@@ -566,6 +566,7 @@ class ShowTests(BriefCase):
         self.assertEqual(by[('a', 'q2')]['answer']['text'], 'Use y')
         self.assertEqual(by[('b', 'q2')]['answer']['text'], 'Too late')
         self.assertEqual([(r['task'], r['id'], r['scope']) for r in found['parked']], [('a', 'q3', 'plan')])
+        self.assertNotIn('group', found['parked'][0])
         self.assertEqual(found['errors'], [{'task': 'c', 'error': 'dispatch failed: timeout'}])
 
     def test_an_unanswered_flagged_question_that_is_stale_still_comes_first(self):
@@ -595,6 +596,7 @@ class ShowTests(BriefCase):
         self.assertGreater(text.index('a/q3'), parked_at)
         self.assertLess(text.index('b/q2'), parked_at)
         self.assertIn('c: the question writer failed: dispatch failed: timeout', text)
+        self.assertEqual(text, UNGROUPED_SHOW)
 
     def test_show_needs_a_plan_and_brief_not_off(self):
         missing = self.cli('show', self.root / 'no-plan')
@@ -604,6 +606,325 @@ class ShowTests(BriefCase):
         off = self.cli('show', self.plan)
         self.assertEqual(off.returncode, 3, off.stderr)
         self.assertIn('off for this plan', off.stderr)
+
+
+# `forge brief show` for ShowTests' fixture, which has no groups. A grouped plan renders
+# parked questions by group instead; this one must stay byte for byte.
+UNGROUPED_SHOW = """\
+b/q1  open [must answer]
+    Question q1
+    default: d
+a/q1  open
+    Question q1
+    default: d
+b/q3  possibly_stale
+    Question q3
+    default: d
+a/q2  answered [must answer]
+    Question q2
+    default: d
+    answer: Use y (ui)
+b/q2  late
+    Question q2
+    default: d
+    answer: Too late (cli)
+
+Parked (wider scope):
+a/q3  parked
+    Question q3
+    default: d
+c: the question writer failed: dispatch failed: timeout
+"""
+
+# The brief writer's prompt for a task in no group. Frozen so a grouped task's extra
+# section cannot leak into it. Repo path in the test is `/repo`.
+UNGROUPED_PROMPT = """\
+You are preparing the open questions for ONE task of a multi-task coding run, before an implementer starts it.
+Read the task below. The repository is at /repo: you may read it and you must not write to it.
+
+## The task: b
+
+### prompt.md
+
+Implement b. TASK_b
+
+### approach.md
+
+Use the approach APPROACH_SENTINEL.
+
+### Its tasks.tsv row
+
+(id, deps, difficulty, files, dwarf, qa, title)
+
+b	a	low	b.txt	sol	opus	Title of b
+
+### All tasks in this run
+
+- a: Title of a
+- b: Title of b
+
+### Its dependencies' prompts (each capped at 4 KB)
+
+#### a
+
+DEP_HEAD short TASK_a
+
+## What to ask
+
+Ask an open question only where a design choice or an ambiguity would make the implementer guess. "Nothing to ask" is the expected answer for most tasks: when the prompt and approach are clear, reply {"questions": []}. At most 3 questions.
+
+Each question is answered by a person before or while earlier tasks are built, so make it short and answerable in a line, and give the options when there are a few.
+
+## Reply format
+
+Reply with JSON only, no prose and no code fence:
+
+{"questions": [{"text": "...", "why": "...", "options": ["..."], "default": "...", "scope": "task", "must_answer": false}]}
+
+- text: the question.
+- why: what depends on the answer.
+- options: the plausible answers, or [].
+- default: what the implementer will do if nobody answers.
+- scope: "task" when only this task needs the answer, "wave" when the other tasks that run alongside it do too, "plan" when the whole run does.
+- must_answer: true only when the decision cannot be defaulted safely.
+"""
+
+# The same plan with a in group auth. The section sits after prompt.md, and wave/plan
+# are defined against the group.
+GROUPED_PROMPT = """\
+You are preparing the open questions for ONE task of a multi-task coding run, before an implementer starts it.
+Read the task below. The repository is at /repo: you may read it and you must not write to it.
+
+## The task: a
+
+### prompt.md
+
+DEP_HEAD short TASK_a
+
+Group auth: Sign-in
+Goal: Users can sign in.
+Other tasks in this group: b — Title of b
+
+### Its tasks.tsv row
+
+(id, deps, difficulty, files, dwarf, qa, title)
+
+a	-	low	a.txt	sol	opus	Title of a
+
+### All tasks in this run
+
+- a: Title of a
+- b: Title of b
+
+## What to ask
+
+Ask an open question only where a design choice or an ambiguity would make the implementer guess. "Nothing to ask" is the expected answer for most tasks: when the prompt and approach are clear, reply {"questions": []}. At most 3 questions.
+
+Each question is answered by a person before or while earlier tasks are built, so make it short and answerable in a line, and give the options when there are a few.
+
+## Reply format
+
+Reply with JSON only, no prose and no code fence:
+
+{"questions": [{"text": "...", "why": "...", "options": ["..."], "default": "...", "scope": "task", "must_answer": false}]}
+
+- text: the question.
+- why: what depends on the answer.
+- options: the plausible answers, or [].
+- default: what the implementer will do if nobody answers.
+- scope: "task" when only this task needs the answer, "wave" when the answer would change how several tasks of this group are done, "plan" when the answer would add, remove or split tasks, or change their order.
+- must_answer: true only when the decision cannot be defaulted safely.
+"""
+
+GROUPS_NOTE = (
+    'brief scope %s: no groups.tsv — run plan --groups waves, or let the planner write groups; '
+    'wave questions stay parked\n')
+
+
+class GroupBriefTests(BriefCase):
+    """A group's goal and siblings in the brief prompt, and wave questions keyed to it."""
+
+    def two_tasks(self):
+        """Tasks a and b, the fixture both prompt snapshots are taken from. c is not in tasks.tsv."""
+        (self.plan / 'tasks.tsv').write_text(
+            'a\t-\tlow\ta.txt\tsol\topus\tTitle of a\n'
+            'b\ta\tlow\tb.txt\tsol\topus\tTitle of b\n')
+        (self.plan / 'tasks' / 'a' / 'prompt.md').write_text('DEP_HEAD short TASK_a\n')
+        (self.plan / 'tasks' / 'b' / 'prompt.md').write_text('Implement b. TASK_b\n')
+        (self.plan / 'tasks' / 'b' / 'approach.md').write_text('Use the approach APPROACH_SENTINEL.\n')
+        return forge_brief.read_tasks(self.plan)
+
+    def groups(self, goal='Users can sign in.', members='a,b', title='Sign-in', gid='auth'):
+        (self.plan / 'groups.tsv').write_text(
+            '# id\treview\tqa\tmembers\ttitle\tgoal\n'
+            '%s\ttask\t-\t%s\t%s\t%s\n' % (gid, members, title, goal))
+
+    def test_prompt_without_a_group_is_the_snapshot(self):
+        tasks = self.two_tasks()
+        task = next(item for item in tasks if item['id'] == 'b')
+        self.assertEqual(forge_brief.build_prompt(self.plan, task, tasks, '/repo'), UNGROUPED_PROMPT)
+        # A task left out of every group keeps that prompt even when the plan has groups.
+        (self.plan / 'tasks.tsv').write_text(
+            'a\t-\tlow\ta.txt\tsol\topus\tTitle of a\n'
+            'b\ta\tlow\tb.txt\tsol\topus\tTitle of b\n'
+            'c\t-\tlow\tc.txt\tsol\topus\tTitle of c\n')
+        self.groups()
+        tasks = forge_brief.read_tasks(self.plan)
+        lone = next(item for item in tasks if item['id'] == 'c')
+        with_groups = forge_brief.build_prompt(self.plan, lone, tasks, '/repo')
+        (self.plan / 'groups.tsv').unlink()
+        without = forge_brief.build_prompt(self.plan, lone, tasks, '/repo')
+        self.assertEqual(with_groups, without)
+        self.assertNotIn('\nGroup ', with_groups)
+        self.assertIn('run alongside it', with_groups)
+        self.assertNotIn('several tasks of this group', with_groups)
+
+    def test_prompt_with_a_group_names_the_title_goal_and_siblings(self):
+        tasks = self.two_tasks()
+        self.groups()
+        task = next(item for item in tasks if item['id'] == 'a')
+        self.assertEqual(forge_brief.build_prompt(self.plan, task, tasks, '/repo'), GROUPED_PROMPT)
+        # The section follows approach.md when the task has one, and still names the siblings.
+        other = next(item for item in tasks if item['id'] == 'b')
+        text = forge_brief.build_prompt(self.plan, other, tasks, '/repo')
+        self.assertLess(text.index('APPROACH_SENTINEL'), text.index('Group auth: Sign-in'))
+        self.assertLess(text.index('Other tasks in this group: a — Title of a'), text.index('### Its tasks.tsv row'))
+        self.assertIn('change how several tasks of this group are done', text)
+        self.assertIn('add, remove or split tasks, or change their order', text)
+        self.assertNotIn('run alongside it', text)
+        # A goal of `-` is no goal: the line is omitted, not written as `(no goal)`.
+        self.groups(goal='-')
+        bare = forge_brief.build_prompt(self.plan, task, tasks, '/repo')
+        self.assertIn('Group auth: Sign-in\nOther tasks in this group: b — Title of b\n', bare)
+        self.assertNotIn('Goal:', bare)
+        self.assertNotIn('(no goal)', bare)
+        # The side dispatch is handed that prompt.
+        self.groups()
+        self.all_say()
+        forge_brief.write(self.plan, task='a')
+        sent = (self.plan / 'side' / 'brief' / 'a' / '1' / 'prompt.txt').read_text()
+        self.assertEqual(sent, forge_brief.build_prompt(self.plan, task, tasks, str(self.repo)))
+        self.assertIn('Goal: Users can sign in.', sent)
+
+    def test_a_grouped_wave_question_records_its_group(self):
+        self.groups()
+        self.arm({'a.qa.*': says(reply(question('Here'), question('Wave', 'wave'), question('Plan', 'plan'))),
+                  'c.qa.*': says(reply(question('Wide', 'wave'), question('Whole', 'plan'))),
+                  '*.qa.*': says(NONE)})
+        forge_brief.write(self.plan)
+        self.assertNotIn('group', self.brief('a')['questions'][0])
+        parked = self.parked('a')['questions']
+        self.assertEqual([(q['id'], q['scope'], q['group']) for q in parked],
+                         [('q2', 'wave', 'auth'), ('q3', 'plan', None)])
+        for parked in self.parked('c')['questions']:
+            self.assertNotIn('group', parked)
+        self.assertEqual([q['scope'] for q in self.parked('c')['questions']], ['wave', 'plan'])
+
+    def test_show_lists_parked_questions_by_group(self):
+        self.groups()
+        (self.plan / 'waves.tsv').write_text('1\ta\n2\tb\n3\tc\n')
+
+        def q(qid, **extra):
+            return dict({'id': qid, 'text': 'Question %s' % qid, 'why': '', 'options': [], 'default': 'd',
+                         'scope': 'task', 'must_answer': False}, **extra)
+        (self.plan / 'tasks' / 'a' / 'brief.json').write_text(json.dumps(
+            {'questions': [q('q1', text='Keep this')], 'model': 'sol', 'generated_at': 't'}))
+        (self.plan / 'tasks' / 'a' / 'brief.parked.json').write_text(json.dumps({'questions': [
+            q('q2', scope='wave', text='Which provider?', options=['x', 'y'], default='x', group='auth'),
+            q('q3', scope='plan', text='Add a task?', default='no', group=None),
+        ], 'model': 'sol', 'generated_at': 't'}))
+        (self.plan / 'tasks' / 'b' / 'brief.json').write_text(json.dumps(
+            {'questions': [], 'model': 'sol', 'generated_at': 't'}))
+        (self.plan / 'tasks' / 'b' / 'brief.parked.json').write_text(json.dumps({'questions': [
+            q('q1', scope='wave', text='Which timeout?', default='y', group='auth'),
+        ], 'model': 'sol', 'generated_at': 't'}))
+        result = self.cli('show', self.plan)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, (
+            'a/q1  open\n'
+            '    Keep this\n'
+            '    default: d\n'
+            '\n'
+            'Group auth (Sign-in): Which provider?\n'
+            '    a/q2  parked\n'
+            '    options: x | y\n'
+            '    default: x\n'
+            'Group auth (Sign-in): Which timeout?\n'
+            '    b/q1  parked\n'
+            '    default: y\n'
+            'Plan:\n'
+            'a/q3  parked\n'
+            '    Add a task?\n'
+            '    default: no\n'))
+        self.assertNotIn('Parked (wider scope):', result.stdout)
+        found = json.loads(self.cli('show', self.plan, '--json').stdout)
+        by = {(row['task'], row['id']): row for row in found['parked']}
+        self.assertEqual(by[('a', 'q2')]['group'], 'auth')
+        self.assertIsNone(by[('a', 'q3')]['group'])
+        self.assertEqual(by[('b', 'q1')]['group'], 'auth')
+        # A title of `-` is absent: no empty parentheses. A group that groups.tsv no longer
+        # names is the same.
+        self.groups(title='-', goal='-')
+        dropped = self.cli('show', self.plan).stdout
+        self.assertIn('Group auth: Which provider?\n', dropped)
+        self.assertNotIn('Group auth ()', dropped)
+        self.assertNotIn('Group auth (-)', dropped)
+
+    def test_the_event_names_the_group_only_when_the_question_has_one(self):
+        self.groups()
+        self.arm({'a.qa.*': says(reply(question('Here', must_answer=True), question('Wave', 'wave'),
+                                       question('Plan', 'plan'))),
+                  'c.qa.*': says(reply(question('Wide', 'wave'))),
+                  '*.qa.*': says(NONE)})
+        (self.plan / 'brief').write_text('gated\n')
+        forge_brief.write(self.plan)
+        found = {(body['task'], body['qid']): body for _, body in self.events('brief_question')}
+        self.assertEqual(found[('a', 'q2')]['group'], 'auth')
+        self.assertEqual(found[('a', 'q2')]['parked'], True)
+        self.assertNotIn('group', found[('a', 'q1')])
+        self.assertNotIn('group', found[('a', 'q3')])
+        self.assertNotIn('group', found[('c', 'q1')])
+        self.assertEqual(found[('c', 'q1')]['scope'], 'wave')
+
+    def test_wave_scope_without_groups_is_noted_once(self):
+        self.arm({'a.qa.*': says(reply(question('Here'), question('Wave', 'wave'))),
+                  '*.qa.*': says(NONE)})
+        (self.plan / 'brief_scope').write_text('wave\n')
+        result = self.cli('write', self.plan, '--task', 'a')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, GROUPS_NOTE % 'wave')
+        self.assertEqual(result.stdout, 'a: 1 question(s), 1 parked\n')
+        self.assertEqual((self.plan / 'brief.groups.noted').read_text(), 'wave\n')
+        wave = self.parked('a')['questions'][0]
+        self.assertEqual(wave['scope'], 'wave')
+        self.assertNotIn('group', wave)
+        again = self.cli('write', self.plan, '--task', 'b')
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertEqual(again.stderr, '')
+        self.assertEqual(again.stdout, 'b: 0 question(s)\n')
+
+    def test_plan_scope_without_groups_is_noted_once(self):
+        self.all_say()
+        (self.plan / 'brief_scope').write_text('plan\n')
+        result = self.cli('write', self.plan, '--task', 'a')
+        self.assertEqual(result.stderr, GROUPS_NOTE % 'plan')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        again = self.cli('write', self.plan)
+        self.assertEqual(again.stderr, '')
+        self.assertNotIn('brief scope', again.stdout)
+
+    def test_a_groups_file_or_task_scope_prints_no_note(self):
+        self.all_say()
+        (self.plan / 'brief_scope').write_text('wave\n')
+        self.groups()
+        noted = self.cli('write', self.plan, '--task', 'a')
+        self.assertEqual(noted.stderr, '')
+        self.assertFalse((self.plan / 'brief.groups.noted').exists())
+        (self.plan / 'groups.tsv').unlink()
+        (self.plan / 'brief_scope').write_text('task\n')
+        quiet = self.cli('write', self.plan, '--task', 'b')
+        self.assertEqual(quiet.stderr, '')
+        self.assertFalse((self.plan / 'brief.groups.noted').exists())
 
 
 if __name__ == '__main__':
