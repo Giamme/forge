@@ -49,6 +49,14 @@
 #                           by a listed reviewer of another model family, recorded and
 #                           never read (measures reviewer agreement). `none` turns it off
 #   --shadow-rate R         that share, 0..1 (default 0.1)
+#   --groups waves|FILE     opt-in (#140): groups.tsv from the computed waves, or from FILE; a
+#                           groups.tsv already in the plan dir is used as is. Validated, its
+#                           group qa resolved and frozen (groups.frozen); `run` refuses when
+#                           it or a member's deps/files changed since
+#   --group-review          with --groups waves: the derived groups get review=group (one QA
+#                           review for the whole group; high-difficulty tasks stay out)
+#   --group-max-tasks N     most members of a review group (default 6)
+#   --group-max-diff-kb N   most diff a group review reads, in KB (default 256; kept in the plan)
 #   --reviewer-session      opt-in experiment: a later review round continues the reviewer's
 #                           earlier session (claude, openclaude, codex) when the QA spec is
 #                           unchanged, and starts fresh whenever it cannot; each round is
@@ -588,6 +596,79 @@ forge_features_table() { # forge_features_table <plan>
   return 0
 }
 
+# --- groups (#140) -----------------------------------------------------------------
+# groups.tsv is the plan's frozen sets of tasks (scripts/forge_groups, forge-groups.py). Opt-in:
+# with no groups.tsv, no --groups and no groups.frozen, nothing here runs or writes.
+forge_groups_py() { python3 "$SKILL_DIR/scripts/forge-groups.py" "$@"; }
+
+# forge_groups_die <message from forge-groups.py>: its one-line message, without the prefix, exit 2.
+forge_groups_die() { local msg="$1"; die "${msg#forge-groups: }" 2; }
+
+# forge_groups_have_review <plan>: 0 when some group has review=group.
+forge_groups_have_review() {
+  [ -f "$1/groups.tsv" ] || return 1
+  forge_groups_py show "$1" 2>/dev/null | awk -F'\t' '$2 == "group" { found = 1 } END { exit !found }'
+}
+
+# forge_groups_max_tasks <plan> [flag]: the flag, else the plan's group_max_tasks, else 6.
+forge_groups_max_tasks() {
+  local value="${2:-}"
+  [ -n "$value" ] || value="$(head -1 "$1/group_max_tasks" 2>/dev/null)"
+  printf '%s' "${value:-6}"
+}
+
+# forge_groups_plan <plan> <--groups value> <--group-review 0|1> <--group-max-tasks value>
+forge_groups_plan() {
+  local plan="$1" src="$2" review="$3" max="$4" out rc=0
+  if [ "$src" = waves ]; then
+    out="$(forge_groups_py derive "$plan" --review "$([ "$review" = 1 ] && echo group || echo task)" \
+      --max-tasks "$(forge_groups_max_tasks "$plan" "$max")" 2>&1)" || forge_groups_die "$out"
+  elif [ -n "$src" ]; then
+    cp "$src" "$plan/groups.tsv" || die "could not copy '$src' to $plan/groups.tsv" 3
+  fi
+  [ -f "$plan/groups.tsv" ] || [ -f "$plan/groups.frozen" ] || return 0
+  # validate, then resolve (writes the group qa back), then freeze
+  out="$(forge_groups_py validate "$plan" --max-tasks "$(forge_groups_max_tasks "$plan" "$max")" 2>&1)" || forge_groups_die "$out"
+  if forge_groups_have_review "$plan" && forge_plan_is_fractal "$plan"; then
+    die "group review does not support Fractal yet" 2
+  fi
+  out="$(forge_groups_py resolve "$plan" 2>&1)" || forge_groups_die "$out"
+  out="$(forge_groups_py freeze "$plan" 2>&1)" || forge_groups_die "$out"
+  return 0
+}
+
+# render_groups <plan>: the table's groups block and, when a group reviews its members together,
+# the reviews line. Nothing without a groups.tsv.
+render_groups() {
+  [ -f "$1/groups.tsv" ] || return 0
+  python3 - "$SKILL_DIR/scripts" "$1" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import forge_groups
+try:
+    groups = forge_groups.load(sys.argv[2])
+except forge_groups.GroupError:
+    groups = []
+if groups:
+    qas = ['qa=' + g.qa if g.qa != '-' else '-' for g in groups]
+    ids = max(len(g.id) for g in groups)
+    qa_w = max(len(q) for q in qas)
+    members = [', '.join(g.members) for g in groups]
+    mem_w = max(len(m) for m in members)
+    print('groups:')
+    for g, q, m in zip(groups, qas, members):
+        print('  %-*s  %-12s  %-*s  %-*s  — %s' % (ids, g.id, 'review=' + g.review, qa_w, q, mem_w, m,
+                                                       g.goal if g.goal != '-' else '(no goal)'))
+    print()
+PY
+}
+
+# forge_groups_review_counts <plan>: "<groups> <members>" of the review=group groups, or nothing.
+forge_groups_review_counts() {
+  [ -f "$1/groups.tsv" ] || return 0
+  forge_groups_py show "$1" 2>/dev/null | awk -F'\t' '$2 == "group" { g++; m += split($4, a, ",") } END { if (g) print g, m }'
+}
+
 do_plan() {
   local PLAN="${1:?plan needs a plan dir}"; shift
   local PF_NAME="" PF_NONE=0 PF_QT=0
@@ -597,7 +678,7 @@ do_plan() {
   local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="" FAIL_FIRST="" REVIEWER_SESSION="" RS_RATE="" IMPLEMENTER_SESSION="" PRE_REVIEW="" PRE_REVIEW_PARALLEL=""
   local FAST_GIVEN=0 FAST_PARSED=""
   local RETRO_FLAG="" BRIEF_FLAG="" BRIEF_SCOPE_FLAG="" BRIEF_MODEL_FLAG="" SUMM_FLAG="" SUMM_MODEL_FLAG=""
-  local COLLAPSE=0 COLLAPSED_NOW=0 FEAT_ERR=""
+  local COLLAPSE=0 COLLAPSED_NOW=0 FEAT_ERR="" GRP_SRC="" GRP_REVIEW=0 GRP_MAX="" GRP_DIFF=""
   # The retro, brief and summaries choices, settled before anything is written: a refusal
   # (a bad value, no model, a spec that does not resolve) leaves the plan dir as it was.
   forge_features_scan "$@"
@@ -621,6 +702,19 @@ do_plan() {
         printf '%s' "${2:-}" | grep -Eq '^(0?\.[0-9]+|0|1|1\.0+)$' || die "--shadow-rate needs a share between 0 and 1"
         SHADOW_RATE="$2"; shift 2 ;;
       --explore)      EXPLORE="${2:?--explore needs a share between 0 and 0.5}"; shift 2 ;;
+      --groups)
+        [ -n "${2:-}" ] || die "--groups needs waves or a groups.tsv file"
+        if [ "$2" != waves ]; then
+          [ -f "$2" ] && [ -r "$2" ] || die "--groups '$2' is not a readable file (use waves, or a groups.tsv)"
+        fi
+        GRP_SRC="$2"; shift 2 ;;
+      --group-review) GRP_REVIEW=1; shift ;;
+      --group-max-tasks)
+        printf '%s' "${2:-}" | grep -Eq '^[0-9]{1,6}$' && [ "$((10#$2))" -ge 1 ] || die "--group-max-tasks needs a positive integer"
+        GRP_MAX="$((10#$2))"; shift 2 ;;
+      --group-max-diff-kb)
+        printf '%s' "${2:-}" | grep -Eq '^[0-9]{1,9}$' && [ "$((10#$2))" -ge 1 ] || die "--group-max-diff-kb needs a positive integer"
+        GRP_DIFF="$((10#$2))"; shift 2 ;;
       --collapse-chains) COLLAPSE=1; shift ;;
       --dwarf)        D_ANY="${2:?}"; shift 2 ;;
       --dwarf-high)   D_HI="${2:?}"; shift 2 ;;
@@ -673,6 +767,7 @@ do_plan() {
     esac
   done
   [ -d "$PLAN" ] || die "plan dir '$PLAN' does not exist"
+  [ "$GRP_REVIEW" = 0 ] || [ "$GRP_SRC" = waves ] || die "--group-review goes with --groups waves (it sets the review of the groups waves derives)"
   # The profile (#48) first: its gates and budget count for every decision-model step below,
   # and its values stand in for the flags this call did not give.
   forge_profile_plan
@@ -700,6 +795,10 @@ do_plan() {
   esac
   [ -z "$SHADOW_RATE" ] || [ "$SHADOW_QA" = none ] || [ "$SHADOW_QA" = off ] \
     || printf '%s\n' "$SHADOW_RATE" > "$PLAN/shadow_rate"
+  # Group options (#140): kept as plan files, only when given, so a re-plan, retry, rerun or split
+  # keeps what the plan was made with.
+  [ -z "$GRP_MAX" ] || printf '%s\n' "$GRP_MAX" > "$PLAN/group_max_tasks"
+  [ -z "$GRP_DIFF" ] || printf '%s\n' "$GRP_DIFF" > "$PLAN/group_max_diff_kb"
   # Fail-first evidence (opt-in, advisory) is part of the plan too: every task's review gets it.
   case "$FAIL_FIRST" in on) : > "$PLAN/fail_first" ;; off) rm -f "$PLAN/fail_first" ;; esac
   # Pre-review tests (opt-in, #85): each attempt's affected tests run before its review, and a
@@ -1013,6 +1112,10 @@ EOF
     note "plan shape could not be recorded (advisory)${shape_err:+: $shape_err}"
   fi
 
+  # Groups (#140): after the last wave computation and the last change to a task's deps, so the
+  # frozen fingerprint is of the table the run will use.
+  forge_groups_plan "$PLAN" "$GRP_SRC" "$GRP_REVIEW" "$GRP_MAX"
+
   render_table "$PLAN"
   # What the gates did, from plan-gates.json: files and deps they added, prompts and
   # requirements still flagged. Prints nothing when no gate recorded anything.
@@ -1092,7 +1195,16 @@ render_table() {
   if [ -s "$PLAN/planner" ]; then
     est=$((est+1)); extra=" + 1 planner ($(cat "$PLAN/planner"))"
   fi
-  echo "tasks: $n   waves: $waves   estimated dispatches: $est ($n dwarf + $n qa$extra)"
+  # A review=group group is reviewed once for all its members (#140): the estimate counts that.
+  local grp_counts grp_n=0 grp_m=0 reviews="$n"
+  grp_counts="$(forge_groups_review_counts "$PLAN")"
+  if [ -n "$grp_counts" ]; then
+    read -r grp_n grp_m <<<"$grp_counts"
+    reviews=$((n - grp_m + grp_n))
+    est=$((n + reviews + (est - n * 2)))
+  fi
+  echo "tasks: $n   waves: $waves   estimated dispatches: $est ($n dwarf + $reviews qa$extra)"
+  [ -z "$grp_counts" ] || echo "reviews: $reviews ($grp_n groups replace $grp_m task reviews)"
   if [ -s "$PLAN/shadow_qa" ]; then
     local rate; rate="$(cat "$PLAN/shadow_rate" 2>/dev/null || echo 0.1)"
     echo "shadow review: $(cat "$PLAN/shadow_qa") on a sampled $rate of reviewed attempts" \
@@ -1167,6 +1279,7 @@ EOF
     done
     echo
   done
+  render_groups "$PLAN"
   # A chain collapsed on this call, or a chain left as a chain. one and branches say nothing.
   # COLLAPSED_NOW is do_plan's: collapsed.json from an earlier plan is not announced again.
   local shape_note=""
@@ -2778,6 +2891,15 @@ do_run() {
   local T="$PLAN/tasks.tsv" W="$PLAN/waves.tsv"
   [ -s "$W" ] || die "no waves.tsv — run the plan subcommand first"
   grep -q 'UNASSIGNED' "$T" && die "some tasks are UNASSIGNED — assign a dwarf before running"
+  # groups.tsv and its members' deps and files are as the plan froze them (#140). Nothing to
+  # check without groups; checked before anything is dispatched, a dry run included.
+  if [ -f "$PLAN/groups.tsv" ] || [ -f "$PLAN/groups.frozen" ]; then
+    local groups_out
+    groups_out="$(forge_groups_py check "$PLAN" 2>&1)" || forge_groups_die "$groups_out"
+    if forge_groups_have_review "$PLAN" && { [ "${FRACTAL_CHOICE:-}" = on ] || forge_plan_is_fractal "$PLAN"; }; then
+      die "group review does not support Fractal yet" 2
+    fi
+  fi
 
   compute_waves "$PLAN"
   local REPO run_id wt_root int_wt int_br
