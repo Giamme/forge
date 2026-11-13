@@ -101,15 +101,16 @@
 
 /* status: the lamp behind each forge state. One meaning each (--st; --st-lit on the 3D plate): four lamps, and the
    waiting lamp for a task that waits for the user (NEEDS_INPUT, NEEDS_DECISION, and an integration that only waits for the user).
+   IMPLEMENTED waits for its group's review and uses that same waiting lamp.
    A hollow lamp is that lamp's family but not its plain case: passed without a merge, stopped, failed outside the code,
    an outdated review, waiting for you */
 .st-merged, .st-pass, .st-accepted, .st-nochanges { --st: var(--lamp-green); --st-lit: var(--lit-green); }
 .st-running, .st-interrupted { --st: var(--lamp-amber); --st-lit: var(--lit-amber); }
 .st-pending, .st-none, .st-unknown, .st-invalidated, .st-outdated { --st: var(--lamp-off); --st-lit: var(--lamp-off); }
 .st-fail, .st-error, .st-conflict, .st-infra, .st-timeout, .st-blocked, .st-bounced, .st-incomplete { --st: var(--lamp-red); --st-lit: var(--lit-red); }
-.st-needs_input, .st-needs_decision, .st-waiting { --st: var(--lamp-wait); --st-lit: var(--lit-wait); }
+.st-needs_input, .st-needs_decision, .st-waiting, .st-implemented { --st: var(--lamp-wait); --st-lit: var(--lit-wait); }
 [class^="st-"], [class*=" st-"] { --st-fill: var(--st); --st-ring: var(--lamp-edge); }
-.st-accepted, .st-nochanges, .st-interrupted, .st-infra, .st-timeout, .st-blocked, .st-outdated, .st-needs_input, .st-needs_decision, .st-waiting { --st-fill: transparent; --st-ring: var(--st); }
+.st-accepted, .st-nochanges, .st-interrupted, .st-infra, .st-timeout, .st-blocked, .st-outdated, .st-needs_input, .st-needs_decision, .st-waiting, .st-implemented { --st-fill: transparent; --st-ring: var(--st); }
 /* verification lanes: flaky passed on a rerun (amber, hollow), known passed with only baseline failures (green, hollow) */
 .st-flaky { --st: var(--lamp-amber); --st-lit: var(--lit-amber); --st-fill: transparent; --st-ring: var(--st); }
 .st-known { --st: var(--lamp-green); --st-lit: var(--lit-green); --st-fill: transparent; --st-ring: var(--st); }
@@ -172,6 +173,11 @@ a.chip, a.chip:hover { color: inherit; text-decoration: none; }
 .sev-chip { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: var(--t-xs); white-space: nowrap; }
 .sev-chip::before { content: ''; width: 9px; height: 9px; clip-path: var(--sev-shape, circle(30%)); background: var(--sev, var(--muted)); flex: none; }
 .chip.sev-chip { font-family: var(--mono); font-weight: 600; letter-spacing: 0; text-transform: none; font-size: var(--t-xs); }
+/* IMPLEMENTED's label is a phrase, so it keeps the waiting lamp and drops the status-word capitals */
+.chip.st-implemented { text-transform: none; letter-spacing: 0; font-family: var(--font-ui); font-weight: 650; font-size: var(--t-xs); }
+a.group-chip { display: inline-flex; align-items: center; padding: 0 6px; border: 1px solid var(--rule); border-radius: var(--r-small); background: var(--key); color: var(--ink);
+  font-family: var(--mono); font-weight: 600; font-size: var(--t-xs); letter-spacing: 0; text-transform: none; text-decoration: none; white-space: nowrap; }
+a.group-chip:hover { text-decoration: underline; text-underline-offset: 2px; }
 /* a model's name plate: the alias engraved, its effort beside it; the one way a model is shown */
 .model-plate { display: inline-flex; align-items: stretch; vertical-align: middle; border: 1px solid var(--rule-2); border-radius: var(--r-small); overflow: hidden; white-space: nowrap; line-height: 1.55; }
 .model-plate .mp-name { padding: 0 6px; background: var(--module-2); color: var(--ink); font-family: var(--font-plate); font-weight: 700; font-size: .857rem; letter-spacing: .06em; text-transform: uppercase; transition: background-color var(--relay); }
@@ -344,13 +350,14 @@ body.no-tasks .tasks-module { display: none; }
 body[data-shell=workbench].no-tasks .run-view { grid-template-rows: auto minmax(0, 1fr) auto 0; }
 body[data-shell=immersive] .sidebar { position: absolute; z-index: 4; left: var(--gap); top: var(--gap); bottom: var(--gap); width: var(--runs-w); box-shadow: var(--ply-1); }
 body[data-shell=immersive][data-runs=closed] .sidebar { display: none; }
-body[data-shell=immersive]:is([data-view=models], [data-view=findings], [data-view=settings], [data-view=worktrees], [data-view=disk], [data-view=projects], [data-view=waiting], [data-view=loading], [data-view=first-run]) #main { left: calc(var(--L) - var(--gap)); }
+body[data-shell=immersive]:is([data-view=models], [data-view=findings], [data-view=settings], [data-view=worktrees], [data-view=disk], [data-view=projects], [data-view=waiting], [data-view=loading], [data-view=first-run], [data-view=group]) #main { left: calc(var(--L) - var(--gap)); }
 body[data-shell=immersive] .stage-row, body[data-shell=immersive] .stage-col { position: absolute; inset: 0; }
 body[data-shell=immersive] .stage-col .stage-slot { position: absolute; inset: 0; }
 body[data-shell=immersive] .insp-module { position: absolute; z-index: 3; right: var(--gap); top: var(--gap); bottom: var(--gap); width: var(--insp-w); box-shadow: var(--ply-1); }
 body[data-shell=immersive][data-insp=closed] .insp-module { display: none; }
 body[data-shell=immersive] .run-header { position: absolute; z-index: 3; left: var(--L); top: var(--gap); width: min(1040px, calc(100% - var(--L) - var(--R))); box-shadow: var(--ply-1); }
 body[data-shell=immersive] .tasks-module { position: absolute; z-index: 3; left: var(--L); right: var(--R); bottom: var(--gap); height: var(--tasks-h); box-shadow: var(--ply-1); }
+body[data-shell=immersive] .groups-module:not([hidden]) { position: absolute; z-index: 3; left: var(--L); right: var(--R); bottom: var(--B); max-height: min(32vh, 240px); box-shadow: var(--ply-1); }
 body[data-shell=immersive][data-tasks=closed] .tasks-module { height: auto; }
 body[data-shell=immersive] .strip-wrap { position: absolute; z-index: 2; left: var(--L); right: var(--R); bottom: var(--B); }
 body[data-shell=immersive] .stage-col .graph, body[data-shell=immersive] .stage-col .files-view { position: absolute; inset: 0; overflow: auto; padding: calc(var(--head-h, 132px) + 2 * var(--gap)) var(--R) calc(var(--B) + var(--gap)) var(--L); }
@@ -388,6 +395,12 @@ body[data-shell=workbench] .insp-module .splitter.v { left: -5px; }
 body[data-shell=workbench] .run-header { grid-area: head; border-radius: 0; border-width: 0 0 1px; }
 body[data-shell=workbench] .strip-wrap { grid-area: strip; padding: var(--s-2) var(--s-3) 0; }
 body[data-shell=workbench] .tasks-module { grid-area: tasks; position: relative; border-radius: 0; border-width: 1px 0 0; }
+body[data-shell=workbench] .run-view.has-groups { grid-template-rows: auto minmax(0, 1fr) auto auto var(--tasks-h);
+  grid-template-areas: "head insp" "stage insp" "strip insp" "groups insp" "tasks insp"; }
+body[data-shell=workbench][data-tasks=closed] .run-view.has-groups { grid-template-rows: auto minmax(0, 1fr) auto auto auto; }
+body[data-shell=workbench] .groups-module { grid-area: groups; position: relative; border-radius: 0; border-width: 1px 0 0; max-height: min(32vh, 240px); }
+body[data-shell=workbench] .run-view.diff-open.has-groups .diff-view { grid-area: 2 / 1 / 6 / 3; }
+body[data-shell] .run-view.diff-open .groups-module { display: none; }
 body[data-shell=workbench] .tasks-module .splitter.h { top: -5px; }
 body[data-shell=workbench] .run-view.diff-open .diff-view { grid-area: 2 / 1 / 5 / 3; overflow: auto; padding: var(--s-4); border-radius: 0; border-width: 0; }
 body[data-shell=workbench] .map-view { display: grid; grid-template-rows: auto minmax(0, 1fr); }
@@ -399,7 +412,7 @@ body[data-shell=workbench] .map-cards-host { overflow: auto; }
 body[data-shell=workbench] .map-cards { padding: var(--s-4); }
 
 /* content views: the leaderboard and the waiting pages */
-body:is([data-view=models], [data-view=findings], [data-view=settings], [data-view=worktrees], [data-view=disk], [data-view=projects], [data-view=waiting], [data-view=loading], [data-view=first-run]) #main { padding: var(--s-6) var(--s-6) var(--s-8); }
+body:is([data-view=models], [data-view=findings], [data-view=settings], [data-view=worktrees], [data-view=disk], [data-view=projects], [data-view=waiting], [data-view=loading], [data-view=first-run], [data-view=group]) #main { padding: var(--s-6) var(--s-6) var(--s-8); }
 
 /* ---------- the stage: the panel the run is inlaid on ---------- */
 .stage-slot { position: relative; background: var(--stage-bg); }
@@ -1301,7 +1314,12 @@ dialog.export-dialog h2 { margin-bottom: var(--s-2); }
   body[data-shell] .stage-col .stage-slot, body[data-shell] .map-view .stage-slot { position: relative; inset: auto; height: clamp(300px, 105vw, 62vh); border-radius: var(--r-module); overflow: hidden; }
   body[data-shell] .run-view .stage-col .stage-slot { height: clamp(240px, 72vw, 62vh); }      /* a run's plate is wide: no empty bands above and below it */
   body[data-shell] .stage-col .graph, body[data-shell] .stage-col .files-view, body[data-shell] .map-cards { position: static; padding: 0; overflow: auto; }
-  body[data-shell] :is(.run-header, .insp-module, .tasks-module, .diff-view, .map-head-module, .strip-wrap) { position: static; width: auto; max-width: none; height: auto; margin: 0; box-shadow: none; border-radius: var(--r-module); border-width: 1px; }
+  body[data-shell] :is(.run-header, .insp-module, .tasks-module, .groups-module, .diff-view, .map-head-module, .strip-wrap) { position: static; width: auto; max-width: none; height: auto; margin: 0; box-shadow: none; border-radius: var(--r-module); border-width: 1px; }
+  body[data-shell=immersive] .groups-module:not([hidden]),
+  body[data-shell=workbench] .groups-module:not([hidden]) { position: static; inset: auto; left: auto; right: auto; bottom: auto; width: auto; max-width: none; height: auto; max-height: 60vh; margin: 0; box-shadow: none; border-radius: var(--r-module); border-width: 1px; }
+  /* the desktop groups row is more specific than the stacked run view; drop it so a phone stays one column */
+  body[data-shell=workbench] .run-view.has-groups,
+  body[data-shell=workbench][data-tasks=closed] .run-view.has-groups { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-template-areas: none; }
   body[data-shell] .tasks-module .run-tasks { max-height: 60vh; }
   body[data-shell] .stage-note { position: static; }
   .stage-ctl { top: auto; bottom: var(--gap); right: var(--gap); translate: none; grid-auto-flow: column; }
@@ -1627,3 +1645,31 @@ dialog.set-guide::backdrop { background: light-dark(rgb(17 22 19 / .35), rgb(0 0
 /* A held redraw that has lasted (#115) */
 .live-held { position: fixed; right: var(--s-4); bottom: var(--s-4); z-index: 30; display: flex; align-items: center; gap: var(--s-2); padding: var(--s-2) var(--s-3); border: 1px solid var(--rule); border-radius: var(--r-key); background: var(--module); color: var(--ink); box-shadow: var(--ply-2); font-size: var(--t-sm); }
 .live-held[hidden] { display: none; }
+
+/* ---------- groups: the run's groups block, and #/runs/<key>/group/<gid> ---------- */
+.groups-module { overflow: auto; }
+.groups-module[hidden] { display: none; }
+.groups-block { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.group-rows { min-height: 0; }
+.group-row { display: grid; gap: 2px 12px; padding: 8px 10px; border-bottom: 1px solid var(--rule); }
+.group-row:last-child { border-bottom: 0; }
+.group-title { font-weight: 650; overflow-wrap: anywhere; }
+a.group-title { text-decoration: underline; text-decoration-color: var(--rule-2); text-underline-offset: 3px; }
+.group-goal { margin: 0; color: var(--muted); font-size: var(--t-sm); }
+.group-meta, .group-members, .group-state { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); font-size: var(--t-sm); }
+.group-state { margin: 0; }
+.group-round, .group-round-members { font-family: var(--mono); font-size: var(--t-xs); }
+.group-view { max-width: 1100px; }
+.group-page { display: grid; gap: var(--s-5); }
+.group-head { display: grid; gap: var(--s-2); }
+.group-head h1, .group-section h2, .group-round-row h3 { margin: 0; }
+.group-section { display: grid; gap: var(--s-2); }
+.group-findings { width: 100%; border-collapse: collapse; }
+.group-findings th, .group-findings td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--rule); vertical-align: baseline; font-size: var(--t-sm); overflow-wrap: anywhere; }
+.group-findings th { font-family: var(--font-plate); font-size: .786rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+.group-ambiguous { background: var(--warn-wash); }
+.group-blocking { color: var(--lamp-red); font-weight: 700; }
+.group-cmd { margin: 0; }
+.group-round-row { display: grid; gap: 2px; padding-bottom: var(--s-2); border-bottom: 1px solid var(--rule); }
+.group-round-row:last-child { border-bottom: 0; padding-bottom: 0; }
+.group-members .chip { text-decoration: none; }
