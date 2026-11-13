@@ -79,7 +79,7 @@ A decomposed run adds:
   tasks/<id>/changes.since.diff        diff from that commit to the one under review; omitted when there is no such range
   tasks/<id>/changes.since.range       the two commits, full hashes
   tasks/<id>/changes.since.stat        diff --stat of that range
-  tasks/<id>/review_sessions.tsv       one row per review round while plan --reviewer-session is on: round, attempt, mode, reason, session id
+  tasks/<id>/review_sessions.tsv       one row per review round while plan --reviewer-session is on: round, attempt, mode, reason (not-sampled for a task --reviewer-session-rate left out), session id
   tasks/<id>/implementer_sessions.tsv  one row per attempt while plan --implementer-session is on: row, attempt, mode (continued|fresh|failed), reason, session id
   tasks/<id>/reviewed.dwarf.{session,resolved}   the implementer session that made reviewed.commit, and what it ran as
   tasks/<id>/retry_findings.dwarf.{session,resolved}   the same, carried beside the retry findings; what --implementer-session continues
@@ -90,6 +90,7 @@ A decomposed run adds:
   infra_backoff, infra_fallback        --infra-backoff's shape; on while --infra-fallback is set
   max_parallel                         the concurrency limit: written by each run from --max-parallel, changed live by forge control
   reviewer_session                     holds on; present while plan --reviewer-session is on
+  reviewer_session_rate, reviewer_session_tasks   --reviewer-session-rate's share, and the task ids it picked (one per line)
   implementer_session                  holds on; present while plan --implementer-session is on
   <final-review-dir>/review.meta       final-review-<epoch>-<pid>/ or integrate-*/final-review/; base=, tip=, source=, spec=, threshold=, integration=, previous=, since=; session= and session_reason= while reviewer_session is set
   control.log                          one JSON line per human change made with forge control, and per request outcome

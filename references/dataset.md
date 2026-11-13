@@ -85,7 +85,9 @@ skip every `side_*` role, so a brief or summary is never counted as a review. A 
 the dispatch role itself, not one of these.
 
 `plan --reviewer-session` writes `$PLAN/reviewer_session` (`on`). The plan event records
-it in `options`. The file joins the plan id only when it is present, so every plan already
+it in `options`, and `--reviewer-session-rate` adds `reviewer_session_rate`; which tasks were
+sampled is in `$PLAN/reviewer_session_tasks`, and the others' `review_sessions.tsv` rows say
+`not-sampled`. The file joins the plan id only when it is present, so every plan already
 in a store keeps its id, and turning the experiment on stores a new plan event.
 `plan --implementer-session` (`$PLAN/implementer_session`, `on`) is recorded the same way, and
 `plan --pre-review-tests` joins the plan id the same way and is listed in `flags`. `plan-gates.json`

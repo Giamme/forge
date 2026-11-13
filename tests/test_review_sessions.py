@@ -217,6 +217,48 @@ class RoundTests(unittest.TestCase):
         self.assertTrue((both / 'reviewer_session').is_file())
         self.assertEqual((both / 'reviewer_session').read_text(), 'on\n')
 
+    # --- a sampled share (--reviewer-session-rate) -------------------------------------------
+    def test_a_rate_picks_that_share_of_each_difficulty_and_a_replan_keeps_it(self):
+        p = self.plan_of('--reviewer-session-rate', '0.5', ids='abcd')
+        self.assertEqual((p / 'reviewer_session').read_text(), 'on\n')
+        self.assertEqual((p / 'reviewer_session_rate').read_text(), '0.5\n')
+        picked = (p / 'reviewer_session_tasks').read_text().split()
+        self.assertEqual(len(picked), 2)
+        self.assertTrue(set(picked) <= set('abcd'))
+        self.assertIn('reviewer-session: on for 2 of 4 tasks (a sampled 0.5)', self.plan_output)
+        r = self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--no-memory')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual((p / 'reviewer_session_tasks').read_text().split(), picked)
+        event = harvest.plan_event(p, dict(run='fixed-run'), src='import', inventory=False)
+        self.assertEqual(event['data']['options'].get('reviewer_session_rate'), '0.5')
+        r = self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--no-memory', '--reviewer-session')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertFalse((p / 'reviewer_session_rate').exists())
+        self.assertFalse((p / 'reviewer_session_tasks').exists())
+
+    def test_a_rate_rejects_a_share_outside_zero_to_one(self):
+        p = self.root / 'plan'; p.mkdir()
+        (p / 'tasks.tsv').write_text('a\t-\tlow\ta.txt\tsol\topus\tA\n')
+        r = self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--reviewer-session-rate', '2')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('--reviewer-session-rate needs a share between 0 and 1', r.stdout)
+
+    def test_a_task_outside_the_sample_reviews_fresh_and_logs_not_sampled(self):
+        p = self.first_round_fails('--reviewer-session-rate', '0')
+        self.assertEqual(self.retry(p).returncode, 0)
+        self.assertFalse(continues(p / 'tasks/a/qa.cmd'))
+        self.assertEqual(self.log(p), [['1', '1', 'fresh', 'not-sampled', ''],
+                                       ['2', '2', 'fresh', 'not-sampled', '']])
+
+    def test_a_task_in_the_sample_continues_as_with_the_plain_flag(self):
+        p = self.first_round_fails('--reviewer-session-rate', '1')
+        self.assertEqual((p / 'reviewer_session_tasks').read_text(), 'a\n')
+        self.assertEqual(self.retry(p).returncode, 0)
+        argv = shlex.split((p / 'tasks/a/qa.cmd').read_text())
+        self.assertEqual(argv[argv.index('--resume') + 1], SESSION)
+        self.assertEqual(self.log(p), [['1', '1', 'fresh', 'first-round', ''],
+                                       ['2', '2', 'continued', 'same-spec', SESSION]])
+
     def test_off_by_default_nothing_continues_and_nothing_is_logged(self):
         p = self.first_round_fails()
         self.assertEqual(self.retry(p).returncode, 0)

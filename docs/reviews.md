@@ -311,6 +311,13 @@ when the resolved harness, model and effort are unchanged. The approval table na
 Dispatch details are in
 [continuing a reviewer session](../references/harnesses.md#continuing-a-reviewer-session).
 
+`plan --reviewer-session-rate R` turns it on for a sampled share of the tasks only, to compare
+the two halves in one run. Within each difficulty, `plan` picks round(R × n) tasks by a hash of
+the run id and the task id, and writes them to `reviewer_session_tasks`. A re-plan keeps the
+same tasks. The other tasks review fresh every round, and their `review_sessions.tsv` rows say
+`not-sampled`. Plain `--reviewer-session` on a re-plan goes back to every task. A whole-run
+review is not sampled.
+
 Any round that cannot continue starts a fresh session. That is the first round, a missing
 or malformed session id, a resolution that is missing or different, any harness other
 than those three, a Fractal plan, and a continue that the harness refuses or that fails

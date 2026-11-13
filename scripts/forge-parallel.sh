@@ -54,6 +54,10 @@
 #                           unchanged, and starts fresh whenever it cannot; each round is
 #                           logged in tasks/<id>/review_sessions.tsv and tagged in the
 #                           dataset. `--no-reviewer-session` turns it off (the default)
+#   --reviewer-session-rate R  the same, on a sampled share R of the tasks only (implies
+#                           --reviewer-session): round(R x n) tasks of each difficulty, picked by
+#                           a hash of the run id and task id; the others review fresh and log
+#                           `not-sampled`, so the two halves can be compared
 #   --implementer-session   opt-in: a retry continues the implementer's earlier session
 #                           (claude, openclaude) when its spec is unchanged and its work is
 #                           still what the review judged, and starts fresh whenever it cannot;
@@ -590,7 +594,7 @@ do_plan() {
   forge_profile_precheck "$PLAN" "$@"
   local REPO="" D_ANY="" D_HI="" D_MD="" D_LO="" Q_ANY="" Q_HI="" Q_MD="" Q_LO=""
   PP_INFRA_FALLBACK=""
-  local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="" FAIL_FIRST="" REVIEWER_SESSION="" IMPLEMENTER_SESSION="" PRE_REVIEW="" PRE_REVIEW_PARALLEL=""
+  local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="" FAIL_FIRST="" REVIEWER_SESSION="" RS_RATE="" IMPLEMENTER_SESSION="" PRE_REVIEW="" PRE_REVIEW_PARALLEL=""
   local FAST_GIVEN=0 FAST_PARSED=""
   local RETRO_FLAG="" BRIEF_FLAG="" BRIEF_SCOPE_FLAG="" BRIEF_MODEL_FLAG="" SUMM_FLAG="" SUMM_MODEL_FLAG=""
   local COLLAPSE=0 COLLAPSED_NOW=0 FEAT_ERR=""
@@ -636,7 +640,10 @@ do_plan() {
           || die "--pre-review-parallel needs an integer from 1 to 64" 2
         PRE_REVIEW_PARALLEL="$((10#$2))"; shift 2 ;;
       --reviewer-session)    REVIEWER_SESSION=on; shift ;;
-      --no-reviewer-session) REVIEWER_SESSION=off; shift ;;
+      --no-reviewer-session) REVIEWER_SESSION=off; RS_RATE=""; shift ;;
+      --reviewer-session-rate)
+        printf '%s' "${2:-}" | grep -Eq '^(0?\.[0-9]+|0|1|1\.0+)$' || die "--reviewer-session-rate needs a share between 0 and 1"
+        REVIEWER_SESSION=on; RS_RATE="$2"; shift 2 ;;
       --implementer-session)    IMPLEMENTER_SESSION=on; shift ;;
       --no-implementer-session) IMPLEMENTER_SESSION=off; shift ;;
       --fast)
@@ -703,6 +710,16 @@ do_plan() {
   # Reviewer-session continuation (opt-in experiment): the file holds `on`. Readers only
   # test that it exists; the dataset records its content.
   case "$REVIEWER_SESSION" in on) printf '%s\n' on > "$PLAN/reviewer_session" ;; off) rm -f "$PLAN/reviewer_session" ;; esac
+  # A sampled share (--reviewer-session-rate): which tasks continue, fixed now so a re-plan or a
+  # retry never moves a task between the two halves. `--reviewer-session` alone means every task.
+  if [ -n "$RS_RATE" ]; then
+    printf '%s\n' "$RS_RATE" > "$PLAN/reviewer_session_rate"
+    reviewer_session_pick "$PLAN" "$RS_RATE" > "$PLAN/reviewer_session_tasks.tmp" \
+      && mv "$PLAN/reviewer_session_tasks.tmp" "$PLAN/reviewer_session_tasks" \
+      || die "could not pick the reviewer-session tasks" 3
+  elif [ "$REVIEWER_SESSION" = on ] || [ "$REVIEWER_SESSION" = off ]; then
+    rm -f "$PLAN/reviewer_session_rate" "$PLAN/reviewer_session_tasks"
+  fi
   # Implementer-session continuation (opt-in, #90): the same `on` file, read the same way.
   case "$IMPLEMENTER_SESSION" in on) printf '%s\n' on > "$PLAN/implementer_session" ;; off) rm -f "$PLAN/implementer_session" ;; esac
   # Which roles ask for the fast tier. Omitted on a re-plan, so an earlier choice stays.
@@ -1095,7 +1112,9 @@ render_table() {
       echo "pre-review tests: on, but $(cat "$PLAN/repo")/.forge/verify-subset (a test command with {files} or {changed}) is missing, so nothing will run"
     fi
   fi
-  if [ -f "$PLAN/reviewer_session" ]; then
+  if [ -f "$PLAN/reviewer_session" ] && [ -f "$PLAN/reviewer_session_rate" ]; then
+    echo "reviewer-session: on for $(grep -c . "$PLAN/reviewer_session_tasks" 2>/dev/null || echo 0) of $(all_ids "$PLAN/tasks.tsv" | grep -c .) tasks (a sampled $(cat "$PLAN/reviewer_session_rate")); the others review fresh and log not-sampled, to compare"
+  elif [ -f "$PLAN/reviewer_session" ]; then
     echo "reviewer-session: a later review round continues the reviewer's earlier session when its QA spec is unchanged (experiment; falls back to a fresh session)"
   fi
   if [ -f "$PLAN/implementer_session" ]; then
@@ -1806,6 +1825,8 @@ do_task_body() (
   if [ "$rs_on" = 1 ]; then
     if [ -n "${FORGE_FRACTAL_RUN:-}" ] || forge_plan_is_fractal "$PLAN"; then
       rs_reason=fractal
+    elif [ -f "$PLAN/reviewer_session_rate" ] && ! grep -qxF "$id" "$PLAN/reviewer_session_tasks" 2>/dev/null; then
+      rs_reason=not-sampled   # the comparison half of --reviewer-session-rate: every round is fresh
     elif [ ! -s "$tdir/retry_findings.md" ]; then
       rs_reason=first-round
     else
