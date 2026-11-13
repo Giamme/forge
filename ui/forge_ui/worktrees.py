@@ -35,6 +35,7 @@ import time
 from forge_ui import reader
 
 RULES = Path(__file__).resolve().parents[2] / 'scripts' / 'forge_worktrees.py'
+LOCATIONS = Path(__file__).resolve().parents[2] / 'scripts' / 'forge_locations.py'
 CACHE_S = 60
 _GIT_TIMEOUT = 10
 _SIZE_BUDGET_S = 120           # one tree's walk stops here and its size is a lower bound
@@ -68,6 +69,35 @@ def rules():
 
 
 _LAST_ERROR = threading.local()
+
+
+def locations():
+    """forge's location list module (scripts/forge_locations.py), loaded read-only, or None. Only its `load` is used:
+    forge-ui never writes the list."""
+    with _LOCK:
+        if 'locations' not in _STATE:
+            try:
+                spec = importlib.util.spec_from_file_location(
+                    'forge_locations_for_ui', LOCATIONS, loader=_ReadOnlyLoader('forge_locations_for_ui', str(LOCATIONS)))
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                if not callable(module.load):
+                    raise TypeError('not the forge location module')
+                _STATE['locations'] = module
+            except Exception:
+                _STATE['locations'] = None
+        return _STATE['locations']
+
+
+def _located():
+    """The location list's worktree entries, [{path, checkout, root, run_id, task, branch, wt_kind, created, gone}]."""
+    module = locations()
+    if module is None:
+        return []
+    try:
+        return [e for e in module.load().values() if e.get('kind') == 'worktree']
+    except Exception:
+        return []
 
 
 def _git(cwd, *args, timeout=_GIT_TIMEOUT):
@@ -264,6 +294,11 @@ def compute(catalog, history):
         if isinstance(a, dict) and a.get('repo_path') and a.get('run_id') and a.get('task'):
             dataset_tasks.setdefault((R.wt_root(a['repo_path'], a['run_id']), a['repo_path'], a['run_id']), set()).add(a['task'])
     events = [e for e in (hist or {}).get('events') or [] if isinstance(e, dict) and isinstance(e.get('path'), str)]
+    located = _located()
+    located_tasks = {}              # real wt_root -> task ids the location list names
+    for e in located:
+        if e.get('task'):
+            located_tasks.setdefault(os.path.dirname(e['path']), set()).add(e['task'])
 
     # every repository to ask: run checkouts and roots, then the dataset's
     candidates = []
@@ -275,6 +310,9 @@ def compute(catalog, history):
     for e in events:
         if e.get('repo_path'):
             candidates.append(e['repo_path'])
+    # The repositories forge's location list names: each one's main working tree, then the checkout a run used.
+    for e in located:
+        candidates += [p for p in (e.get('root'), e.get('checkout')) if isinstance(p, str)]
     # Then every worktree folder on disk, asked through its own .git: a checkout the dataset names may have
     # been deleted by hand, and git answers for the whole repository from any of its worktrees.
     known_folders = set()
@@ -287,6 +325,10 @@ def compute(catalog, history):
             known_folders.add(where[0])
     for (wroot, _repo, _rid) in dataset_tasks:
         known_folders.add(os.path.dirname(wroot))
+    for e in located:
+        where = _layout(e['path'])
+        if where:
+            known_folders.add(where[0])
     candidates += _forge_folders(known_folders)
     roots, listed, asked, failures = {}, {}, set(), {}
     for repo in candidates:
@@ -307,8 +349,8 @@ def compute(catalog, history):
     def tasks_of(root_key, repo, run_id):
         run = by_root.get(root_key)
         if run is not None:
-            return set(run['tasks']), run
-        out = set()
+            return set(run['tasks']) | located_tasks.get(root_key, set()), run
+        out = set(located_tasks.get(root_key, set()))
         for (wroot, _repo, _rid), ids in dataset_tasks.items():
             if wroot == root_key:
                 out |= ids
@@ -448,6 +490,25 @@ def compute(catalog, history):
                           branch=e.get('branch'), kind=e.get('kind'), status='removed', merged=None, head=None,
                           commit=None, created=created['ts'] if created else None,
                           removed=removed['ts'] if removed else None, derived=False, locked=None, size=None, why=None)
+    # what forge's location list recorded: its dates, and the worktrees it added that are not on disk any more
+    for e in located:
+        real = e['path']
+        if real in rows:
+            if rows[real]['created'] is None:
+                rows[real]['created'] = e.get('created')
+            continue
+        root_key = os.path.dirname(real)
+        run = by_root.get(root_key)
+        repo = e.get('root') or e.get('checkout')
+        if _exists(real):
+            _unknown(rows, real, e.get('run_id'), by_root)
+            rows[real].update(repo=rows[real]['repo'] or repo, branch=e.get('branch'), created=e.get('created'),
+                              why='on disk, but git did not list it as a worktree of %s' % (repo or 'its repository'))
+            continue
+        rows[real] = dict(path=real, repo=repo, git_dir=None, run=run['key'] if run else None, run_id=e.get('run_id'),
+                          run_path=run['path'] if run else None, task=e.get('task'), branch=e.get('branch'),
+                          kind=e.get('wt_kind'), status='removed', merged=None, head=None, commit=None,
+                          created=e.get('created'), removed=e.get('gone'), derived=False, locked=None, size=None, why=None)
     for run in runs:
         wroot = R.wt_root(run['repo'], run['run_id'])
         names = [t for t, s in run['tasks'].items() if s not in ('PENDING', 'BLOCKED', None)]

@@ -367,9 +367,16 @@ def _first_line(path) -> str | None:
     return line or None
 
 
+def _matches(entry, repo_real) -> bool:
+    """Whether a location entry belongs to the repository at `repo_real`: as its checkout or its main working tree."""
+    return repo_real in (entry.get('checkout'), entry.get('root'))
+
+
 def run_dirs(repo=None) -> list[tuple[str, str | None]]:
-    """[(run dir, repo the run names)] the registry lists for `repo` (a path) or, None, for every repo."""
+    """[(run dir, repo the run names)] for `repo` (a path) or, None, for every repo: what the run registry lists,
+    then the run dirs forge's location list (forge_locations.py) knows and the registry does not."""
     _scripts()
+    import forge_locations
     import forge_registry
     files = [forge_registry.runs_registry(repo)] if repo is not None else sorted(forge_registry.registry_dir().glob('*.txt'))
     found, seen = [], set()
@@ -388,6 +395,13 @@ def run_dirs(repo=None) -> list[tuple[str, str | None]]:
             seen.add(real)
             named = _first_line(os.path.join(real, 'repo'))
             found.append((real, os.path.realpath(named) if named and os.path.isabs(named) else None))
+    repo_real = os.path.realpath(repo) if repo is not None else None
+    for entry in forge_locations.entries('run'):
+        real = entry['path']
+        if real in seen or not os.path.isdir(real) or (repo_real and not _matches(entry, repo_real)):
+            continue
+        seen.add(real)
+        found.append((real, entry.get('checkout')))
     return found
 
 
@@ -432,6 +446,7 @@ def report(repo=None, home=None, budget_s: float = 600.0, progress=None) -> dict
      data_home: {path, bytes, parts} | None, totals: {runs, worktrees, data_home, reclaimable, snapshots, logs}}
     """
     _scripts()
+    import forge_locations
     import forge_worktrees
     deadline = time.monotonic() + budget_s
     found = run_dirs(repo)
@@ -461,6 +476,18 @@ def report(repo=None, home=None, budget_s: float = 600.0, progress=None) -> dict
                 size, done = tree_usage(root, deadline=deadline)
                 complete = complete and done
                 worktrees.append(dict(repo=named, run_id=run_id, path=root, bytes=size, complete=done))
+    # worktree folders the location list knows that no registered run led to (a run dir deleted, a checkout gone)
+    repo_real = os.path.realpath(repo) if repo is not None else None
+    for entry in forge_locations.entries('worktree'):
+        root = os.path.dirname(entry['path'])
+        if os.path.basename(os.path.dirname(root)) != '.forge-worktrees' or root in seen_roots or not os.path.isdir(root) \
+                or os.path.islink(root) or (repo_real and not _matches(entry, repo_real)):
+            continue
+        seen_roots.add(root)
+        size, done = tree_usage(root, deadline=deadline)
+        complete = complete and done
+        worktrees.append(dict(repo=entry.get('checkout'), run_id=entry.get('run_id') or os.path.basename(root), path=root,
+                              bytes=size, complete=done))
     home_parts = data_home_parts(home, deadline) if home is not None else None
     runs.sort(key=lambda r: -r['total'])
     worktrees.sort(key=lambda w: -w['bytes'])

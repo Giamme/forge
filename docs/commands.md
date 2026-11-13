@@ -129,6 +129,14 @@ own: that stays `forge runs rm`.
 
 ### `forge du`
 
+forge knows where to look from its location list, `<config home>/forge/locations.jsonl`
+(`scripts/forge_locations.py`): every run dir and worktree forge creates is added as it is made, with its
+repository's git dir and main working tree, and marked gone when forge removes it. A checkout deleted by hand or
+reached through a symlink hides nothing. It is written whatever `FORGE_DATASET` says (`FORGE_RUN_REGISTRY=off`
+turns it off with the registry), and the first `forge du` or `forge runs compact --repo|--all` fills it once
+from the run registry and the worktrees on disk. It records what forge did; what is there now is always
+read from the disk and git.
+
 What forge takes on disk, for the repository at the current directory, `--repo DIR`, or every
 repository (`--all`): each registered run dir (total, review snapshots, logs, other files, anything
 forge does not create, and what `forge runs compact --logs` would take back), each run's worktree

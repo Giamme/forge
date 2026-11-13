@@ -365,6 +365,9 @@ def main(argv=None) -> int:
             print('forge runs compact: %s' % error, file=sys.stderr)
         return REFUSED
     batch = not args.run_dirs
+    if batch:
+        import forge_locations
+        forge_locations.ensure_imported()      # once: what the run registry and the disk already hold
     repo = str(repo_of(Path(args.repo))) if args.repo else None
     dirs = args.run_dirs if args.run_dirs else registered(Path(repo) if repo else None)
     excluded = os.path.realpath(args.exclude) if args.exclude else None

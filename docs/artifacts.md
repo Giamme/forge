@@ -39,6 +39,10 @@ Review snapshots (`review-*` directories, a full export of the reviewed tree) ex
 review runs. A dwarf's or reviewer's log copy under `attempts/` may be `<role>.log.gz` once `forge runs
 compact --logs` has run: the same bytes, gzipped. See [forge runs compact](commands.md#forge-runs-compact).
 
+Outside every repo, beside the run registry (`<config home>/forge/runs/`), `<config home>/forge/locations.jsonl`
+lists every run dir and worktree forge created, with its repository, and when forge removed it. See
+[forge du](commands.md#forge-du).
+
 Plus, in the repo itself and surviving the run:
 
 ```
