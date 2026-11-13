@@ -1,4 +1,4 @@
-"""Record brief answers, and flag questions a merge may have made stale (#135).
+"""Record brief answers, and flag questions a merge may have made stale (#135, #136).
 
 `answer` writes `tasks/<id>/brief.answers.json` as `{qid: {text, actor, t}}` while the
 task is still PENDING and has no `attempts.tsv` row. Once it is past starting, nothing
@@ -6,6 +6,13 @@ about the task changes: the same object goes to `brief.late.json` instead. The c
 prints the `tasks.tsv` row and the `prompt.md` a follow-up needs, then the
 `forge control add` line that queues that row. `add` only takes the plan and a task id
 that is already in `tasks.tsv`, and the prompt is what carries the answer.
+
+A parked question (`brief.parked.json`: scope `wave` or `plan`) is answerable only when the
+plan's brief scope is at least as wide as the question's: `--brief-scope wave` takes wave
+questions, `plan` takes both, and the default `task` takes neither (the question id is then
+unknown, as it always was). Such an answer goes to `brief.parked.answers.json` as `{qid: {text,
+actor, t}}`, whatever the task's status, and the command prints `forge brief propose`. Answering
+never changes a prompt: `proposals.py` turns the answer into a diff that waits for approval.
 
 `stale` runs after a task has merged. When that merge's `changes.diff` (or, if the diff
 is gone, the task's attempt events) names a file outside the task's declared files,
@@ -25,6 +32,7 @@ import unicodedata
 from pathlib import Path
 
 import forge_brief
+import forge_side
 
 # Bytes, matching the cap forge-prompt.py uses when it quotes an answer.
 ANSWER_CAP = 4 * 1024
@@ -123,6 +131,36 @@ def question_ids(plan, task) -> list:
         if isinstance(qid, str) and qid:
             found.append(qid)
     return found
+
+
+SCOPE_RANK = {'task': 0, 'wave': 1, 'plan': 2}
+
+
+def parked_questions(plan, task) -> dict:
+    """`{qid: question}` for the task's parked questions, in file order. Every parked question, answerable or not."""
+    data = forge_brief._json(forge_brief.task_dir(plan, task) / 'brief.parked.json')
+    found = {}
+    for question in forge_brief._questions(data if isinstance(data, dict) else None):
+        qid = question.get('id')
+        if isinstance(qid, str) and qid:
+            found[qid] = question
+    return found
+
+
+def answerable_parked(plan, task) -> dict:
+    """The parked questions an answer may be recorded for under the plan's brief scope.
+
+    A question of scope `wave` or `plan` is answerable when the brief scope is at that scope
+    or wider. With brief scope `task` (the default) none is.
+    """
+    reach = SCOPE_RANK.get(forge_side.settings(plan)['brief']['scope'], 0)
+    return {qid: question for qid, question in parked_questions(plan, task).items()
+            if SCOPE_RANK.get(question.get('scope'), 0) >= 1
+            and SCOPE_RANK[question.get('scope')] <= reach}
+
+
+def propose_line(plan, task, qid) -> str:
+    return 'forge brief propose %s %s %s' % (shlex.quote(str(plan)), shlex.quote(task), shlex.quote(qid))
 
 
 def clean_answer(text) -> str:
@@ -284,9 +322,11 @@ def _emit(plan, task, qid, actor, late) -> None:
 def answer(plan, task, qid, text=None, actor='cli', file=None) -> dict:
     """Record one answer. Raises `Usage`, `NotAPlan`, `NoSuchTask` or `NoSuchQuestion`.
 
-    Returns `{task, qid, late, text, message}`. `message` is what the command prints.
+    Returns `{task, qid, late, parked, text, message}`. `message` is what the command prints.
     A late answer's message gives the tasks.tsv row and the prompt text, then the
-    `forge control add` line that queues that follow-up once a scheduler is live.
+    `forge control add` line that queues that follow-up once a scheduler is live. An answer to
+    a parked question is never late: it is stored in `brief.parked.answers.json` and the
+    message names the `forge brief propose` command.
     """
     if file is not None and text is not None:
         raise Usage('give the answer as text or --file, not both')
@@ -302,18 +342,25 @@ def answer(plan, task, qid, text=None, actor='cli', file=None) -> dict:
     if task not in ids:
         raise NoSuchTask(task, ids)
     valid = question_ids(plan, task)
-    if qid not in valid:
-        raise NoSuchQuestion(task, qid, valid)
+    if qid not in valid and qid not in answerable_parked(plan, task):
+        raise NoSuchQuestion(task, qid, valid + list(answerable_parked(plan, task)))
     tdir = forge_brief.task_dir(plan, task)
     with forge_brief._task_lock(plan, task):
         # The brief may have been regenerated while this answer waited for the lock.
-        if qid not in question_ids(plan, task):
-            raise NoSuchQuestion(task, qid, question_ids(plan, task))
-        late = past_start(plan, task)
+        valid = question_ids(plan, task)
+        parked = qid not in valid
+        if parked and qid not in answerable_parked(plan, task):
+            raise NoSuchQuestion(task, qid, valid + list(answerable_parked(plan, task)))
+        late = False if parked else past_start(plan, task)
         record = {'text': cleaned, 'actor': who, 't': time.time()}
-        target = tdir / ('brief.late.json' if late else 'brief.answers.json')
-        previous = _put(target, qid, record)
+        name = 'brief.parked.answers.json' if parked else ('brief.late.json' if late else 'brief.answers.json')
+        previous = _put(tdir / name, qid, record)
     _log(plan, who, task, qid, cleaned, previous, late)
+    if parked:
+        message = '%s/%s answered (%s scope, parked); nothing changes until you propose and approve a diff\n%s\n' % (
+            task, qid, answerable_parked(plan, task).get(qid, {}).get('scope', 'wave'),
+            propose_line(plan, task, qid))
+        return {'task': task, 'qid': qid, 'late': False, 'parked': True, 'text': cleaned, 'message': message}
     if late:
         source = next(item for item in tasks if item['id'] == task)
         follow = _follow_up_id(tasks, task, qid)
@@ -321,7 +368,7 @@ def answer(plan, task, qid, text=None, actor='cli', file=None) -> dict:
                                _question_text(plan, task, qid), cleaned)
     else:
         message = '%s/%s answered\n' % (task, qid)
-    return {'task': task, 'qid': qid, 'late': late, 'text': cleaned, 'message': message}
+    return {'task': task, 'qid': qid, 'late': late, 'parked': False, 'text': cleaned, 'message': message}
 
 
 # --- stale -----------------------------------------------------------------------
