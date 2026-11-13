@@ -5,8 +5,16 @@
 - `tasks/<id>/brief.json`: `{questions: [{id, text, why, options, default, scope: "task",
   must_answer}], model, generated_at}`. `must_answer` survives only under the `gated` level.
 - `tasks/<id>/brief.parked.json`: the same shape for questions whose scope is `wave` or
-  `plan`. Only task scope acts in this issue, so wider scopes are parked whatever
-  `brief_scope` says.
+  `plan`. Only task scope acts, so wider scopes are parked whatever `brief_scope` says.
+  A wave question from a task that belongs to a group also stores `"group": "<gid>"`;
+  a plan question from such a task stores `"group": null`. A task in no group stores
+  neither key, so its parked file stays as it was.
+
+When the task belongs to a group (`<plan>/groups.tsv`), the prompt names that group's
+title, goal and the other tasks in it, and says what `wave` and `plan` mean for the
+group. A task in no group gets the prompt it got before groups existed. A `wave` or
+`plan` brief scope with no `groups.tsv` prints one note and continues; `brief.groups.noted`
+keeps that note to once per plan. Nothing here acts on an answer.
 
 A broken writer never holds a task: a reply that is not valid JSON, or has the wrong
 shape, is retried once, and a second failure (or a failed dispatch) stores
@@ -38,6 +46,7 @@ SCRIPTS = Path(__file__).resolve().parent.parent
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+import forge_groups  # noqa: E402
 import forge_side  # noqa: E402
 
 MAX_QUESTIONS = 3
@@ -150,10 +159,76 @@ def _now() -> str:
 
 # --- the prompt and the reply ----------------------------------------------------
 
+def _task_group(plan, task_id):
+    """The task's group, or None when it is in none (or groups.tsv cannot be read).
+
+    A broken groups.tsv must not hold the task: the writer then behaves as it does for a
+    task in no group.
+    """
+    try:
+        return forge_groups.group_of(plan, task_id)
+    except forge_groups.GroupError:
+        return None
+
+
+def _group_section(group, task: dict, tasks: list) -> str:
+    """The group block that follows the task's own prompt.md and approach.md.
+
+    The goal line is left out when the goal is `-`: that cell means the group has none,
+    and the prompt does not invent a `(no goal)` line. An empty title stays as `-`, which
+    is the cell groups.tsv stores.
+    """
+    by_id = {item['id']: item for item in tasks}
+    lines = ['Group %s: %s' % (group.id, group.title)]
+    if group.goal != '-':
+        lines.append('Goal: %s' % group.goal)
+    others = []
+    for member in group.members:
+        if member == task['id']:
+            continue
+        item = by_id.get(member)
+        title = (item['title'] if item else '') or '(no title)'
+        others.append('%s — %s' % (member, title))
+    if others:
+        lines.append('Other tasks in this group: %s' % ', '.join(others))
+    else:
+        lines.append('Other tasks in this group:')
+    return '\n'.join(lines) + '\n'
+
+
+# The scope sentence is the only line that changes for a grouped task. The ungrouped
+# wording stays the sentence the prompt had before groups, so that prompt is byte-identical.
+_ASK = (
+    '## What to ask\n\n'
+    'Ask an open question only where a design choice or an ambiguity would make the '
+    'implementer guess. "Nothing to ask" is the expected answer for most tasks: when '
+    'the prompt and approach are clear, reply {"questions": []}. At most %d questions.\n\n'
+    'Each question is answered by a person before or while earlier tasks are built, so '
+    'make it short and answerable in a line, and give the options when there are a few.\n\n'
+    '## Reply format\n\n'
+    'Reply with JSON only, no prose and no code fence:\n\n'
+    '{"questions": [{"text": "...", "why": "...", "options": ["..."], "default": "...", '
+    '"scope": "task", "must_answer": false}]}\n\n'
+    '- text: the question.\n'
+    '- why: what depends on the answer.\n'
+    '- options: the plausible answers, or [].\n'
+    '- default: what the implementer will do if nobody answers.\n'
+    '%s'
+    '- must_answer: true only when the decision cannot be defaulted safely.\n')
+_SCOPE_UNGROUPED = (
+    '- scope: "task" when only this task needs the answer, "wave" when the other tasks '
+    'that run alongside it do too, "plan" when the whole run does.\n')
+_SCOPE_GROUPED = (
+    '- scope: "task" when only this task needs the answer, "wave" when the answer would '
+    'change how several tasks of this group are done, "plan" when the answer would add, '
+    'remove or split tasks, or change their order.\n')
+
+
 def build_prompt(plan, task: dict, tasks: list, repo: str) -> str:
     plan = Path(plan)
     tdir = task_dir(plan, task['id'])
     by_id = {item['id']: item for item in tasks}
+    group = _task_group(plan, task['id'])
     parts = [
         'You are preparing the open questions for ONE task of a multi-task coding run, '
         'before an implementer starts it.\n'
@@ -165,6 +240,8 @@ def build_prompt(plan, task: dict, tasks: list, repo: str) -> str:
     approach = _text(tdir / 'approach.md').strip()
     if approach:
         parts.append('### approach.md\n\n%s\n' % approach)
+    if group is not None:
+        parts.append(_group_section(group, task, tasks))
     parts.append('### Its tasks.tsv row\n\n(id, deps, difficulty, files, dwarf, qa, title)\n\n%s\n' % task['row'])
     parts.append('### All tasks in this run\n\n%s\n' % '\n'.join(
         '- %s: %s' % (item['id'], item['title'] or '(no title)') for item in tasks))
@@ -175,24 +252,8 @@ def build_prompt(plan, task: dict, tasks: list, repo: str) -> str:
             parts.append('#### %s\n\n%s\n' % (
                 dep['id'], forge_side.cap(_text(task_dir(plan, dep['id']) / 'prompt.md').strip(),
                                           DEP_PROMPT_LIMIT)))
-    parts.append(
-        '## What to ask\n\n'
-        'Ask an open question only where a design choice or an ambiguity would make the '
-        'implementer guess. "Nothing to ask" is the expected answer for most tasks: when '
-        'the prompt and approach are clear, reply {"questions": []}. At most %d questions.\n\n'
-        'Each question is answered by a person before or while earlier tasks are built, so '
-        'make it short and answerable in a line, and give the options when there are a few.\n\n'
-        '## Reply format\n\n'
-        'Reply with JSON only, no prose and no code fence:\n\n'
-        '{"questions": [{"text": "...", "why": "...", "options": ["..."], "default": "...", '
-        '"scope": "task", "must_answer": false}]}\n\n'
-        '- text: the question.\n'
-        '- why: what depends on the answer.\n'
-        '- options: the plausible answers, or [].\n'
-        '- default: what the implementer will do if nobody answers.\n'
-        '- scope: "task" when only this task needs the answer, "wave" when the other tasks '
-        'that run alongside it do too, "plan" when the whole run does.\n'
-        '- must_answer: true only when the decision cannot be defaulted safely.\n' % MAX_QUESTIONS)
+    scope = _SCOPE_GROUPED if group is not None else _SCOPE_UNGROUPED
+    parts.append(_ASK % (MAX_QUESTIONS, scope))
     return '\n'.join(parts)
 
 
@@ -333,13 +394,23 @@ def _task_lock(plan: Path, task: str):
 
 
 def _record(plan: Path, task: str, model: str, level: str, questions, error) -> dict:
-    """Store brief.json (and brief.parked.json) for one task and emit the events."""
+    """Store brief.json (and brief.parked.json) for one task and emit the events.
+
+    A parked question from a grouped task records `group`: the group id for `wave`, null
+    for `plan`. An ungrouped task's parked questions have no `group` key.
+    """
     stamp = _now()
+    group = _task_group(plan, task)
     kept, parked = [], []
     for number, question in enumerate((questions or [])[:MAX_QUESTIONS], 1):
         entry = dict(question, id='q%d' % number)
         entry['must_answer'] = bool(question['must_answer']) and level == 'gated'
-        (kept if question['scope'] == 'task' else parked).append(entry)
+        if question['scope'] == 'task':
+            kept.append(entry)
+        else:
+            if group is not None:
+                entry['group'] = group.id if question['scope'] == 'wave' else None
+            parked.append(entry)
     brief = {'questions': kept, 'model': model, 'generated_at': stamp}
     if error:
         brief['error'] = error
@@ -360,14 +431,56 @@ def _record(plan: Path, task: str, model: str, level: str, questions, error) -> 
 
 
 def _emit(plan: Path, task: str, question: dict, parked: bool) -> None:
-    """One `brief_question` dataset event. Fail-open, like every other capture."""
+    """One `brief_question` dataset event. Fail-open, like every other capture.
+
+    `group` is set only for a parked question that names a group. A plan question, an
+    ungrouped question and a task question omit the field, so those events stay as they were.
+    """
     try:
         from forge_dataset.capture import point
-        point('brief_question', str(plan), str(task), {
+        body = {
             'task': str(task), 'qid': question['id'], 'scope': question['scope'],
-            'must_answer': question['must_answer'], 'parked': parked})
+            'must_answer': question['must_answer'], 'parked': parked}
+        if question.get('group'):
+            body['group'] = question['group']
+        point('brief_question', str(plan), str(task), body)
     except Exception:
         pass
+
+
+# Said once per plan, when brief is on at wave or plan scope and the plan has no groups.
+GROUPS_NOTE = (
+    'brief scope %s: no groups.tsv — run plan --groups waves, or let the planner write groups; '
+    'wave questions stay parked\n')
+
+
+def _note_missing_groups(plan: Path, scope: str) -> None:
+    """One note when wave or plan scope has nothing to attach a wave question to.
+
+    The marker `brief.groups.noted` is created first, so a second writer, in this process
+    or another, does not say it again. The write itself is unchanged.
+    """
+    if scope not in ('wave', 'plan'):
+        return
+    if (plan / 'groups.tsv').is_file():
+        return
+    marker = plan / 'brief.groups.noted'
+    try:
+        fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        return
+    except OSError:
+        sys.stderr.write(GROUPS_NOTE % scope)
+        sys.stderr.flush()
+        return
+    try:
+        os.write(fd, (scope + '\n').encode())
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+    sys.stderr.write(GROUPS_NOTE % scope)
+    sys.stderr.flush()
 
 
 def _guard(plan) -> tuple:
@@ -388,6 +501,9 @@ def write(plan, task=None, jobs=DEFAULT_JOBS, force=False, timeout=900, progress
     order they were dispatched: status is `written`, `error` (an empty brief.json with the
     error recorded) or `skipped` (with a reason: `exists`, `cap`, ...). Raises `NotAPlan`,
     `BriefOff` (brief is off, or `allowed` refuses for a plan-wide reason) and `UnknownTask`.
+
+    With brief scope `wave` or `plan` and no `groups.tsv`, prints one note to stderr and
+    continues. `brief.groups.noted` keeps the note to once per plan.
     """
     plan, found = _guard(plan)
     tasks = read_tasks(plan)
@@ -396,6 +512,8 @@ def write(plan, task=None, jobs=DEFAULT_JOBS, force=False, timeout=900, progress
     ok, reason = forge_side.allowed('brief', plan)
     if not ok and reason != 'cap':
         raise BriefOff(reason)
+    # plan resolves these flags in the shell, before this writer starts. Say it here, once.
+    _note_missing_groups(plan, found['scope'])
     chosen = [item for item in ordered(plan, tasks) if task is None or item['id'] == task]
     spec, level = found['model'], found['level']
     repo = _text(plan / 'repo').strip()
@@ -513,7 +631,8 @@ def collect(plan, task=None) -> dict:
 
     `{questions: [...], parked: [...], errors: [{task, error}]}`. A question carries
     `task`, `id`, `text`, `why`, `options`, `default`, `scope`, `must_answer`, `state`
-    and, once answered, `answer`.
+    and, once answered, `answer`. A parked question stores `group` when its file has that
+    key: the group id, or null for a plan question.
     """
     plan, _ = _guard(plan)
     tasks = read_tasks(plan)
@@ -547,10 +666,13 @@ def collect(plan, task=None) -> dict:
                 row['state'] = 'open'
             questions.append(row)
         for q in _questions(_json(tdir / 'brief.parked.json')):
-            parked.append({'task': item['id'], 'id': str(q.get('id', '')), 'text': q.get('text', ''),
-                           'why': q.get('why', ''), 'options': q.get('options') or [],
-                           'default': q.get('default', ''), 'scope': q.get('scope', 'wave'),
-                           'must_answer': bool(q.get('must_answer')), 'state': 'parked'})
+            row = {'task': item['id'], 'id': str(q.get('id', '')), 'text': q.get('text', ''),
+                   'why': q.get('why', ''), 'options': q.get('options') or [],
+                   'default': q.get('default', ''), 'scope': q.get('scope', 'wave'),
+                   'must_answer': bool(q.get('must_answer')), 'state': 'parked'}
+            if 'group' in q:
+                row['group'] = q.get('group')
+            parked.append(row)
 
     def rank(row):
         if row['state'] in ('open', 'possibly_stale'):
@@ -560,26 +682,90 @@ def collect(plan, task=None) -> dict:
     return {'questions': questions, 'parked': parked, 'errors': errors}
 
 
-def render(found: dict) -> str:
-    lines = []
+def _question_lines(row) -> list:
+    flag = ' [must answer]' if row['must_answer'] else ''
+    out = ['%s/%s  %s%s' % (row['task'], row['id'], row['state'], flag), '    %s' % row['text']]
+    if row['options']:
+        out.append('    options: %s' % ' | '.join(row['options']))
+    if row['default']:
+        out.append('    default: %s' % row['default'])
+    if row.get('answer'):
+        out.append('    answer: %s (%s)' % (row['answer'].get('text', ''), row['answer'].get('actor', '')))
+    return out
 
-    def block(row):
-        flag = ' [must answer]' if row['must_answer'] else ''
-        lines.append('%s/%s  %s%s' % (row['task'], row['id'], row['state'], flag))
-        lines.append('    %s' % row['text'])
-        if row['options']:
-            lines.append('    options: %s' % ' | '.join(row['options']))
-        if row['default']:
-            lines.append('    default: %s' % row['default'])
-        if row.get('answer'):
-            lines.append('    answer: %s (%s)' % (row['answer'].get('text', ''), row['answer'].get('actor', '')))
-    for row in found['questions']:
-        block(row)
-    if found['parked']:
-        lines.append('')
+
+def _group_titles(plan) -> dict:
+    if not plan:
+        return {}
+    try:
+        return {g.id: g.title for g in forge_groups.load(plan)}
+    except forge_groups.GroupError:
+        return {}
+
+
+def _grouped_parked_lines(rows, plan) -> list:
+    """Parked questions that carry a `group` key, listed by group, then under `Plan:`.
+
+    A wave question is `Group <gid> (<title>): <question>`, with the asking task on the
+    next line. The title comes from groups.tsv and the parentheses are left off when it
+    is `-` or the group is gone. A plan question (`group` null) goes under `Plan:`.
+    A question with no `group` key, in a plan that also has grouped ones, stays in the
+    old parked block so an older file is still shown.
+    """
+    titles = _group_titles(plan)
+    order, by, plans, loose = [], {}, [], []
+    for row in rows:
+        if 'group' not in row:
+            loose.append(row)
+            continue
+        gid = row.get('group')
+        if not isinstance(gid, str) or not gid:
+            plans.append(row)
+            continue
+        if gid not in by:
+            order.append(gid)
+            by[gid] = []
+        by[gid].append(row)
+    lines = []
+    for gid in order:
+        title = titles.get(gid, '-')
+        head = 'Group %s (%s)' % (gid, title) if title and title != '-' else 'Group %s' % gid
+        for row in by[gid]:
+            lines.append('%s: %s' % (head, row['text']))
+            flag = ' [must answer]' if row['must_answer'] else ''
+            lines.append('    %s/%s  %s%s' % (row['task'], row['id'], row['state'], flag))
+            if row['options']:
+                lines.append('    options: %s' % ' | '.join(row['options']))
+            if row['default']:
+                lines.append('    default: %s' % row['default'])
+    if plans:
+        lines.append('Plan:')
+        for row in plans:
+            lines.extend(_question_lines(row))
+    if loose:
         lines.append('Parked (wider scope):')
-        for row in found['parked']:
-            block(row)
+        for row in loose:
+            lines.extend(_question_lines(row))
+    return lines
+
+
+def render(found: dict, plan=None) -> str:
+    """Text for `forge brief show`. `plan` is where group titles are read.
+
+    A plan whose parked questions have no `group` key renders as it did before groups.
+    """
+    lines = []
+    for row in found['questions']:
+        lines.extend(_question_lines(row))
+    parked = found['parked']
+    if parked:
+        lines.append('')
+        if any('group' in row for row in parked):
+            lines.extend(_grouped_parked_lines(parked, plan))
+        else:
+            lines.append('Parked (wider scope):')
+            for row in parked:
+                lines.extend(_question_lines(row))
     for err in found['errors']:
         lines.append('%s: the question writer failed: %s' % (err['task'], err['error']))
     if not lines:

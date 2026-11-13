@@ -124,7 +124,7 @@ def main(argv=None) -> int:
     if args.as_json:
         sys.stdout.write(json.dumps(found, ensure_ascii=False, indent=2, sort_keys=True) + '\n')
     else:
-        sys.stdout.write(forge_brief.render(found))
+        sys.stdout.write(forge_brief.render(found, args.plan))
     return 0
 
 
