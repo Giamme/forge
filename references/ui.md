@@ -31,7 +31,16 @@ run goes on, with the same exit code.
   request until the scheduler applies or refuses it. Each infrastructure pause gets a line: what
   is paused, why, its tasks and the time left. Each is one `forge control` call; the change is
   confirmed first and logged in `control.log`.
-- **Brief questions and summaries:** forge-ui can answer a brief question and turn summaries on or off (for a run or one task), both through forge commands: `forge brief answer` and `forge control set summaries`.
+- **Brief questions and summaries:** forge-ui can answer a brief question, propose a change from an
+  answered parked `wave` or `plan` question, and approve or reject that proposal. It can also turn
+  summaries on or off, for a run or one task. Each one is a forge command: `forge brief answer`,
+  `forge brief propose`, `forge brief apply --approve HASH`, `forge brief reject` and
+  `forge control set summaries`. On a plan, when a question belongs to a group, or one is
+  plan-scoped, the list is split: each group's title and goal, then a Plan heading, then No group
+  for a question with no group. A list with neither sits flat. Proposals sit under that list.
+  One in state `proposed` has Approve and Reject. A task an approved proposal marked shows an
+  affected badge: `affected by <pid>`, or `flagged: already started` when the task had already
+  started.
 - **Open findings and issues:** the findings a run (or all of its repository's runs) left open,
   filed as GitHub issues or dismissed through `forge issues`.
 - **Delete a run:** a dry run, then `forge runs rm`: the dataset keeps the traces, an archive is
@@ -83,7 +92,7 @@ run goes on, with the same exit code.
 - **Opening a node** shows its attempts, dwarves and reviews, and an inspector with the prompt
   that launched each one, the model, timings by phase, tokens, verdicts and the P0–P3 findings
   of every review (the final review's included). A task's inspector opens on its header, its attempt trail
-  with each attempt's reason, its Summary and its Questions (brief questions); Run details has a Retro section
+  with each attempt's reason, its Summary and its Questions (brief questions, grouped the same way, with parked ones collapsed). An affected task also carries that badge in its chips. Run details has a Retro section
   when retro mode wrote one.
 - **Solo run:** one task: its attempts, specs, prompts and the final messages.
 - It refreshes every two seconds while something runs (five otherwise) while the tab is
@@ -199,7 +208,7 @@ review text from private repos. A running server keeps serving them, including r
 later rerun with `--no-ui`.
 
 **Changing needs one.** The server never writes a run file, a repo or a config itself: every
-change is a call of forge's own CLI (`forge control`, `forge issues`, `forge runs rm`,
+change is a call of forge's own CLI (`forge control`, `forge brief`, `forge issues`, `forge runs rm`,
 `forge config`), so validation, locks and the audit log are the CLI's. Each server start makes a
 random token and puts it in the page it serves; every change must send it back, from a `Host` of
 `127.0.0.1` or `localhost` and with an `Origin` equal to that host when the browser sends one, or
