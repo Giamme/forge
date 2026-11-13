@@ -197,12 +197,12 @@ class ProposeAndApplyTests(ProposalCase):
         self.assertEqual([item['pid'] for item in proposals.listing(self.plan)], ['p1', 'p2'])
         self.assertNotEqual(self.digest('p1'), self.digest('p2'))
 
-    def test_a_plan_question_cannot_be_proposed_and_a_missing_answer_is_a_usage_error(self):
-        (self.plan / 'brief_scope').write_text('plan\n')
-        self.answer('a', 'q2', 'yes')
+    def test_a_plan_question_needs_brief_scope_plan_and_a_missing_answer_is_a_usage_error(self):
+        # plan questions are proposed as structural plan diffs (test_brief_plan_diff); under brief scope
+        # wave they are not answerable, so there is nothing to propose
         with self.assertRaises(proposals.Refused) as caught:
             proposals.propose(self.plan, 'a', 'q2')
-        self.assertIn('plan-scoped', caught.exception.reason)
+        self.assertIn('--brief-scope plan', caught.exception.reason)
         (self.plan / 'tasks' / 'a' / 'brief.parked.answers.json').unlink()
         with self.assertRaises(answers.Usage):
             proposals.propose(self.plan, 'a', 'q1')

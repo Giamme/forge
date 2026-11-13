@@ -38,14 +38,30 @@ to apply it after the run; prompt and approach changes go through. Apply checks 
 under the lock, but the scheduler does not take that lock: a task that starts in the instant
 between the check and the write reads whichever prompt it finds, as it would for any edit.
 
+Plan scope (`scope: "plan"`). A parked `plan` question (answerable under `--brief-scope plan`) can
+change the plan's structure: `changes` is then `{edits, add, remove, deps}`: `edits` are the wave
+kind of change (prompt, approach, files) on any unstarted task, `add` new tasks, `remove` unstarted
+ones and `deps` new dependency lists for unstarted tasks (a split is a remove plus adds). Validation
+(`_plan_check`) refuses, with the reason, whatever would not be a plan `plan` could have written. The
+hash covers the diff, `tasks.tsv`, `groups.tsv` and every edited prompt or approach file. `apply`
+with no live run writes `tasks.tsv`, `groups.tsv` and the task dirs (a removed task's dir moves to
+`tasks/.removed/<id>-<pid>/`, never deleted; added rows get dwarf and qa `-`) and writes a stale
+marker into `groups.frozen` (the fingerprint covers only groups.tsv and the members' rows, so an
+ungrouped change, or a plan with no groups, would not otherwise stop `run`): `run` then refuses until
+`plan` validates, routes and freezes again, which overwrites the marker or removes it. A wave apply
+meanwhile keeps the marker. With a live run only additions apply, queued in dependency order, each
+through `forge control add`; the task joins no group.
+
 `brief_diff` events (`{pid, scope, group, state, tasks}`) record proposed, refused, approved and
 rejected. The dispatch is a read-only `side` dispatch of kind `brief-change`, on the plan's brief
 model, under the same `allowed` checks as the brief writer.
 """
 from __future__ import annotations
 
+import argparse
 import contextlib
 import difflib
+import io
 import fcntl
 import hashlib
 import json
@@ -65,6 +81,10 @@ import forge_side
 
 CHANGE_FIELDS = ('prompt', 'approach', 'files')
 FILE_CAP = 6 * 1024
+DIFFICULTIES = ('low', 'medium', 'high')
+ACCEPTANCE_RE = re.compile(r'^#{2,}\s+Acceptance criteria\s*$', re.IGNORECASE | re.MULTILINE)
+PLAN_KEYS = ('edits', 'add', 'remove', 'deps')
+ADD_KEYS = ('id', 'deps', 'difficulty', 'files', 'title', 'prompt', 'approach', 'group')
 PID_RE = re.compile(r'p[1-9][0-9]*')
 STATES = ('proposed', 'refused', 'approved', 'rejected')
 
@@ -266,13 +286,8 @@ def build_prompt(plan, group, asking: str, question: dict, answer: dict, repo: s
     return '\n'.join(parts)
 
 
-def parse_reply(reply):
-    """`(data, None)` for a usable reply, else `(None, reason)`.
-
-    `data` is `{summary, changes}`; each change is a dict with a string `task`, and `prompt`,
-    `approach` and `files` each a string or null (a missing one is null). A field that is not one
-    of those three is kept as it came: confinement refuses it, the parser does not drop it.
-    """
+def _reply_object(reply):
+    """`(object, None)` for a reply holding one JSON object (a fence or prose around it is dropped), else `(None, reason)`."""
     if not isinstance(reply, str) or not reply.strip():
         return None, 'empty reply'
     text = forge_brief._strip_fence(reply)
@@ -290,33 +305,102 @@ def parse_reply(reply):
             return None, 'reply is not valid JSON'
     if not isinstance(data, dict):
         return None, 'reply is not a JSON object'
+    return data, None
+
+
+def _edit_list(items, where='change'):
+    """`(edits, None)` or `(None, reason)`: each edit a dict with a string `task`, and `prompt`,
+    `approach` and `files` each a string or null (a missing one is null). A field that is not one
+    of those three is kept as it came: confinement refuses it, the parser does not drop it."""
+    found = []
+    for index, item in enumerate(items, 1):
+        label = '%s %d' % (where, index)
+        if not isinstance(item, dict):
+            return None, '%s is not an object' % label
+        if not isinstance(item.get('task'), str) or not item['task'].strip():
+            return None, '%s has no "task" string' % label
+        change = dict(item, task=item['task'].strip())
+        for field in CHANGE_FIELDS:
+            value = change.setdefault(field, None)
+            if value is not None and not isinstance(value, str):
+                return None, '%s: %s must be a string or null' % (label, field)
+        found.append(change)
+    return found, None
+
+
+def _storable(entry: dict):
+    try:   # a lone surrogate parses but cannot be stored as UTF-8
+        forge_brief._dump(entry).encode('utf-8')
+    except UnicodeError:
+        return 'reply has characters that cannot be stored'
+    return None
+
+
+def parse_reply(reply):
+    """`(data, None)` for a usable reply, else `(None, reason)`. `data` is `{summary, changes}`."""
+    data, reason = _reply_object(reply)
+    if data is None:
+        return None, reason
     summary, changes = data.get('summary'), data.get('changes')
     if not isinstance(summary, str):
         return None, 'reply has no "summary" string'
     if not isinstance(changes, list):
         return None, 'reply has no "changes" list'
-    found = []
-    for index, item in enumerate(changes, 1):
-        where = 'change %d' % index
-        if not isinstance(item, dict):
-            return None, '%s is not an object' % where
-        if not isinstance(item.get('task'), str) or not item['task'].strip():
-            return None, '%s has no "task" string' % where
-        change = dict(item, task=item['task'].strip())
-        for field in CHANGE_FIELDS:
-            value = change.setdefault(field, None)
-            if value is not None and not isinstance(value, str):
-                return None, '%s: %s must be a string or null' % (where, field)
-        found.append(change)
+    found, reason = _edit_list(changes)
+    if found is None:
+        return None, reason
     entry = {'summary': ' '.join(summary.split()), 'changes': found}
-    try:   # a lone surrogate parses but cannot be stored as UTF-8
-        forge_brief._dump(entry).encode('utf-8')
-    except UnicodeError:
-        return None, 'reply has characters that cannot be stored'
-    return entry, None
+    reason = _storable(entry)
+    return (None, reason) if reason else (entry, None)
 
 
-def _ask(plan, task, prompt, spec, timeout):
+def parse_plan_reply(reply):
+    """`(data, None)` for a usable plan-scope reply, else `(None, reason)`.
+
+    `data` is `{summary, changes: {edits, add, remove, deps}}`. `changes` is that object, or a list
+    (the edits, as in wave scope) with `add`, `remove` and `deps` beside it; either spelling of those
+    three keys is read. Only the shape is checked here (lists of objects, of strings, with a string
+    `id` or `task`); whether the structure is a plan is `_plan_check`'s decision.
+    """
+    data, reason = _reply_object(reply)
+    if data is None:
+        return None, reason
+    summary, raw = data.get('summary'), data.get('changes')
+    if not isinstance(summary, str):
+        return None, 'reply has no "summary" string'
+    if isinstance(raw, list):
+        raw = {'edits': raw}
+    elif raw is None and any(key in data for key in ('add', 'remove', 'deps')):
+        raw = {}
+    if not isinstance(raw, dict):
+        return None, 'reply has no "changes" object or list'
+    unknown = sorted(set(raw) - set(PLAN_KEYS))
+    if unknown:
+        return None, '"changes" has unknown key(s): %s' % ', '.join(unknown)
+    pick = lambda key: raw.get(key) if raw.get(key) is not None else data.get(key)   # noqa: E731
+    edits, add, remove, deps = pick('edits') or [], pick('add') or [], pick('remove') or [], pick('deps') or []
+    for name, value in (('edits', edits), ('add', add), ('remove', remove), ('deps', deps)):
+        if not isinstance(value, list):
+            return None, '"%s" is not a list' % name
+    edits, reason = _edit_list(edits)
+    if edits is None:
+        return None, reason
+    for index, item in enumerate(add, 1):
+        if not isinstance(item, dict):
+            return None, 'add %d is not an object' % index
+    if not all(isinstance(item, str) and item.strip() for item in remove):
+        return None, '"remove" must be a list of task ids'
+    for index, item in enumerate(deps, 1):
+        if not isinstance(item, dict) or not isinstance(item.get('task'), str) or not item['task'].strip():
+            return None, 'deps %d has no "task" string' % index
+    entry = {'summary': ' '.join(summary.split()),
+             'changes': {'edits': edits, 'add': add, 'remove': [item.strip() for item in remove],
+                         'deps': [dict(item, task=item['task'].strip()) for item in deps]}}
+    reason = _storable(entry)
+    return (None, reason) if reason else (entry, None)
+
+
+def _ask(plan, task, prompt, spec, timeout, parse=None):
     """One dispatch, a retry on an unusable reply. `(data, None)` or `(None, why)`."""
     reminder, error = '', 'no reply'
     for attempt in range(2):
@@ -326,7 +410,7 @@ def _ask(plan, task, prompt, spec, timeout):
                 return None, 'the brief-change dispatch cap is reached' + (' (no retry)' if attempt else '')
             return None, 'dispatch failed: %s' % (result['reason'] or 'error')
         try:
-            data, error = parse_reply(result['last'])
+            data, error = (parse or parse_reply)(result['last'])
         except Exception as failure:   # noqa: BLE001 - a broken reply is an unusable reply
             data, error = None, 'reply could not be read (%s)' % type(failure).__name__
         if data is not None:
@@ -337,8 +421,9 @@ def _ask(plan, task, prompt, spec, timeout):
 
 # --- confinement -----------------------------------------------------------------------
 
-def _confine(plan, group, changes: list) -> list:
-    """The reasons this proposal must be refused, in change order. Empty when it is confined."""
+def _confine_edits(plan, changes: list, where) -> list:
+    """The reasons these per-task edits must be refused. `where(task)` is None when the task may be
+    changed, else why not (a started task is always refused here)."""
     reasons, seen = [], set()
     for change in changes:
         task = change['task']
@@ -346,8 +431,9 @@ def _confine(plan, group, changes: list) -> list:
         if task in seen:
             reasons.append('task %s is changed twice' % task)
         seen.add(task)
-        if task not in group.members:
-            reasons.append('task %s is not a member of group %s' % (task, group.id))
+        why = where(task)
+        if why:
+            reasons.append(why)
         elif started(plan, task):
             reasons.append('task %s has started' % task)
         if extra:
@@ -360,6 +446,12 @@ def _confine(plan, group, changes: list) -> list:
         if isinstance(files, str) and (not files.strip() or any(ch in files for ch in '\t\r\n')):
             reasons.append('files for %s must be one non-empty line without tabs' % task)
     return reasons
+
+
+def _confine(plan, group, changes: list) -> list:
+    """The reasons this proposal must be refused, in change order. Empty when it is confined."""
+    return _confine_edits(plan, changes, lambda task: None if task in group.members
+                          else 'task %s is not a member of group %s' % (task, group.id))
 
 
 def _normalize(changes: list) -> list:
@@ -437,7 +529,7 @@ def _emit(plan, record: dict) -> None:
         from forge_dataset.capture import point
         point('brief_diff', str(plan), str(record['task']), {
             'pid': record['pid'], 'scope': record['scope'], 'group': record['group'],
-            'state': record['state'], 'tasks': [change['task'] for change in record['changes']]})
+            'state': record['state'], 'tasks': touched(record)})
     except Exception:
         pass
 
@@ -453,12 +545,12 @@ def _generated_at(plan, task):
 # --- propose ---------------------------------------------------------------------------
 
 def propose(plan, task, qid, actor='cli', timeout=900) -> dict:
-    """Ask the brief model what the answer to a parked wave question changes, and record the proposal.
+    """Ask the brief model what the answer to a parked wave or plan question changes, and record the proposal.
 
     Returns the proposal record (`state` is `proposed` or `refused`; a refused one carries its
     `reason` and still has its diff). Raises `NotAPlan`, `BriefOff` (brief off, or `allowed`
     refuses), `Usage` (no answer yet), `NoSuchTask`, `NoSuchQuestion` and `Refused` (the question
-    is not a wave question of a group, or the writer failed). Nothing in the plan changes.
+    is not a wave question of a group or a plan question, or the writer failed). Nothing in the plan changes.
     """
     who = answers._actor(actor)
     plan, found = forge_brief._guard(plan)
@@ -469,15 +561,21 @@ def propose(plan, task, qid, actor='cli', timeout=900) -> dict:
     if qid not in parked:
         raise answers.NoSuchQuestion(task, qid, list(parked))
     question = parked[qid]
-    if question.get('scope') != 'wave':
-        raise Refused('%s/%s is a %s-scoped question: a proposal acts on one group, so only a wave question '
-                      'can be proposed (a plan question needs a new plan)' % (task, qid, question.get('scope')))
-    gid = question.get('group')
-    if not isinstance(gid, str) or not gid:
-        raise Refused('%s/%s names no group, so there is nothing for a wave answer to act on' % (task, qid))
-    group = _group_of(plan, gid)
-    if group is None:
-        raise Refused('group %s is not in groups.tsv' % gid)
+    scope = question.get('scope')
+    if scope not in ('wave', 'plan'):
+        raise Refused('%s/%s is a %s-scoped question: only a parked wave or plan question can be proposed'
+                      % (task, qid, scope))
+    gid, group = None, None
+    if scope == 'plan':
+        if qid not in answers.answerable_parked(plan, task):
+            raise Refused('%s/%s is a plan question: the plan needs --brief-scope plan to act on it' % (task, qid))
+    else:
+        gid = question.get('group')
+        if not isinstance(gid, str) or not gid:
+            raise Refused('%s/%s names no group, so there is nothing for a wave answer to act on' % (task, qid))
+        group = _group_of(plan, gid)
+        if group is None:
+            raise Refused('group %s is not in groups.tsv' % gid)
     answer = answers._load_map(forge_brief.task_dir(plan, task) / 'brief.parked.answers.json').get(qid)
     if not isinstance(answer, dict) or not isinstance(answer.get('text'), str) or not answer['text'].strip():
         raise answers.Usage('%s/%s has no answer yet: forge brief answer %s %s %s TEXT' % (
@@ -485,6 +583,8 @@ def propose(plan, task, qid, actor='cli', timeout=900) -> dict:
     made, written = answer.get('t'), _generated_at(plan, task)
     if isinstance(made, (int, float)) and made > 0 and written is not None and made < written:
         raise Refused('%s/%s was answered before its question was last written: answer it again' % (task, qid))
+    if scope == 'plan':
+        return _propose_plan(plan, task, qid, question, answer, who, found, timeout)
     ok, reason = forge_side.allowed('brief-change', plan)
     if not ok:
         raise forge_brief.BriefOff(reason)
@@ -517,13 +617,14 @@ def propose(plan, task, qid, actor='cli', timeout=900) -> dict:
 
 # --- apply -----------------------------------------------------------------------------
 
-def _validate_new(plan, new_text: str, max_tasks: int) -> None:
-    """Run the group validation against the tasks.tsv an apply would write, touching nothing real."""
+def _validate_new(plan, new_text: str, max_tasks: int, groups_text=None) -> None:
+    """Run the group validation against the tasks.tsv (and groups.tsv) an apply would write, touching nothing real."""
     with tempfile.TemporaryDirectory(prefix='forge-validate-') as scratch:
         scratch = Path(scratch)
         (scratch / 'tasks.tsv').write_text(new_text, encoding='utf-8')
         groups_file = Path(plan) / 'groups.tsv'
-        (scratch / 'groups.tsv').write_bytes(_read_bytes(groups_file) or b'')
+        (scratch / 'groups.tsv').write_bytes(
+            groups_text.encode('utf-8') if groups_text is not None else _read_bytes(groups_file) or b'')
         os.symlink(str(Path(plan) / 'tasks'), str(scratch / 'tasks'))   # sweep.json is read from it
         forge_groups.validate(scratch, forge_groups.load(scratch), max_tasks)
 
@@ -558,6 +659,8 @@ def apply(plan, pid, approve_hash, actor='cli') -> dict:
     plan = Path(plan)
     if not plan.is_dir() or not (plan / 'tasks.tsv').is_file():
         raise forge_brief.NotAPlan(str(plan))
+    if _load(plan, pid).get('scope') == 'plan':   # the scope never changes, so reading it unlocked is safe
+        return _apply_plan(plan, pid, approve_hash, who)
     with _proposals_lock(plan), _control_lock(plan) as control:
         record = _load(plan, pid)
         if record.get('state') != 'proposed':
@@ -596,7 +699,7 @@ def apply(plan, pid, approve_hash, actor='cli') -> dict:
         try:
             for path, value in written:
                 forge_brief.atomic_write(path, value)
-            if files_edits:
+            if files_edits and not plan_stale(plan):   # a plan change awaiting `plan` stays stale
                 forge_groups.freeze(plan)
         except BaseException:
             for path, old in before.items():
@@ -617,7 +720,626 @@ def apply(plan, pid, approve_hash, actor='cli') -> dict:
     _emit(plan, record)
     names = [str(path.relative_to(plan)) for path, _ in written] + (['groups.frozen'] if files_edits else [])
     return {'pid': pid, 'state': 'approved', 'files': names,
-            'tasks': [change['task'] for change in changes], 'warning': warning}
+            'tasks': [change['task'] for change in changes], 'warning': warning,
+            'message': None, 'notes': [], 'live': False}
+
+
+# --- plan scope: structural changes ----------------------------------------------------
+
+PLAN_MESSAGE = 'structural changes apply after the run ends (forge control stop, or wait), then plan again'
+
+
+def plan_changes_of(record) -> dict:
+    """A stored plan-scope proposal's `changes` as `{edits, add, remove, deps}`, whatever was stored."""
+    raw = record.get('changes') if isinstance(record, dict) else None
+    raw = raw if isinstance(raw, dict) else {}
+    return {key: list(raw.get(key) or []) if isinstance(raw.get(key) or [], list) else [] for key in PLAN_KEYS}
+
+
+def touched(record) -> list:
+    """The task ids a proposal names, in a stable order, for the `brief_diff` event."""
+    if record.get('scope') != 'plan':
+        return [change['task'] for change in record.get('changes') or []]
+    changes = plan_changes_of(record)
+    found = [item.get('task') for item in changes['edits']] + [item.get('id') for item in changes['add']] \
+        + list(changes['remove']) + [item.get('task') for item in changes['deps']]
+    return list(dict.fromkeys(item for item in found if isinstance(item, str)))
+
+
+def _id_problem(name):
+    """Why `name` is not an id a new task may have, or None. The scheduler's rule (`_task_id_ok`), and no
+    whitespace, comma or backslash (they break tasks.tsv and deps), no leading `.` or `-`."""
+    if not isinstance(name, str) or not name:
+        return 'the id must be a non-empty string'
+    if name in ('.', '..') or '/' in name or '\0' in name:
+        return 'the id %r is not a valid task id' % name
+    if any(ch.isspace() or ch in ',\\' for ch in name) or name[0] in '.-':
+        return 'the id %r may not contain whitespace, commas or backslashes, nor start with . or -' % name
+    return None
+
+
+def _normalize_plan(changes: dict) -> dict:
+    """Each added task cleaned: prompt and approach end with a newline, files a list, text fields stripped."""
+    out = {'edits': _normalize(changes['edits']), 'remove': [str(item).strip() for item in changes['remove']],
+           'deps': [], 'add': []}
+    for item in changes['deps']:
+        entry = dict(item)
+        if isinstance(entry.get('deps'), list):
+            entry['deps'] = [str(dep).strip() if isinstance(dep, str) else dep for dep in entry['deps']]
+        out['deps'].append(entry)
+    for item in changes['add']:
+        entry = dict(item)
+        for field in ('id', 'difficulty', 'group'):
+            if isinstance(entry.get(field), str):
+                entry[field] = entry[field].strip()
+        if isinstance(entry.get('title'), str):
+            entry['title'] = ' '.join(entry['title'].split())
+        if isinstance(entry.get('files'), str):
+            entry['files'] = [part for part in entry['files'].split(',')]
+        if isinstance(entry.get('files'), list):
+            entry['files'] = [part.strip() if isinstance(part, str) else part for part in entry['files']]
+        if isinstance(entry.get('deps'), list):
+            entry['deps'] = [dep.strip() if isinstance(dep, str) else dep for dep in entry['deps']]
+        for field in ('prompt', 'approach'):
+            value = entry.get(field)
+            if isinstance(value, str) and value and not value.endswith('\n'):
+                entry[field] = value + '\n'
+        out['add'].append(entry)
+    return out
+
+
+def _check_added(plan, entry, taken, group_ids, reasons):
+    """Append to `reasons` what is wrong with one `add` entry; True when it is sound enough to build a row from."""
+    name = entry.get('id')
+    label = 'add %s' % (name if isinstance(name, str) and name else '(no id)')
+    before = len(reasons)
+    extra = sorted(key for key in entry if key not in ADD_KEYS)
+    if extra:
+        reasons.append('%s: unknown field(s) %s' % (label, ', '.join(extra)))
+    problem = _id_problem(name)
+    if problem:
+        reasons.append('%s: %s' % (label, problem))
+    elif name in taken:
+        reasons.append('%s: the id is already a task (an added id must be new)' % label)
+    elif name in group_ids:
+        reasons.append('%s: the id is also a group id' % label)
+    elif (Path(plan) / 'tasks' / name).exists():
+        reasons.append('%s: tasks/%s already exists (an added id must be new)' % (label, name))
+    if entry.get('difficulty') not in DIFFICULTIES:
+        reasons.append('%s: difficulty must be low, medium or high' % label)
+    files = entry.get('files')
+    if (not isinstance(files, list) or not files or not all(isinstance(part, str) and part for part in files)
+            or any(ch in part for part in files if isinstance(part, str) for ch in ',\t\r\n')):
+        reasons.append('%s: files must be a non-empty list of paths without tabs or commas' % label)
+    title = entry.get('title')
+    if not isinstance(title, str) or not title or '\t' in title:
+        reasons.append('%s: title must be one non-empty line without tabs' % label)
+    prompt = entry.get('prompt')
+    if not isinstance(prompt, str) or not prompt.strip():
+        reasons.append('%s: prompt is empty' % label)
+    elif not ACCEPTANCE_RE.search(prompt):
+        reasons.append('%s: prompt has no "## Acceptance criteria" section (the plan rule: references/decompose.md)' % label)
+    approach = entry.get('approach')
+    if approach is not None and (not isinstance(approach, str) or not approach.strip()):
+        reasons.append('%s: approach must be a non-empty string or null' % label)
+    group = entry.get('group')
+    if group is not None and group not in group_ids:
+        reasons.append('%s: group %s is not in groups.tsv' % (label, group))
+    deps = entry.get('deps')
+    if not isinstance(deps, list) or not all(isinstance(dep, str) and dep for dep in deps):
+        reasons.append('%s: deps must be a list of task ids' % label)
+    return len(reasons) == before
+
+
+def _rewrite_rows(lines: list, drop=(), files=None, deps=None) -> list:
+    """The tasks.tsv lines without the dropped rows and with the files or deps column of the named rows replaced."""
+    files, deps, out = files or {}, deps or {}, []
+    for line in lines:
+        body = line.rstrip('\n')
+        cols = body.split('\t')
+        if body.strip() and not body.startswith('#') and len(cols) >= 7:
+            if cols[0] in drop:
+                continue
+            if cols[0] in files or cols[0] in deps:
+                if cols[0] in files:
+                    cols[3] = files[cols[0]]
+                if cols[0] in deps:
+                    cols[1] = ','.join(deps[cols[0]]) or '-'
+                line = '\t'.join(cols) + ('\n' if line.endswith('\n') else '')
+        out.append(line)
+    return out
+
+
+def _rewrite_groups(lines: list, drop: set, join: dict) -> tuple:
+    """`(new lines, reasons)`: each group row without the dropped members and with the joining ones appended."""
+    out, reasons = [], []
+    for line in lines:
+        body = line.rstrip('\n')
+        cols = body.split('\t')
+        if body.strip() and not body.startswith('#') and len(cols) == 6:
+            members = [member.strip() for member in cols[3].split(',')]
+            kept = [member for member in members if member not in drop] + join.get(cols[0], [])
+            if kept != members:
+                if not kept:
+                    reasons.append('group %s would lose every member: take it out of groups.tsv by hand first' % cols[0])
+                else:
+                    cols[3] = ','.join(kept)
+                    line = '\t'.join(cols) + ('\n' if line.endswith('\n') else '')
+        out.append(line)
+    return out, reasons
+
+
+def _has_cycle(graph: dict) -> list:
+    """A cycle in `{task: [deps]}` as a list of ids, or []."""
+    state, stack = {}, []
+
+    def visit(node):
+        state[node] = 1
+        stack.append(node)
+        for dep in graph.get(node, []):
+            if state.get(dep) == 1:
+                return stack[stack.index(dep):] + [dep]
+            if dep not in state and dep in graph:
+                found = visit(dep)
+                if found:
+                    return found
+        state[node] = 2
+        stack.pop()
+        return []
+
+    for node in graph:
+        if node not in state:
+            found = visit(node)
+            if found:
+                return found
+    return []
+
+
+def _plan_check(plan, changes: dict) -> tuple:
+    """`(reasons, built)` for plan-scope `changes` against the plan as it is now.
+
+    `reasons` is why the proposal is refused (empty when it is a plan). `built` is what applying
+    writes, computed from the sound parts even when there are reasons, so a refused proposal
+    still shows its diff: `{tasks_old, tasks_new, groups_old, groups_new (None without a groups.tsv),
+    edits [(task, field, text)], add [entry], remove [id], rows [new tasks.tsv rows added]}`.
+    """
+    plan = Path(plan)
+    reasons = []
+    rows = forge_brief.read_tasks(plan)
+    by_id = {item['id']: item for item in rows}
+    try:
+        groups = forge_groups.load(plan)
+    except forge_groups.GroupError as error:
+        raise Refused('groups.tsv cannot be read: %s' % ' '.join(str(error).split()))
+    group_ids = {group.id for group in groups}
+
+    removed = []
+    for name in changes['remove']:
+        if name in removed:
+            reasons.append('task %s is removed twice' % name)
+        elif name not in by_id:
+            reasons.append('cannot remove %s: it is not in tasks.tsv' % name)
+        elif started(plan, name):
+            reasons.append('cannot remove %s: it has started' % name)
+        else:
+            removed.append(name)
+
+    added, taken = {}, set(by_id)
+    for entry in changes['add']:
+        sound = _check_added(plan, entry, taken | set(added), group_ids, reasons)
+        name = entry.get('id')
+        if isinstance(name, str) and name in added:
+            reasons.append('add %s: the id is added twice' % name)
+        elif sound:
+            added[name] = entry
+
+    new_deps = {}
+    for entry in changes['deps']:
+        name, deps = entry['task'], entry.get('deps')
+        extra = sorted(key for key in entry if key not in ('task', 'deps'))
+        if extra:
+            reasons.append('deps entry for %s has unknown field(s): %s' % (name, ', '.join(extra)))
+        if not isinstance(deps, list) or not all(isinstance(dep, str) and dep for dep in deps):
+            reasons.append('deps for %s must be a list of task ids' % name)
+        elif name in new_deps:
+            reasons.append('deps of %s are changed twice' % name)
+        elif name in added:
+            reasons.append('deps of %s: it is added in this proposal, so its deps are in its add entry' % name)
+        elif name not in by_id:
+            reasons.append('cannot change the deps of %s: it is not in tasks.tsv' % name)
+        elif name in removed:
+            reasons.append('cannot change the deps of %s: it is removed in this proposal' % name)
+        elif started(plan, name):
+            reasons.append('cannot change the deps of %s: it has started' % name)
+        else:
+            new_deps[name] = list(dict.fromkeys(deps))
+
+    edits_reasons = _confine_edits(plan, changes['edits'], lambda task: (
+        'task %s is removed in this proposal' % task if task in removed
+        else 'task %s is not in tasks.tsv' % task if task not in by_id else None))
+    reasons.extend(edits_reasons)
+
+    graph = {}
+    for name, item in by_id.items():
+        if name not in removed:
+            graph[name] = new_deps.get(name, item['deps'])
+    for name, entry in added.items():
+        graph[name] = list(dict.fromkeys(entry.get('deps') or []))
+    for name, deps in graph.items():
+        for dep in deps:
+            if dep == name:
+                reasons.append('task %s depends on itself' % name)
+            elif dep in removed:
+                reasons.append('task %s depends on removed task %s: rewrite its deps in the same proposal' % (name, dep))
+            elif dep not in graph:
+                reasons.append('task %s depends on %s, which will not exist' % (name, dep))
+    cycle = _has_cycle({name: [dep for dep in deps if dep in graph and dep != name] for name, deps in graph.items()})
+    if cycle:
+        reasons.append('the dependencies form a cycle: %s' % ' -> '.join(cycle))
+
+    files_new, edits = {}, []
+    for change in changes['edits']:
+        task = change['task']
+        if task not in by_id or task in removed or not forge_side._safe_component(task):
+            continue
+        for field in ('prompt', 'approach'):
+            new = change.get(field)
+            if isinstance(new, str) and new.strip():
+                current = _read_bytes(_task_file(plan, task, field + '.md'))
+                if current is None or _text(current) != new:
+                    edits.append((task, field, new))
+        files = change.get('files')
+        if isinstance(files, str) and files.strip() and by_id[task]['files'] != files:
+            files_new[task] = files
+            edits.append((task, 'files', files))
+
+    tasks_old = _text(_read_bytes(plan / 'tasks.tsv'))
+    lines = tasks_old.splitlines(True)
+    if lines and not lines[-1].endswith('\n'):
+        lines[-1] += '\n'
+    lines = _rewrite_rows(lines, drop=set(removed), files=files_new, deps=new_deps)
+    for name, entry in added.items():
+        lines.append('\t'.join([name, ','.join(dict.fromkeys(entry.get('deps') or [])) or '-', entry['difficulty'],
+                                ','.join(entry['files']), '-', '-', entry['title']]) + '\n')
+    tasks_new = ''.join(lines)
+
+    groups_old = _read_bytes(plan / 'groups.tsv')
+    groups_old = None if groups_old is None else _text(groups_old)
+    groups_new = groups_old
+    if groups_old is not None:
+        join = {}
+        for name, entry in added.items():
+            if entry.get('group'):
+                join.setdefault(entry['group'], []).append(name)
+        glines, more = _rewrite_groups(groups_old.splitlines(True), set(removed), join)
+        reasons.extend(more)
+        groups_new = ''.join(glines)
+
+    built = {'tasks_old': tasks_old, 'tasks_new': tasks_new, 'groups_old': groups_old, 'groups_new': groups_new,
+             'edits': edits, 'add': list(added.values()), 'remove': removed, 'deps': new_deps}
+    if not reasons:
+        if not (edits or added or removed or new_deps):
+            reasons.append('the proposal changes nothing')
+        else:
+            try:
+                _validate_new(plan, tasks_new, _max_tasks(plan), groups_new)
+            except forge_groups.GroupError as error:
+                reasons.append('group validation fails: %s' % ' '.join(str(error).split()))
+    return reasons, built
+
+
+def _plan_diff(plan, built: dict) -> tuple:
+    """`(diff text, targets)` of a built plan change. The hash covers tasks.tsv and groups.tsv whole."""
+    diffs, targets = [], []
+    if built['tasks_new'] != built['tasks_old']:
+        diffs.append(_udiff('tasks.tsv', built['tasks_old'], built['tasks_new']))
+    if built['groups_new'] != built['groups_old']:
+        diffs.append(_udiff('groups.tsv', built['groups_old'], built['groups_new']))
+    for task, field, new in built['edits']:
+        if field == 'files':
+            continue   # the tasks.tsv diff shows it
+        current = _read_bytes(_task_file(plan, task, field + '.md'))
+        diffs.append(_udiff(_rel(task, field), None if current is None else _text(current), new))
+        targets.append((_rel(task, field), current))
+    for entry in built['add']:
+        diffs.append(_udiff(_rel(entry['id'], 'prompt'), None, entry['prompt']))
+        if entry.get('approach'):
+            diffs.append(_udiff(_rel(entry['id'], 'approach'), None, entry['approach']))
+        targets.append(('tasks/%s' % entry['id'], None))
+    targets.append(('tasks.tsv', _read_bytes(Path(plan) / 'tasks.tsv')))
+    targets.append(('groups.tsv', _read_bytes(Path(plan) / 'groups.tsv')))
+    return ''.join(diffs), targets
+
+
+def build_plan_prompt(plan, asking: str, question: dict, answer: dict, repo: str) -> str:
+    plan = Path(plan)
+    rows = forge_brief.read_tasks(plan)
+    groups = forge_groups.load(plan) if (plan / 'groups.tsv').is_file() else []
+    parts = [
+        'You are revising the PLAN of a multi-task coding run (its tasks and their dependencies), because a '
+        'person answered an open question that affects the plan as a whole.\n'
+        'The repository is at %s: you may read it and you must not write to it.\n' % repo,
+        '## The question (asked for task %s)\n\n%s\n\nwhy: %s\noptions: %s\ndefault: %s\n' % (
+            asking, question.get('text', ''), question.get('why', ''),
+            ' | '.join(question.get('options') or []) or '(none)', question.get('default', '')),
+        '## The answer\n\n%s\n' % answer.get('text', ''),
+        '## Every task (tasks.tsv: id, deps, difficulty, files, dwarf, qa, title) and its status\n',
+    ]
+    for item in rows:
+        parts.append('%s   [%s]' % (item['row'].rstrip('\n'), 'STARTED: you may not change it'
+                                    if started(plan, item['id']) else 'unstarted'))
+    parts.append('\n## groups.tsv (id, review, qa, members, title, goal)\n\n%s\n' % (
+        _text(_read_bytes(plan / 'groups.tsv')).strip() if groups else '(no groups)'))
+    parts.append('## The unstarted tasks (each file capped at 6 KB)\n')
+    for item in rows:
+        if not started(plan, item['id']):
+            parts.append('### %s\n\n#### prompt.md\n\n%s\n\n#### approach.md\n\n%s\n' % (
+                item['id'], _capped(plan, item['id'], 'prompt.md'), _capped(plan, item['id'], 'approach.md') or '(none)'))
+    parts.append(
+        '## What to change\n\n'
+        'Decide what the answer changes in the plan. You may change only tasks that have not started: edit '
+        'their prompt (prompt.md), approach (approach.md) or files column, remove them, or give them new '
+        'deps. You may add tasks. A split is a removal plus the added tasks that replace it; every task that '
+        'depended on a removed one needs its deps rewritten in the same reply. Added ids must be new. '
+        'An added task\'s deps must name tasks that will exist, with no cycle; its group is null or one '
+        'existing group id. Every added prompt must end with an "## Acceptance criteria" section of '
+        'observable checks. Give the FULL new text of any file you change, never a patch. Leave a field '
+        'null when it stays as it is. If the answer changes nothing, reply with empty lists.\n\n'
+        '## Reply format\n\n'
+        'Reply with JSON only, no prose and no code fence:\n\n'
+        '{"summary": "...", "changes": {\n'
+        '  "edits": [{"task": "id", "prompt": "<full new prompt.md>"|null, "approach": "<full new approach.md>"|null, '
+        '"files": "<new files column>"|null}],\n'
+        '  "add": [{"id": "new-id", "deps": ["id"], "difficulty": "low|medium|high", "files": ["path"], '
+        '"title": "...", "prompt": "<full prompt.md>", "approach": "<full approach.md>"|null, "group": "group id"|null}],\n'
+        '  "remove": ["id"],\n'
+        '  "deps": [{"task": "id", "deps": ["id"]}]}}\n')
+    return '\n'.join(parts)
+
+
+def _split_word(changes: dict) -> bool:
+    return bool(changes['remove']) and len(changes['add']) >= 1
+
+
+def _propose_plan(plan, task, qid, question, answer, who, found, timeout) -> dict:
+    ok, reason = forge_side.allowed('brief-change', plan)
+    if not ok:
+        raise forge_brief.BriefOff(reason)
+    repo = forge_brief._text(plan / 'repo').strip()
+    prompt = build_plan_prompt(plan, task, question, answer, repo)
+    data, error = _ask(plan, task, prompt, found['model'], timeout, parse=parse_plan_reply)
+    if data is None:
+        raise Refused('the change writer failed: %s' % error)
+    changes = _normalize_plan(data['changes'])
+    reasons, built = _plan_check(plan, changes)
+    diff_text, targets = _plan_diff(plan, built)
+    summary = data['summary']
+    if _split_word(changes) and 'split' not in summary.lower():
+        summary = 'split: ' + summary
+    state = 'refused' if reasons else 'proposed'
+    with _proposals_lock(plan):
+        number = (_numbers(plan) or [0])[-1] + 1
+        pid = 'p%d' % number
+        directory = _proposals(plan) / pid
+        directory.mkdir(parents=True)
+        record = {'pid': pid, 'scope': 'plan', 'group': None, 'task': task, 'qid': qid,
+                  'answer': answer['text'], 'summary': summary, 'changes': changes,
+                  'state': state, 'reason': '; '.join(reasons) or None,
+                  'created': forge_brief._now(), 'actor': who}
+        forge_brief.atomic_write(directory / 'diff.patch', diff_text)
+        forge_brief.atomic_write(directory / 'hash', _digest(diff_text, targets) + '\n')
+        _store(plan, record)
+    _emit(plan, record)
+    return record
+
+
+# --- applying a plan-scope proposal ----------------------------------------------------
+
+def _decompose_hint(plan) -> str:
+    level = forge_brief._text(Path(plan) / 'decompose_level').strip()
+    return ' --decompose-level %s' % level if level in DIFFICULTIES else ''
+
+
+def plan_again_message(plan) -> str:
+    return 'plan changed; run forge-parallel.sh plan %s …%s again before run' % (shlex.quote(str(plan)), _decompose_hint(plan))
+
+
+STALE = 'stale: plan changed by proposal'
+
+
+def plan_stale(plan) -> bool:
+    """True when a plan-scope apply left `groups.frozen` as a stale marker: `plan` has not run again."""
+    return forge_brief._text(Path(plan) / 'groups.frozen').startswith(STALE)
+
+
+def _routing_for(rows: list, difficulty: str):
+    """`(dwarf, qa)` an added row can take in a live run: explicit specs copied from an existing row
+    (the same difficulty first), since `forge control add` refuses `-` and UNASSIGNED."""
+    def explicit(item):
+        return all(value not in ('', '-', 'UNASSIGNED') for value in (item['dwarf'], item['qa']))
+    pool = [item for item in rows if explicit(item)]
+    same = [item for item in pool if item['difficulty'] == difficulty]
+    chosen = (same or pool or [None])[0]
+    return (chosen['dwarf'], chosen['qa']) if chosen else None
+
+
+def _write_edits(written: list) -> list:
+    """Write `[(path, text)]` atomically, returning the undo list `[(path, old bytes or None)]`."""
+    undo = []
+    for path, value in written:
+        undo.append((path, _read_bytes(path)))
+        forge_brief.atomic_write(path, value)
+    return undo
+
+
+def _undo_files(undo: list) -> None:
+    for path, old in reversed(undo):
+        try:
+            if old is None:
+                Path(path).unlink(missing_ok=True)
+            else:
+                forge_brief.atomic_write(path, _text(old))
+        except OSError:
+            pass
+
+
+def _apply_plan_offline(plan, pid, built: dict) -> list:
+    """Write the new plan files, create the new task dirs, move the removed ones. Rolled back whole on a failure."""
+    import shutil
+    moved, created, undo = [], [], []
+    try:
+        for entry in built['add']:
+            tdir = plan / 'tasks' / entry['id']
+            tdir.mkdir(parents=True)
+            created.append(tdir)
+            forge_brief.atomic_write(tdir / 'prompt.md', entry['prompt'])
+            forge_brief.atomic_write(tdir / 'approach.md', entry.get('approach') or '')
+        for name in built['remove']:
+            source = plan / 'tasks' / name
+            if source.is_dir():
+                target = plan / 'tasks' / '.removed' / ('%s-%s' % (name, pid))
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.rename(str(source), str(target))
+                moved.append((source, target))
+        written = [(plan / ('tasks/%s/%s.md' % (task, field)), value)
+                   for task, field, value in built['edits'] if field != 'files']
+        written.append((plan / 'tasks.tsv', built['tasks_new']))
+        if built['groups_new'] != built['groups_old']:
+            written.append((plan / 'groups.tsv', built['groups_new']))
+        # The frozen fingerprint covers groups.tsv and the rows of group members only, so a change to
+        # an ungrouped task, or a plan with no groups, would leave `run` free to go on with rows `plan`
+        # never routed. A stale marker never matches a fingerprint, and with no groups.tsv its mere
+        # presence is refused by `check_frozen`: either way `run` stops until `plan` freezes again
+        # (it overwrites the marker, or removes it when there are no groups).
+        written.append((plan / 'groups.frozen', '%s %s\n' % (STALE, pid)))
+        undo = _write_edits(written)
+    except BaseException:
+        _undo_files(undo)
+        for source, target in reversed(moved):
+            try:
+                os.rename(str(target), str(source))
+            except OSError:
+                pass
+        for tdir in created:
+            shutil.rmtree(str(tdir), ignore_errors=True)
+        raise
+    names = [str(path.relative_to(plan)) for path, _ in written]
+    names += ['tasks/%s/' % entry['id'] for entry in built['add']]
+    names += [str(target.relative_to(plan)) + '/' for _, target in moved]
+    return names
+
+
+def _control_args(plan, task, actor):
+    return argparse.Namespace(plan=str(plan), task=task, json=False, actor='ui' if actor == 'ui' else 'cli')
+
+
+def _dependency_order(adds: list) -> list:
+    """The added entries, each after the added entries it depends on (proposal order otherwise):
+    `forge control add` refuses a row whose dependency is not in tasks.tsv yet."""
+    ids = {entry['id'] for entry in adds}
+    ordered, placed, pending = [], set(), list(adds)
+    while pending:
+        ready = [entry for entry in pending
+                 if all(dep in placed or dep not in ids for dep in (entry.get('deps') or []))]
+        if not ready:   # a cycle among the adds: _plan_check refuses it, never reached
+            ready = pending[:1]
+        ordered.append(ready[0])
+        placed.add(ready[0]['id'])
+        pending.remove(ready[0])
+    return ordered
+
+
+def _apply_plan_live(plan, pid, built: dict, control, actor, rows) -> tuple:
+    """Queue each added task through `forge control add`. Returns `(names, notes)`; raises `Refused`."""
+    import shutil
+    adds = _dependency_order(built['add'])
+    routes = {}
+    for entry in adds:
+        route = _routing_for(rows, entry['difficulty'])
+        if route is None:
+            raise Refused('a live run needs explicit dwarf and qa specs for an added task, and no task of '
+                          'this plan has them yet: apply after the run ends, then plan again')
+        routes[entry['id']] = route
+    queued, notes = [], []
+    for entry in adds:
+        name, (dwarf, qa) = entry['id'], routes[entry['id']]
+        tdir = plan / 'tasks' / name
+        undo = []
+        try:
+            with control.control_lock(os.path.realpath(str(plan))):
+                tdir.mkdir(parents=True)
+                forge_brief.atomic_write(tdir / 'prompt.md', entry['prompt'])
+                forge_brief.atomic_write(tdir / 'approach.md', entry.get('approach') or '')
+                old = _text(_read_bytes(plan / 'tasks.tsv'))
+                if old and not old.endswith('\n'):
+                    old += '\n'
+                row = '\t'.join([name, ','.join(dict.fromkeys(entry.get('deps') or [])) or '-', entry['difficulty'],
+                                 ','.join(entry['files']), dwarf, qa, entry['title']]) + '\n'
+                undo = _write_edits([(plan / 'tasks.tsv', old + row)])
+            with contextlib.redirect_stdout(io.StringIO()):
+                control.cmd_add(_control_args(plan, name, actor))
+        except (control.Refused, control.Invalid, OSError) as error:
+            with contextlib.suppress(Exception), control.control_lock(os.path.realpath(str(plan))):
+                _undo_files(undo)
+            shutil.rmtree(str(tdir), ignore_errors=True)
+            done = ('; already queued: %s' % ', '.join(queued)) if queued else ''
+            failure = Refused('forge control add refused %s: %s%s' % (name, error, done))
+            failure.queued = queued
+            raise failure
+        queued.append(name)
+        if entry.get('group'):
+            notes.append('task %s joins no group (a live-added task joins none), whatever the proposal says' % name)
+    names = ['tasks.tsv'] + ['tasks/%s/' % name for name in queued]
+    return names, notes
+
+
+def _apply_plan(plan, pid, approve_hash, who) -> dict:
+    """`apply` for a plan-scope proposal. No live run: the plan files change and `plan` must run again.
+    A live run: only added tasks, each through `forge control add`; anything else refuses, nothing changed."""
+    with _proposals_lock(plan):
+        queued = None
+        with _control_lock(plan) as control:
+            record = _load(plan, pid)
+            if record.get('state') != 'proposed':
+                raise Refused('proposal %s is %s, not proposed' % (pid, record.get('state')))
+            stored = _stored_hash(plan, pid)
+            if not stored or str(approve_hash).strip().lower() != stored:
+                raise Refused('the hash does not match proposal %s: read its diff again and quote its hash' % pid)
+            changes = plan_changes_of(record)
+            reasons, built = _plan_check(plan, changes)
+            if reasons:
+                raise Refused('proposal %s no longer fits the plan: %s' % (pid, '; '.join(reasons)))
+            _, targets = _plan_diff(plan, built)
+            if _digest(_text(_read_bytes(_proposals(plan) / pid / 'diff.patch')), targets) != stored:
+                raise Refused('a target file changed since proposal %s: propose again' % pid)
+            live = control.is_live(os.path.realpath(str(plan)))
+            if live and (changes['edits'] or changes['remove'] or changes['deps']):
+                raise Refused(PLAN_MESSAGE)
+            notes = []
+            if not live:
+                names = _apply_plan_offline(plan, pid, built)
+                message = plan_again_message(plan)
+                record.update(state='approved', applied=forge_brief._now(), applied_by=who, live=False)
+                _store(plan, record)
+        if live:   # forge control add takes the control lock itself
+            rows = forge_brief.read_tasks(plan)
+            try:
+                names, notes = _apply_plan_live(plan, pid, built, answers._control(), who, rows)
+            except Refused as failure:
+                queued = getattr(failure, 'queued', None)
+                if queued:   # some rows are in the plan and queued: the proposal cannot be applied again
+                    record.update(state='approved', applied=forge_brief._now(), applied_by=who, live=True,
+                                  queued=queued, partial=failure.reason)
+                    _store(plan, record)
+                    _emit(plan, record)
+                raise
+            order = [entry['id'] for entry in _dependency_order(built['add'])]
+            message = 'queued %s into the live run through forge control add' % ', '.join(order)
+            record.update(state='approved', applied=forge_brief._now(), applied_by=who, live=True, queued=order)
+            _store(plan, record)
+    _emit(plan, record)
+    return {'pid': pid, 'state': 'approved', 'files': names, 'tasks': touched(record), 'warning': None,
+            'message': message, 'notes': notes, 'live': live}
 
 
 # --- reject and list -------------------------------------------------------------------
@@ -665,8 +1387,9 @@ def listing(plan) -> list:
 
 def render_one(item: dict) -> str:
     """The text `forge brief proposals` shows for one proposal."""
-    lines = ['%s  %s  scope %s  group %s  (asked by %s/%s)' % (
-        item['pid'], item['state'], item.get('scope'), item.get('group'), item.get('task'), item.get('qid')),
+    lines = ['%s  %s  scope %s%s  (asked by %s/%s)' % (
+        item['pid'], item['state'], item.get('scope'),
+        '  group %s' % item.get('group') if item.get('group') else '', item.get('task'), item.get('qid')),
         '    %s' % (item.get('summary') or '(no summary)')]
     if item.get('reason'):
         lines.append('    refused: %s' % item['reason'] if item['state'] == 'refused' else '    %s' % item['reason'])
