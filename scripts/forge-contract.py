@@ -3,7 +3,7 @@
 
 Subcommands, stdlib only, no network:
 
-  qa --part head|tail [--kind task|final|solo|sweep] [--threshold P0|P1|P2|P3|none]
+  qa --part head|tail [--kind task|final|solo|sweep|adopt|group] [--threshold P0|P1|P2|P3|none]
       Prints one piece of the QA prompt. The caller prints everything between and
       after the pieces itself (scope notes, the diff fence, the memory note and the
       "Place any learning notes before the final FORGE_VERDICT ..." sentence).
@@ -60,7 +60,9 @@ line (`[P2]`, `(P2)`, `**P2**`, `P2:`, `P2 -` or a standalone `P2`; uppercase on
 Facts (#119). A finding may end its first line (or, wrapped, its last) with
 `{reach=main|realistic|unusual origin=new|existing evidence=ran|traced|suspected}`. They are
 recorded in shadow and decide nothing: the gate never reads them, and `split_facts` cuts the
-suffix for readers that show the line. A missing or malformed suffix changes nothing.
+suffix for readers that show the line. A missing or malformed suffix changes nothing. A group
+review may put `{tasks=…}` on that same line; the facts are still read when that brace follows
+them, and still when the facts brace is what closes the line.
 
 Phantom findings. A reviewer may echo the contract it was given. Three layers keep that
 from creating findings or blocking: (1) FORGE_VERDICT, FORGE_LEARNING, FORGE_TESTS and FORGE_RETRO text is removed
@@ -86,7 +88,7 @@ import sys
 
 SEVERITIES = ('P0', 'P1', 'P2', 'P3')
 PLACEHOLDER = 'path/file.py:123'
-KINDS = ('task', 'final', 'solo', 'sweep', 'adopt')
+KINDS = ('task', 'final', 'solo', 'sweep', 'adopt', 'group')
 DEFAULT_THRESHOLD = 'P2'
 QA_TEST_MINUTES = 5        # the reviewer's own test time, beyond which it says the check is too broad (#89)
 
@@ -157,6 +159,13 @@ _HEAD = {
         'diff itself.',
     ],
 }
+# Group review (#140) is the task contract plus one review over several tasks. The shared
+# preamble stays the task one, so a change to it reaches group; these lines are the addition.
+_HEAD['group'] = _HEAD['task'] + [
+    'This review covers several tasks, listed with their own requirements and acceptance',
+    'criteria. Judge each task against its own criteria, and judge the combined change',
+    'as a whole, including how the tasks fit together.',
+]
 
 _FINDINGS = [
     'Report findings only — do not edit any file. For each finding give the file and line,',
@@ -164,7 +173,7 @@ _FINDINGS = [
     'it in the code, or PLAUSIBLE if you could not fully verify it.',
 ]
 # #69: task reviews returned a few findings per round. These two lines follow _FINDINGS for
-# task and solo only, so the findings rules stay one paragraph. Final and sweep omit them.
+# task, solo, adopt and group, so the findings rules stay one paragraph. Final and sweep omit them.
 _ALL_CONFIRMED = ['List every CONFIRMED finding you find, not only the most important few.']
 _SOLO_EXTRA = ['If the diff is correct, say so plainly rather than inventing something to report.']
 
@@ -209,6 +218,22 @@ _SEVERITY = [
 # of the location, and forge-ui strips only two.
 FACTS = {'reach': ('main', 'realistic', 'unusual'), 'origin': ('new', 'existing'),
          'evidence': ('ran', 'traced', 'suspected')}
+
+# Group review (#140) attributes each finding to a member. The facts brace above is a different
+# tag and may sit on the same bullet; `{tasks=…}` has to be its own brace or the two are confused.
+# The facts brace still closes the line (`split_facts` reads a group that ends it). `{tasks=…}`
+# sits immediately before that brace. A tasks brace written after the facts is still parsed, so a
+# reviewer who ends on `{tasks=…}` does not drop the shadow measurement, but the prompt names one order.
+_GROUP_ATTRIB = [
+    'Attribute each finding to the task whose diff changed the file it names.',
+    'When a finding is about a different task than the file suggests, or it spans',
+    'several tasks, end its bullet with {tasks=a,b}, the ids of the tasks that must',
+    'change. A finding with no file needs {tasks=…}.',
+    'The {reach=… origin=… evidence=…} facts may sit on the same bullet. They are not',
+    'the tasks tag. Write {tasks=…} in its own braces, immediately before the facts',
+    'brace, so the facts brace still ends the line:',
+    '  - [P1][CONFIRMED] path/file.py:123 — {tasks=a,b} {reach=realistic origin=new evidence=traced}',
+]
 
 _SWEEP_FINDINGS = [
     'Report findings only — do not edit any file. A finding here is a regression the change',
@@ -258,10 +283,12 @@ def qa_text(part: str, kind: str = 'task', threshold=None) -> str:
     if part != 'tail':
         raise ValueError('part must be head or tail')
     lines = list(_SWEEP_FINDINGS if kind == 'sweep' else _FINDINGS)
-    if kind in ('task', 'solo', 'adopt'):
+    if kind in ('task', 'solo', 'adopt', 'group'):
         lines += _ALL_CONFIRMED + _SOLO_EXTRA
     lines += [''] + _VERIFY
     lines += [''] + _SEVERITY
+    if kind == 'group':
+        lines += [''] + _GROUP_ATTRIB
     lines += [''] + _threshold_clause(rank, kind) + _CHECKED
     if kind == 'sweep':
         lines += [''] + _SWEEP_STATUS
@@ -468,25 +495,41 @@ def _finding(number: int, lines: list):
 # when it names at least one of the three facts: a finding's own text may end in braces (`{}`, `{a=1}`).
 _FACTS_SUFFIX = re.compile(r'[ \t]*[`*_]*\{([^{}\n]*)\}[`*_.]*[ \t]*$')
 _FACT = re.compile(r'([A-Za-z]+)[ \t]*[=:][ \t]*([A-Za-z]+)')
+# Group review's `{tasks=…}` is its own brace. When a reviewer puts it after the facts, the facts
+# group no longer closes the line; if the closing brace is not facts, this tail is cut and the
+# facts suffix is tried on what remains.
+_TASKS_TAIL = re.compile(
+    r'[ \t]*[`*_]*\{[ \t]*tasks[ \t]*=[ \t]*[^{}\n]*\}[`*_.]*[ \t]*$', re.IGNORECASE)
 
 
 def split_facts(line: str):
     """(line without its facts suffix, {reach, origin, evidence}) or (line, None) when it has none.
 
     A fact whose value is not one of its words reads None, and keys other than the three are ignored:
-    a malformed suffix is still cut from the line, so it never reaches a location or a title."""
-    match = _FACTS_SUFFIX.search(line or '')
-    if not match:
-        return line, None
-    said = {key.lower(): value.lower() for key, value in _FACT.findall(match.group(1))}
-    if not any(key in said for key in FACTS):
-        return line, None
-    return line[:match.start()], {key: said[key] if said.get(key) in words else None
-                                  for key, words in FACTS.items()}
+    a malformed suffix is still cut from the line, so it never reaches a location or a title.
+    `{tasks=…}` after the facts is not a facts suffix: both braces are cut, and the facts are kept.
+    `{tasks=…}` before the facts stays on the returned line, as it does when it is the only brace."""
+    original = line or ''
+    bodies = [original]
+    tasks = _TASKS_TAIL.search(original)
+    if tasks:
+        bodies.append(original[:tasks.start()])
+    for body in bodies:
+        match = _FACTS_SUFFIX.search(body)
+        if not match:
+            continue
+        said = {key.lower(): value.lower() for key, value in _FACT.findall(match.group(1))}
+        if not any(key in said for key in FACTS):
+            continue
+        return body[:match.start()], {key: said[key] if said.get(key) in words else None
+                                      for key, words in FACTS.items()}
+    return original, None
 
 
 def facts(text: str):
-    """The facts of one finding block: its first line's suffix, else its last line's (a wrapped bullet)."""
+    """The facts of one finding block: its first line's suffix, else its last line's (a wrapped bullet).
+
+    A `{tasks=…}` brace after the facts does not hide them."""
     lines = [line for line in (text or '').split('\n') if line.strip()]
     for line in lines[:1] + lines[-1:]:
         found = split_facts(line)[1]
@@ -503,6 +546,16 @@ def parse_findings(text: str) -> list:
 
 # --- the gate --------------------------------------------------------------------
 
+def finding_blocks(finding, threshold=None) -> bool:
+    """Whether one finding blocks at the threshold: the gate's per-finding rule.
+
+    CONFIRMED or UNSTATED blocks when it has no severity, or a severity at the threshold
+    or worse. PLAUSIBLE never blocks. `none` is P3, and an empty threshold is the default."""
+    rank = _rank(threshold)
+    return (finding.status in ('CONFIRMED', 'UNSTATED')
+            and (finding.severity is None or finding.severity <= rank))
+
+
 def gate(verdict: str, text: str, threshold=None) -> GateResult:
     """Check a QA verdict against its findings: a FAIL may be accepted as
     PASS-with-known-issues, a PASS that lists a blocking finding fails."""
@@ -514,8 +567,7 @@ def gate(verdict: str, text: str, threshold=None) -> GateResult:
                   + sum(1 for f in findings if f.status == 'UNSTATED'))
     worst = 'P%d' % min(f.severity for f in labelled) if labelled else '-'
     below = tuple(f for f in labelled if f.severity > rank)
-    blocking = any(f.status in ('CONFIRMED', 'UNSTATED')
-                   and (f.severity is None or f.severity <= rank) for f in findings)
+    blocking = any(finding_blocks(f, threshold) for f in findings)
     if verdict == 'PASS' and blocking:
         decision = 'fail'
     elif (verdict == 'FAIL' and confirmed and unlabelled == 0
@@ -597,7 +649,8 @@ def _parser() -> argparse.ArgumentParser:
                     help='head = review preamble, tail = findings format + verdict contract')
     qa.add_argument('--kind', choices=KINDS, default='task',
                     help='task (default), final (whole-run review), solo (solo wording), sweep (a finding '
-                         'sweep task: per-finding FIXED lines, regressions only) or adopt (a range made outside forge)')
+                         'sweep task: per-finding FIXED lines, regressions only), adopt (a range made outside '
+                         'forge) or group (one review over several tasks; attribute each finding)')
     qa.add_argument('--threshold', type=_threshold_arg, default=None, metavar='P0..P3|none',
                     help='least severe level that still blocks; none = P3 (default: %s)' % DEFAULT_THRESHOLD)
     dwarf = sub.add_parser('dwarf', help='print the implementer rules block')
