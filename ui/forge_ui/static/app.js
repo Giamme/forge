@@ -1076,6 +1076,9 @@ window.ForgeApp = (() => {
       const groups = el('section', undefined, 'module groups-module');
       groups.id = 'run-groups'; groups.hidden = true; groups.setAttribute('aria-label', 'Groups');
       view.append(groups);
+      view.style.setProperty('--groups-h', '0px');
+      // A width change (the side panels, the window) can rewrap the rows; republish the height then.
+      if (window.ResizeObserver) new ResizeObserver(() => syncGroupsHeight(groups, view)).observe(groups);
     }
     document.body.classList.toggle('no-tasks', run.kind === 'solo');
     ensureStage();
@@ -1088,6 +1091,13 @@ window.ForgeApp = (() => {
     announce(run);
   }
   // The groups block. Nothing in the host, and the run grid unchanged, when summary() returns null.
+  // --groups-h is the block's border box, so the immersive strip and stage padding sit above it.
+  function syncGroupsHeight(host, view) {
+    if (!host || !view) return;
+    const shown = !host.hidden && host.getClientRects().length > 0;
+    const next = (shown ? host.getBoundingClientRect().height : 0) + 'px';
+    if (view.style.getPropertyValue('--groups-h') !== next) view.style.setProperty('--groups-h', next);
+  }
   function renderGroups(run) {
     const host = $('run-groups'), view = $('run-view');
     if (!host || !view) return;
@@ -1097,8 +1107,8 @@ window.ForgeApp = (() => {
     });
     host.hidden = !block;
     view.classList.toggle('has-groups', !!block);
-    if (!block) { host.replaceChildren(); return; }
-    preserve(host, () => { host.append(block); });
+    if (!block) { host.replaceChildren(); syncGroupsHeight(host, view); return; }
+    preserve(host, () => { host.append(block); syncGroupsHeight(host, view); });
   }
   // #/runs/<key>/group/<gid>. The run stays cached; the group payload is fetched by the view.
   function renderGroup() {

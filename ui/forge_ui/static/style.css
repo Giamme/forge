@@ -361,6 +361,14 @@ body[data-shell=immersive] .groups-module:not([hidden]) { position: absolute; z-
 body[data-shell=immersive][data-tasks=closed] .tasks-module { height: auto; }
 body[data-shell=immersive] .strip-wrap { position: absolute; z-index: 2; left: var(--L); right: var(--R); bottom: var(--B); }
 body[data-shell=immersive] .stage-col .graph, body[data-shell=immersive] .stage-col .files-view { position: absolute; inset: 0; overflow: auto; padding: calc(var(--head-h, 132px) + 2 * var(--gap)) var(--R) calc(var(--B) + var(--gap)) var(--L); }
+/* --groups-h is the groups block's used height, published from its border box. The strip, the stage
+   note and the 2D stage padding sit one gap above that block. Below 761px the modules stack in flow. */
+@media (min-width: 761px) {
+  body[data-shell=immersive] .run-view.has-groups .strip-wrap { bottom: calc(var(--B) + var(--groups-h, 0px) + var(--gap)); }
+  body[data-shell=immersive] .run-view.has-groups .stage-col .graph,
+  body[data-shell=immersive] .run-view.has-groups .stage-col .files-view { padding-bottom: calc(var(--B) + var(--groups-h, 0px) + 2 * var(--gap)); }
+  body[data-shell=immersive] .run-view.has-groups .stage-note { bottom: calc(var(--B) + var(--groups-h, 0px) + var(--gap) + 60px); }
+}
 body[data-shell=immersive] .diff-view { position: absolute; z-index: 3; left: var(--L); right: var(--gap); top: var(--gap); bottom: var(--B); overflow: auto; padding: var(--s-4); box-shadow: var(--ply-1); }
 body[data-shell=immersive] .run-view.diff-open .run-header { display: none; }
 body[data-shell=immersive] .map-head-module { position: absolute; z-index: 3; left: var(--L); top: var(--gap); width: max-content; max-width: calc(100% - var(--L) - var(--gap)); box-shadow: var(--ply-1); }

@@ -80,6 +80,36 @@ class GroupsPage(unittest.TestCase):
         self.assertIn('per-task review', block)
         self.assertEqual(page.locator('#run-groups a.group-title').count(), 1)
         self.assertIn('/group/ship', page.get_attribute('#run-groups a.group-title', 'href'))
+        # Desktop immersive: the block used to share the strip's bottom edge and cover it, and the stage
+        # padding stopped at the tasks module. Execution is the mode that shows the summary strip.
+        page.click('[data-mode=exec]')
+        page.wait_for_selector('#strip:not([hidden]) .strip')
+        page.evaluate("() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")
+        box = page.evaluate("""() => {
+          const rect = el => { const r = el.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, height: r.height }; };
+          const groups = document.querySelector('#run-groups');
+          const strip = document.querySelector('#strip');
+          const tasks = document.querySelector('.tasks-module');
+          const graph = document.querySelector('#graph2d');
+          const g = rect(groups), s = rect(strip), t = rect(tasks);
+          return {
+            shell: document.body.dataset.shell,
+            position: getComputedStyle(groups).position,
+            groupsTop: g.top, groupsBottom: g.bottom, groupsH: g.height,
+            stripTop: s.top, stripBottom: s.bottom, stripH: s.height,
+            tasksTop: t.top,
+            pad: parseFloat(getComputedStyle(graph).paddingBottom),
+            graphBottom: graph.getBoundingClientRect().bottom,
+          };
+        }""")
+        self.assertEqual(box['shell'], 'immersive', box)
+        self.assertEqual(box['position'], 'absolute', box)
+        self.assertGreater(box['groupsH'], 40, box)
+        self.assertGreater(box['stripH'], 8, box)
+        self.assertLessEqual(box['groupsBottom'], box['tasksTop'] + 1, box)
+        self.assertLessEqual(box['stripBottom'], box['groupsTop'] + 1, box)
+        self.assertGreaterEqual(box['pad'] + 1, box['graphBottom'] - box['groupsTop'], box)
+        page.click('[data-mode=plan]')
         page.set_viewport_size({'width': 390, 'height': 844})
         self.assertEqual(page.evaluate("() => getComputedStyle(document.querySelector('#run-groups')).position"), 'static')
         self.assertFalse(page.locator('#run-groups').is_hidden())
