@@ -318,22 +318,33 @@ def parser():
     return p
 
 
+def print_run(out, dry_run, index=None, count=None):
+    """One run's result, printed as soon as it is done."""
+    data = out.data
+    head = '%s%s  %s' % ('[%d/%d] ' % (index, count) if index else '', data['run_id'] or os.path.basename(data['run_dir'] or ''),
+                          data['status'])
+    if data['bytes_freed']:
+        head += (', about %s to take back' if dry_run else ', %s taken back') % forge_storage.size_text(data['bytes_freed'])
+    print(head)
+    print('    %s' % data['run_dir'])
+    for step in data['steps']:
+        print('    %-4s %-9s %s' % ('ok' if step['ok'] else 'FAIL', step['step'], step['detail']),
+              file=sys.stdout if step['ok'] else sys.stderr)
+    sys.stdout.flush()
+
+
 def print_text(results, total, dry_run):
-    for out in results:
-        data = out.data
-        head = '%s  %s' % (data['run_id'] or os.path.basename(data['run_dir'] or ''), data['status'])
-        if data['bytes_freed']:
-            head += (', about %s to take back' if dry_run else ', %s taken back') % forge_storage.size_text(data['bytes_freed'])
-        print(head)
-        print('    %s' % data['run_dir'])
-        for step in data['steps']:
-            print('    %-4s %-9s %s' % ('ok' if step['ok'] else 'FAIL', step['step'], step['detail']),
-                  file=sys.stdout if step['ok'] else sys.stderr)
     counted = sum(1 for out in results if out.data['status'] in ('compacted', 'would-compact'))
+    by = {}
+    for out in results:
+        by[out.data['status']] = by.get(out.data['status'], 0) + 1
+    rest = ', '.join('%d %s' % (by[k], label) for k, label in (('nothing', 'with nothing to take back'), ('active', 'active, skipped'),
+                     ('recent', 'changed recently, skipped'), ('refused', 'refused'), ('failed', 'FAILED')) if by.get(k))
     if dry_run:
-        print('forge runs compact: dry run, nothing was changed; %d run(s) to compact, about %s to take back' % (counted, forge_storage.size_text(total)))
+        print('forge runs compact: dry run, nothing was changed; %d run(s) to compact, about %s to take back%s' % (
+            counted, forge_storage.size_text(total), '; ' + rest if rest else ''))
     else:
-        print('forge runs compact: %d run(s) compacted, %s taken back' % (counted, forge_storage.size_text(total)))
+        print('forge runs compact: %d run(s) compacted, %s taken back%s' % (counted, forge_storage.size_text(total), '; ' + rest if rest else ''))
 
 
 def main(argv=None) -> int:
@@ -375,9 +386,16 @@ def main(argv=None) -> int:
     policy = user_settings() if args.auto else None
     if policy is not None and policy['compact'] != 'auto':
         dirs = []                       # storage.compact off: only the footprint is measured
-    for path in dirs:
-        if excluded and os.path.realpath(path) == excluded:
-            continue
+    dirs = [path for path in dirs if not (excluded and os.path.realpath(path) == excluded)]
+    live = not args.json and not args.auto       # in a terminal, each run is reported as it ends: a batch takes minutes
+    if live and len(dirs) > 1:
+        print('forge runs compact: %d run(s) to look at%s; each one is reported when it is done' % (
+            len(dirs), ' (dry run: nothing is changed)' if args.dry_run else ''))
+        sys.stdout.flush()
+    for index, path in enumerate(dirs, 1):
+        if live and len(dirs) > 1 and sys.stderr.isatty():
+            sys.stderr.write('\r\033[K[%d/%d] %s…' % (index, len(dirs), os.path.basename(path)))
+            sys.stderr.flush()
         try:
             out, code = compact_one(path, args, batch)
         except KeyboardInterrupt:
@@ -393,6 +411,10 @@ def main(argv=None) -> int:
             out.step('internal', False, '%s: %s' % (type(error).__name__, error))
         results.append(out)
         codes.append(code)
+        if live:
+            if len(dirs) > 1 and sys.stderr.isatty():
+                sys.stderr.write('\r\033[K')
+            print_run(out, args.dry_run, index if len(dirs) > 1 else None, len(dirs))
     if args.auto and repo and (policy['warn_gb'] is not None or policy['compact'] == 'auto'):
         measured = forge_storage.footprints_of(forge_storage.report(Path(repo), budget_s=600))
         forge_storage.save_footprints(_rm().data_home(), {repo: measured.get(repo) or dict(bytes=0, runs=0, worktrees=0, count=0)})
