@@ -5,7 +5,8 @@ The server never writes a run dir, a repo or forge's config itself. A write is o
 this module holds the route table, the body validation, the call and the mapping of the CLI's
 exit code to an HTTP answer. server.py does the authentication and hands each authenticated POST
 to `dispatch`. Profile create and edit write a JSON body to the CLI's stdin (`--file -`);
-a brief answer writes the answer text the same way. Every other call has no stdin.
+a brief answer writes the answer text the same way. Approving, rejecting and proposing a brief
+change print text and take no stdin. Every other call has no stdin.
 """
 from __future__ import annotations
 
@@ -38,6 +39,9 @@ MAX_PROFILE_BODY = 64 * 1024
 # strips control characters; this bound is the one the route enforces before that call.
 MAX_ANSWER = 4096
 _QID = re.compile(r'^q[0-9]+$')
+# The page accepts the same width the route captures. The CLI's own ids are p1, p2, …; p0 still reaches it.
+_PID = re.compile(r'^p[0-9]{1,6}$')
+_TASK_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
 _PROFILE_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$')
 _PROFILE_KEY = re.compile(r'^(routing|policy)\.[a-z_.]+$')
 _PROFILE_ACTIONS = ('create', 'edit', 'set', 'unset', 'rm', 'use')
@@ -367,6 +371,95 @@ def _brief_answer(ctx):
         return 404, {'error': 'not found'}
     return ctx.locked(lambda: ctx.call('brief', 'answer', path, task, qid, '--file', '-', '--actor', 'ui',
                                        stdin=stdin, json_stdout=False))
+
+
+def _brief_pid(ctx):
+    pid = ctx.parts[0] if ctx.parts else ''
+    if not isinstance(pid, str) or not _PID.fullmatch(pid):
+        raise BadBody('pid must match ^p[0-9]{1,6}$')
+    return pid
+
+
+def _optional_reason(value):
+    """None when the reason is absent, null or blank. BadBody when it is not acceptable text.
+
+    Newline and tab are allowed, as on a dismissal. A leading '-' is safe: the CLI gets `--reason=`.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value) > MAX_REASON or not _no_control_chars(value.replace('\n', ' ').replace('\t', ' ')):
+        raise BadBody(f'reason must be a text of at most {MAX_REASON} characters, without control characters (newline and tab are allowed)')
+    return value.strip() or None
+
+
+def _plan_or_404(ctx):
+    path = ctx.locate(('plan',))
+    if path is None:
+        return None
+    return path
+
+
+def _brief_apply(ctx):
+    """POST `{hash}`: `forge brief apply <plan> <pid> --approve <hash> --actor ui`.
+
+    Exit 0 prints text (the files written, the notes, and the plan-again line), so the body is that text.
+    """
+    ctx.route = 'brief apply'
+    try:
+        if not isinstance(ctx.body, dict):
+            raise BadBody('body must be a JSON object')
+        pid = _brief_pid(ctx)
+        _check_fields(ctx.body, ('hash',))
+        digest = _text(ctx.body, 'hash')
+    except BadBody as exc:
+        return _invalid(str(exc))
+    path = _plan_or_404(ctx)
+    if path is None:
+        return 404, {'error': 'not found'}
+    return ctx.locked(lambda: ctx.call('brief', 'apply', path, pid, '--approve', digest, '--actor', 'ui',
+                                       json_stdout=False))
+
+
+def _brief_reject(ctx):
+    """POST `{reason}`: `forge brief reject <plan> <pid> [--reason=TEXT] --actor ui`. The reason may be empty."""
+    ctx.route = 'brief reject'
+    try:
+        if not isinstance(ctx.body, dict):
+            raise BadBody('body must be a JSON object')
+        pid = _brief_pid(ctx)
+        _check_fields(ctx.body, ('reason',))
+        reason = _optional_reason(ctx.body.get('reason'))
+    except BadBody as exc:
+        return _invalid(str(exc))
+    path = _plan_or_404(ctx)
+    if path is None:
+        return 404, {'error': 'not found'}
+    argv = ['brief', 'reject', path, pid]
+    if reason:
+        argv.append('--reason=' + reason)
+    argv += ['--actor', 'ui']
+    return ctx.locked(lambda: ctx.call(*argv, json_stdout=False))
+
+
+def _brief_propose(ctx):
+    """POST `{task, qid}`: `forge brief propose <plan> <task> <qid> --actor ui` for a parked wave or plan question."""
+    ctx.route = 'brief propose'
+    try:
+        if not isinstance(ctx.body, dict):
+            raise BadBody('body must be a JSON object')
+        _check_fields(ctx.body, ('task', 'qid'))
+        task = _text(ctx.body, 'task')
+        if not _TASK_ID.fullmatch(task):
+            raise BadBody('task must be a task id')
+        qid = _text(ctx.body, 'qid')
+        if not _QID.fullmatch(qid):
+            raise BadBody('qid must match ^q[0-9]+$')
+    except BadBody as exc:
+        return _invalid(str(exc))
+    path = _plan_or_404(ctx)
+    if path is None:
+        return 404, {'error': 'not found'}
+    return ctx.locked(lambda: ctx.call('brief', 'propose', path, task, qid, '--actor', 'ui', json_stdout=False))
 
 
 # ----------------------------------------------------------------- issues, delete and config routes
@@ -938,6 +1031,9 @@ ROUTES = [
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/controls'), _change),
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/tasks/([A-Za-z0-9][A-Za-z0-9._-]{0,127})/brief/([^/]+)'),
      _brief_answer),
+    ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/proposals/([^/]+)/apply'), _brief_apply),
+    ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/proposals/([^/]+)/reject'), _brief_reject),
+    ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/proposals'), _brief_propose),
     ('GET', re.compile(r'/api/runs/([0-9a-f]{12})/issues'), _issues_list),
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/issues'), _issues_file),
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/issues/dismiss'), _issues_dismiss),

@@ -439,7 +439,10 @@ class RouteNameTests(EndpointCase):
                  (('GET', '/api/config', None, f'run={k}&repo=/x'), ('config', k)),
                  (('POST', '/api/config/profiles', {'run': k, 'action': 'nope'}), ('profiles', k)),
                  (('GET', '/api/config/profiles', None, f'run={k}&repo=/x'), ('profiles', k)),
-                 (('GET', f'/api/runs/{k}/issues', None, 'scope=x'), ('issues', k))]
+                 (('GET', f'/api/runs/{k}/issues', None, 'scope=x'), ('issues', k)),
+                 (('POST', f'/api/runs/{k}/proposals', {}), ('brief propose', k)),
+                 (('POST', f'/api/runs/{k}/proposals/p1/apply', {}), ('brief apply', k)),
+                 (('POST', f'/api/runs/{k}/proposals/nope/reject', {}), ('brief reject', k))]
         for args, expected in cases:
             self.assertEqual(self.named(*args), expected, args)
         self.assertEqual(self.calls(), [])
@@ -534,6 +537,15 @@ class BriefAnswerTests(EndpointCase):
         self.assertEqual(body['output'], '')
         self.assertIn('no such question', body['detail'])
 
+    def test_a_parked_qid_is_forwarded(self):
+        # Parked questions use the same answer route. The CLI stores them in brief.parked.answers.json.
+        self.behave(stdout='reader/q4 answered\n')
+        status, body = self.post({'answer': 'later'}, self.path('q4'))
+        self.assertEqual((status, body), (200, {'exit': 0, 'output': 'reader/q4 answered\n'}))
+        self.assertEqual(self.last_argv(), ['brief', 'answer', self.rplan, 'reader', 'q4',
+                                            '--file', '-', '--actor', 'ui'])
+        self.assertEqual(self.calls()[-1]['stdin'], 'later')
+
     def test_a_second_write_to_the_run_is_busy(self):
         self.assertTrue(self.server.run_locks.acquire(self.key))
         try:
@@ -549,6 +561,124 @@ class BriefAnswerReadOnlyTests(EndpointCase):
     def test_an_answer_is_refused(self):
         status, body = self.post({'answer': 'yes'}, f'/api/runs/{self.key}/tasks/reader/brief/q1')
         self.assertEqual((status, body), (405, {'error': 'method not allowed'}))
+        self.assertEqual(self.calls(), [])
+
+
+class BriefProposalTests(EndpointCase):
+    """Propose, approve and reject go through `forge brief` with the plan locked. stdout is text."""
+
+    HASH = 'abc'
+
+    def apply(self, pid='p1', body=None, key=None):
+        payload = {'hash': self.HASH} if body is None else body
+        return self.post(payload, f'/api/runs/{key or self.key}/proposals/{pid}/apply')
+
+    def reject(self, pid='p1', body=None, key=None):
+        return self.post({} if body is None else body, f'/api/runs/{key or self.key}/proposals/{pid}/reject')
+
+    def propose(self, body=None, key=None):
+        payload = {'task': 'reader', 'qid': 'q4'} if body is None else body
+        return self.post(payload, f'/api/runs/{key or self.key}/proposals')
+
+    def test_apply_returns_the_cli_text_and_passes_the_hash(self):
+        stdout = ('p1 applied: tasks.tsv\n'
+                  'plan changed; run forge-parallel.sh plan /plans/demo again before run\n'
+                  'regenerating questions for 2 tasks: reader, page\n')
+        self.behave(stdout=stdout)
+        status, body = self.apply(body={'hash': 'ab' * 32})
+        self.assertEqual((status, body), (200, {'exit': 0, 'output': stdout}))
+        self.assertEqual(self.last_argv(), ['brief', 'apply', self.rplan, 'p1', '--approve', 'ab' * 32, '--actor', 'ui'])
+        self.assertEqual(self.calls()[-1]['stdin'], '')
+        self.assertEqual(self.calls()[-1]['leader'], True)
+        # p0 matches the route's pid pattern and is the CLI's to refuse.
+        self.behave(stdout='p0 applied: nothing\n')
+        status, body = self.apply('p0', {'hash': 'abc'})
+        self.assertEqual((status, body['output']), (200, 'p0 applied: nothing\n'))
+        self.assertEqual(self.last_argv()[1:5], ['apply', self.rplan, 'p0', '--approve'])
+        self.assertEqual(self.last_argv()[5], 'abc')
+
+    def test_a_bad_pid_never_reaches_the_cli(self):
+        before = len(self.calls())
+        for pid in ('px', 'p', 'P1', 'p1234567', 'p-1', '1'):
+            self.assertEqual(self.apply(pid)[0], 400, pid)
+            self.assertEqual(self.reject(pid)[0], 400, pid)
+        # A slash never reaches the pid check: the route is one segment, so this is an unmatched POST.
+        self.assertEqual(self.apply('../p1')[0], 405)
+        self.assertEqual(self.reject('../p1')[0], 405)
+        self.assertEqual(len(self.calls()), before)
+
+    def test_a_bad_hash_never_reaches_the_cli(self):
+        before = len(self.calls())
+        for body in ({}, {'hash': ''}, {'hash': '-abc'}, {'hash': 'ab\nc'}, {'hash': 3},
+                     {'hash': 'abc', 'actor': 'ui'}):
+            self.assertEqual(self.apply(body=body)[0], 400, body)
+        self.assertEqual(self.apply(key=self.solo_key)[0], 404)
+        self.assertEqual(self.apply(key='000000000000')[0], 404)
+        self.assertEqual(len(self.calls()), before)
+
+    def test_reject_passes_a_reason_and_omits_a_blank_one(self):
+        self.behave(stdout='p1 rejected\n')
+        status, body = self.reject(body={'reason': 'not now'})
+        self.assertEqual((status, body), (200, {'exit': 0, 'output': 'p1 rejected\n'}))
+        self.assertEqual(self.last_argv(), ['brief', 'reject', self.rplan, 'p1', '--reason=not now', '--actor', 'ui'])
+        self.assertEqual(self.calls()[-1]['stdin'], '')
+        self.reject(body={'reason': '-no'})
+        self.assertEqual(self.last_argv(), ['brief', 'reject', self.rplan, 'p1', '--reason=-no', '--actor', 'ui'])
+        for body in ({}, {'reason': ''}, {'reason': '   '}, {'reason': None}):
+            self.reject(body=body)
+            self.assertEqual(self.last_argv(), ['brief', 'reject', self.rplan, 'p1', '--actor', 'ui'], body)
+        before = len(self.calls())
+        self.assertEqual(self.reject(body={'reason': 'x' * 501})[0], 400)
+        self.assertEqual(self.reject(body={'reason': 'a\x00b'})[0], 400)
+        self.assertEqual(self.reject(body={'reason': 1})[0], 400)
+        self.assertEqual(len(self.calls()), before)
+
+    def test_propose_forwards_the_task_and_the_qid(self):
+        stdout = 'p3  proposed  scope wave  (asked by reader/q4)\n'
+        self.behave(stdout=stdout)
+        status, body = self.propose()
+        self.assertEqual((status, body), (200, {'exit': 0, 'output': stdout}))
+        self.assertEqual(self.last_argv(), ['brief', 'propose', self.rplan, 'reader', 'q4', '--actor', 'ui'])
+        self.assertEqual(self.calls()[-1]['stdin'], '')
+        before = len(self.calls())
+        for payload in ({'task': 'reader', 'qid': 'q'}, {'task': 'reader', 'qid': 'q1a'},
+                        {'task': '-reader', 'qid': 'q4'}, {'task': '', 'qid': 'q4'},
+                        {'task': '../x', 'qid': 'q4'}, {'qid': 'q4'}, {'task': 'reader'},
+                        {'task': 'reader', 'qid': 'q4', 'hash': 'abc'}):
+            self.assertEqual(self.propose(payload)[0], 400, payload)
+        self.assertEqual(self.propose(key=self.solo_key)[0], 404)
+        self.assertEqual(len(self.calls()), before)
+
+    def test_a_refused_proposal_keeps_the_cli_text(self):
+        stdout = 'p1  refused  scope plan\n'
+        self.behave(code=3, stderr='forge brief: proposal p1 is refused: it does not fit\n', stdout=stdout)
+        status, body = self.apply()
+        self.assertEqual(status, 409)
+        self.assertEqual(body['error'], 'refused')
+        self.assertEqual(body['exit'], 3)
+        self.assertEqual(body['output'], stdout)
+        self.assertIn('does not fit', body['detail'])
+
+    def test_a_second_write_to_the_run_is_busy(self):
+        self.assertTrue(self.server.run_locks.acquire(self.key))
+        try:
+            self.assertEqual(self.apply(), (409, {'error': 'busy'}))
+            self.assertEqual(self.reject(), (409, {'error': 'busy'}))
+            self.assertEqual(self.propose(), (409, {'error': 'busy'}))
+        finally:
+            self.server.run_locks.release(self.key)
+        self.assertEqual(self.calls(), [])
+
+
+class BriefProposalReadOnlyTests(EndpointCase):
+    read_only = True
+
+    def test_propose_apply_and_reject_are_refused(self):
+        key = self.key
+        for path, body in ((f'/api/runs/{key}/proposals', {'task': 'reader', 'qid': 'q4'}),
+                           (f'/api/runs/{key}/proposals/p1/apply', {'hash': 'abc'}),
+                           (f'/api/runs/{key}/proposals/p1/reject', {'reason': 'no'})):
+            self.assertEqual(self.post(body, path), (405, {'error': 'method not allowed'}), path)
         self.assertEqual(self.calls(), [])
 
 

@@ -855,6 +855,26 @@ a.brief-open:hover { text-decoration: none; background: var(--module-2); }
 .brief-q .brief-notice { margin: 0; }
 .brief-parked { margin-top: var(--s-2); }
 .brief-parked > .brief-questions { margin-top: var(--s-2); }
+/* Grouped questions, proposals and affected badges (#136). The questions strip stays short until a
+   proposal is open; then it shares the tasks module with the table, which keeps a minimum of its own. */
+.brief-group { display: grid; gap: 2px; margin: var(--s-2) 10px 0; }
+.brief-group-title { margin: 0; font-size: var(--t-sm); }
+.brief-goal { margin: 0; color: var(--muted); font-size: var(--t-xs); overflow-wrap: anywhere; }
+.brief-actions { display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: center; }
+.brief-actions input { flex: 1 1 12rem; min-width: 8rem; min-height: 28px; padding: 4px 8px; }
+.brief-proposals { display: grid; gap: var(--s-2); align-content: start; padding: 6px 10px 10px; overflow: auto; min-height: 0; flex: 1 1 auto; }
+.brief-proposal { display: grid; gap: 4px; padding: var(--s-2) 10px; border: 1px solid var(--rule); border-radius: var(--r-key); background: var(--module-2); }
+.brief-proposal-top { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+.brief-summary, .brief-reason { margin: 0; overflow-wrap: anywhere; }
+.brief-reason { color: var(--warn-ink); }
+.brief-hash { font-size: var(--t-xs); overflow-wrap: anywhere; }
+.brief-proposal .brief-notice { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.brief-patch .diff-scroll, pre.brief-diff { max-height: 8rem; overflow: auto; }
+pre.brief-diff { margin: 0; white-space: pre; }
+.brief-proposal[aria-busy=true] { opacity: .7; }
+.brief-affected-row { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.run-questions[data-proposals] { flex: 1 1 auto; max-height: none; }
+.tasks-module:has(.run-questions[data-proposals]:not([hidden])) .run-tasks { min-height: 5.5rem; }
 
 /* ---------- tables ---------- */
 .table-scroll { overflow: auto; max-width: 100%; border: 1px solid var(--rule); border-radius: var(--r-key); background: var(--module); }
