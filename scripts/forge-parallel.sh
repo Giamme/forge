@@ -34,6 +34,10 @@
 #   forge-parallel.sh combine <new-plan> <plan-a> <plan-b> [<plan>...] [--verify <command>] [--dry-run]
 #   forge-parallel.sh _task <plan-dir> <task-id>     (internal; coordinator target)
 #   forge-parallel.sh _group <plan-dir> <group-id>   (internal; one QA review of a review=group group, #140)
+#   forge-parallel.sh _group_settle <plan-dir> <group-id> [--tasks a,b]
+#                                                   (internal; send a FAIL group's implicated members back, #140)
+#   forge-parallel.sh _merge_group <plan-dir> <group-id>
+#                                                   (internal; merge a PASS group's members with one merge, #140)
 #   forge-parallel.sh _qa_only <plan-dir> <task-id>  (internal; exit 0 when the next entry only re-runs QA)
 #   forge-parallel.sh _waves <plan-dir>             (internal; rewrite waves.tsv after a live `forge control add`)
 #   forge-parallel.sh _sweep <plan-dir> --severity Pn [--plausible] [--max N]
@@ -3598,6 +3602,8 @@ case "$CMD" in
   _task)     do_task "$@" ;;
   _merge)    merge_task "$@" ;;
   _group)    need_fn do_group; do_group "$@" ;;
+  _group_settle) need_fn do_group_settle; do_group_settle "$@" ;;
+  _merge_group)  need_fn merge_group; merge_group "$@" ;;
   # The live scheduler's accept (forge control accept, #138): it holds the plan lock already.
   _accept)   need_fn do_accept; FORGE_ACCEPT_LIVE=1 do_accept "$@" ;;
   _prepare_retry) retry_for_scheduler "$@" ;;
