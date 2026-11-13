@@ -32,7 +32,7 @@ PIPELINE_ROLES = ('task', 'solo', 'verification', 'parallel')
 TASKS_COLS = ('id', 'deps', 'difficulty', 'files', 'dwarf', 'qa', 'title')
 STRUCTURED = ('codex', 'claude', 'openclaude', 'grok', 'opencode')   # as forge-runtime.py's: .last is the message, not the log
 # Plan files that change what a plan decides, added to its rid only when present (see plan_event).
-PLAN_RID_LATER = ('decompose_level', 'shadow_qa', 'shadow_rate', 'explore', 'reviewer_session',
+PLAN_RID_LATER = ('decompose_level', 'shadow_qa', 'shadow_rate', 'explore', 'reviewer_session', 'reviewer_session_rate',
                   'implementer_session', 'pre_review_tests', 'retro_mode', 'brief', 'brief_scope', 'brief_model',
                   'summaries', 'summaries_model')
 
@@ -806,7 +806,7 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
         fractal_selection=read_json(plan / 'fractal-selection.json'),
         jev_coupling=read_json(plan / 'jev-coupling.json'),
         options=dict({name: first_line(plan / name) for name in ('verify_retries', 'timeout', 'final_qa',
-                                                            'shadow_qa', 'shadow_rate', 'explore', 'reviewer_session',
+                                                            'shadow_qa', 'shadow_rate', 'explore', 'reviewer_session', 'reviewer_session_rate',
                                                             'implementer_session', 'retro_mode', 'brief', 'brief_scope',
                                                             'brief_model', 'summaries', 'summaries_model')
                  if (plan / name).exists()}, qa_threshold=threshold, qa_threshold_source=threshold_source),

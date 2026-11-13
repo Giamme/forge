@@ -389,6 +389,29 @@ carry_implementer_session() { # carry_implementer_session <tdir>
 }
 
 # --- reviewer-session continuation (plan --reviewer-session, an opt-in experiment) ------------
+# reviewer_session_pick <plan> <rate>: the task ids whose reviews continue under
+# --reviewer-session-rate, one per line. Within each difficulty, round(rate x n) tasks with the
+# lowest sha256 of "<run id>/<task id>", so the halves are balanced by difficulty and stable.
+reviewer_session_pick() {
+  python3 - "$1/tasks.tsv" "$(cat "$1/run_id" 2>/dev/null || basename "$1")" "$2" <<'PY'
+import hashlib, sys
+from collections import defaultdict
+rows = [line.split('\t') for line in open(sys.argv[1], encoding='utf-8').read().splitlines()
+        if line and not line.startswith('#')]
+run, rate = sys.argv[2], float(sys.argv[3])
+tiers = defaultdict(list)
+for row in rows:
+    tiers[row[2] if len(row) > 2 else ''].append(row[0])
+keep = set()
+for ids in tiers.values():
+    ids.sort(key=lambda i: hashlib.sha256(('%s/%s' % (run, i)).encode()).hexdigest())
+    keep.update(ids[:int(rate * len(ids) + 0.5)])
+for row in rows:
+    if row[0] in keep:
+        print(row[0])
+PY
+}
+
 # review_session_decide <session-file> <resolved-file> <resolution-file> [harnesses]: whether this
 # round continues the earlier session. Prints `mode<TAB>reason<TAB>session`; the session is the
 # id to continue, and empty for every fresh answer.
