@@ -33,6 +33,7 @@
 #   forge-parallel.sh split <plan-dir> <new-plan> --tasks <id,id> [--dry-run]
 #   forge-parallel.sh combine <new-plan> <plan-a> <plan-b> [<plan>...] [--verify <command>] [--dry-run]
 #   forge-parallel.sh _task <plan-dir> <task-id>     (internal; coordinator target)
+#   forge-parallel.sh _group <plan-dir> <group-id>   (internal; one QA review of a review=group group, #140)
 #   forge-parallel.sh _qa_only <plan-dir> <task-id>  (internal; exit 0 when the next entry only re-runs QA)
 #   forge-parallel.sh _waves <plan-dir>             (internal; rewrite waves.tsv after a live `forge control add`)
 #   forge-parallel.sh _sweep <plan-dir> --severity Pn [--plausible] [--max N]
@@ -172,7 +173,7 @@ JEV_OPTS=0
 # Flags shared by several subcommands, then the helper libraries. Functions only, resolved
 # at call time, so they may use die/note/field and friends defined below.
 source "$SKILL_DIR/scripts/forge-parallel-options.sh"
-for forge_lib in task gates verify attribute plans review adopt; do
+for forge_lib in task gates verify attribute plans review adopt group; do
   [ -f "$SKILL_DIR/scripts/forge-lib-$forge_lib.sh" ] && source "$SKILL_DIR/scripts/forge-lib-$forge_lib.sh"
 done
 OUTPUT=summary
@@ -3596,6 +3597,7 @@ case "$CMD" in
   combine)   need_fn do_combine; do_combine "$@" ;;
   _task)     do_task "$@" ;;
   _merge)    merge_task "$@" ;;
+  _group)    need_fn do_group; do_group "$@" ;;
   # The live scheduler's accept (forge control accept, #138): it holds the plan lock already.
   _accept)   need_fn do_accept; FORGE_ACCEPT_LIVE=1 do_accept "$@" ;;
   _prepare_retry) retry_for_scheduler "$@" ;;
