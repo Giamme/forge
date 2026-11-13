@@ -36,6 +36,8 @@ class GroupCase(MemberCase):
         (p / 'groups.tsv').write_text(HEADER + 'g1\t%s\t-\ta,b,c\tThree\tDo all three\n' % review)
         r = self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--no-memory', *flags)
         self.assertEqual(r.returncode, 0, r.stdout)
+        if review == 'group':
+            self.hold_group(p)              # `run` would review the group itself: these tests do it by hand
         r = self.run_script('forge-parallel.sh', 'run', p)
         for task in 'abc':
             self.assertEqual(self.read(p, task, 'status'), 'IMPLEMENTED' if review == 'group' else 'PASS', r.stdout)

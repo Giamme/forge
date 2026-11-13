@@ -44,7 +44,15 @@ class MemberCase(unittest.TestCase):
             (p / 'groups.tsv').write_text(group_file(review))
         r = self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--no-memory', *flags)
         self.assertEqual(r.returncode, 0, r.stdout)
+        if review == 'group':
+            self.hold_group(p)
         return p
+
+    def hold_group(self, p, gid='g1'):
+        """`run` reviews and merges a review=group group once its members are IMPLEMENTED (test_group_schedule); a group
+        waiting for a person is left alone. These tests look at the members, and drive the review by hand."""
+        (p / 'groups' / gid).mkdir(parents=True, exist_ok=True)
+        (p / 'groups' / gid / 'status').write_text('NEEDS_DECISION\n')
 
     def read(self, plan, task, name):
         return (plan / 'tasks' / task / name).read_text().strip()

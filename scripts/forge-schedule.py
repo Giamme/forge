@@ -19,6 +19,11 @@ findings for ``forge issues`` and does not fail the run.
 Both numbers are per invocation, but while the scheduler runs they are mirrored into the
 plan dir (retry_budget, infra_budget, tasks/<id>/retry_budget) and re-read at every
 decision, so `forge control` can change them mid-run. See "live control files" below.
+
+Group review (#140) is opt-in through groups.tsv: the members of a `review=group` group stop at
+IMPLEMENTED, and once all are, the scheduler runs the group as one unit of work (`_group`, keyed
+`group:<gid>` in `active`), then merges a PASS (`_merge_group`) or sends the implicated members back
+(`_group_settle`, then the ordinary requeue). A plan without such a group never reaches that code.
 """
 from __future__ import annotations
 
@@ -433,21 +438,23 @@ def _group_alive(pgid: int) -> bool:
     return True
 
 
-def stop_harnesses(plan: object, names: object) -> None:
-    """Run the guard's identity-checked `stop` on every harness record of these tasks, all
-    at once, so the bound does not grow with the number of tasks. Never raises."""
+def stop_harnesses(plan: object, names: object, groups: object = ()) -> None:
+    """Run the guard's identity-checked `stop` on every harness record of these tasks (and the
+    review harness of these groups, #140), all at once, so the bound does not grow with the
+    number of tasks. Never raises."""
     stopping = []
-    for name in names:
-        for role in HARNESS_ROLES:
-            try:
-                record = _resolve(plan, 'tasks', name, role + '.harness')
-                if not os.path.lexists(record):
-                    continue
-                stopping.append((name, role, subprocess.Popen(
-                    [sys.executable, GUARD, 'stop', record], stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)))
-            except (OSError, ValueError) as error:
-                _warn('could not stop the ' + role + ' harness of ' + name + ': ' + str(error))
+    targets = [(name, ('tasks', name), role) for name in names for role in HARNESS_ROLES]
+    targets += [('group ' + gid, ('groups', gid), 'qa') for gid in groups]
+    for name, where, role in targets:
+        try:
+            record = _resolve(plan, *where, role + '.harness')
+            if not os.path.lexists(record):
+                continue
+            stopping.append((name, role, subprocess.Popen(
+                [sys.executable, GUARD, 'stop', record], stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)))
+        except (OSError, ValueError) as error:
+            _warn('could not stop the ' + role + ' harness of ' + name + ': ' + str(error))
     deadline = time.monotonic() + GUARD_STOP_WAIT
     for name, role, process in stopping:
         try:
@@ -467,6 +474,7 @@ def stop_harnesses(plan: object, names: object) -> None:
 # only while scheduler.live says a scheduler reads them. The scheduler applies or refuses each,
 # logs one outcome line with the same `request` id, and removes it. live_stop settles whatever
 # is left after it withdraws liveness, under the same lock, so no request outlives its run.
+GROUP_KEY = 'group:'   # the `active` key of a running group review: a prefix no task id takes (#140)
 REQUESTS = 'control.requests'
 REQUEST_MAX = 64 * 1024
 # What `forge control retry --decide` may carry: retry=N (1 to 20) or threshold=Pn.
@@ -560,13 +568,15 @@ def refuse_requests(plan: object, reason: str) -> None:
         settle_request(plan, name, read_request(plan, name), 'refused', reason)
 
 
-def live_start(plan: object, names: object, retry_failed: int, infra_retries: int) -> None:
+def live_start(plan: object, names: object, retry_failed: int, infra_retries: int, groups: object = ()) -> None:
     """Publish the flags and that this scheduler is live. Stale per-task overrides and
-    usage counters from an earlier invocation go first."""
+    usage counters from an earlier invocation go first, and so does a review group's."""
     with _control_lock(plan):
         for name in _task_dirs(plan, names):
             _remove(plan, 'tasks', name, 'retry_budget')
             _remove(plan, 'tasks', name, 'retries.used')
+        for gid in groups:
+            _remove(plan, 'groups', gid, 'retries.used')
         _remove(plan, 'infra.paused')
         _remove(plan, 'infra.last')
         _remove(plan, 'drain')
@@ -665,9 +675,26 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         if not _task_id_ok(name):
             raise ValueError('invalid task ID: ' + name)
         (plan / 'tasks' / name).mkdir(parents=True, exist_ok=True)
-    active = {}
+    # Opt-in group review (#140): the review=group groups of groups.tsv. Without one, nothing below changes.
+    rgroups = {}       # gid -> its Group
+    if (plan / 'groups.tsv').is_file():
+        import forge_groups
+        try:
+            rgroups = {g.id: g for g in forge_groups.load(plan) if g.review == 'group'}
+        except forge_groups.GroupError as error:
+            raise ValueError(str(error))
+        for g in rgroups.values():
+            absent = [m for m in g.members if m not in tasks]
+            if absent:
+                raise ValueError('group ' + g.id + ' has members tasks.tsv does not: ' + ', '.join(absent))
+            if GROUP_KEY + g.id in tasks:
+                raise ValueError('task ' + GROUP_KEY + g.id + ' clashes with group ' + g.id)
+    group_of = {m: g.id for g in rgroups.values() for m in g.members}   # member -> its review group
+    active = {}        # task id, or GROUP_KEY + gid for a running group review
     pending = list(tasks)
     interrupted = False
+    group_again = set()   # groups to review once more whatever their status says (a resume, an UNKNOWN)
+    group_used = {}       # gid -> re-reviews of an UNKNOWN verdict used this run
     retries = {}       # automatic reviewer-driven retries used per task, this run
     refused = {}       # task -> budget at the time its retry could not be prepared
     retried = set()    # tasks whose next dispatch is a retry (FORGE_FRACTAL_RETRY=1)
@@ -854,11 +881,11 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             return False
         return True
 
-    def echo_output(name: str) -> None:
+    def echo_output(name: str, file: Path | None = None) -> None:
         # task.out is opened in append mode, so a retried task's file keeps its earlier
-        # attempts; print only what is new.
+        # attempts; print only what is new. (A group review's own file is group.out.)
         try:
-            data = (plan / 'tasks' / name / 'task.out').read_bytes()
+            data = (file or plan / 'tasks' / name / 'task.out').read_bytes()
         except OSError:
             return
         start = offsets.get(name, 0)
@@ -1340,6 +1367,155 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             with _control_lock(plan):
                 settle_request(plan, name, request, outcome, reason)
 
+    # --- group review (#140) ---------------------------------------------------------------
+    # A member of a review=group group ends its attempt IMPLEMENTED. Once every member is, the group is one unit
+    # of work: `_group` reviews it, then (by its status) `_merge_group` merges it or `_group_settle` sends the
+    # implicated members back through the ordinary retry. Nothing here runs for a plan without such a group.
+
+    def gread(gid: str, name: str) -> str:
+        """A short file of the group's dir, stripped; empty when missing or unsafe."""
+        try:
+            fd = os.open(_resolve(plan, 'groups', gid, name), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                return os.read(fd, 4097).decode('utf-8', 'replace').strip()
+            finally:
+                os.close(fd)
+        except OSError:
+            return ''
+
+    def gstate(gid: str) -> str:
+        return gread(gid, 'status').split('\n')[0].strip()
+
+    def gmerged(gid: str) -> bool:
+        return (plan / 'groups' / gid / 'merged').exists()
+
+    def gsettled(gid: str) -> bool:
+        """The group's FAIL of its current round was settled (`_group_settle` wrote settled.round)."""
+        rnd = gread(gid, 'round')
+        return bool(rnd) and gread(gid, 'settled.round') == rnd
+
+    def gbudget() -> int:
+        """Re-reviews of an UNKNOWN verdict a group may use: the run's --retry-failed, as `forge control` has it."""
+        value = _read_budget(plan, 'retry_budget')
+        return retry_failed if value is None else value
+
+    def group_set(gid: str, state: str) -> None:
+        _write_atomic(plan, state + '\n', 'groups', gid, 'status')
+
+    def group_ready(gid: str) -> bool:
+        """Every member is IMPLEMENTED, nothing runs or merged it, and its status does not stop it: a group
+        waiting for a person (NEEDS_DECISION, CONFLICT, ERROR) is left, an INFRA or TIMEOUT one is reviewed by the
+        next run, a PASS one is merged. A FAIL whose members came back is the next round; one not yet settled
+        waits for its settle."""
+        if GROUP_KEY + gid in active or gmerged(gid):
+            return False
+        if not all(status(m) == 'IMPLEMENTED' for m in rgroups[gid].members):
+            return False
+        if gid in group_again:
+            return True
+        state = gstate(gid)
+        return state in ('', 'WAITING') or (state == 'FAIL' and gsettled(gid))
+
+    def ready_groups() -> list:
+        return [gid for gid in rgroups if group_ready(gid)]
+
+    def start_group(gid: str) -> None:
+        root = plan / 'groups' / gid
+        root.mkdir(parents=True, exist_ok=True)
+        log = open(root / 'group.out', 'ab')
+        process = subprocess.Popen(
+            ['/bin/bash', script, '_group', str(plan), gid],
+            stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+        )
+        active[GROUP_KEY + gid] = process, log
+        group_again.discard(gid)
+        print('forge: reviewing group ' + gid + ' (' + ', '.join(rgroups[gid].members) + ')',
+              file=sys.stderr, flush=True)
+
+    def start_ready_groups() -> None:
+        """Start the review of every ready group a free slot allows, on the same terms as a task: nothing
+        new while stopping, draining or paused for infrastructure. A group takes one slot, and has no file
+        overlap with a task: it touches only its own candidate worktree."""
+        if not rgroups or interrupted or graceful or paused or drained(plan):
+            return
+        cap = live_capacity(plan, capacity)
+        for gid in rgroups:
+            if len(active) >= cap:
+                return
+            if group_ready(gid):
+                start_group(gid)
+
+    def group_line(gid: str) -> None:
+        """Say what a group that waits for a person (or the next run) waits for: _group_settle's own line."""
+        subprocess.run(['/bin/bash', script, '_group_settle', str(plan), gid])
+
+    def requeue_members(gid: str) -> None:
+        """Every member now in AUTO_RETRY and retryable goes back through the ordinary requeue: its budget,
+        escalation, decision and pin apply to it alone, as for a task reviewed by itself."""
+        for member in rgroups[gid].members:
+            if member not in pending and member not in active and status(member) in AUTO_RETRY and retryable(member):
+                requeue(member)
+
+    def merge_group(gid: str, requeue_ok: bool = True) -> None:
+        result = subprocess.run(['/bin/bash', script, '_merge_group', str(plan), gid])
+        if result.returncode == 0:
+            if brief_mode != 'off':
+                for member in rgroups[gid].members:
+                    if status(member) == 'MERGED':
+                        brief_stale(member)
+        elif requeue_ok and not interrupted and not graceful:
+            requeue_members(gid)   # a member the merge invalidated, when its review is what was voided
+
+    def rereview(gid: str) -> bool:
+        """An UNKNOWN verdict is reviewed again once per unit of the group's own budget (--retry-failed N),
+        counted in groups/<gid>/retries.used; no member attempt is spent. False when the budget is spent."""
+        used = group_used.get(gid, 0)
+        if used >= gbudget():
+            return False
+        group_used[gid] = used + 1
+        _write_atomic(plan, str(used + 1), 'groups', gid, 'retries.used')
+        group_again.add(gid)
+        print('forge: group ' + gid + ' got no verdict; reviewing it again (re-review ' + str(used + 1) + '/'
+              + str(gbudget()) + ', no attempt spent)', file=sys.stderr, flush=True)
+        return True
+
+    def reap_group(gid: str, allow_requeue: bool) -> None:
+        """What a finished group review does, by its status. Like a task, a PASS is merged however the run ends;
+        every other outcome is kept once the run is interrupted, and nothing is requeued while it stops."""
+        state = gstate(gid)
+        going = allow_requeue and not interrupted and not graceful
+        if state == 'REVIEWING':
+            group_set(gid, 'ERROR')
+            print('forge: group ' + gid + ' ended without a result; marked ERROR (see ' + str(plan / 'groups' / gid
+                  / 'group.out') + ')', file=sys.stderr, flush=True)
+        elif state == 'PASS':
+            merge_group(gid, going)
+        elif state == 'FAIL':
+            if not interrupted:
+                result = subprocess.run(['/bin/bash', script, '_group_settle', str(plan), gid])
+                if result.returncode:
+                    _warn('group ' + gid + ' could not be settled (exit ' + str(result.returncode)
+                          + '); its members stay IMPLEMENTED')
+                elif going:
+                    requeue_members(gid)
+        elif state in ('NEEDS_DECISION', 'CONFLICT', 'ERROR'):
+            group_line(gid)
+        elif state == 'UNKNOWN':
+            if not (going and rereview(gid)):
+                group_line(gid)
+        elif state in ('INVALIDATED', 'WAITING') and going:
+            requeue_members(gid)
+
+    def report_waiting_groups() -> None:
+        """Members left IMPLEMENTED are not failures, and no dependent of theirs ran: say which group each waits for."""
+        for gid, group in rgroups.items():
+            if gmerged(gid):
+                continue
+            for member in group.members:
+                if status(member) == 'IMPLEMENTED':
+                    print('forge: ' + member + ' is implemented, waiting for group ' + gid + ' (' + (gstate(gid) or 'not reviewed')
+                          + ')', file=sys.stderr, flush=True)
+
     def reap_exited(into: set[str] | None = None, *, allow_requeue: bool = True) -> None:
         """Reap every active task whose process has already exited.
 
@@ -1361,6 +1537,12 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                     into.add(name)
                 log.close()
                 del active[name]
+                if name.startswith(GROUP_KEY) and name not in tasks:
+                    gid = name[len(GROUP_KEY):]
+                    if os.environ.get('FORGE_OUTPUT') == 'full':
+                        echo_output(name, plan / 'groups' / gid / 'group.out')
+                    reap_group(gid, allow_requeue)
+                    continue
                 if os.environ.get('FORGE_OUTPUT') == 'full':
                     echo_output(name)
                 state = status(name)
@@ -1373,6 +1555,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 elif allow_requeue and not interrupted and not graceful \
                         and state in AUTO_RETRY and retryable(name):
                     requeue(name)
+                elif state == 'IMPLEMENTED' and allow_requeue and name in group_of:
+                    start_ready_groups()   # the last member in: its group is reviewed now, with no wave barrier
             if not reaped:
                 return
 
@@ -1479,7 +1663,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     try:
-        live_start(plan, tasks, retry_failed, infra_retries)
+        live_start(plan, tasks, retry_failed, infra_retries, rgroups)
         summaries_on_change()
         # Failures require an explicit retry unless this run asked for automatic ones.
         # Saved PASS results use the same fingerprint checks without paying for
@@ -1487,7 +1671,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         # is simply dispatched again.
         # RUNNING at start means a scheduler was killed without its cleanup: its tasks'
         # harnesses may still be running and editing their worktrees.
-        stop_harnesses(plan, [name for name in pending if status(name) == 'RUNNING'])
+        stop_harnesses(plan, [name for name in pending if status(name) == 'RUNNING'],
+                       [gid for gid in rgroups if gstate(gid) == 'REVIEWING'])
         for name in pending[:]:
             state = status(name)
             if state == 'PASS':
@@ -1500,9 +1685,28 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 pending.remove(name)
                 continue
             if status(name) not in ('PENDING', 'BLOCKED', 'INFRA'):
-                pending.remove(name)
+                pending.remove(name)   # an IMPLEMENTED member is not implemented again: its group is reviewed
+        for gid in rgroups:
+            if gmerged(gid):
+                continue
+            state = gstate(gid)
+            if state == 'REVIEWING':   # a scheduler died mid-review; its harness was stopped above
+                group_set(gid, 'INTERRUPTED')
+                state = 'INTERRUPTED'
+            if state == 'PASS':
+                merge_group(gid)
+            elif state == 'FAIL' and not gsettled(gid) and not interrupted:
+                subprocess.run(['/bin/bash', script, '_group_settle', str(plan), gid])
+                requeue_members(gid)
+            elif state in ('INTERRUPTED', 'INFRA', 'TIMEOUT'):
+                group_again.add(gid)
+            elif state == 'INVALIDATED' and gread(gid, 'invalidated.reason') not in ('integration-moved', 'integration-dirty'):
+                group_again.add(gid)
+            elif state == 'UNKNOWN':
+                if not rereview(gid):
+                    group_line(gid)
         swept = time.monotonic()
-        while pending or active or waiting_scopes() or sweep_due():
+        while pending or active or waiting_scopes() or sweep_due() or ready_groups():
             # Reap before honouring the stop. A signal during the sleep, and a task
             # that exits while another merge is still running, have already written
             # a result; breaking first used to skip them and mark them INTERRUPTED.
@@ -1570,9 +1774,13 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             cap = live_capacity(plan, capacity)
             draining = drained(plan)   # again: the infrastructure wait above can last minutes
             brief_waiting.clear()
+            start_ready_groups()
             for name in pending[:]:
                 if paused or len(active) >= cap or interrupted or graceful or draining:
                     break
+                if rgroups and status(name) == 'IMPLEMENTED':
+                    pending.remove(name)   # a member waiting for its group is never dispatched again
+                    continue
                 deps = [d for d in tasks[name][1].split(',') if d and d != '-']
                 if any(status(dep) != 'MERGED' for dep in deps):
                     continue
@@ -1580,7 +1788,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                     # A wait, not a stop: the rest of the plan runs, and the run does not end while it lasts.
                     brief_waiting.add(name)
                     continue
-                if any(overlap(tasks[name][3], tasks[other][3]) for other in active):
+                if any(overlap(tasks[name][3], tasks[other][3]) for other in active if other in tasks):
                     continue
                 if pauses and scope_held(name):
                     # Each move changes the models it is held on: the implementer, then the reviewer, in one pass,
@@ -1614,7 +1822,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 print('forge: stopped by forge control stop; ' + str(len(pending)) + ' task(s) not started',
                       file=sys.stderr, flush=True)
                 break
-            if not active and draining and (pending or waiting_scopes()):
+            if not active and draining and (pending or waiting_scopes() or ready_groups()):
                 if not drain_told:
                     drain_told = True
                     print('forge: drained — ' + str(len(pending)) + ' task(s) waiting; forge control resume '
@@ -1628,9 +1836,11 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 if not pending and sweep_due() and start_sweep():
                     continue
                 for name in pending:
-                    mark(name, 'BLOCKED')
+                    if status(name) != 'IMPLEMENTED':   # waiting for its group, not blocked
+                        mark(name, 'BLOCKED')
                 break
             time.sleep(0.05)
+        report_waiting_groups()
     finally:
         try:
             held_record()
@@ -1674,8 +1884,14 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             except subprocess.TimeoutExpired:
                 pass
             log.close()
-        stop_harnesses(plan, [name for name, _ in stopping])
+        stopped_groups = [name[len(GROUP_KEY):] for name, _ in stopping if name.startswith(GROUP_KEY) and name not in tasks]
+        stop_harnesses(plan, [name for name, _ in stopping if name in tasks], stopped_groups)
         for name, _ in stopping:
+            if name.startswith(GROUP_KEY) and name not in tasks:
+                # A group left REVIEWING is INTERRUPTED; one that wrote its outcome before the stop keeps it.
+                if gstate(name[len(GROUP_KEY):]) == 'REVIEWING':
+                    group_set(name[len(GROUP_KEY):], 'INTERRUPTED')
+                continue
             try:
                 mark(name, 'INTERRUPTED')
             except OSError as error:
