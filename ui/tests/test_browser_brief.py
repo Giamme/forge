@@ -1,7 +1,8 @@
 """Brief questions in a real browser (Chromium through Python Playwright, skipped without it).
 
 Answering posts to the brief answer route and the answer shows as text. A late answer shows the CLI notice.
-Read-only has the questions and no answer box, and so does an exported run. Parked questions stay collapsed, with no box. The run's list
+Read-only has the questions and no answer box, and so does an exported run. Parked questions stay collapsed.
+An unanswered parked question has an answer box and no propose button. The run's list
 opens the task, flagged questions first. The route is answered by the test (`page.route`), so no `forge brief`
 runs. Fixtures come from test_browser.
 """
@@ -138,7 +139,7 @@ class Brief(unittest.TestCase):
         self.assertEqual(page.locator('#inspector .brief-section b').count(), 0)
         self.assertClean(page)
 
-    def test_parked_questions_stay_collapsed_and_have_no_box(self):
+    def test_parked_questions_stay_collapsed_until_answered(self):
         page = self.open(cdn=False, view='2d')
         page.goto(self.url + '#/runs/' + self.key + '/tasks/page')
         page.wait_for_selector('#inspector .brief-parked')
@@ -146,7 +147,8 @@ class Brief(unittest.TestCase):
         self.assertFalse(page.evaluate("document.querySelector('#inspector .brief-parked').open"))
         self.assertEqual(page.text_content('#inspector .brief-parked > summary'), 'Parked (wider scope)')
         self.assertIn('For the <b>whole</b> plan?', page.text_content('#inspector .brief-parked'))
-        self.assertEqual(page.locator('#inspector .brief-parked .brief-box, #inspector .brief-parked textarea').count(), 0)
+        self.assertEqual(page.locator('#inspector .brief-parked .brief-box').count(), 1)
+        self.assertEqual(page.locator('#inspector .brief-parked .brief-propose').count(), 0)
         self.assertEqual(page.locator('#inspector .brief-parked b').count(), 0)
         self.assertEqual(page.locator('#inspector .brief-section > .brief-questions .brief-box').count(), 1)
         self.assertIn('Layout?', page.text_content('#inspector .brief-section > .brief-questions'))

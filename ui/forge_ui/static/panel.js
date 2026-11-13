@@ -711,6 +711,10 @@ window.ForgePanel = (() => {
       const group = window.ForgeGroups.taskChip(task.group, ctx.hash({ kind: 'group', id: task.group }));
       if (group) chips.append(group);
     }
+    if (window.ForgeBrief && window.ForgeBrief.affectedBadge) {
+      const affected = window.ForgeBrief.affectedBadge(task);
+      if (affected) chips.append(affected);
+    }
     if (task.explored) chips.append(el('span', '* explored', 'tag'));
     head.append(chips);
     const dl = diffLink(ctx, solo ? 'View the diff →' : 'View its diff, findings pinned to their lines →', { kind: 'task', task: task.id, source: 'current' }); if (dl) head.append(dl);

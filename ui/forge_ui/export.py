@@ -66,11 +66,14 @@ _TEXT_KEYS = frozenset(('prompt', 'last', 'request', 'log_tail', 'dwarf_tail', '
 # object under `tasks` (its `text` is already in _TEXT_KEYS); it is not this string.
 # A brief question's why, the choices in options, its default and the answer a person typed are private
 # only under `questions` and `parked` (`text` is already in _TEXT_KEYS). `scope`, `state` and `id` stay.
+# A proposal's summary, diff and refusal reason are the model's prose and the patch. pid, state, scope,
+# group, hash and the truncation flag stay. `reason` under `affected` is a short machine word and stays.
 _TEXT_KEYS_UNDER = {'decisions': frozenset(('reason',)), 'adoptions': frozenset(('reason',)),
                     'adoption': frozenset(('reason',)), 'header': frozenset(('goal', 'criteria')),
                     'groups': frozenset(('goal', 'decision')),
                     'questions': frozenset(('why', 'options', 'default', 'answer')),
-                    'parked': frozenset(('why', 'options', 'default', 'answer'))}
+                    'parked': frozenset(('why', 'options', 'default', 'answer')),
+                    'proposals': frozenset(('summary', 'diff', 'reason'))}
 
 
 def _enc(value):

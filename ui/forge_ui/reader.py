@@ -1313,8 +1313,12 @@ def _run_summaries(reader):
 
 
 # --- brief mode (#135): tasks/<id>/brief.json, parked questions, answers and late answers ---------
+# Proposals and affected markers (#136) are read only while brief is on. Off leaves them unread, so a
+# plan without brief keeps the run JSON it had.
 
 _BRIEF_LEVELS = ('advisory', 'gated', 'strict')
+# CLI proposal dirs are p1, p2, … with no leading zero (PID_RE). p0 and p0001 are not proposals.
+_PID_DIR = re.compile(r'^p[1-9][0-9]{0,5}$')
 
 
 def _brief_level(reader):
@@ -1383,7 +1387,11 @@ def _brief_rows(reader, prefix, body, answers, late, parked):
                    possibly_stale=file_stale or question.get('possibly_stale') is True)
         if parked:
             scope = question.get('scope')
+            group = question.get('group')
             row['scope'] = scope if isinstance(scope, str) else None
+            row['group'] = group if isinstance(group, str) and group else None
+            # Parked answers live in brief.parked.answers.json, passed in as `answers`.
+            row['answer'] = _cap_str(reader, _entry_text(answers.get(qid)), stem + '.answer')
         else:
             row['state'] = state
             row['answer'] = _cap_str(reader, _entry_text(entry), stem + '.answer')
@@ -1417,8 +1425,11 @@ def _task_brief(reader, ident):
     parked = reader.object(paths['parked']) if present['parked'] else None
     late = _answer_map(reader.object(paths['late']) if present['late'] else None)
     answers = _answer_map(reader.object(f'{prefix}/brief.answers.json'))
+    # Missing parked answers are no answers. The file is not read when this task has no parked questions,
+    # and a missing file is not tracked, so `updated` does not move.
+    parked_answers = _answer_map(reader.object(f'{prefix}/brief.parked.answers.json')) if present['parked'] else {}
     return dict(questions=_brief_rows(reader, prefix, brief, answers, late, False),
-                parked=_brief_rows(reader, prefix, parked, {}, {}, True),
+                parked=_brief_rows(reader, prefix, parked, parked_answers, {}, True),
                 late=_late_rows(reader, prefix, late))
 
 
@@ -1439,10 +1450,79 @@ def _run_brief(level, tasks):
     return dict(level=level, open=open_n, flagged=flagged)
 
 
+def _affected(reader, ident):
+    """`tasks/<id>/brief.affected` as `{pid, reason, flag_only}`, or None when the marker is absent or not one.
+
+    `t` stays on disk. `flag_only` is true only when the file says exactly that: a task that had already
+    started when the proposal was applied. A bad object is warned about here, or already by the JSON read.
+    """
+    label = f'tasks/{ident}/brief.affected'
+    body = reader.object(label)
+    if body is None:
+        return None
+    pid, reason = body.get('pid'), body.get('reason')
+    if not isinstance(pid, str) or not pid or len(pid) > 32 or not isinstance(reason, str) or not reason:
+        reader.warn(label, 'not an affected marker')
+        return None
+    return dict(pid=pid, reason=reader.cap(reason, label + '.reason', 500),
+                flag_only=body.get('flag_only') is True)
+
+
+def _as_str(value):
+    return value if isinstance(value, str) else None
+
+
+def _proposals(reader):
+    """`<plan>/proposals/<pid>/` in numeric order: the public record, the hash, and the diff.
+
+    The diff is capped like every other text. `truncated` is true when the shown diff is not the file.
+    The hash is not capped: Approve sends the hash the page shows. `answer` and the edit lists stay in
+    the file; the run JSON does not carry them. A directory that is not a proposal id is skipped.
+    """
+    names = []
+    for path in reader.children('proposals'):
+        if not _PID_DIR.fullmatch(path.name):
+            continue
+        try:
+            if not path.is_dir():
+                continue
+        except (OSError, ValueError) as exc:
+            reader.warn(f'proposals/{path.name}', f'cannot stat ({type(exc).__name__})')
+            continue
+        names.append(path.name)
+    names.sort(key=lambda name: int(name[1:]))
+    rows = []
+    for pid in names:
+        prefix = f'proposals/{pid}'
+        body = reader.object(f'{prefix}/proposal.json')
+        if body is None:
+            continue
+        if body.get('pid') != pid:
+            reader.warn(f'{prefix}/proposal.json', 'pid does not match the directory')
+        raw = reader.text(f'{prefix}/diff.patch')
+        if raw is None:
+            diff, cut = '', False
+        else:
+            diff = reader.cap(raw, f'{prefix}/diff')
+            cut = diff != raw
+        raw_hash = reader.text(f'{prefix}/hash')
+        digest = raw_hash.strip() if isinstance(raw_hash, str) else ''
+        rows.append(dict(pid=pid, scope=_as_str(body.get('scope')), group=_as_str(body.get('group')),
+                         task=_as_str(body.get('task')), qid=_as_str(body.get('qid')),
+                         summary=_cap_str(reader, body.get('summary'), f'{prefix}/summary'),
+                         state=_as_str(body.get('state')),
+                         reason=_cap_str(reader, body.get('reason'), f'{prefix}/reason'),
+                         created=_as_str(body.get('created')), hash=digest or None, diff=diff, truncated=cut))
+    return rows
+
+
 def _attach_brief(reader, tasks):
     """Set each task's `brief` and return the run's `{level, open, flagged}`, or None when brief is off.
 
-    Off means the questions are not shown either: a file left from an earlier level stays on disk."""
+    Off means the questions are not shown either: a file left from an earlier level stays on disk.
+    Affected markers are attached only while brief is on, and only when the file is a real marker.
+    The key is omitted otherwise, including when brief is off, so that run JSON does not grow a null.
+    """
     level = _brief_level(reader)
     if level is None:
         for task in tasks:
@@ -1450,6 +1530,9 @@ def _attach_brief(reader, tasks):
         return None
     for task in tasks:
         task['brief'] = _task_brief(reader, task['id'])
+        affected = _affected(reader, task['id'])
+        if affected is not None:
+            task['affected'] = affected
     return _run_brief(level, tasks)
 
 
@@ -2270,7 +2353,11 @@ def detail(path, source='plan') -> dict:
     result['deferrals'] = [line.strip() for line in (reader.text('deferrals.txt') or '').splitlines() if line.strip()]
     result['findings_available'] = findings.available()
     result['fractal'] = fractal.summary(reader)
-    result['brief'] = _attach_brief(reader, tasks)
+    brief = _attach_brief(reader, tasks)
+    result['brief'] = brief
+    # Absent, not empty, when brief is off: proposals/ is not listed, so the run JSON does not change.
+    if brief is not None:
+        result['proposals'] = _proposals(reader)
     # No groups.tsv: the run JSON gains nothing. A plan that has one carries `groups` and, on
     # every task, `group` (its group id, or null when it is in none).
     if reader.exists('groups.tsv'):

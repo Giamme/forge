@@ -1,7 +1,8 @@
-/* forge-ui brief questions (#135): a task's questions in the inspector, and the run's open questions.
-   window.ForgeBrief, and a CommonJS module under node:test. The pure helpers (openQuestions, orderQuestions,
-   startLine) are tested in ui/tests/js/briefview.test.js. Question text, answers and the late-answer notice
-   are untrusted: they only ever enter the page as text.
+/* forge-ui brief questions (#135) and proposals (#136): a task's questions in the inspector, the run's
+   open questions, and the proposals waiting on an answer. window.ForgeBrief, and a CommonJS module
+   under node:test. The pure helpers (openQuestions, orderQuestions, startLine, groupQuestions,
+   canPropose, affectedLabel) are tested in ui/tests/js/briefview.test.js. Question text, answers,
+   reasons and diffs are untrusted: they only ever enter the page as text.
    Ordering is flagged (must answer) first, then by the projected start from projectSchedule. A task with no
    finite start is last. Wave numbers are a preview and are never a sort key. */
 (function (root, factory) {
@@ -14,10 +15,24 @@
 
   const list = v => Array.isArray(v) ? v : [];
   const num = v => typeof v === 'number' && Number.isFinite(v) ? v : null;
+  // A question with no group, drawn only when it shares the list with a group or with Plan.
+  // An all-loose list stays flat, so this title is not a heading there.
+  const LOOSE_TITLE = 'No group';
   const notices = new Map();                                 // run\ntask\nqid → the late answer's stdout
+  const proposalNotices = new Map();                         // run\npid → the apply/reject/propose stdout
+
+  function page() {
+    if (root && root.document) return root;
+    return globalThis;
+  }
+
+  function forgeUI() {
+    if (root && root.ForgeUI) return root.ForgeUI;
+    return globalThis.ForgeUI;
+  }
 
   function el(tag, text, className) {
-    const node = root.document.createElement(tag);
+    const node = page().document.createElement(tag);
     if (text !== undefined) node.textContent = text === null || text === undefined ? '' : String(text);
     if (className) node.className = className;
     return node;
@@ -25,6 +40,10 @@
 
   function noticeKey(run, task, question) {
     return String(run && run.key) + '\n' + String(task && task.id) + '\n' + String(question && question.id);
+  }
+
+  function proposalKey(runKey, pid) {
+    return String(runKey) + '\n' + String(pid);
   }
 
   // Open task questions, in task order. Parked questions are wider than the task and are not listed here.
@@ -111,6 +130,90 @@
     });
   }
 
+  // Where one question sits. A plan question is under "Plan". A wave question uses only its own group
+  // (an empty one stays loose, not the task's group). Anything else uses the question's group, then the task's.
+  function bucketOf(item) {
+    const question = item && item.question;
+    const task = item && item.task;
+    const scope = question && question.scope;
+    if (scope === 'plan') return { kind: 'plan' };
+    if (scope === 'wave') {
+      const id = question && typeof question.group === 'string' ? question.group : '';
+      return id ? { kind: 'group', id } : { kind: 'loose' };
+    }
+    const fromQuestion = question && typeof question.group === 'string' && question.group ? question.group : '';
+    const fromTask = task && typeof task.group === 'string' && task.group ? task.group : '';
+    const id = fromQuestion || fromTask;
+    return id ? { kind: 'group', id } : { kind: 'loose' };
+  }
+
+  // Sections in run.groups order, then unknown group ids in the order they appear, then Plan, then loose.
+  // A group with no question in `items` is skipped. Order inside a section is the order of `items`.
+  // Loose questions (no group of their own, and not plan-scoped) carry LOOSE_TITLE so a mixed list
+  // does not file them under the previous group or under Plan.
+  function groupQuestions(items, groups) {
+    const catalog = new Map();
+    for (const group of list(groups)) {
+      if (group && typeof group.id === 'string' && group.id && !catalog.has(group.id)) catalog.set(group.id, group);
+    }
+    const byGroup = new Map();
+    const unknown = [];
+    const plan = [];
+    const loose = [];
+    for (const item of list(items)) {
+      const where = bucketOf(item);
+      if (where.kind === 'plan') { plan.push(item); continue; }
+      if (where.kind === 'loose') { loose.push(item); continue; }
+      if (!byGroup.has(where.id)) {
+        byGroup.set(where.id, []);
+        if (!catalog.has(where.id)) unknown.push(where.id);
+      }
+      byGroup.get(where.id).push(item);
+    }
+    const sections = [];
+    for (const group of list(groups)) {
+      if (!group || typeof group.id !== 'string' || !group.id) continue;
+      const rows = byGroup.get(group.id);
+      if (!rows || !rows.length) continue;
+      const title = typeof group.title === 'string' && group.title ? group.title : group.id;
+      const goal = typeof group.goal === 'string' ? group.goal : '';
+      sections.push({ kind: 'group', id: group.id, title, goal, items: rows });
+      byGroup.delete(group.id);
+    }
+    for (const id of unknown) {
+      const rows = byGroup.get(id);
+      if (rows && rows.length) sections.push({ kind: 'group', id, title: id, goal: '', items: rows });
+    }
+    if (plan.length) sections.push({ kind: 'plan', id: null, title: 'Plan', goal: '', items: plan });
+    if (loose.length) sections.push({ kind: 'loose', id: null, title: LOOSE_TITLE, goal: '', items: loose });
+    return sections;
+  }
+
+  // The propose button is only on an answered wave or plan question. A task question has no scope.
+  function canPropose(question) {
+    if (!question || typeof question !== 'object') return false;
+    if (question.scope !== 'wave' && question.scope !== 'plan') return false;
+    return typeof question.answer === 'string' && question.answer.length > 0;
+  }
+
+  // "affected by p3", or "flagged: already started" when the task had already started. Otherwise null.
+  function affectedLabel(task) {
+    const mark = task && task.affected;
+    if (!mark || typeof mark !== 'object') return null;
+    if (mark.flag_only === true) return 'flagged: already started';
+    if (typeof mark.pid === 'string' && mark.pid) return 'affected by ' + mark.pid;
+    return null;
+  }
+
+  function affectedBadge(task) {
+    const label = affectedLabel(task);
+    if (!label) return null;
+    const node = el('span', label, 'tag brief-affected');
+    const reason = task.affected && typeof task.affected.reason === 'string' ? task.affected.reason : '';
+    if (reason) node.title = reason;
+    return node;
+  }
+
   function flags(question) {
     const row = el('div', undefined, 'brief-flags');
     if (question && question.must_answer === true) row.append(el('span', 'must answer', 'tag'));
@@ -136,6 +239,35 @@
   function clearNotice(box) {
     const old = box && box.parentElement && box.parentElement.querySelector(':scope > .brief-notice');
     if (old) old.remove();
+  }
+
+  function setBusy(node, on) {
+    if (!node) return;
+    if (on) {
+      node.dataset.busy = '1';
+      node.setAttribute('aria-busy', 'true');
+    } else {
+      delete node.dataset.busy;
+      node.removeAttribute('aria-busy');
+    }
+    if (!node.querySelectorAll) return;
+    for (const item of node.querySelectorAll('button, textarea, input')) item.disabled = !!on;
+  }
+
+  function outputOf(res) {
+    const data = res && res.data;
+    return data && typeof data.output === 'string' ? data.output : '';
+  }
+
+  async function postJson(path, body) {
+    const ui = forgeUI();
+    let res = { ok: false, error: 'unavailable', detail: 'this page cannot send' };
+    try {
+      if (ui && ui.post) res = await ui.post(path, body);
+    } catch (_) {
+      res = { ok: false, error: 'failed', detail: 'could not send' };
+    }
+    return res;
   }
 
   function answerBox(ctx, task, question) {
@@ -165,7 +297,7 @@
   async function sendAnswer(box, field, send, msgs, ctx, task, question) {
     if (box.dataset.busy) return;
     const answer = field.value.trim();
-    const ui = root.ForgeUI;
+    const ui = forgeUI();
     if (!answer) {
       if (ui) ui.outcome(msgs, { ok: false, status: 400, error: 'invalid', detail: 'the answer is empty' });
       return;
@@ -204,6 +336,38 @@
     if (ui && ui.outcome) ui.outcome(msgs, res);
   }
 
+  async function sendPropose(actions, ctx, task, question) {
+    if (actions.dataset.busy) return;
+    const run = (ctx && ctx.run) || {};
+    setBusy(actions, true);
+    const path = '/api/runs/' + encodeURIComponent(run.key) + '/proposals';
+    const res = await postJson(path, { task: task.id, qid: question.id });
+    if (!actions.isConnected) return;
+    const output = outputOf(res);
+    // Exit 0 stored a proposal. Exit 3 is also 409 when the run lock is busy, and when the CLI
+    // refuses without storing anything (a wave question with no group, a plan question the scope
+    // cannot act on, brief off): stdout is empty then. A refused proposal that was stored prints
+    // its pid. Only that, and exit 0, are a write the page should redraw. Anything else is an error.
+    const pid = /^p[0-9]{1,6}\b/.exec(String(output).trim());
+    const wrote = !!(res && (res.ok || (res.status === 409 && pid)));
+    if (pid) proposalNotices.set(proposalKey(run.key, pid[0]), output);
+    if (wrote && ctx && ctx.refresh) { ctx.refresh(); return; }
+    setBusy(actions, false);
+    const ui = forgeUI();
+    const msgs = actions.querySelector('.brief-msgs');
+    if (!wrote && ui && ui.outcome && msgs) ui.outcome(msgs, res);
+  }
+
+  function proposeActions(ctx, task, question) {
+    const actions = el('div', undefined, 'brief-actions');
+    const send = el('button', 'Propose a change', 'brief-propose');
+    send.type = 'button';
+    const msgs = el('div', undefined, 'brief-msgs');
+    send.addEventListener('click', () => sendPropose(actions, ctx, task, question));
+    actions.append(send, msgs);
+    return actions;
+  }
+
   function questionCard(question, ctx, task, parked) {
     const li = el('li', undefined, 'brief-q');
     if (question.id) li.dataset.qid = String(question.id);
@@ -214,23 +378,48 @@
     if (typeof question.default === 'string' && question.default) li.append(el('p', 'if unanswered: ' + question.default, 'brief-default muted'));
     const marks = flags(question);
     if (marks) li.append(marks);
-    if (!parked && typeof question.answer === 'string' && question.answer) li.append(el('p', 'Answer: ' + question.answer, 'brief-got'));
+    if (typeof question.answer === 'string' && question.answer) li.append(el('p', 'Answer: ' + question.answer, 'brief-got'));
     if (parked && typeof question.scope === 'string' && question.scope) li.append(el('p', 'scope: ' + question.scope, 'brief-scope muted'));
-    if (!parked) {
-      const note = notices.get(noticeKey(ctx && ctx.run, task, question));
-      const box = answerBox(ctx, task, question);
-      if (note) li.append(noticeNode(note));
-      li.append(box);
-    }
+    const note = notices.get(noticeKey(ctx && ctx.run, task, question));
+    const box = answerBox(ctx, task, question);
+    if (note) li.append(noticeNode(note));
+    li.append(box);
+    if (canPropose(question)) li.append(proposeActions(ctx, task, question));
     return li;
   }
 
-  // Drop the answer boxes once the page knows it cannot write. The promise is cached, so a redraw settles at once.
+  function sectionHead(section) {
+    const title = section && typeof section.title === 'string' ? section.title : '';
+    if (!title) return null;
+    const block = el('div', undefined, 'brief-group');
+    block.append(el('h4', title, 'brief-group-title'));
+    if (section.goal) block.append(el('p', section.goal, 'brief-goal'));
+    return block;
+  }
+
+  function questionList(items, ctx, task, parked) {
+    const ul = el('ul', undefined, 'brief-questions');
+    for (const item of items) ul.append(questionCard(item.question, ctx, task, parked));
+    return ul;
+  }
+
+  function appendQuestions(parent, questions, ctx, task, parked) {
+    const sections = groupQuestions(questions.map(question => ({ task, question })), (ctx.run || {}).groups);
+    const flat = sections.length === 1 && sections[0].kind === 'loose';
+    if (flat) { parent.append(questionList(sections[0].items, ctx, task, parked)); return; }
+    for (const section of sections) {
+      const heading = sectionHead(section);
+      if (heading) parent.append(heading);
+      parent.append(questionList(section.items, ctx, task, parked));
+    }
+  }
+
+  // Drop the answer boxes and the write buttons once the page knows it cannot write.
   function settleControls(section) {
-    const ui = root.ForgeUI;
+    const ui = forgeUI();
     const drop = () => {
       if (!section.isConnected) return;
-      for (const box of section.querySelectorAll('.brief-box')) box.remove();
+      for (const box of section.querySelectorAll('.brief-box, .brief-actions')) box.remove();
       section.dataset.controls = 'off';
     };
     if (!ui || !ui.controlsEnabled) { drop(); return; }
@@ -241,7 +430,8 @@
     });
   }
 
-  // The inspector section. Nothing when this task has no brief. Parked questions stay collapsed, with no answer box.
+  // The inspector section. Nothing when this task has no brief. Parked questions stay collapsed.
+  // An unanswered parked question still has an answer box, so it can be answered and then proposed.
   function taskSection(host, ctx, task) {
     const brief = task && task.brief;
     if (!host || !brief || typeof brief !== 'object') return null;
@@ -250,17 +440,12 @@
     const questions = list(brief.questions).filter(item => item && typeof item === 'object');
     const parked = list(brief.parked).filter(item => item && typeof item === 'object');
     if (!questions.length && !parked.length) section.append(el('p', 'No questions.', 'muted'));
-    if (questions.length) {
-      const ul = el('ul', undefined, 'brief-questions');
-      for (const question of questions) ul.append(questionCard(question, ctx, task, false));
-      section.append(ul);
-    }
+    if (questions.length) appendQuestions(section, questions, ctx, task, false);
     if (parked.length) {
       const details = el('details', undefined, 'brief-parked');
       details.dataset.keep = 'brief-parked:' + task.id;
-      const ul = el('ul', undefined, 'brief-questions');
-      for (const question of parked) ul.append(questionCard(question, ctx, task, true));
-      details.append(el('summary', 'Parked (wider scope)'), ul);
+      details.append(el('summary', 'Parked (wider scope)'));
+      appendQuestions(details, parked, ctx, task, true);
       section.append(details);
     }
     host.append(section);
@@ -268,35 +453,153 @@
     return section;
   }
 
-  // The run's open questions. `href(taskId)` is the link that opens that task's inspector.
+  function openItem(item, spec) {
+    const run = spec.run;
+    const task = item.task, question = item.question;
+    const li = el('li');
+    const link = el('a', undefined, 'brief-open');
+    link.href = typeof spec.href === 'function' ? spec.href(task.id) : '#';
+    const top = el('span', undefined, 'brief-open-top');
+    top.append(el('span', task.id, 'mono brief-open-task'), el('span', typeof question.text === 'string' && question.text ? question.text : '—', 'brief-open-text'));
+    link.append(top);
+    const marks = flags(question);
+    if (marks) link.append(marks);
+    const when = startLine({ deps: waitingDeps(task, run && run.tasks), start: projectionStart(spec.projections, task), now: spec.now, status: task.status });
+    if (when) link.append(el('span', when, 'brief-when'));
+    li.append(link);
+    return li;
+  }
+
+  function drawDiff(proposal) {
+    const box = el('div', undefined, 'brief-patch');
+    const Diff = (typeof globalThis !== 'undefined' && globalThis.ForgeDiff) || (root && root.ForgeDiff);
+    const text = typeof proposal.diff === 'string' ? proposal.diff : '';
+    const opts = { truncated: proposal.truncated === true };
+    if (Diff && typeof Diff.renderPatch === 'function') Diff.renderPatch(box, text, opts);
+    else {
+      box.append(el('pre', text, 'mono brief-diff'));
+      if (opts.truncated) box.append(el('p', 'This diff was cut short.', 'warn'));
+    }
+    return box;
+  }
+
+  async function sendDecision(card, spec, proposal, kind, reasonField) {
+    if (card.dataset.busy) return;
+    const run = (spec && spec.run) || {};
+    const base = '/api/runs/' + encodeURIComponent(run.key) + '/proposals/' + encodeURIComponent(proposal.pid) + '/';
+    let path, body;
+    if (kind === 'apply') {
+      path = base + 'apply';
+      body = { hash: proposal.hash };
+    } else {
+      path = base + 'reject';
+      const reason = reasonField && typeof reasonField.value === 'string' ? reasonField.value.trim() : '';
+      body = reason ? { reason } : {};
+    }
+    setBusy(card, true);
+    const res = await postJson(path, body);
+    if (!card.isConnected) return;
+    const output = outputOf(res);
+    if (output) proposalNotices.set(proposalKey(run.key, proposal.pid), output);
+    if (res && res.ok && spec && spec.refresh) { spec.refresh(); return; }
+    setBusy(card, false);
+    const ui = forgeUI();
+    const msgs = card.querySelector('.brief-msgs');
+    if (!(res && res.ok) && ui && ui.outcome && msgs) ui.outcome(msgs, res);
+  }
+
+  function proposalActions(card, spec, proposal) {
+    const actions = el('div', undefined, 'brief-actions');
+    const msgs = el('div', undefined, 'brief-msgs');
+    if (typeof proposal.hash === 'string' && proposal.hash) {
+      const approve = el('button', 'Approve', 'brief-approve');
+      approve.type = 'button';
+      approve.addEventListener('click', () => sendDecision(card, spec, proposal, 'apply'));
+      actions.append(approve);
+    }
+    const reject = el('button', 'Reject', 'brief-reject');
+    reject.type = 'button';
+    const reason = el('input');
+    reason.type = 'text';
+    reason.maxLength = 500;
+    reason.setAttribute('aria-label', 'Reject reason');
+    reason.placeholder = 'Reason (optional)';
+    reject.addEventListener('click', () => sendDecision(card, spec, proposal, 'reject', reason));
+    actions.append(reject, reason, msgs);
+    return actions;
+  }
+
+  function proposalCard(proposal, spec) {
+    const card = el('article', undefined, 'brief-proposal');
+    if (proposal.pid) card.dataset.pid = String(proposal.pid);
+    const top = el('div', undefined, 'brief-proposal-top');
+    top.append(el('span', typeof proposal.state === 'string' && proposal.state ? proposal.state : '—', 'tag brief-state'));
+    top.append(el('span', typeof proposal.scope === 'string' && proposal.scope ? proposal.scope : '—', 'tag'));
+    const group = typeof proposal.group === 'string' && proposal.group ? proposal.group : '—';
+    top.append(el('span', group, 'brief-proposal-group'));
+    card.append(top);
+    card.append(el('p', typeof proposal.summary === 'string' && proposal.summary ? proposal.summary : '—', 'brief-summary'));
+    if (proposal.state === 'refused' && typeof proposal.reason === 'string' && proposal.reason) card.append(el('p', proposal.reason, 'brief-reason'));
+    if (typeof proposal.hash === 'string' && proposal.hash) card.append(el('code', proposal.hash, 'mono brief-hash'));
+    card.append(drawDiff(proposal));
+    const run = spec && spec.run;
+    const stored = proposalNotices.get(proposalKey(run && run.key, proposal.pid));
+    if (stored) card.append(noticeNode(stored));
+    if (proposal.state === 'proposed') card.append(proposalActions(card, spec, proposal));
+    return card;
+  }
+
+  function proposalsBlock(proposals, spec) {
+    const wrap = el('div', undefined, 'brief-proposals');
+    const head = el('p', undefined, 'brief-list-head');
+    head.append(el('span', 'Proposals', 'plate'), el('span', String(proposals.length), 'module-count'));
+    wrap.append(head);
+    for (const proposal of proposals) wrap.append(proposalCard(proposal, spec));
+    return wrap;
+  }
+
+  // The run's open questions, grouped when a group or a plan section exists, and its proposals.
+  // All-loose questions stay the flat list the run page had. Beside another section they sit under
+  // "No group", not under the previous heading. `href(taskId)` opens that task's inspector.
   function renderList(host, spec) {
     spec = spec || {};
     if (!host) return;
     host.replaceChildren();
+    if (host.dataset) delete host.dataset.proposals;
     const run = spec.run;
     const open = orderQuestions(openQuestions(run), spec.projections);
-    if (!open.length) return;
-    const head = el('p', undefined, 'brief-list-head');
-    head.append(el('span', 'Questions', 'plate'), el('span', String(open.length), 'module-count'));
-    const ul = el('ul', undefined, 'brief-list');
-    ul.dataset.scroll = 'brief-list';
-    for (const item of open) {
-      const task = item.task, question = item.question;
-      const li = el('li');
-      const link = el('a', undefined, 'brief-open');
-      link.href = typeof spec.href === 'function' ? spec.href(task.id) : '#';
-      const top = el('span', undefined, 'brief-open-top');
-      top.append(el('span', task.id, 'mono brief-open-task'), el('span', typeof question.text === 'string' && question.text ? question.text : '—', 'brief-open-text'));
-      link.append(top);
-      const marks = flags(question);
-      if (marks) link.append(marks);
-      const when = startLine({ deps: waitingDeps(task, run && run.tasks), start: projectionStart(spec.projections, task), now: spec.now, status: task.status });
-      if (when) link.append(el('span', when, 'brief-when'));
-      li.append(link);
-      ul.append(li);
+    const proposals = list(run && run.proposals).filter(item => item && typeof item === 'object');
+    if (!open.length && !proposals.length) return;
+    if (proposals.length && host.dataset) host.dataset.proposals = '1';
+    if (open.length) {
+      const head = el('p', undefined, 'brief-list-head');
+      head.append(el('span', 'Questions', 'plate'), el('span', String(open.length), 'module-count'));
+      const ul = el('ul', undefined, 'brief-list');
+      ul.dataset.scroll = 'brief-list';
+      const sections = groupQuestions(open, run && run.groups);
+      const flat = sections.length === 1 && sections[0].kind === 'loose';
+      if (flat) {
+        for (const item of sections[0].items) ul.append(openItem(item, spec));
+      } else {
+        for (const section of sections) {
+          const li = el('li');
+          const heading = sectionHead(section);
+          if (heading) li.append(heading);
+          if (li.childElementCount) ul.append(li);
+          for (const item of section.items) ul.append(openItem(item, spec));
+        }
+      }
+      host.append(head, ul);
     }
-    host.append(head, ul);
+    if (proposals.length) {
+      const block = proposalsBlock(proposals, spec);
+      host.append(block);
+      settleControls(block);
+    }
   }
 
-  return { openQuestions, orderQuestions, startLine, renderList, taskSection };
+  return {
+    openQuestions, orderQuestions, startLine, renderList, taskSection,
+    groupQuestions, canPropose, affectedLabel, affectedBadge,
+  };
 });

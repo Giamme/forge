@@ -235,5 +235,90 @@ window.ForgeDiff = (() => {
       if (target && host.dataset.scrolledTo !== url + '\n' + spec.file) { host.dataset.scrolledTo = url + '\n' + spec.file; requestAnimationFrame(() => target.scrollIntoView({ block: 'start' })); }
     }
   }
-  return { render, urlFor, cache };
+
+  // A proposal's unified diff (difflib, or diff --git). Same line table as a file hunk, text only.
+  function parsePatch(text) {
+    const files = [];
+    let file = null, hunk = null, sawMinus = false;
+    function startFile(name) {
+      file = { name: name || 'diff', hunks: [] };
+      files.push(file);
+      hunk = null;
+    }
+    for (let raw of String(text || '').split('\n')) {
+      if (raw.endsWith('\r')) raw = raw.slice(0, -1);
+      if (raw.startsWith('diff --git ')) {
+        const parts = raw.slice('diff --git '.length).trim().split(/\s+/);
+        const name = (parts[1] || parts[0] || 'diff').replace(/^b\//, '');
+        startFile(name);
+        sawMinus = false;
+        continue;
+      }
+      if (raw.startsWith('--- ')) {
+        const name = raw.slice(4).trim().replace(/^a\//, '');
+        startFile(name === '/dev/null' ? 'diff' : name);
+        sawMinus = true;
+        continue;
+      }
+      if (raw.startsWith('+++ ') && sawMinus) {
+        const name = raw.slice(4).trim().replace(/^b\//, '');
+        if (file && name && name !== '/dev/null') file.name = name;
+        sawMinus = false;
+        continue;
+      }
+      sawMinus = false;
+      const head = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/.exec(raw);
+      if (head) {
+        if (!file) startFile('diff');
+        hunk = {
+          old_start: Number(head[1]), old_lines: head[2] == null ? 1 : Number(head[2]),
+          new_start: Number(head[3]), new_lines: head[4] == null ? 1 : Number(head[4]),
+          section: head[5].trim(), lines: [],
+        };
+        file.hunks.push(hunk);
+        continue;
+      }
+      if (hunk && (raw.startsWith('+') || raw.startsWith('-') || raw.startsWith(' ') || raw.startsWith('\\'))) hunk.lines.push(raw);
+    }
+    return files.filter(item => item.hunks.length);
+  }
+  function patchTable(file) {
+    const sec = el('section', undefined, 'diff-file');
+    if (file.name) sec.append(el('p', file.name, 'mono diff-path'));
+    const table = el('table', undefined, 'diff-table');
+    table.setAttribute('role', 'presentation');
+    const body = el('tbody');
+    for (const h of file.hunks) {
+      const hr = el('tr', undefined, 'diff-hunk');
+      const label = `@@ -${h.old_start},${h.old_lines} +${h.new_start},${h.new_lines} @@${h.section ? ' ' + h.section : ''}`;
+      const hc = el('td', label);
+      hc.colSpan = 4;
+      hr.append(hc);
+      body.append(hr);
+      let o = h.old_start, n = h.new_start;
+      for (const ln of h.lines) {
+        const m = ln[0];
+        const tr = el('tr', undefined, 'diff-line ' + (m === '+' ? 'add' : m === '-' ? 'del' : m === '\\' ? 'meta' : 'ctx'));
+        const on = m === '+' || m === '\\' ? '' : String(o++);
+        const nn = m === '-' || m === '\\' ? '' : String(n++);
+        tr.append(el('td', on, 'ln'), el('td', nn, 'ln'), el('td', m === '\\' ? '' : m, 'mk'), el('td', m === '\\' ? ln.slice(1).trim() : ln.slice(1), 'code'));
+        body.append(tr);
+      }
+    }
+    table.append(body);
+    const scroll = el('div', undefined, 'diff-scroll');
+    scroll.append(table);
+    sec.append(scroll);
+    return sec;
+  }
+  function renderPatch(host, text, opts) {
+    if (!host) return;
+    host.replaceChildren();
+    opts = opts || {};
+    const files = parsePatch(text);
+    if (!files.length) host.append(el('pre', typeof text === 'string' ? text : '', 'mono brief-diff'));
+    else for (const file of files) host.append(patchTable(file));
+    if (opts.truncated) host.append(el('p', 'This diff was cut short.', 'warn'));
+  }
+  return { render, urlFor, cache, renderPatch };
 })();

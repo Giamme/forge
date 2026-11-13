@@ -860,7 +860,13 @@ window.ForgeApp = (() => {
         value: t => t.summary && t.summary.sentence || null, cell: t => t.summary && t.summary.sentence || '—' }] : []),
       { id: 'difficulty', label: 'Difficulty', value: t => DIFF_RANK[t.difficulty] ?? null, cell: t => display(t.difficulty) },
       { id: 'wave', label: 'Wave', value: t => Number.isFinite(Number(t.wave)) && t.wave !== null && t.wave !== '' ? Number(t.wave) : null, cell: t => display(t.wave) },
-      { id: 'status', label: 'Status', value: t => RM.taskStatus(t), cell: t => chip(RM.statusText(t), RM.taskStatus(t)) },
+      { id: 'status', label: 'Status', value: t => RM.taskStatus(t), cell: t => {
+        const mark = window.ForgeBrief && window.ForgeBrief.affectedBadge && window.ForgeBrief.affectedBadge(t);
+        if (!mark) return chip(RM.statusText(t), RM.taskStatus(t));
+        const row = el('span', undefined, 'brief-affected-row');
+        row.append(chip(RM.statusText(t), RM.taskStatus(t)), mark);
+        return row;
+      } },
       ...(window.ForgeChecks ? [{ id: 'now', label: 'Now', title: 'What a running task is doing, or why one that is not running waits',
         value: t => window.ForgeChecks.nowRank(t), cell: t => window.ForgeChecks.cell(t, now(), { hash: s => hashFor(run.key, s) }) }] : []),
       { id: 'dwarf', label: 'Dwarf', value: t => t.dwarf, cell: t => window.ForgeIcons.modelPlate(t.dwarf) },
@@ -1128,21 +1134,29 @@ window.ForgeApp = (() => {
       fetchJSON: path => fetchJSON(path).then(r => r.data),
     });
   }
-  // Open brief questions (#135), flagged first and then by the schedule projection. Hidden with the tasks module
-  // when that panel is folded, and hidden entirely when brief is off or nothing is still open.
+  // Open brief questions (#135), flagged first and then by the schedule projection, plus proposals (#136).
+  // Hidden with the tasks module when that panel is folded, and hidden entirely when brief is off or there
+  // is nothing to show. A proposal keeps the host open after every question is answered.
   function renderQuestions(run) {
     const host = $('run-questions');
     if (!host) return;
     const show = run.kind !== 'solo' && run.brief && window.ForgeBrief;
-    if (!show) { host.hidden = true; host.replaceChildren(); return; }
-    const open = window.ForgeBrief.openQuestions(run);
-    if (!open.length) { host.hidden = true; host.replaceChildren(); return; }
+    const open = show ? window.ForgeBrief.openQuestions(run) : [];
+    const proposals = show ? list(run.proposals).filter(item => item && typeof item === 'object') : [];
+    if (!open.length && !proposals.length) {
+      host.hidden = true;
+      host.replaceChildren();
+      delete host.dataset.proposals;
+      return;
+    }
     host.hidden = false;
+    host.setAttribute('aria-label', proposals.length ? 'Questions and proposals' : 'Open questions');
     const clock = now();
     const projections = RM.projectSchedule(run, { now: clock });
     preserve(host, () => window.ForgeBrief.renderList(host, {
       run, projections, now: clock,
       href: id => hashFor(run.key, { kind: 'task', id }),
+      refresh: () => loadRun(run.key),
     }));
   }
   function renderMain() {
