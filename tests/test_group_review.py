@@ -292,10 +292,16 @@ class StopTests(GroupCase):
         wt = Path((p / 'wt_root').read_text().strip()) / 'b'
         (wt / 'stray.txt').write_text('changed after it was judged\n')
         calls = len(self.calls())
+        status_file = p / 'tasks' / 'b' / 'status'
+        before = status_file.stat().st_ino
         r = self.review(p)
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertEqual(self.status(p), 'WAITING')
         self.assertEqual(self.read(p, 'b', 'status'), 'INVALIDATED')
+        # A reader of status sees the previous word or this one. Truncating the file in place
+        # keeps its inode and can show a partial word.
+        self.assertNotEqual(status_file.stat().st_ino, before)
+        self.assertEqual(list((p / 'tasks' / 'b').glob('.status.*.tmp')), [])
         self.assertEqual(self.read(p, 'b', 'invalidated.reason'), 'group-candidate')
         self.assertEqual((self.read(p, 'a', 'status'), self.read(p, 'c', 'status')), ('IMPLEMENTED', 'IMPLEMENTED'))
         self.assertEqual(len(self.calls()), calls)

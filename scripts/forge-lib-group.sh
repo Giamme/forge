@@ -106,7 +106,7 @@ do_group() (
        || [ "$(git -C "$REPO" rev-parse --verify --quiet "forge/$run_id/$id" 2>/dev/null)" != "$reviewed" ] \
        || [ "$(forge_fingerprint "$wt_root/$id" 2>/dev/null)" != "$(cat "$tdir/source.fingerprint" 2>/dev/null)" ]; then
       echo group-candidate > "$tdir/invalidated.reason"
-      echo INVALIDATED > "$tdir/status"
+      group_set_status "$tdir" INVALIDATED
       note "group $gid: $id moved since it was implemented — invalidated"
       moved=1
     fi
