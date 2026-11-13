@@ -1,4 +1,4 @@
-"""Whether a side dispatch (a brief or a task summary) may run, and running it.
+"""Whether a side dispatch (a brief, a brief change or a task summary) may run, and running it.
 
 Retro, brief mode and generated summaries are opt-in. `settings(plan)` resolves the
 effective choice for one plan dir. `allowed` says whether one dispatch may go out.
@@ -16,6 +16,9 @@ Precedence for each switch, first match wins:
    plan is planned: once `waves.tsv` exists the plan is frozen and this step is skipped.
 4. Off. `brief_scope` defaults to `task`. An env var forces the switch off and leaves
    the resolved scope and model in place.
+
+A `brief-change` dispatch (a wave-scoped proposal, #136) follows the brief settings: the same
+level, `FORGE_BRIEF=off`, model, `never-send` floor and its own cap.
 
 `allowed` refuses with `env`, `off`, `never-send` (the plan repo's privacy floor),
 `no-model` or `cap`, in that order. For a summary, `tasks/<task>/summaries` (`on` or
@@ -40,7 +43,9 @@ from forge_decide.providers import privacy_floor
 SCRIPTS = Path(__file__).resolve().parent.parent
 DISPATCH = SCRIPTS / 'forge-dispatch.sh'
 
-KINDS = ('brief', 'summary')
+KINDS = ('brief', 'brief-change', 'summary')
+# Kinds that follow the brief settings: `FORGE_BRIEF=off`, the plan's brief level and brief model.
+BRIEF_KINDS = ('brief', 'brief-change')
 ON_OFF = ('off', 'on')
 BRIEF_LEVELS = ('off', 'advisory', 'gated', 'strict')
 BRIEF_SCOPES = ('task', 'wave', 'plan')
@@ -283,19 +288,19 @@ def _allocate(plan: Path, kind: str, task: str) -> Path:
 
 
 def allowed(kind, plan, task=None):
-    """`(ok, reason)` for a `brief` or `summary` dispatch. `reason` is None when it may run.
+    """`(ok, reason)` for a `brief`, `brief-change` or `summary` dispatch. `reason` is None when it may run.
 
     Reasons, in the order they are decided: `env`, `off`, `never-send`, `no-model`, `cap`.
     """
     if kind not in KINDS:
-        raise ValueError('kind must be brief or summary, not %r' % (kind,))
+        raise ValueError('kind must be brief, brief-change or summary, not %r' % (kind,))
     plan = Path(plan)
-    if kind == 'brief' and _env_off('FORGE_BRIEF'):
+    if kind in BRIEF_KINDS and _env_off('FORGE_BRIEF'):
         return False, 'env'
     if kind == 'summary' and _env_off('FORGE_SUMMARIES'):
         return False, 'env'
     found = settings(plan)
-    if kind == 'brief':
+    if kind in BRIEF_KINDS:
         on = found['brief']['level'] in ('advisory', 'gated', 'strict')
         model = found['brief']['model']
     else:
@@ -405,7 +410,7 @@ def run(kind, plan, task, prompt, spec, timeout=900) -> dict:
     stops the dispatch's session, including a preflight that has not exited.
     """
     if kind not in KINDS:
-        raise ValueError('kind must be brief or summary, not %r' % (kind,))
+        raise ValueError('kind must be brief, brief-change or summary, not %r' % (kind,))
     plan = Path(plan)
     if not _safe_component(task):
         return _finish(plan, task, kind, spec, False, None, None, 'error')
