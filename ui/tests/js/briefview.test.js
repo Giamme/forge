@@ -102,7 +102,7 @@ test('questions sit under their group, then unknown groups, then Plan, then loos
     { kind: 'group', id: 'docs', title: 'docs', goal: '', ids: ['q4'] },
     { kind: 'group', id: 'other', title: 'other', goal: '', ids: ['q5'] },
     { kind: 'plan', id: null, title: 'Plan', goal: '', ids: ['q3', 'q7'] },
-    { kind: 'loose', id: null, title: '', goal: '', ids: ['q2', 'q9'] },
+    { kind: 'loose', id: null, title: 'No group', goal: '', ids: ['q2', 'q9'] },
   ]);
 });
 
@@ -380,11 +380,97 @@ test('the question list shows a group title and goal, then unknown groups, then 
     projections: {},
     now,
   });
-  assert.deepEqual(host.querySelectorAll('h4').map(node => node.textContent), ['Ship the reader', 'zz']);
+  assert.deepEqual(host.querySelectorAll('h4').map(node => node.textContent), ['Ship the reader', 'zz', 'No group']);
   assert.equal(host.querySelector('.brief-goal').textContent, 'Land it together');
   assert.equal(host.textContent.includes('(no goal)'), false);
   assert.equal(host.textContent.includes('unused'), false);
   assert.deepEqual(host.querySelectorAll('a.brief-open .brief-open-task').map(node => node.textContent), ['page', 'misc', 'loose']);
+  const rows = host.querySelectorAll('.brief-list > li');
+  assert.equal(headingBefore(rows.find(li => taskOf(li) === 'page')), 'Ship the reader');
+  assert.equal(headingBefore(rows.find(li => taskOf(li) === 'misc')), 'zz');
+  assert.equal(headingBefore(rows.find(li => taskOf(li) === 'loose')), 'No group');
+});
+
+function taskOf(li) {
+  const node = li && li.querySelector('.brief-open-task');
+  return node ? node.textContent : '';
+}
+
+function headingBefore(node) {
+  const parent = node && node.parentElement;
+  if (!parent) return null;
+  const index = parent.children.indexOf(node);
+  const prev = index > 0 ? parent.children[index - 1] : null;
+  const head = prev && prev.querySelector('h4');
+  return head ? head.textContent : null;
+}
+
+test('a loose question is not filed under the previous group or under Plan', () => {
+  arm();
+  const host = document.createElement('div');
+  const section = B.taskSection(host, {
+    run: { key: 'demo', groups: [{ id: 'ship', title: 'Ship the reader', goal: 'Land it together' }] },
+  }, {
+    id: 'reader',
+    group: 'ship',
+    brief: {
+      parked: [
+        { id: 'q1', text: 'in the group', scope: 'wave', group: 'ship', state: 'open' },
+        { id: 'q2', text: 'for the plan', scope: 'plan', state: 'open' },
+        { id: 'q3', text: 'no group here', scope: 'wave', group: null, state: 'open' },
+      ],
+    },
+  });
+  const parked = section.querySelector('.brief-parked');
+  assert.deepEqual(parked.querySelectorAll('h4').map(node => node.textContent), ['Ship the reader', 'Plan', 'No group']);
+  assert.equal(headingBefore(card(parked, 'q1').parentElement), 'Ship the reader');
+  assert.equal(headingBefore(card(parked, 'q2').parentElement), 'Plan');
+  assert.equal(headingBefore(card(parked, 'q3').parentElement), 'No group');
+});
+
+test('a propose that stored nothing shows the error, and a stored refusal refreshes', async () => {
+  let refreshed = 0;
+  const outcomes = [];
+  arm(() => Promise.resolve({ ok: false, status: 409, error: 'busy' }));
+  globalThis.ForgeUI.outcome = (_host, res) => { outcomes.push(res); };
+  const host = document.createElement('div');
+  const section = B.taskSection(host, {
+    run: { key: 'demo', groups: [] },
+    refresh: () => { refreshed += 1; },
+  }, {
+    id: 'reader',
+    brief: {
+      parked: [{ id: 'q4', text: 'wave?', scope: 'wave', group: null, state: 'answered', answer: 'yes' }],
+    },
+  });
+  const button = section.querySelector('button.brief-propose');
+  await button.click();
+  assert.equal(refreshed, 0);
+  assert.deepEqual(outcomes.map(res => res.error), ['busy']);
+  assert.equal(button.disabled, false);
+
+  outcomes.length = 0;
+  const refused = {
+    ok: false, status: 409, error: 'refused',
+    detail: 'reader/q4 names no group, so there is nothing for a wave answer to act on',
+    data: { exit: 3, output: '' },
+  };
+  globalThis.ForgeUI.post = () => Promise.resolve(refused);
+  await button.click();
+  assert.equal(refreshed, 0);
+  assert.equal(outcomes.length, 1);
+  assert.match(outcomes[0].detail, /names no group/);
+  assert.equal(button.disabled, false);
+
+  outcomes.length = 0;
+  globalThis.ForgeUI.post = () => Promise.resolve({
+    ok: false, status: 409, error: 'refused',
+    detail: 'forge brief: proposal p8 is refused: it does not fit',
+    data: { exit: 3, output: 'p8  refused  scope wave  (asked by reader/q4)\n' },
+  });
+  await button.click();
+  assert.equal(refreshed, 1);
+  assert.equal(outcomes.length, 0);
 });
 
 test('a proposal shows its state, and only a proposed one can be approved with the shown hash or rejected', async () => {

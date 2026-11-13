@@ -15,6 +15,9 @@
 
   const list = v => Array.isArray(v) ? v : [];
   const num = v => typeof v === 'number' && Number.isFinite(v) ? v : null;
+  // A question with no group, drawn only when it shares the list with a group or with Plan.
+  // An all-loose list stays flat, so this title is not a heading there.
+  const LOOSE_TITLE = 'No group';
   const notices = new Map();                                 // run\ntask\nqid → the late answer's stdout
   const proposalNotices = new Map();                         // run\npid → the apply/reject/propose stdout
 
@@ -146,6 +149,8 @@
 
   // Sections in run.groups order, then unknown group ids in the order they appear, then Plan, then loose.
   // A group with no question in `items` is skipped. Order inside a section is the order of `items`.
+  // Loose questions (no group of their own, and not plan-scoped) carry LOOSE_TITLE so a mixed list
+  // does not file them under the previous group or under Plan.
   function groupQuestions(items, groups) {
     const catalog = new Map();
     for (const group of list(groups)) {
@@ -180,7 +185,7 @@
       if (rows && rows.length) sections.push({ kind: 'group', id, title: id, goal: '', items: rows });
     }
     if (plan.length) sections.push({ kind: 'plan', id: null, title: 'Plan', goal: '', items: plan });
-    if (loose.length) sections.push({ kind: 'loose', id: null, title: '', goal: '', items: loose });
+    if (loose.length) sections.push({ kind: 'loose', id: null, title: LOOSE_TITLE, goal: '', items: loose });
     return sections;
   }
 
@@ -339,11 +344,13 @@
     const res = await postJson(path, { task: task.id, qid: question.id });
     if (!actions.isConnected) return;
     const output = outputOf(res);
-    const wrote = !!(res && (res.ok || res.status === 409));
-    if (wrote && output) {
-      const match = /^p[0-9]{1,6}\b/.exec(output.trim());
-      if (match) proposalNotices.set(proposalKey(run.key, match[0]), output);
-    }
+    // Exit 0 stored a proposal. Exit 3 is also 409 when the run lock is busy, and when the CLI
+    // refuses without storing anything (a wave question with no group, a plan question the scope
+    // cannot act on, brief off): stdout is empty then. A refused proposal that was stored prints
+    // its pid. Only that, and exit 0, are a write the page should redraw. Anything else is an error.
+    const pid = /^p[0-9]{1,6}\b/.exec(String(output).trim());
+    const wrote = !!(res && (res.ok || (res.status === 409 && pid)));
+    if (pid) proposalNotices.set(proposalKey(run.key, pid[0]), output);
     if (wrote && ctx && ctx.refresh) { ctx.refresh(); return; }
     setBusy(actions, false);
     const ui = forgeUI();
@@ -382,9 +389,10 @@
   }
 
   function sectionHead(section) {
-    if (!section || section.kind === 'loose') return null;
+    const title = section && typeof section.title === 'string' ? section.title : '';
+    if (!title) return null;
     const block = el('div', undefined, 'brief-group');
-    block.append(el('h4', section.title || 'Plan', 'brief-group-title'));
+    block.append(el('h4', title, 'brief-group-title'));
     if (section.goal) block.append(el('p', section.goal, 'brief-goal'));
     return block;
   }
@@ -551,7 +559,8 @@
   }
 
   // The run's open questions, grouped when a group or a plan section exists, and its proposals.
-  // All-loose questions stay the flat list the run page had. `href(taskId)` opens that task's inspector.
+  // All-loose questions stay the flat list the run page had. Beside another section they sit under
+  // "No group", not under the previous heading. `href(taskId)` opens that task's inspector.
   function renderList(host, spec) {
     spec = spec || {};
     if (!host) return;
@@ -569,20 +578,16 @@
       ul.dataset.scroll = 'brief-list';
       const sections = groupQuestions(open, run && run.groups);
       const flat = sections.length === 1 && sections[0].kind === 'loose';
-      const blocks = flat ? [sections[0]] : sections;
-      if (!flat) {
-        for (const section of blocks) {
-          if (section.kind === 'loose') continue;
+      if (flat) {
+        for (const item of sections[0].items) ul.append(openItem(item, spec));
+      } else {
+        for (const section of sections) {
           const li = el('li');
           const heading = sectionHead(section);
           if (heading) li.append(heading);
-          ul.append(li);
+          if (li.childElementCount) ul.append(li);
           for (const item of section.items) ul.append(openItem(item, spec));
         }
-        const loose = sections.find(section => section.kind === 'loose');
-        if (loose) for (const item of loose.items) ul.append(openItem(item, spec));
-      } else {
-        for (const item of sections[0].items) ul.append(openItem(item, spec));
       }
       host.append(head, ul);
     }

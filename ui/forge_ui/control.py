@@ -26,6 +26,22 @@ MAX_FIELD = 256
 ISSUES_LIST_TIMEOUT_S = 120   # a listing asks gh for the filed state
 ISSUES_FILE_TIMEOUT_S = 300   # filing up to 25 issues
 DELETE_TIMEOUT_S = 900        # removing worktrees, branches and the archive can be slow
+# One brief model call, end to end. proposals.propose and forge_brief.write pass 900s to
+# forge_side.run, which waits that plus _DISPATCH_GRACE_S (30) before it returns its own
+# timeout. The extra minute is the CLI storing the result and exiting, so a call that uses
+# its whole wait is a refusal on the page and not a process this route killed.
+_BRIEF_MODEL_S = 900
+_BRIEF_DISPATCH_GRACE_S = 30
+_BRIEF_CALL_S = _BRIEF_MODEL_S + _BRIEF_DISPATCH_GRACE_S
+_BRIEF_SETTLE_S = 60
+BRIEF_PROPOSE_TIMEOUT_S = _BRIEF_CALL_S + _BRIEF_SETTLE_S
+# apply may spend 120s refreshing waves.tsv, then regenerates each unstarted affected task:
+# one model call, in order. The budget is forty of those calls (twice the planner's task
+# ceiling) plus the waves refresh. A faster call releases the run lock when the CLI exits.
+# Past this, a regeneration that is still running is killed, the same way a 60s cap was.
+_WAVES_REFRESH_S = 120
+_APPLY_TASKS = 40
+BRIEF_APPLY_TIMEOUT_S = _WAVES_REFRESH_S + _APPLY_TASKS * _BRIEF_CALL_S + _BRIEF_SETTLE_S
 MAX_FPS = 25
 MAX_LABELS = 5
 MAX_LABEL = 50
@@ -403,6 +419,9 @@ def _brief_apply(ctx):
     """POST `{hash}`: `forge brief apply <plan> <pid> --approve <hash> --actor ui`.
 
     Exit 0 prints text (the files written, the notes, and the plan-again line), so the body is that text.
+    Regeneration is one brief model call per unstarted affected task, so the wait is
+    `BRIEF_APPLY_TIMEOUT_S` and not the 60s default. The plan files are written before that
+    regeneration; killing it here would leave it half-done and drop the text the page shows.
     """
     ctx.route = 'brief apply'
     try:
@@ -417,7 +436,7 @@ def _brief_apply(ctx):
     if path is None:
         return 404, {'error': 'not found'}
     return ctx.locked(lambda: ctx.call('brief', 'apply', path, pid, '--approve', digest, '--actor', 'ui',
-                                       json_stdout=False))
+                                       json_stdout=False, limit=BRIEF_APPLY_TIMEOUT_S))
 
 
 def _brief_reject(ctx):
@@ -442,7 +461,10 @@ def _brief_reject(ctx):
 
 
 def _brief_propose(ctx):
-    """POST `{task, qid}`: `forge brief propose <plan> <task> <qid> --actor ui` for a parked wave or plan question."""
+    """POST `{task, qid}`: `forge brief propose <plan> <task> <qid> --actor ui` for a parked wave or plan question.
+
+    One brief-change model call. The wait is `BRIEF_PROPOSE_TIMEOUT_S`, past the CLI's own 900s.
+    """
     ctx.route = 'brief propose'
     try:
         if not isinstance(ctx.body, dict):
@@ -459,7 +481,8 @@ def _brief_propose(ctx):
     path = _plan_or_404(ctx)
     if path is None:
         return 404, {'error': 'not found'}
-    return ctx.locked(lambda: ctx.call('brief', 'propose', path, task, qid, '--actor', 'ui', json_stdout=False))
+    return ctx.locked(lambda: ctx.call('brief', 'propose', path, task, qid, '--actor', 'ui',
+                                       json_stdout=False, limit=BRIEF_PROPOSE_TIMEOUT_S))
 
 
 # ----------------------------------------------------------------- issues, delete and config routes

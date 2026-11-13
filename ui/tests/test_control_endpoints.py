@@ -633,6 +633,43 @@ class BriefProposalTests(EndpointCase):
         self.assertEqual(self.reject(body={'reason': 1})[0], 400)
         self.assertEqual(len(self.calls()), before)
 
+    def test_propose_and_apply_wait_for_the_brief_model(self):
+        """Propose is one model call. Apply regenerates each unstarted task after the files are written.
+
+        The CLI waits 900s plus 30s of dispatch grace per call, and up to 120s to refresh waves.
+        A 60s cap kills propose outright and kills apply after the plan files are already written.
+        """
+        seen = []
+        real = control.run_cli
+
+        def spy(argv, timeout, stdin=None):
+            # argv is the forge executable, then `brief`, then the subcommand.
+            seen.append((argv[2], timeout))
+            return real(argv, timeout, stdin=stdin)
+
+        self.behave(stdout='p3  proposed  scope wave\n')
+        with patch.object(control, 'run_cli', spy):
+            self.assertEqual(self.propose()[0], 200)
+            self.behave(stdout='p1 applied: nothing\n')
+            self.assertEqual(self.apply()[0], 200)
+        self.assertEqual(seen, [
+            ('propose', control.BRIEF_PROPOSE_TIMEOUT_S),
+            ('apply', control.BRIEF_APPLY_TIMEOUT_S),
+        ])
+        self.assertGreaterEqual(control.BRIEF_PROPOSE_TIMEOUT_S, 900 + 30)
+        self.assertGreaterEqual(control.BRIEF_APPLY_TIMEOUT_S, 120 + 2 * (900 + 30))
+        # The route limit is what run_cli waits on, not TIMEOUT_S. A call longer than the
+        # default still returns the CLI's text.
+        self.behave(sleep=2, stdout='p3  proposed  scope wave\n')
+        with patch.object(control, 'TIMEOUT_S', 1):
+            status, body = self.propose()
+        self.assertEqual(status, 200, body)
+        self.behave(sleep=2, stdout='p1 applied: tasks.tsv\nregenerating questions for 2 tasks: reader, page\n')
+        with patch.object(control, 'TIMEOUT_S', 1):
+            status, body = self.apply()
+        self.assertEqual(status, 200, body)
+        self.assertIn('regenerating questions', body['output'])
+
     def test_propose_forwards_the_task_and_the_qid(self):
         stdout = 'p3  proposed  scope wave  (asked by reader/q4)\n'
         self.behave(stdout=stdout)
