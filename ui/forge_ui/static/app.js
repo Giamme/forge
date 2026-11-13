@@ -21,7 +21,7 @@ window.ForgeApp = (() => {
     settings: false, lastKey: null, settingsRun: null, settingsPickedAt: null, settingsView: null,
     models: false, modelsData: null, modelsText: null, modelsError: null, reviewerOutcomes: null, modelsPrefs: store.get('models', {}),
     files: new Map(), findingsCount: new Map(), filesPrefs: store.get('files', {}), runSort: store.get('run-sort', 'updated'), tablePrefs: store.get('tables', {}),
-    findings: new Map() };
+    findings: new Map(), groupId: null };
   state.stageMode = state.mode === 'exec' ? 'exec' : 'plan';   // the stage's own mode, kept while Files is shown
   if (state.mode === 'files' && !window.ForgeFiles) state.mode = state.stageMode;
   const $ = id => document.getElementById(id);
@@ -49,6 +49,7 @@ window.ForgeApp = (() => {
     if (!sel) return base;
     const e = encodeURIComponent;
     if (sel.kind === 'task') return `${base}/tasks/${e(sel.id)}`;
+    if (sel.kind === 'group') return `${base}/group/${e(sel.id)}`;
     if (sel.kind === 'execution') return sel.task ? `${base}/tasks/${e(sel.task)}/executions/${e(sel.exec)}` : `${base}/executions/${e(sel.exec)}`;
     if (sel.kind === 'final') return `${base}/final-review${sel.name ? '/' + e(sel.name) : ''}`;
     if (sel.kind === 'adoption') return `${base}/adoptions/${e(sel.name)}`;
@@ -88,6 +89,7 @@ window.ForgeApp = (() => {
     const d = decodeURIComponent, rest = m[2] || '';
     if (/^\/findings\/?$/.test(rest)) return { key: d(m[1]), sel: null, findings: true };
     let sel = null, r;
+    if ((r = rest.match(/^\/group\/([^/]+)\/?$/))) return { key: d(m[1]), sel: null, group: d(r[1]) };
     if ((r = rest.match(/^\/tasks\/([^/]+)\/diff(?:\/(?!file\/|finding\/)([^/]+))?(?:\/finding\/([^/]+))?(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'task', id: d(r[1]) }, diff: { kind: 'task', task: d(r[1]), source: r[2] ? d(r[2]) : 'current', finding: r[3] ? d(r[3]) : null, file: r[4] ? d(r[4]) : null } };
     if ((r = rest.match(/^\/tasks\/([^/]+)\/fractal\/([^/]+)\/diff(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'task', id: d(r[1]) }, diff: { kind: 'fractal', task: d(r[1]), node: d(r[2]), file: r[3] ? d(r[3]) : null } };
     if ((r = rest.match(/^\/final-review\/([^/]+)\/diff(?:\/finding\/([^/]+))?(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'final', name: d(r[1]) }, diff: { kind: 'final', name: d(r[1]), finding: r[2] ? d(r[2]) : null, file: r[3] ? d(r[3]) : null } };
@@ -116,7 +118,7 @@ window.ForgeApp = (() => {
   function link(text, key, sel) { const a = el('a', text); a.href = hashFor(key, sel); return a; }
 
   const statuses = new Set(['merged', 'pass', 'running', 'pending', 'fail', 'error', 'infra',
-    'timeout', 'unknown', 'invalidated', 'blocked', 'interrupted', 'nochanges', 'conflict', 'accepted', 'outdated', 'needs_input', 'needs_decision']);
+    'timeout', 'unknown', 'invalidated', 'blocked', 'interrupted', 'nochanges', 'conflict', 'accepted', 'outdated', 'needs_input', 'needs_decision', 'implemented']);
   function chip(value, cls) {
     const status = String(cls || value || 'unknown').toLowerCase();
     return el('span', value || '—', 'chip st-' + (statuses.has(status) ? status : 'unknown'));
@@ -826,7 +828,7 @@ window.ForgeApp = (() => {
       if (solo) where.append(document.createTextNode(' · solo run'));
       // the describer: each state's count, the wall time so far, and how long since anything moved
       const desc = el('span', undefined, 'describer');
-      for (const [s, n] of Object.entries(run.counts || {})) { const d = el('span', undefined, 'desc-count'); d.append(el('i', undefined, 'lamp st-' + String(s).toLowerCase()), document.createTextNode(` ${s} ${n}`)); desc.append(d); }
+      for (const [s, n] of Object.entries(run.counts || {})) { const d = el('span', undefined, 'desc-count'); d.append(el('i', undefined, 'lamp st-' + String(s).toLowerCase()), document.createTextNode(` ${RM.statusLabel(s)} ${n}`)); desc.append(d); }
       const r = RM.timeRange(run, now());
       if (r) desc.append(el('span', `WALL ${RM.fmtDur(r.end - r.start)}`, 'dim'));
       const upd = el('span', relative(run.updated).replace(/^updated /, ''), 'dim updated'); upd.title = 'Last activity ' + time(run.updated);
@@ -850,6 +852,9 @@ window.ForgeApp = (() => {
     return [
       { id: 'id', label: 'ID', mono: true, value: t => t.id, cell: t => link(t.id, run.key, { kind: 'task', id: t.id }) },
       { id: 'title', label: 'Title', value: t => t.title },
+      // the task's group, only while this run has groups: a run without groups.tsv keeps the columns it had
+      ...(list(run.groups).length && window.ForgeGroups ? [{ id: 'group', label: 'Group', value: t => t.group || null,
+        cell: t => t.group ? window.ForgeGroups.taskChip(t.group, hashFor(run.key, { kind: 'group', id: t.group })) : '—' }] : []),
       // the one-sentence summary, only while the run's summaries are on (#133 B): the column is not there otherwise
       ...(summariesOn(run) ? [{ id: 'summary', label: 'Summary', title: 'The one-sentence summary of each task (summaries are on for this run)', cls: 'sum-col',
         value: t => t.summary && t.summary.sentence || null, cell: t => t.summary && t.summary.sentence || '—' }] : []),
@@ -1067,6 +1072,13 @@ window.ForgeApp = (() => {
       const tasks = el('div', undefined, 'run-tasks'); tasks.id = 'run-tasks';
       box.append(Shell.head('tasks', 'Tasks', ''), questions, switchRow, tasks, Shell.splitter('tasks'));
       view.append(box);
+      // After the tasks module. Hidden until the run has groups, so a run without them lays out as before.
+      const groups = el('section', undefined, 'module groups-module');
+      groups.id = 'run-groups'; groups.hidden = true; groups.setAttribute('aria-label', 'Groups');
+      view.append(groups);
+      view.style.setProperty('--groups-h', '0px');
+      // A width change (the side panels, the window) can rewrap the rows; republish the height then.
+      if (window.ResizeObserver) new ResizeObserver(() => syncGroupsHeight(groups, view)).observe(groups);
     }
     document.body.classList.toggle('no-tasks', run.kind === 'solo');
     ensureStage();
@@ -1075,7 +1087,46 @@ window.ForgeApp = (() => {
     renderSummarySwitch(run);
     renderQuestions(run);
     renderTable(run);
+    renderGroups(run);
     announce(run);
+  }
+  // The groups block. Nothing in the host, and the run grid unchanged, when summary() returns null.
+  // --groups-h is the block's border box, so the immersive strip and stage padding sit above it.
+  function syncGroupsHeight(host, view) {
+    if (!host || !view) return;
+    const shown = !host.hidden && host.getClientRects().length > 0;
+    const next = (shown ? host.getBoundingClientRect().height : 0) + 'px';
+    if (view.style.getPropertyValue('--groups-h') !== next) view.style.setProperty('--groups-h', next);
+  }
+  function renderGroups(run) {
+    const host = $('run-groups'), view = $('run-view');
+    if (!host || !view) return;
+    const block = window.ForgeGroups && window.ForgeGroups.summary(run, {
+      groupHref: id => hashFor(run.key, { kind: 'group', id }),
+      taskHref: id => hashFor(run.key, { kind: 'task', id }),
+    });
+    host.hidden = !block;
+    view.classList.toggle('has-groups', !!block);
+    if (!block) { host.replaceChildren(); syncGroupsHeight(host, view); return; }
+    preserve(host, () => { host.append(block); syncGroupsHeight(host, view); });
+  }
+  // #/runs/<key>/group/<gid>. The run stays cached; the group payload is fetched by the view.
+  function renderGroup() {
+    const main = $('main'), gid = state.groupId, run = state.cache.get(state.key)?.data;
+    if (main.dataset.view !== 'group' || main.dataset.run !== state.key || main.dataset.group !== gid) {
+      setView(main, 'group'); main.dataset.run = state.key; main.dataset.group = gid;
+      main.replaceChildren();
+      const view = el('section', undefined, 'group-view'); view.id = 'group-view'; main.append(view);
+    }
+    const host = $('group-view');
+    if (!window.ForgeGroups) { host.replaceChildren(el('p', 'Groups are not available in this page.', 'empty')); return; }
+    if (run) { host.dataset.run = state.key; host.dataset.group = gid; }
+    window.ForgeGroups.render(host, {
+      key: state.key, gid, run, plan: run && run.path, back: '#/runs/' + encodeURIComponent(state.key),
+      taskHref: id => hashFor(state.key, { kind: 'task', id }),
+      transcriptHref: execution => execution && execution.id ? convoHash(state.key, { kind: 'execution', exec: execution.id }) : null,
+      fetchJSON: path => fetchJSON(path).then(r => r.data),
+    });
   }
   // Open brief questions (#135), flagged first and then by the schedule projection. Hidden with the tasks module
   // when that panel is folded, and hidden entirely when brief is off or nothing is still open.
@@ -1104,6 +1155,7 @@ window.ForgeApp = (() => {
     if (state.disk) { renderDisk(); return; }
     if (state.projects) { renderProjects(); return; }
     if (state.key && state.findingsPage) { renderFindings(); return; }
+    if (state.key && state.groupId) { renderGroup(); return; }
     if (!state.key) { renderMap(); return; }
     const cached = state.cache.get(state.key);
     if (cached) renderRun(cached.data);
@@ -1113,7 +1165,8 @@ window.ForgeApp = (() => {
     const prev = state.lastStatuses.get(run.key), cur = new Map(list(run.tasks).map(t => [t.id, t.status]));
     state.lastStatuses.set(run.key, cur);
     if (!prev || Date.now() - state.announced < 10000) return;
-    const changes = [...cur].filter(([id, s]) => prev.has(id) && prev.get(id) !== s).map(([id, s]) => `${id} ${prev.get(id).toLowerCase()} → ${s.toLowerCase()}`);
+    const word = s => { const label = RM.statusLabel(s); return label === String(s) ? String(s).toLowerCase() : label; };
+    const changes = [...cur].filter(([id, s]) => prev.has(id) && prev.get(id) !== s).map(([id, s]) => `${id} ${word(prev.get(id))} → ${word(s)}`);
     if (!changes.length) return;
     state.announced = Date.now();
     $('live').textContent = changes.slice(0, 5).join('; ');
@@ -1167,9 +1220,19 @@ window.ForgeApp = (() => {
     return request('/api/runs/' + encodeURIComponent(key), result => {
       const changed = state.cache.get(key)?.text !== result.text;
       state.cache.set(key, result);
-      if (state.key === key && changed && !state.findingsPage) renderRun(result.data);
+      if (state.key === key && changed && !state.findingsPage) {
+        if (state.groupId) renderGroup(); else renderRun(result.data);
+      }
     }, 'Could not refresh run', error => {
       if (state.key !== key || state.cache.has(key) || state.findingsPage) return;
+      if (state.groupId) {
+        if (error.status === 404) state.errors.delete('/api/runs/' + encodeURIComponent(key));
+        const host = $('group-view');
+        if (host) host.replaceChildren(el('p', error.status === 404
+          ? 'Waiting for this run to appear… checking again while this tab is visible. If its directory was removed, pick another run.'
+          : 'Could not load this run. Select another run, or leave refresh enabled to retry.', 'empty'));
+        return;
+      }
       if (error.status === 404) state.errors.delete('/api/runs/' + encodeURIComponent(key));
       setView($('main'), 'waiting');
       $('main').replaceChildren(el('p', error.status === 404 ?
@@ -1184,7 +1247,8 @@ window.ForgeApp = (() => {
       history.replaceState(null, '', '#/runs/' + encodeURIComponent(SNAP.meta.key));
       parsed = parseHash(location.hash);
     }
-    const keyChanged = parsed.key !== state.key || (!!state.findingsPage && !parsed.findings);   // the findings page replaced the run's DOM
+    const leavingGroup = !!state.groupId && state.groupId !== (parsed.group || null);
+    const keyChanged = parsed.key !== state.key || (!!state.findingsPage && !parsed.findings) || leavingGroup;   // findings and the group page replace the run's DOM
     state.key = parsed.key;
     const selWas = JSON.stringify(state.sel || null);
     state.sel = parsed.sel;
@@ -1201,6 +1265,7 @@ window.ForgeApp = (() => {
     state.projects = parsed.projects && window.ForgeProjects && !SNAP ? parsed.projects : null;
     if (parsed.key) state.lastKey = parsed.key;
     state.findingsPage = !!parsed.findings && !!window.ForgeFindings;
+    state.groupId = parsed.group && window.ForgeGroups ? parsed.group : null;
     if (state.cloud && state.cloud.model) {                  // a model's runs: the cloud, filtered to it
       cloudFilter({ models: { aliases: [state.cloud.model], role: 'any' } });
       history.replaceState(null, '', '#/cloud'); state.cloud.model = null;
@@ -1220,6 +1285,7 @@ window.ForgeApp = (() => {
     if (state.disk) { renderDisk(); return; }
     if (state.projects) { renderProjects(); return; }
     if (state.key && state.findingsPage) { renderFindings(); return; }
+    if (state.key && state.groupId) { renderGroup(); loadRun(state.key); return; }
     if (!state.key) { renderMap(); return; }
     const cached = state.cache.get(state.key);
     if (cached) {
