@@ -971,13 +971,16 @@ are stored). It costs no model call of its own.
 
 With `plan --brief advisory|gated|strict --brief-model SPEC`, a read-only side dispatch writes
 the questions each task needs answered before it starts. Each question has a default. A task
-with no answer follows the default. The user answers with `forge brief answer`,
-and each answer goes into that task's prompt. forge never answers for the user.
+with no answer follows the default. The user answers with `forge brief answer`.
+A task-scoped answer goes into that task's prompt. A `wave` or `plan` answer stays parked
+until an approved proposal applies its diff. forge never answers for the user.
 
 - **Cost.** One dispatch per task that has no `brief.json`, at effort `low`, four at a time.
   A reply that is not valid JSON, or has the wrong shape, is retried once; a second failure
-  stores no questions and the reason in `brief.json`'s `error`. Answers and stale flags call no
-  model.
+  stores no questions and the reason in `brief.json`'s `error`. Answers, stale flags and
+  `reject` call no model. A proposal is one more side dispatch, kind `brief-change`. Each
+  unstarted task whose questions are regenerated is one more, kind `brief`. Both are read-only,
+  at effort `low`, on the brief model.
 - **When.** `run` writes the missing briefs when it starts. `strict` waits for them; `advisory`
   and `gated` write them alongside the scheduler. `forge brief write PLAN [--task ID] [--jobs N]
   [--force]` does the same by hand, and `--force` redoes a task that already has a brief.
@@ -989,13 +992,96 @@ and each answer goes into that task's prompt. forge never answers for the user.
     whose brief is still being written waits too.
   - `strict`: `run` exits `3` before any task starts while a question of an unstarted task is
     open. It prints each question, its default and the answer command. Answer them and run again.
-- **Answers.** `forge brief answer PLAN TASK QID TEXT` (or `--file F`; `-` reads stdin). Before
-  the task starts, the answer goes to `brief.answers.json` and to the prompt under "Decisions the
-  user made", which overrides what the requirements say. After it starts, the answer goes to
-  `brief.late.json` and changes nothing in the run. The command then prints the `tasks.tsv` row,
-  the `prompt.md` a follow-up needs, and the `forge control add` line that queues it.
-- **Scope.** `--brief-scope task` (the default) is the only scope that acts. A `wave` or `plan`
-  question is parked in `brief.parked.json` and acts on nothing.
+- **Answers.** `forge brief answer PLAN TASK QID TEXT` (or `--file F`; `-` reads stdin). For a
+  task-scoped question, an answer given before the task starts goes to `brief.answers.json` and
+  into the prompt under "Decisions the user made", which overrides what the requirements say.
+  After the task starts, that answer goes to `brief.late.json` and changes nothing in the run.
+  The command then prints the `tasks.tsv` row, the `prompt.md` a follow-up needs, and the
+  `forge control add` line that queues it.
+- **Scope.** `--brief-scope` is `task` (the default), `wave` or `plan`. The question's own
+  scope decides what an answer may change. `task` writes the answer into that task. `wave` and
+  `plan` questions are parked in `brief.parked.json` whatever `--brief-scope` says, and they
+  change the plan only through a proposal you approve. Both scopes use the plan's
+  [groups](#groups-and-group-review-opt-in). A wave proposal needs the question's group in
+  `groups.tsv`. When the task belongs to a group, the question
+  writer is told that group's title, goal and the other tasks in it. It asks `wave` when the
+  answer would change how several tasks of the group are done, and `plan` when the answer
+  would add, remove or split tasks, or change their order. A wave question from a grouped
+  task records `"group": "<gid>"`. A plan question from a grouped task records `"group": null`.
+  A task in no group keeps the prompt it had before groups, and its parked questions have no
+  `group` key. With `--brief-scope wave` or `plan` and no `groups.tsv`, forge prints one note
+  and goes on. `brief.groups.noted` keeps that note to once per plan. The note says to run
+  `plan --groups waves`, or to let the planner write groups, because a wave question with no
+  group stays parked. `gated` and `strict` still read only the task questions in `brief.json`.
+  A parked question does not hold a task.
+- **Parked answers.** A parked question can be answered when the brief scope is at least as
+  wide as the question. `wave` answers wave questions. `plan` answers wave and plan questions.
+  `task` answers neither: the question id is unknown, and `answer` exits `2`. The answer goes
+  to `tasks/<id>/brief.parked.answers.json` as `{qid: {text, actor, t}}`, including after the
+  task has started. It is never a late answer, and it does not change a prompt. The command
+  prints `forge brief propose PLAN TASK QID`. Nothing in the plan changes until that proposal
+  is approved. `forge brief show` lists parked questions by group: `Group <gid> (<title>):`
+  and the question, or `Group <gid>:` when the title is `-` or the group is gone, then
+  `Plan:` for a plan question. A question with no `group` key stays under
+  `Parked (wider scope):`.
+- **Proposals.** `forge brief propose PLAN TASK QID` asks the brief model what that parked
+  answer changes, in one read-only side dispatch of kind `brief-change`, and stores the result
+  under `proposals/<pid>/` (`p1`, `p2`, and so on). Each directory holds `proposal.json`,
+  `diff.patch` (a unified diff of the plan files it would change) and `hash`. `state` is
+  `proposed`, `refused`, `approved` or `rejected`. A reply that breaks the rules below, or
+  that changes nothing, is stored as `refused` with its reason and its diff, and `propose`
+  exits `3`. `apply` leaves a refused proposal where it is. A failed dispatch stores nothing.
+  The question's scope is the proposal's scope: under `--brief-scope plan`, a wave question
+  is still a wave proposal. A plan question needs `--brief-scope plan`, or `propose` refuses
+  it. `forge brief proposals PLAN` lists every proposal, oldest first, with its state, scope,
+  group, summary and diff. `--json` prints the same records. A `proposed` one also prints the
+  exact `forge brief apply` line. `forge brief reject PLAN PID [--reason TEXT]` sets
+  `rejected`. It touches no plan file. Only a `proposed` or `refused` proposal can be rejected.
+- **What each scope may change.**
+  - `task`: the answer, as under Answers. There is no proposal.
+  - `wave`: `prompt.md`, `approach.md` and the `files` column, and only for unstarted members
+    of the question's group. The question must name a group that is in `groups.tsv`. A change
+    that names another task, a started member, or any other field refuses the whole proposal.
+    A wave question with no group cannot be proposed.
+  - `plan`: the same three fields on any unstarted task, new tasks, removal of unstarted
+    tasks, and new dependency lists for unstarted tasks. A split is a removal plus the added
+    tasks, and every task that still depended on a removed one needs its deps rewritten in
+    the same reply. An added task's group is null or an existing group id. Anything that
+    would not be a plan `plan` could have written refuses the whole proposal. Between runs,
+    an added row gets dwarf and qa `-`.
+- **Approve by hash.** `hash` is the sha256 of `diff.patch` and the current contents of every
+  target. For a wave `files` change the target is that task's `tasks.tsv` row. For a plan
+  change the hash also covers `tasks.tsv`, `groups.tsv` and every edited prompt or approach.
+  `forge brief apply PLAN PID --approve HASH` must quote the hash `proposals` shows. A
+  different hash, a state other than `proposed`, a target that has started, or a target that
+  changed since the proposal, refuses the apply and writes nothing. After a target changes,
+  propose again.
+- **Live and between runs.** While a scheduler is live, a wave proposal that changes only
+  prompt and approach is written. The next attempt of an unstarted task reads those files.
+  A wave proposal that changes `files` is refused while the run is live, and nothing is
+  written: the scheduler keeps the files column it read at start. With no live run, a wave
+  `files` change is written, `groups.frozen` is re-frozen (a stale marker left by a plan
+  proposal stays stale), and `waves.tsv` is recomputed when that file already exists. A
+  plan apply with no live run writes `tasks.tsv` and the task directories, and `groups.tsv`
+  when membership changed. A removed task's directory moves to `tasks/.removed/<id>-<pid>/`.
+  `groups.frozen` becomes the marker `stale: plan changed by proposal <pid>`, so `run`
+  refuses until `forge-parallel.sh plan` validates, routes and freezes again. With a live
+  run, a plan proposal that includes an edit, a removal or a dep change is refused, and
+  nothing is written. A proposal that only adds tasks queues each one with
+  `forge control add`, in dependency order. A task added that way joins no group. It needs
+  dwarf and qa specs copied from a task that already has them. If a later add is refused,
+  the tasks already queued stay, and the proposal is `approved` so it is not applied again.
+- **Affected tasks.** After a successful apply, every task the proposal changed or added, and
+  every task that depends on a changed, added or removed task, directly or further down, gets
+  `tasks/<id>/brief.affected`. The marker is `{pid, reason, t}`. `reason` is `changed`,
+  `added` or `dependent`. An unstarted task's questions are regenerated, one brief dispatch
+  each (`write --force`). An answer whose question text is still in the new brief is kept.
+  Any other answer moves to `brief.answers.prev.json`. A task that has already started gets
+  the same marker with `flag_only`, and its questions stay. `forge brief show` lists a marked
+  task as `affected by <pid>`, and adds `flagged (already started)` when `flag_only` is set.
+  `apply --no-regenerate` writes the same markers and does not dispatch. Regenerating one
+  task later is `forge brief write PLAN --task ID --force`. The next approved proposal that
+  touches a task replaces that task's marker. Earlier proposals stay in `proposals/`.
 - **Stale.** After a task merges, a merge that changed files outside that task's declared files
   flags the open questions of its dependents that have not started (`possibly_stale`). `forge
   brief stale PLAN TASK` does this by hand.
@@ -1004,13 +1090,19 @@ and each answer goes into that task's prompt. forge never answers for the user.
 - **Privacy.** A never-send repository gets no brief dispatch (`never-send`), so its tasks have
   no questions and nothing holds them.
 - **Off.** With `--brief off`, no setting, or `FORGE_BRIEF=off`, there is no writer, no hold and
-  no prompt addition. `forge-prompt.py` adds nothing without a `brief` file. `forge brief write`
-  and `forge brief show` exit `3` for such a plan.
+  no prompt addition. `forge-prompt.py` adds nothing without a `brief` file. `forge brief write`,
+  `forge brief show` and `forge brief propose` exit `3` for such a plan.
 
 Files it adds: the plan files `brief`, `brief_scope` and `brief_model`; `brief.out` (the
-writer's output) and `brief.pid` (while the writer runs); and per task `tasks/<id>/brief.json`,
-`brief.parked.json`, `brief.answers.json` and `brief.late.json`. Its events are `brief_question`,
-`brief_answer` and `side_dispatch` (kind `brief`).
+writer's output), `brief.pid` (while the writer runs) and `brief.groups.noted` (once, when
+wave or plan scope has no groups); `proposals/<pid>/proposal.json`, `diff.patch` and `hash`;
+and per task `tasks/<id>/brief.json`, `brief.parked.json`, `brief.answers.json`,
+`brief.late.json`, `brief.parked.answers.json`, `brief.affected` and `brief.answers.prev.json`.
+A removed task's directory is moved to `tasks/.removed/<id>-<pid>/`. Its events are
+`brief_question`, `brief_answer`, `brief_diff` and `side_dispatch` (kind `brief` or
+`brief-change`). A `brief_diff` event is `{pid, scope, group, state, tasks}` and is written
+when a proposal is proposed, refused, approved or rejected. The approved event from a
+successful apply also carries `affected` and `flagged`, the task ids it marked.
 
 ## Task summaries (opt-in)
 
