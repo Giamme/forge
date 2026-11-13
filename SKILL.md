@@ -77,7 +77,10 @@ For explanation requests, explain the workflow without spending model quota.
   tests also run without its non-test changes, and the reviewer is asked to report any that
   still pass as P2; it needs `.forge/verify-subset` and never changes a result by itself. So is
   `plan --pre-review-tests`: before each review forge runs only the tests the attempt affects
-  (`.forge/verify-subset`), and a red attempt goes back to its implementer unreviewed. `plan` explores by default (`--explore 0.2`: now and then
+  (`.forge/verify-subset`), and a red attempt goes back to its implementer unreviewed. So are
+  `plan --groups` and `plan --group-review`: one review can cover several small, related,
+  low-risk tasks. Offer them, never add them unprompted, and keep a high-risk task on per-task
+  review. Read [Groups and group review](references/decompose.md#groups-and-group-review-opt-in). `plan` explores by default (`--explore 0.2`: now and then
   a row left to forge gets its neighbouring tier's model from the user's pools, odds
   recorded for `forge dataset routing`); say so with the table and pass `--explore 0` when
   the user declines. Retries follow a policy: after three failed attempts on one model the
@@ -100,6 +103,10 @@ For explanation requests, explain the workflow without spending model quota.
   split choice replaces the row in `tasks.tsv` and is a later `run`
   ([when reviews don't converge](references/decompose.md#when-reviews-dont-converge)); do that
   only when the user asks.
+- A group at `NEEDS_DECISION` waits for the user. Present `forge group show <plan>`. Run
+  `forge group retry <plan> <gid> --tasks <ids>` only on the user's word: that answers an
+  ambiguous decision. An oversized group is split in `groups.tsv` and planned again; do not
+  retry it. Nothing else resumes it.
 - Exit `8` / status `INFRA` is an infrastructure stop (`capacity`, `rate_limit`, `usage_limit`,
   `budget`, `auth`, `network`, `provider_down`, `empty` or `cancelled`; an old run may say
   `quota`), not a task failure, and no attempt was spent. Report each "needs you" item with its

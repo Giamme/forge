@@ -59,6 +59,19 @@ A decomposed run adds:
   waves.tsv, deferrals.txt
   tasks/<id>/{capsule.md,prompt.md,dwarf.*,qa.*,changes.diff,status}
   tasks/<id>/attempt, attempts.tsv     attempts spent; one audit row per entry (incl. refunded stops)
+  groups.tsv                           id, review, qa, members, title, goal; absent unless groups are on
+  groups.frozen                        sha256 of the six columns, then each member's deps and files
+  group_max_tasks, group_max_diff_kb   review-group bounds (defaults 6 members and 256 KB when absent)
+  groups/<gid>/status, round, rounds.tsv, merged
+                                       a review=group group's outcome; rounds.tsv is round, epoch, status, implicated, qa spec
+  groups/<gid>/candidate.base, candidate.commit, fingerprint, members.tsv, members.paths, combined.diff
+                                       the candidate the one review read; members.tsv is round, task, commit, attempt
+  groups/<gid>/qa.input, qa.last, qa.out, qa.gate, qa.round-<n>.last, known_issues.md, infra.txt
+  groups/<gid>/attribution.json, decision.md, decision.<round>.md, conflict.files
+  groups/<gid>/settled.round, settle.tasks, retries.used, invalidated.reason, review.base, merge.out, group.out
+  tasks/<id>/reviewed.commit, source.fingerprint
+                                       the commit and worktree fingerprint a review=group member stopped at
+  tasks/<id>/settled.group             gid and round, once a group FAIL judged this member
   tasks/<id>/known_issues.md, qa.gate  findings the threshold tolerated, and the gate's decision (accept, fail or keep)
   sweep/plan.json, plan.md             run --sweep: the fix tasks, their findings, and every finding left out with its reason
   tasks/<id>/sweep.json                a fix task's findings (S1, S2, ...), each with its source task and key
@@ -126,9 +139,13 @@ with worktrees and branches at:
 
 ```
 <repo>/../.forge-worktrees/<run-id>/<task-id>    worktree
+<repo>/../.forge-worktrees/<run-id>/_group-<gid> group-review candidate; kept for the merge
 forge/<run-id>/<task-id>                         task branch
 forge/<run-id>-integration                       integration branch
 ```
+
+A group review's files are what each outcome writes. The rules are in
+[Groups and group review](../references/decompose.md#groups-and-group-review-opt-in).
 
 `control.log` lines look like
 `{"at": 1761200000.5, "actor": "ui", "action": "set", "task": null, "key": "qa-threshold", "value": "P2", "previous": "P1"}`
