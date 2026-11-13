@@ -342,6 +342,27 @@ class GroupsPlanTests(unittest.TestCase):
             self.assertFalse(new.exists())
         self.assertEqual(((p / 'groups.tsv').read_text(), (p / 'groups.frozen').read_text(), (p / 'tasks.tsv').read_text()), before)
 
+    def test_split_refusal_does_not_offer_a_merged_review_group_member(self):
+        # b is already MERGED, so "--tasks b,c" is a command split refuses. The refusal must not suggest it.
+        p = self.split_fixture()
+        self.assertFalse((p / 'tasks' / 'b' / 'merged').exists())
+        (p / 'tasks' / 'b' / 'merged').write_text('')
+        before = ((p / 'groups.tsv').read_text(), (p / 'groups.frozen').read_text(), (p / 'tasks.tsv').read_text())
+        new = self.root / 'second'
+        r = self.run_script('forge-parallel.sh', 'split', p, new, '--tasks', 'c')
+        self.assertEqual(r.returncode, 3, r.stdout)
+        self.assertIn('review group g1', r.stdout)
+        self.assertIn('b, which is MERGED', r.stdout)
+        self.assertNotIn('--tasks', r.stdout)
+        self.assertFalse(new.exists())
+        # the advice the old message gave is itself refused, before the group check
+        r = self.run_script('forge-parallel.sh', 'split', p, new, '--tasks', 'b,c')
+        self.assertEqual(r.returncode, 3, r.stdout)
+        self.assertIn("task 'b' is MERGED", r.stdout)
+        self.assertNotIn('review group', r.stdout)
+        self.assertFalse(new.exists())
+        self.assertEqual(((p / 'groups.tsv').read_text(), (p / 'groups.frozen').read_text(), (p / 'tasks.tsv').read_text()), before)
+
     def test_split_moves_a_whole_review_group_and_cuts_a_task_group(self):
         p = self.split_fixture()
         new = self.root / 'second'
