@@ -17,6 +17,8 @@ from forge_ui import findings
 NAME = re.compile(r'(task|dwarf|qa|solo|verification|parallel)-[0-9a-f]{32}')
 _KIND = re.compile(r'(final-review|integrate)-([0-9]+)-([0-9]+)')
 _SHADOW = re.compile(r'[0-9]+-[0-9]+')
+# A group dir under groups/. The same shape as a group id (forge_groups, the group route).
+_GROUP_DIR = re.compile(r'[a-z0-9][a-z0-9-]{0,39}')
 CONTAINERS = ('task', 'solo')
 _MODEL_ROLES = ('dwarf', 'qa')
 # attempts.tsv is appended right after the task execution's EXIT trap ran finish().
@@ -445,6 +447,9 @@ def locate(run_path, name, task_ids):
         for child in kinds:
             if child.startswith('integrate-'):
                 yield child + '/final-review/attempts'
+        # A review=group group's QA dispatch writes its attempts here, as a task's land in the task dir.
+        for child in listed('groups', _GROUP_DIR):
+            yield f'groups/{child}/attempts'
 
     for rel in candidates():
         try:

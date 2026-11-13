@@ -14,7 +14,7 @@ import sys
 import time
 import urllib.parse
 
-from forge_ui import checks, diffs, executions, findings, fractal, links, repos, transcripts
+from forge_ui import checks, diffs, executions, findings, fractal, groups, links, repos, transcripts
 from forge_ui.findings import verdict as _verdict
 
 
@@ -649,7 +649,39 @@ def _scheduler(reader):
 
 
 # Not NEEDS_INPUT or NEEDS_DECISION: those wait for the user, so a task that depends on one waits rather than stops.
+# IMPLEMENTED is not here either: the member's own work is in and it waits for the group's review.
+# A task that depends on one waits, it does not stop.
 _STOPPED = ('FAIL', 'BLOCKED', 'INFRA', 'INTERRUPTED', 'TIMEOUT', 'ERROR', 'CONFLICT', 'NOCHANGES', 'INVALIDATED', 'UNKNOWN')
+
+# How status_class, and through it _waiting, reads a status.
+# done is MERGED only. PASS is saved and not merged yet, so a dependent still lists it.
+# NOCHANGES is failed: it is in _STOPPED and will not merge. The page paints PASS and NOCHANGES
+# as finished; this reader does not, because a dependent is not free of either.
+# IMPLEMENTED is waiting, with NEEDS_INPUT and NEEDS_DECISION: awaiting the group's review.
+# It is not done, not active and not failed.
+_DONE_STATUS = frozenset(('MERGED',))
+_ACTIVE_STATUS = frozenset(('RUNNING',))
+_WAITING_STATUS = frozenset(('NEEDS_INPUT', 'NEEDS_DECISION', 'IMPLEMENTED'))
+
+
+def status_class(status):
+    """'done', 'active', 'waiting' or 'failed', or None for a status in none of those buckets.
+
+    `_waiting` uses this for a dependency: 'done' drops it from `on`, 'failed' puts it in
+    `stopped`, and 'waiting' leaves it in `on` only. PENDING is None (not started). PASS is
+    None too (saved, not merged). IMPLEMENTED is 'waiting': awaiting group review.
+    """
+    if status in _DONE_STATUS:
+        return 'done'
+    if status in _ACTIVE_STATUS:
+        return 'active'
+    if status in _WAITING_STATUS:
+        return 'waiting'
+    if status in _STOPPED:
+        return 'failed'
+    return None
+
+
 _DETAIL_CAP = 400              # characters of an infra stop's detail, a short text
 _ATTEMPT_CAP = 8               # a plan without a max_attempts file
 _LEDGER_KEEP = 50              # the newest ledger rows a task keeps
@@ -889,9 +921,10 @@ def _waiting(reader, tasks, scheduler):
             continue
         if task['status'] != 'PENDING':
             continue
-        on = [dep for dep in task['deps'] if status.get(dep) != 'MERGED']
+        on = [dep for dep in task['deps'] if status_class(status.get(dep)) != 'done']
         if on:
-            task['waiting'] = dict(kind='deps', on=on, stopped=[dep for dep in on if status.get(dep) in _STOPPED])
+            task['waiting'] = dict(kind='deps', on=on,
+                                   stopped=[dep for dep in on if status_class(status.get(dep)) == 'failed'])
         elif scheduler['stopping']:
             task['waiting'] = dict(kind='stopping', mode=scheduler['stopping'])
         elif scheduler['drained']:
@@ -2238,6 +2271,17 @@ def detail(path, source='plan') -> dict:
     result['findings_available'] = findings.available()
     result['fractal'] = fractal.summary(reader)
     result['brief'] = _attach_brief(reader, tasks)
+    # No groups.tsv: the run JSON gains nothing. A plan that has one carries `groups` and, on
+    # every task, `group` (its group id, or null when it is in none).
+    if reader.exists('groups.tsv'):
+        listed = groups.groups(reader)
+        result['groups'] = listed
+        owner = {}
+        for item in listed:
+            for member in item['members'] or []:
+                owner.setdefault(member, item['id'])
+        for task in tasks:
+            task['group'] = owner.get(task['id'])
     result.update(tasks=tasks, warnings=reader.warnings, truncated=reader.truncated, updated=reader.updated)
     return result
 
@@ -2261,6 +2305,14 @@ def _plan_task(reader, tasks, task_id):
 def _review(kind, item, text):
     return dict(kind=kind, execution=item['id'], attempt=item['attempt'], spec=(item['model'] or {}).get('spec'),
                 verdict=item['verdict'], state=item['state'], findings=findings.listing(text), tests=findings.tests(text))
+
+
+def group_detail(path, gid, source='plan'):
+    """One group of a plan, with its review, or None when the plan has no such group."""
+    reader = _Read(path)
+    if _kind(reader.path) != 'plan':
+        return None
+    return groups.group(reader, gid)
 
 
 def task_detail(path, task_id, source='plan'):
@@ -2322,6 +2374,15 @@ def _execution(reader, name):
         owner, owner_dir = dict(kind='task', id='solo'), ''
     elif parts[0] == 'attempts':
         execs, owner, owner_dir = _run_execs(reader), dict(kind='run', id=None), ''
+    elif parts[0] == 'groups' and len(parts) >= 4 and parts[2] == 'attempts':
+        # A review=group group's QA dispatch lives in groups/<gid>/attempts, and its prompts in the group dir.
+        gid = parts[1]
+        if not groups.GID.fullmatch(gid):
+            return None
+        owner_dir = f'groups/{gid}'
+        execs = executions.scan(reader, owner_dir + '/attempts',
+                                reader.word(owner_dir + '/status') == 'REVIEWING', ('qa',))
+        owner = dict(kind='group', id=gid)
     elif parts[0] in ('tasks', 'shadow'):
         task = _plan_task(reader, tasks, parts[1])
         execs = _task_execs(reader, task)
@@ -3217,6 +3278,9 @@ class Catalog:
 
     def task(self, key, task_id):
         return self._find(key, task_detail, task_id)
+
+    def group(self, key, gid):
+        return self._find(key, group_detail, gid)
 
     def execution(self, key, name):
         return self._find(key, execution_detail, name)

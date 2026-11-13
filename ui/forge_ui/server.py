@@ -36,6 +36,7 @@ TOKEN_HEADER = 'X-Forge-UI-Token'
 
 _RUN_PATH = re.compile(r'/api/runs/([0-9a-f]{12})')
 _TASK_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/tasks/([^/]+)')
+_GROUP_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/groups/([a-z0-9][a-z0-9-]{0,39})')
 _EXEC_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/executions/((?:task|dwarf|qa|solo|verification|parallel)-[0-9a-f]{32})')
 _REVIEW_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/final-reviews/((?:final-review|integrate)-[0-9]+-[0-9]+)')
 _TASK_DIFF_PATH = re.compile(_TASK_PATH.pattern + r'/diff(?:/(current|prev|committed|existing))?')
@@ -130,6 +131,9 @@ def api_get(catalog, path):
     if match:
         task_id = _task_id(match.group(2))
         return None if task_id is None else catalog.task(match.group(1), task_id)
+    match = _GROUP_PATH.fullmatch(path)
+    if match:
+        return catalog.group(*match.groups())
     match = _EXEC_PATH.fullmatch(path)
     if match:
         return catalog.execution(*match.groups())
