@@ -61,6 +61,13 @@
   --sev-p1: light-dark(#783ebd, #c18dff);
   --sev-p2: light-dark(#335dbd, #88a9ff);
   --sev-p3: light-dark(#56635b, #a7b2ab);
+  /* the Disk screen's parts, a fixed categorical order checked for colour-blind separation on --module, both themes */
+  --disk-1: light-dark(#2a78d6, #3987e5);
+  --disk-2: light-dark(#eb6834, #d95926);
+  --disk-3: light-dark(#1baf7a, #199e70);
+  --disk-4: light-dark(#eda100, #c98500);
+  --disk-5: light-dark(#e87ba4, #d55181);
+  --disk-6: light-dark(#6250d6, #9085e9);
   /* the 3D stage: body, hairlines and the accent of what is live */
   --stage-accent: var(--lamp-amber);
   --stage-body: light-dark(#f3f5f0, #161c19);
@@ -1393,6 +1400,27 @@ table.wt-grid { width: max-content; min-width: 100%; }
 .disk-block p { margin: 0 0 var(--s-2); }
 .disk-list { margin: 0; padding-left: 1.2em; font-size: var(--t-sm); font-variant-numeric: tabular-nums; }
 .disk-list li { overflow-wrap: anywhere; }
+.disk-view { position: relative; }
+.disk-chart { display: grid; gap: var(--s-2); padding: var(--s-4); border-radius: var(--r-module); background: var(--module); box-shadow: var(--ply-1); }
+.disk-chart h2 { margin: 0; justify-self: start; }
+.disk-chart .disk-sub { margin-top: var(--s-3); }
+.disk-bar { display: flex; gap: 2px; height: 14px; min-width: 2px; }
+.disk-bar-whole { height: 22px; }
+.disk-seg { flex-basis: 0; min-width: 2px; height: 100%; cursor: default; }
+.disk-seg:first-child { border-radius: 4px 0 0 4px; }
+.disk-seg:last-child { border-radius: 0 4px 4px 0; }
+.disk-seg:only-child { border-radius: 4px; }
+.disk-seg:hover, .disk-seg:focus-visible { outline: 2px solid var(--route); outline-offset: 1px; position: relative; z-index: 1; }
+.disk-legend { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-4); margin: 0; padding: 0; list-style: none; font-size: var(--t-sm); font-variant-numeric: tabular-nums; }
+.disk-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.disk-swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+.disk-repos { display: grid; gap: 6px; }
+.disk-repo { display: grid; grid-template-columns: minmax(8em, 16em) minmax(0, 1fr) 6em; align-items: center; gap: var(--s-3); font-size: var(--t-sm); }
+.disk-repo-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.disk-repo-size { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.disk-track { min-width: 0; }
+.disk-tip { position: absolute; z-index: 5; display: grid; gap: 2px; max-width: 22em; padding: 6px 10px; border-radius: var(--r-key); background: var(--key); color: var(--ink); box-shadow: var(--ply-2); font-size: var(--t-sm); pointer-events: none; font-variant-numeric: tabular-nums; }
+@media (max-width: 640px) { .disk-repo { grid-template-columns: minmax(0, 1fr) 5em; } .disk-track { grid-column: 1 / -1; grid-row: 2; } }
 
 /* ---------- projects (#/projects) ---------- */
 .projects-view { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-3); max-width: 1600px; }

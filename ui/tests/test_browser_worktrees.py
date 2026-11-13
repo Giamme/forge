@@ -81,9 +81,12 @@ class Worktrees(unittest.TestCase):
     def test_filters_narrow_the_rows_and_a_command_is_copied_whole(self):
         page = self.page()
         page.wait_for_selector('.wt-grid')
-        self.assertEqual(self.shown(page), ['finished', 'failed', 'in_use', 'removed'])
+        # what is on disk first: the removed history waits behind the filter
+        self.assertEqual(self.shown(page), ['finished', 'failed', 'in_use'])
         page.select_option('select[data-filter="status"]', 'failed')
         self.assertEqual(self.shown(page), ['failed'])
+        page.select_option('select[data-filter="status"]', 'all')
+        self.assertEqual(self.shown(page), ['finished', 'failed', 'in_use', 'removed'])
         page.select_option('select[data-filter="status"]', 'disk')
         self.assertEqual(self.shown(page), ['finished', 'failed', 'in_use'])
         self.assertEqual(page.locator('.wt-row-in_use .wt-copy').count(), 0)     # an active run's worktree offers nothing

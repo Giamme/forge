@@ -57,7 +57,7 @@
     const UI = root.ForgeUI;
     const el = (tag, text, cls) => UI.el(tag, text, cls);
     const start = ctx.filter || {};
-    const s = { data: null, error: null, filter: { repo: start.repo || '', run: start.run || '', status: 'all', kind: 'all' }, timer: null, seq: 0, loading: false };
+    const s = { data: null, error: null, filter: { repo: start.repo || '', run: start.run || '', status: 'disk', kind: 'all' }, timer: null, seq: 0, loading: false };
 
     const head = el('div', undefined, 'wt-head');
     const refreshKey = el('button', 'Read again'); refreshKey.type = 'button';
@@ -180,8 +180,8 @@
       notes.replaceChildren(...out);
     }
     function drawTotals(rows) {
-      const t = totals(rows);
-      sums.replaceChildren(el('strong', `${t.onDisk} on disk`), el('span', ` · ${humanBytes(t.bytes)}${t.pending ? ` so far, ${t.pending} still being measured` : ''} · ${t.count - t.onDisk} removed or missing · ${t.count} listed`));
+      const t = totals(rows), hidden = list(s.data && s.data.rows).length - list(rows).length;
+      sums.replaceChildren(el('strong', `${t.onDisk} on disk`), el('span', ` · ${humanBytes(t.bytes)}${t.pending ? ` so far, ${t.pending} still being measured` : ''} · ${t.count - t.onDisk} removed or missing · ${t.count} listed${hidden > 0 ? ` · ${hidden} more hidden by the filters` : ''}`));
     }
     function drawGroups() {
       const items = list(s.data && s.data.runs).filter(g => g.command && (!s.filter.run || g.key === s.filter.run) && (!s.filter.repo || g.repo === s.filter.repo));

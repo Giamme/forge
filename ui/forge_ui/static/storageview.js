@@ -41,6 +41,43 @@
     return Object.keys(HOME_LABEL).filter(k => p[k] > 0).map(k => ({ key: k, label: HOME_LABEL[k], bytes: p[k] })).sort((a, b) => b.bytes - a.bytes);
   }
   const repoName = p => typeof p === 'string' && p ? p.replace(/\/+$/, '').split('/').pop() : '—';
+  // The chart's parts, in a fixed order that fixes their colours (--disk-1 … --disk-6): a part keeps its colour
+  // whatever else is on screen.
+  const PARTS = [
+    { key: 'snapshots', label: 'review snapshots', note: 'can go: nothing reads them', color: 'var(--disk-1)' },
+    { key: 'logs', label: 'logs', note: 'gzipping the log copies takes most of it back', color: 'var(--disk-2)' },
+    { key: 'other', label: 'other run files', note: 'prompts, diffs, verdicts: what forge-ui shows', color: 'var(--disk-3)' },
+    { key: 'strays', label: "not forge's", note: 'found inside run dirs; forge never removes them', color: 'var(--disk-4)' },
+    { key: 'worktrees', label: 'worktrees', note: 'see the Worktrees screen', color: 'var(--disk-5)' },
+    { key: 'home', label: 'data home', note: 'the dataset (kept), archives, exports', color: 'var(--disk-6)' },
+  ];
+  // [{key, label, note, color, bytes, share}] of everything forge takes, in PARTS order; empty parts stay (0 bytes).
+  function breakdown(data) {
+    const t = (data && data.totals) || {}, runs = list(data && data.runs);
+    const sum = f => runs.reduce((n, r) => n + (Number(f(r)) || 0), 0);
+    const bytes = { snapshots: sum(r => r.snapshots), logs: sum(r => (r.logs || 0) + (r.gz || 0)), other: sum(r => (r.other || 0) + (r.fractal || 0)),
+      strays: sum(r => r.strays), worktrees: t.worktrees || 0, home: (data && data.data_home && data.data_home.bytes) || 0 };
+    const total = Object.values(bytes).reduce((a, b) => a + b, 0);
+    return PARTS.map(p => ({ ...p, bytes: bytes[p.key], share: total ? bytes[p.key] / total : 0 }));
+  }
+  // [{repo, name, total, parts: {key: bytes}}] largest first: each repository's run dirs and worktree folders.
+  function byRepo(data) {
+    const out = new Map();
+    const at = repo => {
+      const k = repo || '';
+      if (!out.has(k)) out.set(k, { repo: repo || null, name: repo ? repoName(repo) : 'unknown repository', total: 0,
+        parts: { snapshots: 0, logs: 0, other: 0, strays: 0, worktrees: 0 } });
+      return out.get(k);
+    };
+    const add = (g, key, n) => { n = Number(n) || 0; g.parts[key] += n; g.total += n; };
+    for (const r of list(data && data.runs)) {
+      const g = at(r.repo);
+      add(g, 'snapshots', r.snapshots); add(g, 'logs', (r.logs || 0) + (r.gz || 0)); add(g, 'other', (r.other || 0) + (r.fractal || 0)); add(g, 'strays', r.strays);
+    }
+    for (const w of list(data && data.worktrees)) add(at(w.repo), 'worktrees', w.bytes);
+    return Array.from(out.values()).filter(g => g.total > 0).sort((a, b) => b.total - a.total);
+  }
+  const pct = x => x >= 0.995 ? '100%' : x >= 0.1 ? Math.round(x * 100) + '%' : x > 0 ? (x * 100 < 1 ? '<1%' : (x * 100).toFixed(0) + '%') : '0%';
 
   /* ---------- DOM ---------- */
   function render(host, ctx) {
@@ -57,9 +94,65 @@
     const lede = el('p', 'What forge takes on disk in every repository it has runs for, and the command that takes each part back. Review snapshots and log copies can go without losing a run: every run stays viewable here and in the dataset. Commands are only copied: this page runs nothing.', 'muted wt-lede');
     const status = el('p', undefined, 'wt-totals'); status.setAttribute('role', 'status');
     const cmds = el('div', undefined, 'disk-commands');
+    const chart = el('section', undefined, 'disk-chart');
+    chart.setAttribute('aria-label', 'Where the space goes');
+    const tip = el('div', undefined, 'disk-tip'); tip.hidden = true; tip.setAttribute('role', 'tooltip');
     const tableHost = el('div', undefined, 'wt-table');
     const extra = el('section', undefined, 'disk-extra');
-    host.replaceChildren(head, lede, status, cmds, tableHost, extra);
+    host.replaceChildren(head, lede, status, chart, cmds, tableHost, extra, tip);
+
+    // one tooltip for every segment: what it is, its size and its share, beside the pointer or the focused segment
+    function showTip(seg, x, y) {
+      const p = seg._part;
+      tip.replaceChildren(el('strong', p.label), el('span', ` ${humanBytes(p.bytes)} · ${pct(p.share)}${seg._of ? ' of ' + seg._of : ''}`), el('span', p.note, 'muted'));
+      tip.hidden = false;
+      const box = host.getBoundingClientRect(), w = tip.offsetWidth;
+      tip.style.left = Math.max(0, Math.min(x - box.left + 12, box.width - w)) + 'px';
+      tip.style.top = (y - box.top + 16) + 'px';
+    }
+    function segment(part, width, of) {
+      const seg = el('span', undefined, 'disk-seg');
+      seg._part = part; seg._of = of;
+      seg.style.flexGrow = String(width); seg.style.background = part.color;
+      seg.tabIndex = 0;
+      seg.setAttribute('aria-label', `${part.label}: ${humanBytes(part.bytes)}, ${pct(part.share)}${of ? ' of ' + of : ''}`);
+      seg.addEventListener('pointermove', e => showTip(seg, e.clientX, e.clientY));
+      seg.addEventListener('pointerleave', () => { tip.hidden = true; });
+      seg.addEventListener('focus', () => { const r = seg.getBoundingClientRect(); showTip(seg, r.left + r.width / 2, r.bottom - 8); });
+      seg.addEventListener('blur', () => { tip.hidden = true; });
+      return seg;
+    }
+    function drawChart(d) {
+      const parts = breakdown(d), total = parts.reduce((n, p) => n + p.bytes, 0);
+      if (!total) { chart.replaceChildren(); return; }
+      const whole = el('div', undefined, 'disk-bar disk-bar-whole');
+      for (const p of parts) if (p.bytes > 0) whole.append(segment(p, p.bytes));
+      const legend = el('ul', undefined, 'disk-legend');
+      for (const p of parts) {
+        if (!p.bytes) continue;
+        const li = el('li'); const sw = el('i', undefined, 'disk-swatch'); sw.style.background = p.color;
+        li.append(sw, el('span', p.label), el('strong', humanBytes(p.bytes)), el('span', pct(p.share), 'muted'));
+        li.title = p.note; legend.append(li);
+      }
+      const repos = byRepo(d).slice(0, 10), top = repos.length ? repos[0].total : 0;
+      const rows = el('div', undefined, 'disk-repos');
+      for (const g of repos) {
+        const row = el('div', undefined, 'disk-repo');
+        const name = el('span', g.name, 'disk-repo-name'); if (g.repo) name.title = g.repo;
+        const track = el('div', undefined, 'disk-track');
+        const bar = el('div', undefined, 'disk-bar'); bar.style.width = (100 * g.total / top) + '%';
+        for (const p of parts) {
+          const n = g.parts[p.key] || 0;
+          if (n > 0) bar.append(segment({ ...p, bytes: n, share: n / g.total }, n, g.name));
+        }
+        track.append(bar);
+        row.append(name, track, el('span', humanBytes(g.total), 'disk-repo-size'));
+        rows.append(row);
+      }
+      const parts2 = [el('h2', 'Where the space goes', 'plate'), whole, legend];
+      if (repos.length) parts2.push(el('h2', 'By repository' + (byRepo(d).length > repos.length ? ' (the 10 largest)' : ''), 'plate disk-sub'), rows);
+      chart.replaceChildren(...parts2);
+    }
 
     function copyButton(command) {
       const b = el('button', 'Copy', 'wt-copy'); b.type = 'button';
@@ -141,7 +234,8 @@
         if (!d.complete) parts.push(el('span', ' · measuring stopped at its time limit: some sizes are lower bounds', 'muted'));
         status.replaceChildren(...parts);
       }
-      if (!d) { cmds.replaceChildren(); tableHost.replaceChildren(); extra.replaceChildren(); return; }
+      if (!d) { chart.replaceChildren(); cmds.replaceChildren(); tableHost.replaceChildren(); extra.replaceChildren(); return; }
+      drawChart(d);
       stamp.textContent = 'measured ' + when(d.computed);
       cmds.replaceChildren(...list(d.commands).map(commandBox));
       if (!list(d.runs).length) tableHost.replaceChildren(el('p', 'forge has no registered runs.', 'muted'));
@@ -173,5 +267,5 @@
     return { reload: () => load(true) };
   }
 
-  return { render, humanBytes, summary, homeParts, repoName, HOME_LABEL };
+  return { render, humanBytes, summary, homeParts, repoName, HOME_LABEL, PARTS, breakdown, byRepo, pct };
 });
