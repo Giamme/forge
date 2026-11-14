@@ -1,0 +1,7 @@
+ace5503	fix(brief): missing-groups note on the console; unreadable groups.tsv never holds a task
+3d10275	fix(groups): a path a member changed is a finding's location before any other path
+4ea7ec4	fix(groups): one brief stale pass per group merge; --tasks also sends back implicated members
+6aed51f	fix(ui): the group page says when its findings are an earlier round's
+54fe483	fix(groups): groups.tsv and groups.frozen get a plain file's mode
+41f9cdf	fix(groups): each group QA dispatch records its round for the dataset import
+79b5134	test(dataset): allow forge_brief/proposals.py its brief_diff point capture
