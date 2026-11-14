@@ -482,7 +482,8 @@ implicated tasks or `-`, QA spec. Status writes are atomic.
 - **`NEEDS_DECISION`, ambiguous.** A blocking finding names no member. Members stay
   `IMPLEMENTED`. `decision.md` starts `reasons: ambiguous`. The user names the members with
   `forge group retry PLAN GID --tasks a,b`. That runs `_group_settle --tasks`, which fails
-  only those members (an ambiguous finding says it was assigned by a decision), moves
+  those members, each with the ambiguous findings (marked as assigned by a decision), and
+  also any member the review implicated by its own blocking finding, with only that. It moves
   `decision.md` to `decision.<round>.md`, and sets the group to `FAIL`. The next `run
   --retry-failed` retries those tasks. A live scheduler picks them up on its sweep when
   they have budget left. Do this only when the user says so.

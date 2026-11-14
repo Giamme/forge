@@ -1457,13 +1457,10 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 requeue(member)
 
     def merge_group(gid: str, requeue_ok: bool = True) -> None:
+        # _merge_group flags each merged member's dependents itself (forge_brief_stale), so a direct call
+        # behaves the same; the scheduler does not do it a second time.
         result = subprocess.run(['/bin/bash', script, '_merge_group', str(plan), gid])
-        if result.returncode == 0:
-            if brief_mode != 'off':
-                for member in rgroups[gid].members:
-                    if status(member) == 'MERGED':
-                        brief_stale(member)
-        elif requeue_ok and not interrupted and not graceful:
+        if result.returncode != 0 and requeue_ok and not interrupted and not graceful:
             requeue_members(gid)   # a member the merge invalidated, when its review is what was voided
 
     def rereview(gid: str) -> bool:

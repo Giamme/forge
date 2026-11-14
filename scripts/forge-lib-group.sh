@@ -322,7 +322,7 @@ for row, finding in zip(rows, blocks):
         others = [t for t in tasks if t != me]
         if others:
             note = 'Also involves: ' + ', '.join(others)
-    elif row.get('n') in assigned:
+    elif row.get('n') in assigned and me in named:
         others = [t for t in named if t != me]
         note = ('Also involves: ' + ', '.join(others)) if others else \
             'Not attributed to a member task by the review; assigned to %s by a decision.' % me
@@ -416,7 +416,7 @@ do_group_settle() (
     note "$(group_status_line "$gid" "$G" "$st")"
     return 0
   fi
-  local facts implicated ambiguous
+  local facts implicated ambiguous named_ids=()
   if [ -n "$named" ]; then
     facts="$(python3 -I "$SKILL_DIR/scripts/forge_groups/review.py" facts "$G/attribution.json" 2>/dev/null)" || facts=""
     IFS=$'\t' read -r implicated ambiguous _ <<< "$facts"
@@ -425,6 +425,16 @@ do_group_settle() (
       die "group $gid has no blocking finding that names no member in round $round: nothing for --tasks to assign" 2
     fi
     assigned="$ambiguous"
+    # The members whose own blocking findings the review attributed go back too, named or not: left
+    # IMPLEMENTED, the next group round would only find the same thing again.
+    named_ids=("${want[@]}")
+    if [ -n "${implicated:-}" ] && [ "$implicated" != - ]; then
+      local union=()
+      for id in "${ids[@]}"; do
+        case ",${named// /},$implicated," in *",$id,"*) union+=("$id") ;; esac
+      done
+      want=("${union[@]}")
+    fi
   else
     facts="$(python3 -I "$SKILL_DIR/scripts/forge_groups/review.py" facts "$G/attribution.json" 2>/dev/null)" || facts=""
     IFS=$'\t' read -r implicated ambiguous _ <<< "$facts"
@@ -447,7 +457,7 @@ do_group_settle() (
   # Every member's report is made before anything changes: one that cannot be made changes nothing.
   verdict="$(forge_verdict "$G/qa.last" 2>/dev/null)"; [ "$verdict" = PASS ] || [ "$verdict" = FAIL ] || verdict=FAIL
   thr="$(cut -f1 "$G/qa.gate" 2>/dev/null | head -1)"; [ -n "$thr" ] || thr="$(qa_threshold_for "$PLAN" "")"
-  local named_csv=""; [ -z "$named" ] || named_csv="$(IFS=,; echo "${want[*]}")"
+  local named_csv=""; [ -z "$named" ] || named_csv="$(IFS=,; echo "${named_ids[*]}")"
   for id in "${want[@]}"; do
     if ! group_member_report "$G" "$id" "$members" FAIL "$assigned" "$named_csv" > "$PLAN/tasks/$id/.qa.last.settle.tmp" 2> "$G/settle.err"; then
       for n in "${want[@]}"; do rm -f "$PLAN/tasks/$n/.qa.last.settle.tmp"; done
@@ -615,8 +625,8 @@ merge_group() { # merge_group <plan> <gid> -> 0 merged, 1 not
       --set integration="$integration" --set group="$gid"
   done
   note "group $gid: $ids_csv merged"
-  # TODO(group-schedule): the scheduler's merge() runs brief_stale after a task merge; this does it here so a
-  # direct _merge_group call is the same. If the scheduler also runs it for a group, drop one of the two.
+  # With brief on, flag each member's dependents here, for the scheduler and a direct call alike (the
+  # scheduler's merge_group does not repeat it).
   for id in "${ids[@]}"; do forge_brief_stale "$PLAN" "$id"; done
   return 0
 }

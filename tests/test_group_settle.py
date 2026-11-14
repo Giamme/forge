@@ -203,15 +203,21 @@ class SettleDecisionTests(SettleCase):
         self.assertEqual(self.status(p), 'FAIL')
         self.assertFalse((p / 'groups' / 'g1' / 'decision.md').exists())
         self.assertEqual(self.gread(p, 'decision.1.md'), 'reasons: ambiguous\n')
-        self.assertEqual([self.read(p, t, 'status') for t in 'abc'], ['IMPLEMENTED', 'IMPLEMENTED', 'FAIL'])
+        # b is not named, but its own blocking finding goes back with it: left IMPLEMENTED, the next
+        # group round would only report it again. a has none and stays.
+        self.assertEqual([self.read(p, t, 'status') for t in 'abc'], ['IMPLEMENTED', 'FAIL', 'FAIL'])
         c = (self.tdir(p, 'c') / 'qa.last').read_text()
         self.assertIn(P1_X, c)
         self.assertIn('assigned to c by a decision', c)
         self.assertNotIn(P1_B, c)                                            # b's own finding stays b's
+        b = (self.tdir(p, 'b') / 'qa.last').read_text()
+        self.assertIn(P1_B, b)
+        self.assertNotIn(P1_X, b)                                            # the assigned one is c's alone
         self.assertEqual(len(self.rows(p, 'c')), 1)
-        self.assertEqual(self.rows(p, 'b'), [])
+        self.assertEqual(len(self.rows(p, 'b')), 1)
         self.assertEqual(self.settle(p, '--tasks', 'c').returncode, 0)
         self.assertEqual(len(self.rows(p, 'c')), 1)
+        self.assertEqual(len(self.rows(p, 'b')), 1)
 
     def test_tasks_gives_the_same_finding_to_every_named_task_and_their_own(self):
         p = self.decided()

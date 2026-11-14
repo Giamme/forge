@@ -231,7 +231,8 @@ class GroupCliTests(unittest.TestCase):
         self.write_ambiguous()
         result = self.group('retry', self.plan, 'g1', '--tasks', 'c', '--reason', 'c owns the stray finding')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual([self.status(task) for task in 'abc'], ['IMPLEMENTED', 'IMPLEMENTED', 'FAIL'])
+        # c takes the stray finding; b goes back too, for the finding the review attributed to it.
+        self.assertEqual([self.status(task) for task in 'abc'], ['IMPLEMENTED', 'FAIL', 'FAIL'])
         self.assertEqual((self.plan / 'groups' / 'g1' / 'status').read_text().strip(), 'FAIL')
         self.assertFalse((self.plan / 'groups' / 'g1' / 'decision.md').exists())
         self.assertIn('forge-parallel.sh run ', result.stdout)
