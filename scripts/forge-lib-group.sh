@@ -199,9 +199,18 @@ do_group() (
   local yq="" ft_qa rc
   [ -f "$PLAN/yolo_qa" ] && yq="--yolo"
   ft_qa="$(forge_fast_tier "$PLAN" qa)"
+  local before_qa made
+  before_qa="$(ls -d "$G"/attempts/qa-* 2>/dev/null)"
   /bin/bash "$DISPATCH" qa "$qa" --repo "$snap" --run-dir "$G" --review-base "$(cat "$G/review.base")" \
       --prompt-file "$G/qa.input" ${yq:+"$yq"} $ft_qa --output "${FORGE_OUTPUT:-summary}" > "$G/qa.out" 2>&1
   rc=$?
+  # The dispatch's own record of its round: the harvest reads it before it matches replies, so a round
+  # that leaves no qa.round-<n>.last (invalidated, timed out) still gets its dispatch.
+  for made in "$G"/attempts/qa-*; do
+    [ -d "$made" ] || continue
+    case $'\n'"$before_qa"$'\n' in *$'\n'"$made"$'\n'*) continue ;; esac
+    printf '%s\n' "$round" > "$made/group.round" 2>/dev/null || true
+  done
   if [ "${FORGE_OUTPUT:-summary}" = full ]; then cat "$G/qa.out"; fi
   if [ "$rc" -ne 0 ]; then
     case "$rc" in

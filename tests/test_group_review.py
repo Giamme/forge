@@ -126,6 +126,9 @@ class ReviewTests(GroupCase):
         self.assertRegex(row[1], r'^[0-9]+$')
         self.assertEqual(list((p / 'groups' / 'g1').glob('review-*')), [])  # the snapshot is gone
         self.assertEqual(json.loads(self.gread(p, 'attribution.json'))['round'], 1)
+        # the dispatch records its round, for the harvest
+        [attempt] = (p / 'groups' / 'g1' / 'attempts').glob('qa-*')
+        self.assertEqual((attempt / 'group.round').read_text(), '1\n')
         # no member changed
         self.assertEqual(self.members_state(p), before)
 

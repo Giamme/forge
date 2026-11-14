@@ -90,7 +90,8 @@ A group review is one QA dispatch for several tasks (`forge-dispatch.sh qa` with
 `--run-dir <plan>/groups/<gid>`). It is recorded with `scope` `group`, an empty task,
 `group` (the group id), `members` (the task ids from `groups.tsv`, in order) and `round`
 (the number in `groups/<gid>/round` when the dispatch was captured live; an import reads
-the round from `members.tsv`, matched to `qa.round-<n>.last` when that file exists). It is
+the dispatch's own `attempts/qa-*/group.round`, and for a run recorded before that file, the
+round from `members.tsv`, matched to `qa.round-<n>.last` when that file exists). It is
 not a task attempt. Reviewer leaderboards, `forge dataset` reviewers, pairs, routing, tiers
 and efforts, review history, finding facts, the review rows of `forge dataset export`, and
 forge-ui's model views skip `scope` `group` the way they skip a side dispatch. The dispatch

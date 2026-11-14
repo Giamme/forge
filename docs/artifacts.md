@@ -68,6 +68,8 @@ A decomposed run adds:
                                        the candidate the one review read; members.tsv is round, task, commit, attempt
   groups/<gid>/qa.input, qa.last, qa.out, qa.gate, qa.round-<n>.last, known_issues.md, infra.txt
   groups/<gid>/attribution.json, decision.md, decision.<round>.md, conflict.files
+  groups/<gid>/attempts/qa-<id>/group.round
+                                       the round that QA dispatch reviewed, read by a dataset import
   groups/<gid>/settled.round, settle.tasks, retries.used, invalidated.reason, review.base, merge.out, group.out
   tasks/<id>/reviewed.commit, source.fingerprint
                                        the commit and worktree fingerprint a review=group member stopped at

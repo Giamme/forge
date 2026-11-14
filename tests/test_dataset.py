@@ -2434,6 +2434,23 @@ class GroupReviewDatasetTests(StoreCase):
         self.assertEqual(result['failed'], [], result)
         return result
 
+    def test_a_dispatch_that_recorded_its_round_keeps_it_when_the_round_left_no_reply(self):
+        # Round 1 was invalidated: its dispatch has a reply but no qa.round-1.last. Round 2 was
+        # reviewed. Matching replies alone gives round 1's dispatch no round.
+        from forge_dataset.harvest import assign_group_rounds
+        plan = self.plan_skeleton('rounds', 'rounds-uid', ['a', 'b'])
+        gdir = self.group(plan, 'g1', ['a', 'b'], round_file='2', message=self.GROUP_MESSAGE)
+        (gdir / 'qa.round-1.last').unlink()
+        self.write(gdir / 'members.tsv', ''.join('%d\t%s\t%s\t1\n' % (n, t, (t * 40)[:40])
+                                                for n in (1, 2) for t in ('a', 'b')))
+        first = gdir / 'attempts' / 'qa-g1'
+        second = self.execution(gdir, 'qa', 'qa-g1-2', 60.0, self.GROUP_MESSAGE + 'round two\n')
+        self.write(gdir / 'qa.round-2.last', self.GROUP_MESSAGE + 'round two\n')
+        self.assertEqual(assign_group_rounds(gdir), {'qa-g1-2': 2})
+        self.write(first / 'group.round', '1\n')
+        self.write(second / 'group.round', '2\n')
+        self.assertEqual(assign_group_rounds(gdir), {'qa-g1': 1, 'qa-g1-2': 2})
+
     def built(self, path):
         """The events an import would write, before the store's rid dedup."""
         from types import SimpleNamespace

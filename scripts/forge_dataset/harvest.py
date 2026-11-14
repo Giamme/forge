@@ -503,15 +503,25 @@ def assign_group_rounds(group_dir: Path) -> dict:
 
     The file is incremented when the next round starts, so it may already name a round
     this dispatch did not review. members.tsv names the rounds that built a candidate.
-    A reply copied to qa.round-<n>.last is that round's; remaining dispatches zip onto
-    the rounds that have such a file, or onto every members.tsv round when none does.
-    An oversized round writes members.tsv and no reply, so it takes no dispatch.
+    A dispatch that recorded its round (`group.round`, written by `_group` since the
+    dispatch ended) is that round's. For the others: a reply copied to qa.round-<n>.last
+    is that round's; remaining dispatches zip onto the rounds that have such a file, or
+    onto every members.tsv round when none does. An oversized round writes members.tsv
+    and no reply, so it takes no dispatch.
     """
     rounds = _group_rounds(member_rows(group_dir))
     assignment = {}
     used = set()
     unmatched = []
+    attempts = []
     for attempt in group_qa_attempts(group_dir):
+        recorded = (text(attempt / 'group.round') or '').strip()
+        if recorded.isdigit():
+            assignment[attempt.name] = int(recorded)
+            used.add(int(recorded))
+        else:
+            attempts.append(attempt)
+    for attempt in attempts:
         last = text(attempt / 'qa.last')
         matched = None
         if last is not None:
