@@ -520,7 +520,11 @@ class PromptTextTests(unittest.TestCase):
         task = contract.qa_text('tail', 'task')
         self.assertNotIn(every, final)
         self.assertNotIn('say so plainly', final)
-        self.assertEqual(task, LEGACY_FINDINGS + extra + final[len(LEGACY_FINDINGS):])
+        # #149 inserts the {outside=…} paragraph after the severity rules. Final has no
+        # such paragraph; everything else in the task tail is still the final tail.
+        outside = '\n' + '\n'.join(contract._OUTSIDE) + '\n'
+        self.assertEqual(task, LEGACY_FINDINGS + extra + final[len(LEGACY_FINDINGS):].replace(
+            '\n\nBlocking threshold:', '\n' + outside + '\nBlocking threshold:', 1))
         sweep = contract.qa_text('tail', 'sweep')
         self.assertNotIn(every, sweep)
         self.assertNotIn('say so plainly', sweep)
@@ -589,7 +593,8 @@ class PromptTextTests(unittest.TestCase):
 
     def test_group_kind_adds_the_review_rules_and_task_and_sweep_stay(self):
         # #140. Group is the task contract plus how to judge several tasks and how to
-        # attribute a finding. Task and sweep stay byte-identical to v0.18.
+        # attribute a finding. Task head and sweep stay byte-identical to v0.18;
+        # task tails add only the {outside=…} paragraph (#149).
         head = contract.qa_text('head', 'group')
         tail = contract.qa_text('tail', 'group')
         task_head = contract.qa_text('head', 'task')
@@ -607,17 +612,26 @@ class PromptTextTests(unittest.TestCase):
                        'end its bullet with {tasks=a,b}',
                        'A finding with no file needs {tasks=',
                        'Write {tasks=…} in its own braces',
-                       'immediately before the facts',
                        'so the facts brace still ends the line',
                        '{tasks=a,b} {reach=realistic origin=new evidence=traced}'):
             self.assertIn(phrase, tail, phrase)
             self.assertNotIn(phrase, contract.qa_text('tail', 'task'), phrase)
             self.assertNotIn(phrase, contract.qa_text('tail', 'sweep'), phrase)
+        # #149: task, solo and group also say to put {outside=…} immediately before the facts.
+        self.assertIn('immediately before the facts', tail)
+        self.assertIn('immediately before the facts', contract.qa_text('tail', 'task'))
+        self.assertNotIn('immediately before the facts', contract.qa_text('tail', 'sweep'))
         self.assertEqual(tail.splitlines()[-2:], contract.qa_text('tail', 'task').splitlines()[-2:])
         self.assertIn('List every CONFIRMED finding you find', tail)
+        # Task head and sweep stay byte-identical to v0.18. Task tails gained the
+        # {outside=…} paragraph (#149); the pin is that tail with the paragraph removed.
+        outside = '\n' + '\n'.join(contract._OUTSIDE) + '\n'
         for (kind, part, threshold), digest in _V018.items():
             with self.subTest(kind=kind, part=part, threshold=threshold):
                 text = contract.qa_text(part, kind, threshold)
+                if kind == 'task' and part == 'tail':
+                    self.assertEqual(text.count(outside), 1)
+                    text = text.replace(outside, '', 1)
                 self.assertEqual(hashlib.sha256(text.encode()).hexdigest(), digest)
 
     def test_the_verdict_lines_still_parse(self):
@@ -643,7 +657,7 @@ class DwarfRulesTests(unittest.TestCase):
                        'actual', 'say so explicitly instead of claiming it passed',
                        'which verification commands you ran'):
             self.assertIn(phrase, ' '.join(text.split()), phrase)
-        self.assertLessEqual(len(text.splitlines()), 10)          # 8 until #90's verification-scope rule
+        self.assertLessEqual(len(text.splitlines()), 13)          # 10 until #149's outside-file rule
         self.assertFalse(any(line != line.rstrip() for line in text.splitlines()))
 
     def test_with_verification_after_the_merge_the_whole_suite_is_left_to_forge(self):
