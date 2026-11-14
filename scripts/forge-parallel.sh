@@ -706,7 +706,7 @@ forge_groups_flags_early() {
 # the reviews line. Nothing without a groups.tsv.
 render_groups() {
   [ -f "$1/groups.tsv" ] || return 0
-  python3 - "$SKILL_DIR/scripts" "$1" <<'PY'
+  python3 - "$SKILL_DIR/scripts" "$1" "$(printf '%q' "$1")" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1])
 import forge_groups
@@ -722,8 +722,14 @@ if groups:
     mem_w = max(len(m) for m in members)
     print('groups:')
     for g, q, m in zip(groups, qas, members):
+        goal = g.goal if g.goal != '-' else '(no goal)'
         print('  %-*s  %-12s  %-*s  %-*s  — %s' % (ids, g.id, 'review=' + g.review, qa_w, q, mem_w, m,
-                                                       g.goal if g.goal != '-' else '(no goal)'))
+                                                       goal if g.title == '-' else '%s: %s' % (g.title, goal)))
+    missing = [g.id for g in groups if g.goal == '-']
+    if missing:
+        # A goal is what a group review and a brief prompt say the group is for (#136).
+        print('%d group(s) have no goal (%s): set one with forge group set %s GID --goal "..."'
+              % (len(missing), ', '.join(missing), sys.argv[3]))
     print()
 PY
 }

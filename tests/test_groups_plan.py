@@ -72,6 +72,10 @@ class GroupsPlanTests(unittest.TestCase):
         self.assertEqual(self.groups(p), [('w1', 'task', '-', ('a', 'b', 'c'))])   # d waits on a: alone in wave 2
         self.frozen_ok(p)
         self.assertIn('groups:', out)
+        # #136: a derived group has a title and no goal; the table says so and how to set one
+        self.assertEqual([(g.title, g.goal) for g in fg.load(p)], [('Wave 1', '-')])
+        self.assertIn('— Wave 1: (no goal)', out)
+        self.assertEqual(out.count('1 group(s) have no goal (w1): set one with forge group set'), 1, out)
 
     def test_group_review_leaves_the_high_tasks_out_and_resolves_the_qa(self):
         p = self.new_plan()
@@ -205,9 +209,10 @@ class GroupsPlanTests(unittest.TestCase):
         lines = out.splitlines()
         block = lines[lines.index('groups:') + 1:][:3]
         self.assertEqual(block, [
-            '  g1  review=group  qa=opus:medium  a, b, c  — Every command can write JSON and TSV',
+            '  g1  review=group  qa=opus:medium  a, b, c  — Formats: Every command can write JSON and TSV',
             '  g2  review=group  qa=sonnet       d, e     — (no goal)',
             '  w3  review=task   -               f, g     — (no goal)'])
+        self.assertIn('2 group(s) have no goal (g2, w3): set one with forge group set', out)
         # 7 tasks, 2 review groups cover 5 of them: 7 - 5 + 2 reviews
         self.assertIn('reviews: 4 (2 groups replace 5 task reviews)', lines)
         self.assertIn('tasks: 7   waves: 1   estimated dispatches: 11 (7 dwarf + 4 qa)', out)

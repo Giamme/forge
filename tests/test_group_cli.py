@@ -167,6 +167,46 @@ class GroupCliTests(unittest.TestCase):
         if decision is not None:
             self.put(f'groups/{gid}/decision.md', decision)
 
+    # --- set --------------------------------------------------------------------------------------
+
+    def freeze(self):
+        import sys
+        sys.path.insert(0, str(ROOT / 'scripts'))
+        import forge_groups
+        forge_groups.freeze(self.plan)
+        return forge_groups
+
+    def test_set_writes_the_goal_freezes_again_and_logs_it(self):
+        self.put('groups.tsv', HEADER + 'w1\tgroup\topus:high\ta,b,c\tWave 1\t-\n')
+        fg = self.freeze()
+        result = self.group('set', self.plan, 'w1', '--goal', '  Every command\twrites   JSON ', '--reason', 'from the brief')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        [g] = fg.load(self.plan)
+        self.assertEqual((g.title, g.goal, g.members), ('Wave 1', 'Every command writes JSON', ('a', 'b', 'c')))
+        self.assertIsNone(fg.check_frozen(self.plan))          # frozen again: the next run accepts it
+        [entry] = self.log()
+        self.assertEqual((entry['actor'], entry['action'], entry['key'], entry['value'], entry['previous'], entry['reason']),
+                         ('cli', 'group-set', 'w1.goal', 'Every command writes JSON', '-', 'from the brief'))
+        # the same value again changes nothing and logs nothing; an empty value means none
+        self.assertIn('unchanged', self.group('set', self.plan, 'w1', '--goal', 'Every command writes JSON').stdout)
+        self.assertEqual(len(self.log()), 1)
+        self.assertEqual(self.group('set', self.plan, 'w1', '--title', '').returncode, 0)
+        self.assertEqual(fg.load(self.plan)[0].title, '-')
+
+    def test_set_refuses_groups_that_changed_since_plan_and_bad_input(self):
+        self.put('groups.tsv', HEADER + 'w1\tgroup\topus:high\ta,b,c\tWave 1\t-\n')
+        fg = self.freeze()
+        before = (self.plan / 'groups.frozen').read_text()
+        self.put('groups.tsv', HEADER + 'w1\tgroup\topus:high\ta,b\tWave 1\t-\n')    # a member taken out by hand
+        refused = self.group('set', self.plan, 'w1', '--goal', 'G')
+        self.assertEqual(refused.returncode, 3, refused.stderr)
+        self.assertIn('run plan again', refused.stderr)
+        self.assertEqual((self.plan / 'groups.frozen').read_text(), before)
+        self.assertEqual(self.log(), [])
+        self.assertEqual(self.group('set', self.plan, 'zz', '--goal', 'G').returncode, 2)
+        self.assertEqual(self.group('set', self.plan, 'w1').returncode, 2)
+        self.assertEqual(self.group('set', self.plan, 'w1', '--goal', 'x' * 501).returncode, 2)
+
     def write_ambiguous(self):
         self.write_review_group('NEEDS_DECISION', 'reasons: ambiguous\n\nChoices:\n')
         self.put('groups/g1/qa.last', QA_AMBIGUOUS)

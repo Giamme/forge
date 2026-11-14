@@ -195,7 +195,9 @@ def derive(plan, review='task', max_tasks=6) -> list:
             if len(chunk) < 2:
                 continue
             suffix = chr(ord('a') + index) if len(chunks) > 1 else ''
-            groups.append(Group('w%d%s' % (wave, suffix), review, '-', tuple(chunk), '-', '-'))
+            # A derived group has a title and no goal: nothing here knows what the wave is for.
+            # plan asks for one, and `forge group set` writes it.
+            groups.append(Group('w%d%s' % (wave, suffix), review, '-', tuple(chunk), 'Wave %d%s' % (wave, suffix), '-'))
     return groups
 
 

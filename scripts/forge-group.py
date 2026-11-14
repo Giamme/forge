@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Show a plan's task groups, and retry a review=group group.
+"""Show a plan's task groups, retry a review=group group, and set a group's title or goal.
 
   show PLAN [--group GID] [--json]
       Every group in groups.tsv order: id, review scope, reviewer (qa), title, goal,
@@ -17,8 +17,16 @@
       so the next run reviews it again. No member attempt is spent.
       Anything else (PASS, merged, FAIL, WAITING, CONFLICT, ...) is refused.
 
+  set PLAN GID [--title TEXT] [--goal TEXT] [--reason TEXT]
+      Rewrite a group's title or goal in groups.tsv and freeze the groups again, under the
+      control lock, logged in control.log (actor cli). One line each; an empty value means none
+      (`-`). Refused (exit 3) when groups.tsv or a member's deps or files already differ from
+      what plan froze: freezing again would accept those edits too, so run plan again. Works
+      on a live run: title and goal change no membership, and the next prompt that names the
+      group (a group review, a brief) uses the new text.
+
 Exit codes: 0 ok, 2 usage or an unknown group or task, 3 refused (no groups.tsv on show,
-a state this command does not retry, the control lock busy).
+a state this command does not retry, groups changed since plan, the control lock busy).
 """
 from __future__ import annotations
 
@@ -39,6 +47,7 @@ SCRIPTS = Path(__file__).resolve().parent
 PARALLEL = SCRIPTS / 'forge-parallel.sh'
 REARM = ('UNKNOWN', 'INFRA', 'TIMEOUT', 'INTERRUPTED', 'ERROR')
 REASON_LIMIT = 2000
+TEXT_LIMIT = 500
 
 _CONTROL = None
 _SWEEP_EVERY = None
@@ -100,6 +109,12 @@ def parser() -> argparse.ArgumentParser:
     retry.add_argument('gid', help='the group id')
     retry.add_argument('--tasks', help='comma list of member tasks; required when the decision is ambiguous')
     retry.add_argument('--reason', help="why, recorded in the plan's control.log (actor cli)")
+    setter = sub.add_parser('set', help="a group's title or goal, then the groups frozen again")
+    setter.add_argument('plan', help='the plan directory')
+    setter.add_argument('gid', help='the group id')
+    setter.add_argument('--title', help='one line; empty for none')
+    setter.add_argument('--goal', help='one line: what the group is for; empty for none')
+    setter.add_argument('--reason', help="why, recorded in the plan's control.log (actor cli)")
     return top
 
 
@@ -415,11 +430,54 @@ def cmd_retry(args) -> int:
     raise Refused(message)
 
 
+def one_line(text: str, flag: str) -> str:
+    value = ' '.join(text.split())
+    if len(value) > TEXT_LIMIT:
+        raise Usage(f'{flag} is limited to {TEXT_LIMIT} characters')
+    return value or '-'
+
+
+def cmd_set(args) -> int:
+    plan = plan_dir(args.plan)
+    if not os.path.isdir(plan):
+        raise Usage(f'{args.plan} is not a plan directory')
+    if not os.path.isfile(os.path.join(plan, 'groups.tsv')):
+        raise Usage(f'{plan} has no groups.tsv')
+    if args.title is None and args.goal is None:
+        raise Usage('set needs --title or --goal')
+    title = None if args.title is None else one_line(args.title, '--title')
+    goal = None if args.goal is None else one_line(args.goal, '--goal')
+    reason = clean_reason(args.reason)
+    find_group(load_groups(plan), args.gid, plan)
+    ctrl = control()
+    with ctrl.control_lock(plan):
+        ctrl.probe(plan, 'control.log')
+        groups = load_groups(plan)
+        group = find_group(groups, args.gid, plan)
+        stale = forge_groups.check_frozen(plan)
+        if stale:
+            raise Refused(f'{stale}: forge group set would freeze those changes too')
+        new = group._replace(title=group.title if title is None else title, goal=group.goal if goal is None else goal)
+        if new == group:
+            sys.stdout.write(f'group {group.id}: unchanged\n')
+            return 0
+        forge_groups.write(plan, [new if g.id == group.id else g for g in groups])
+        forge_groups.freeze(plan)
+        for key, before, after in (('title', group.title, new.title), ('goal', group.goal, new.goal)):
+            if before != after:
+                ctrl.audit(plan, 'cli', 'group-set', None, f'{group.id}.{key}', after, before,
+                           **({'reason': reason} if reason else {}))
+    sys.stdout.write(f'group {group.id}: title {new.title!r}, goal {new.goal!r}; groups frozen again\n')
+    return 0
+
+
 def main(argv=None) -> int:
     args = parser().parse_args(argv)
     try:
         if args.command == 'show':
             return cmd_show(args)
+        if args.command == 'set':
+            return cmd_set(args)
         return cmd_retry(args)
     except Usage as error:
         sys.stderr.write(f'forge group: {error}\n')
