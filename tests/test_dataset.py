@@ -2116,6 +2116,12 @@ class IndependenceTests(unittest.TestCase):
                            if 'forge_dataset' in line and 'import' in line]
                 self.assertEqual(imports, ['from forge_dataset.capture import point'], path)
                 continue
+            if path.parent.name == 'forge_brief' and path.name == 'proposals.py':
+                # A proposal's state change records one `brief_diff` point event. It reads nothing back.
+                imports = [line.strip() for line in text.splitlines()
+                           if 'forge_dataset' in line and 'import' in line]
+                self.assertEqual(imports, ['from forge_dataset.capture import point'], path)
+                continue
             if path.parent.name == 'forge_brief' and path.name == 'answers.py':
                 # An answer records a point event. Whether a question is possibly stale reads the files this
                 # run's own attempts changed (its diff, else its attempt events): no verdict, no earlier run.
@@ -2346,3 +2352,327 @@ class SideDispatchStatisticsTests(StoreCase):
         self.assertEqual(findings_n, 1)
         self.assertEqual(findings, [('qa', '- [P2][CONFIRMED] a.txt:1 — wrong', 2, 'CONFIRMED')])
         self.assertEqual(self.token_sum('sided'), dict(input=50, cached_input=5, output=10))
+
+
+class GroupReviewDatasetTests(StoreCase):
+    """A review=group QA dispatch is one review of several tasks.
+
+    It is recorded once, as scope group, and it is not a task attempt: leaderboards and
+    the per-task statistics leave it out. Export keeps the dispatch, flagged. A plan
+    with no group review imports the same events as before.
+    """
+
+    REPO = '/nonexistent/repo'
+    GATE = 'P2\taccept\tnone\t0\t0\t0'
+    MEMBER_NOTE = 'Group review, the findings attributed to this member.\nFORGE_VERDICT: PASS\n'
+    GROUP_MESSAGE = '- [P2][CONFIRMED] a.txt:2 — group\nFORGE_VERDICT: PASS\n'
+    TASK_MESSAGE = '- [P1][CONFIRMED] c.txt:1 — task\nFORGE_VERDICT: FAIL\n'
+    PROMPT = 'review this\n```diff\ndiff --git a/a.txt b/a.txt\n+a\n```\n'
+
+    def write(self, path, text):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    def execution(self, directory, role, name, started, message='done\n', tokens=(3, 0, 1)):
+        attempt = directory / 'attempts' / name
+        attempt.mkdir(parents=True)
+        pipeline = role in ('task', 'solo', 'parallel', 'verification')
+        (attempt / 'metrics.json').write_text(json.dumps(dict(
+            role=role, wall_started=started, exit_code=0,
+            harness='pipeline' if pipeline else 'codex', elapsed_s=dict(total=1),
+            input_tokens=tokens[0], cached_input_tokens=tokens[1], output_tokens=tokens[2])))
+        if not pipeline:
+            (attempt / (role + '.resolved')).write_text(
+                'alias=opus\nharness=codex\nmodel=opus\neffort=low\n')
+            (attempt / (role + '.last')).write_text(message)
+            (attempt / (role + '.prompt')).write_text(self.PROMPT)
+        return attempt
+
+    def plan_skeleton(self, name, uid, tasks):
+        path = Path(self.tmp.name) / name
+        path.mkdir(parents=True)
+        self.write(path / 'dataset.uid', uid + '\n')
+        self.write(path / 'repo', self.REPO + '\n')
+        self.write(path / 'run_id', uid + '-run\n')
+        self.write(path / 'goal.txt', 'goal\n')
+        self.write(path / 'tasks.tsv', ''.join(
+            '%s\t-\tlow\t%s.txt\tluna\topus\t%s\n' % (tid, tid, tid) for tid in tasks))
+        return path
+
+    def task(self, plan, tid, started, status='PASS', attempt_n=1, own_qa=False, judged_copy=False):
+        tdir = plan / 'tasks' / tid
+        self.write(tdir / 'status', status + '\n')
+        self.write(tdir / 'attempt', '%d\n' % attempt_n)
+        self.write(tdir / 'attempts.tsv', '100\t%d\t%s\t\tluna\n' % (attempt_n, status))
+        self.write(tdir / 'reviewed.commit', (tid * 40)[:40] + '\n')
+        self.execution(tdir, 'task', 'task-' + tid, started)
+        self.execution(tdir, 'dwarf', 'dwarf-' + tid, started + 0.1)
+        if own_qa:
+            self.execution(tdir, 'qa', 'qa-' + tid, started + 0.2, self.TASK_MESSAGE, tokens=(10, 1, 2))
+        if judged_copy:
+            self.write(tdir / 'qa.last', self.MEMBER_NOTE)
+            self.write(tdir / 'qa.gate', self.GATE + '\n')
+        return tdir
+
+    def group(self, plan, gid, members, round_file, message, reviewed_round=1):
+        gdir = plan / 'groups' / gid
+        self.write(plan / 'groups.tsv',
+                   '# id\treview\tqa\tmembers\ttitle\tgoal\n%s\tgroup\topus\t%s\tTitle\tGoal\n'
+                   % (gid, ','.join(members)))
+        self.write(gdir / 'round', '%s\n' % round_file)
+        self.write(gdir / 'status', 'PASS\n')
+        rows = ['%d\t%s\t%s\t1\n' % (reviewed_round, tid, (tid * 40)[:40]) for tid in members]
+        self.write(gdir / 'members.tsv', ''.join(rows))
+        self.execution(gdir, 'qa', 'qa-' + gid, 50.0, message, tokens=(40, 4, 8))
+        if reviewed_round is not None:
+            self.write(gdir / ('qa.round-%d.last' % reviewed_round), message)
+        return gdir
+
+    def imported(self, path):
+        from forge_dataset.importer import import_run
+        result = import_run(path)
+        self.assertEqual(result['failed'], [], result)
+        return result
+
+    def test_a_dispatch_that_recorded_its_round_keeps_it_when_the_round_left_no_reply(self):
+        # Round 1 was invalidated: its dispatch has a reply but no qa.round-1.last. Round 2 was
+        # reviewed. Matching replies alone gives round 1's dispatch no round.
+        from forge_dataset.harvest import assign_group_rounds
+        plan = self.plan_skeleton('rounds', 'rounds-uid', ['a', 'b'])
+        gdir = self.group(plan, 'g1', ['a', 'b'], round_file='2', message=self.GROUP_MESSAGE)
+        (gdir / 'qa.round-1.last').unlink()
+        self.write(gdir / 'members.tsv', ''.join('%d\t%s\t%s\t1\n' % (n, t, (t * 40)[:40])
+                                                for n in (1, 2) for t in ('a', 'b')))
+        first = gdir / 'attempts' / 'qa-g1'
+        second = self.execution(gdir, 'qa', 'qa-g1-2', 60.0, self.GROUP_MESSAGE + 'round two\n')
+        self.write(gdir / 'qa.round-2.last', self.GROUP_MESSAGE + 'round two\n')
+        self.assertEqual(assign_group_rounds(gdir), {'qa-g1-2': 2})
+        self.write(first / 'group.round', '1\n')
+        self.write(second / 'group.round', '2\n')
+        self.assertEqual(assign_group_rounds(gdir), {'qa-g1': 1, 'qa-g1-2': 2})
+
+    def built(self, path):
+        """The events an import would write, before the store's rid dedup."""
+        from types import SimpleNamespace
+        from forge_dataset.importer import Mapper, import_tree
+        batches = import_tree(path, Mapper(), SimpleNamespace(include_temp=True, report_unreadable=False), {})
+        rows = []
+        for events, _repo in batches:
+            for event in events:
+                data = json.loads(json.dumps(event.get('data') or {}))
+                data.pop('root', None)
+                # The plan id starts with the run uid, which differs between the two fixtures.
+                # The rest of it is the content hash, so a new plan input still shows up here.
+                rid = event.get('rid') or ''
+                if event.get('kind') == 'plan':
+                    rid = rid.rsplit(':', 1)[-1]
+                rows.append((event.get('kind'), rid, event.get('task'), event.get('attempt'),
+                             event.get('src'), data))
+        return sorted(rows, key=lambda row: (row[0], row[2] or '', row[3] or 0, (row[5] or {}).get('role') or ''))
+
+    def test_locate_names_a_group_and_leaves_every_existing_root(self):
+        from forge_dataset import harvest
+        plan = self.plan_skeleton('locate', 'locate-uid', ['t1'])
+        for relative in ('tasks/t1', 'tasks/groups', 'shadow/t1/1-0', 'side/summary/t1/1',
+                         'final-review-1-2', 'integrate-3/final-review', 'integrate-3', 'adopt-4',
+                         'groups/g1', 'groups/final-review-9', 'groups/integrate-9'):
+            (plan / relative).mkdir(parents=True, exist_ok=True)
+        loose = Path(self.tmp.name) / 'not-a-plan' / 'groups' / 'g1'
+        loose.mkdir(parents=True)
+
+        def kept(path):
+            found = harvest.locate(path)
+            self.assertNotIn('group', found, path)
+            return (found['mode'], found['scope'], found['task'], found.get('shadow'), found.get('side'))
+
+        self.assertEqual(kept(plan), ('parallel', 'plan', None, None, None))
+        self.assertEqual(kept(plan / 'tasks' / 't1'), ('parallel', 'task', 't1', None, None))
+        self.assertEqual(kept(plan / 'tasks' / 'groups'), ('parallel', 'task', 'groups', None, None))
+        self.assertEqual(kept(plan / 'shadow' / 't1' / '1-0'), ('parallel', 'task', 't1', True, None))
+        self.assertEqual(kept(plan / 'side' / 'summary' / 't1' / '1'), ('parallel', 'task', 't1', None, 'summary'))
+        self.assertEqual(kept(plan / 'final-review-1-2'), ('parallel', 'final_review', None, None, None))
+        self.assertEqual(kept(plan / 'integrate-3' / 'final-review'), ('parallel', 'final_review', None, None, None))
+        self.assertEqual(kept(plan / 'integrate-3'), ('parallel', 'integrate', None, None, None))
+        self.assertEqual(kept(plan / 'adopt-4'), ('parallel', 'adopt', None, None, None))
+        self.assertNotIn('group', harvest.locate(loose))
+        self.assertNotEqual(harvest.locate(loose).get('scope'), 'group')
+        for gid in ('g1', 'final-review-9', 'integrate-9'):
+            found = harvest.locate(plan / 'groups' / gid)
+            self.assertEqual((found['mode'], found['scope'], found['task'], found['group']),
+                             ('parallel', 'group', None, gid))
+            self.assertNotIn('shadow', found)
+            self.assertNotIn('side', found)
+            self.assertEqual(found['run_dir'], plan.resolve())
+
+    def test_a_plan_without_a_group_review_imports_the_same_events(self):
+        plain = self.plan_skeleton('plain', 'plain-uid', ['t1'])
+        self.task(plain, 't1', 1.0, own_qa=True)
+        decorated = self.plan_skeleton('decorated', 'decorated-uid', ['t1'])
+        self.task(decorated, 't1', 1.0, own_qa=True)
+        self.write(decorated / 'groups.tsv',
+                   '# id\treview\tqa\tmembers\ttitle\tgoal\ng1\tgroup\topus\tt1\tTitle\tGoal\n')
+        (decorated / 'groups').mkdir()
+        plain_events = self.built(plain)
+        self.assertEqual(sorted((kind, task, data.get('role'))
+                                for kind, _rid, task, _attempt, _src, data in plain_events),
+                         [('attempt', 't1', None), ('dispatch', 't1', 'dwarf'),
+                          ('dispatch', 't1', 'qa'), ('plan', None, None)])
+        for _kind, _rid, _task, _attempt, _src, data in plain_events:
+            self.assertNotIn('review_scope', data)
+            self.assertNotIn('group', data)
+        # Same files, plus a groups.tsv and an empty groups dir: no new event and no new field.
+        self.assertEqual(plain_events, self.built(decorated))
+
+    def test_import_records_the_group_round_from_members_and_links_them(self):
+        from forge_dataset import export, facts, history, pairs, reviewers
+        from forge_dataset.routing import tasks as routing_tasks
+        from forge_dataset.tiers import records as tier_records
+        plan = self.plan_skeleton('import-plan', 'import-uid', ['a', 'b', 'c'])
+        self.task(plan, 'a', 1.0, judged_copy=True)
+        self.task(plan, 'b', 2.0, judged_copy=True)
+        self.task(plan, 'c', 3.0, status='FAIL', own_qa=True)
+        # The round file has already moved on. members.tsv and qa.round-1.last name round 1.
+        self.group(plan, 'g1', ['a', 'b'], round_file='9', message=self.GROUP_MESSAGE, reviewed_round=1)
+        self.imported(plan)
+        grouped = [e for e in self.events(kind='dispatch', run='import-uid') if e['data'].get('scope') == 'group']
+        self.assertEqual(len(grouped), 1)
+        dispatch = grouped[0]
+        self.assertIsNone(dispatch['task'])
+        self.assertEqual(dispatch['data']['role'], 'qa')
+        self.assertEqual(dispatch['data']['group'], 'g1')
+        self.assertEqual(dispatch['data']['members'], ['a', 'b'])
+        self.assertEqual(dispatch['data']['round'], 1)
+        self.assertEqual(dispatch['data']['verdict'], 'PASS')
+        self.assertEqual(dispatch['data']['tokens'], dict(input=40, cached_input=4, output=8))
+        self.assertFalse(any(e['task'] in ('a', 'b') and e['data'].get('role') == 'qa'
+                             for e in self.events(kind='dispatch', run='import-uid')))
+        for tid in ('a', 'b'):
+            [attempt] = self.events(kind='attempt', task=tid)
+            self.assertEqual(attempt['data']['status'], 'PASS')
+            self.assertEqual(attempt['data']['review_scope'], 'group')
+            self.assertEqual(attempt['data']['group'], 'g1')
+            self.assertEqual(attempt['data']['round'], 1)
+            self.assertIsNone(attempt['data']['gate'])
+            self.assertNotIn('forge_note', attempt['data']['blobs'])
+            self.assertEqual(attempt['data']['qa'], 'opus')
+            self.assertNotIn('verdict', attempt['data'])
+            self.assertEqual(attempt['data']['reviewed_commit'], (tid * 40)[:40])
+        [other] = self.events(kind='attempt', task='c')
+        self.assertNotIn('review_scope', other['data'])
+        self.assertNotIn('group', other['data'])
+        again = self.imported(plan)
+        self.assertEqual(again['new'], 0, again)
+
+        self.assertTrue(export.not_an_attempt('qa', {'scope': 'group'}))
+        self.assertFalse(export.not_an_attempt('qa'))
+        self.assertFalse(export.not_an_attempt('qa', {'scope': 'task'}))
+        runs = export.Runs(export.Store(store.connect()))
+        rows = [(row['task'], row['verdict']) for row in export._qa_rows(runs) if row['run'] == 'import-uid']
+        cases = [(case['task'], case['expected'].get('passes'))
+                 for case in export.review_cases(runs) if case['run'] == 'import-uid']
+        self.assertEqual(rows, [('c', 'FAIL')])
+        self.assertEqual(cases, [('c', False)])
+        self.assertFalse(any((row['dispatch'].get('d') or {}).get('scope') == 'group'
+                             for row in export._qa_rows(runs)))
+        coverage = facts.report(runs)['coverage']
+        self.assertEqual(coverage['reviews'], 1)
+        self.assertEqual(coverage['findings'], 1)
+        findings = [(item['role'], item['task'], item['findings'][0]['head'])
+                    for item in history.load()['findings'] if item['run'] == 'import-uid']
+        self.assertEqual(findings, [('qa', 'c', '- [P1][CONFIRMED] c.txt:1 — task')])
+        for tid in ('a', 'b'):
+            store.record([dict(rid='outcome-' + tid, kind='outcome', ts=time.time(), src='import',
+                               run='import-uid', run_id='import-uid-run', mode='parallel', task=tid,
+                               data=dict(name='survival', reviewed=(tid * 40)[:40], status='ok', added=4,
+                                         surviving=4, horizon_days=14, reverted_by=[]))],
+                         repo=self.REPO)
+        runs = export.Runs(export.Store(store.connect()))
+        report = reviewers.report(runs)
+        self.assertEqual(report['reviewers'], [])
+        self.assertEqual(report['unattributed']['no_review'], 2)
+        routed = [row['task'] for row in routing_tasks(runs) if row['run'] == 'import-uid']
+        self.assertEqual(sorted(routed), ['a', 'b', 'c'])
+        self.assertNotIn('g1', {row['task'] for row in tier_records(runs)})
+        self.assertEqual(pairs.report(runs)['pairs'], 0)
+
+    def test_a_live_group_dispatch_is_imported_once_and_links_the_attempts(self):
+        from forge_dataset import capture
+        from forge_dataset.importer import import_run
+        plan = self.plan_skeleton('live-plan', 'live-uid', ['a', 'b'])
+        for index, tid in enumerate(('a', 'b')):
+            self.task(plan, tid, 1.0 + index, judged_copy=True)
+        gdir = self.group(plan, 'g1', ['a', 'b'], round_file='1', message=self.GROUP_MESSAGE)
+        for tid in ('a', 'b'):
+            tdir = plan / 'tasks' / tid
+            (tdir / 'qa.last').unlink()
+            (tdir / 'qa.gate').unlink()
+            attempt = tdir / 'attempts' / ('task-' + tid)
+            capture.on_begin(str(attempt), str(tdir), 'task')
+            self.write(tdir / 'qa.last', self.MEMBER_NOTE)
+            self.write(tdir / 'qa.gate', self.GATE + '\n')
+            capture.on_finish(str(attempt), str(tdir), 'task', 'pipeline', 0)
+        qa = gdir / 'attempts' / 'qa-g1'
+        capture.on_begin(str(qa), str(gdir), 'qa')
+        capture.on_finish(str(qa), str(gdir), 'qa', 'codex', 0)
+        self.assertEqual(self.errors(), '')
+        for tid in ('a', 'b'):
+            [attempt] = self.events(kind='attempt', task=tid)
+            self.assertIn('forge_note', attempt['data']['blobs'])
+            self.assertEqual(attempt['data']['gate'], self.GATE)
+            self.assertNotIn('review_scope', attempt['data'])
+        [dispatch] = [e for e in self.events(kind='dispatch') if e['data'].get('scope') == 'group']
+        self.assertEqual((dispatch['task'], dispatch['data']['round'], dispatch['data']['members']),
+                         (None, 1, ['a', 'b']))
+        self.write(gdir / 'round', '9\n')
+        result = import_run(plan)
+        self.assertEqual(result['failed'], [], result)
+        stored = len(self.events())
+        again = import_run(plan)
+        self.assertEqual(again['new'], 0, again)
+        self.assertEqual(len(self.events()), stored)
+        grouped = [e for e in self.events(kind='dispatch', run='live-uid') if e['data'].get('scope') == 'group']
+        self.assertEqual(len(grouped), 1)
+        self.assertEqual(grouped[0]['data']['round'], 1)
+        self.assertEqual(grouped[0]['data']['group'], 'g1')
+        self.assertIsNone(grouped[0]['task'])
+        for tid in ('a', 'b'):
+            [attempt] = self.events(kind='attempt', task=tid)
+            self.assertEqual(attempt['data']['review_scope'], 'group')
+            self.assertEqual((attempt['data']['group'], attempt['data']['round']), ('g1', 1))
+            self.assertIsNone(attempt['data']['gate'])
+            self.assertNotIn('forge_note', attempt['data']['blobs'])
+            self.assertEqual(attempt['data']['status'], 'PASS')
+
+    def test_an_oversized_round_does_not_take_the_qa_dispatch(self):
+        plan = self.plan_skeleton('oversized', 'over-uid', ['a'])
+        tdir = plan / 'tasks' / 'a'
+        self.write(tdir / 'status', 'PASS\n')
+        self.write(tdir / 'attempt', '2\n')
+        self.write(tdir / 'attempts.tsv', '10\t1\tFAIL\t\tluna\n30\t2\tPASS\t\tluna\n')
+        self.write(tdir / 'qa.last', self.MEMBER_NOTE)
+        self.write(tdir / 'qa.gate', self.GATE + '\n')
+        self.execution(tdir, 'task', 'task-a1', 10.0)
+        self.execution(tdir, 'task', 'task-a2', 20.0)
+        gdir = plan / 'groups' / 'g1'
+        self.write(plan / 'groups.tsv',
+                   '# id\treview\tqa\tmembers\ttitle\tgoal\ng1\tgroup\topus\ta\tTitle\tGoal\n')
+        self.write(gdir / 'round', '9\n')
+        self.write(gdir / 'members.tsv',
+                   '1\ta\t%s\t1\n2\ta\t%s\t2\n' % ('a' * 40, 'b' * 40))
+        self.execution(gdir, 'qa', 'qa-g1', 40.0, self.GROUP_MESSAGE, tokens=(40, 4, 8))
+        self.write(gdir / 'qa.round-1.last', 'a different reply that never matched\n')
+        self.write(gdir / 'qa.round-2.last', self.GROUP_MESSAGE)
+        self.imported(plan)
+        [dispatch] = [e for e in self.events(kind='dispatch', run='over-uid') if e['data'].get('role') == 'qa']
+        self.assertEqual(dispatch['data']['scope'], 'group')
+        self.assertEqual(dispatch['data']['round'], 2)
+        self.assertIsNone(dispatch['task'])
+        attempts = {event['attempt']: event for event in self.events(kind='attempt', task='a')}
+        self.assertEqual(sorted(attempts), [1, 2])
+        self.assertNotIn('review_scope', attempts[1]['data'])
+        self.assertEqual(attempts[1]['data']['status'], 'FAIL')
+        self.assertEqual(attempts[2]['data']['status'], 'PASS')
+        self.assertEqual(attempts[2]['data']['review_scope'], 'group')
+        self.assertEqual((attempts[2]['data']['group'], attempts[2]['data']['round']), ('g1', 2))
+        self.assertIsNone(attempts[2]['data']['gate'])
+        self.assertNotIn('forge_note', attempts[2]['data']['blobs'])

@@ -33,6 +33,11 @@
 #   forge-parallel.sh split <plan-dir> <new-plan> --tasks <id,id> [--dry-run]
 #   forge-parallel.sh combine <new-plan> <plan-a> <plan-b> [<plan>...] [--verify <command>] [--dry-run]
 #   forge-parallel.sh _task <plan-dir> <task-id>     (internal; coordinator target)
+#   forge-parallel.sh _group <plan-dir> <group-id>   (internal; one QA review of a review=group group, #140)
+#   forge-parallel.sh _group_settle <plan-dir> <group-id> [--tasks a,b]
+#                                                   (internal; send a FAIL group's implicated members back, #140)
+#   forge-parallel.sh _merge_group <plan-dir> <group-id>
+#                                                   (internal; merge a PASS group's members with one merge, #140)
 #   forge-parallel.sh _qa_only <plan-dir> <task-id>  (internal; exit 0 when the next entry only re-runs QA)
 #   forge-parallel.sh _waves <plan-dir>             (internal; rewrite waves.tsv after a live `forge control add`)
 #   forge-parallel.sh _sweep <plan-dir> --severity Pn [--plausible] [--max N]
@@ -49,6 +54,14 @@
 #                           by a listed reviewer of another model family, recorded and
 #                           never read (measures reviewer agreement). `none` turns it off
 #   --shadow-rate R         that share, 0..1 (default 0.1)
+#   --groups waves|FILE     opt-in (#140): groups.tsv from the computed waves, or from FILE; a
+#                           groups.tsv already in the plan dir is used as is. Validated, its
+#                           group qa resolved and frozen (groups.frozen); `run` refuses when
+#                           it or a member's deps/files changed since
+#   --group-review          with --groups waves: the derived groups get review=group (one QA
+#                           review for the whole group; high-difficulty tasks stay out)
+#   --group-max-tasks N     most members of a review group (default 6)
+#   --group-max-diff-kb N   most diff a group review reads, in KB (default 256; kept in the plan)
 #   --reviewer-session      opt-in experiment: a later review round continues the reviewer's
 #                           earlier session (claude, openclaude, codex) when the QA spec is
 #                           unchanged, and starts fresh whenever it cannot; each round is
@@ -164,7 +177,7 @@ JEV_OPTS=0
 # Flags shared by several subcommands, then the helper libraries. Functions only, resolved
 # at call time, so they may use die/note/field and friends defined below.
 source "$SKILL_DIR/scripts/forge-parallel-options.sh"
-for forge_lib in task gates verify attribute plans review adopt; do
+for forge_lib in task gates verify attribute plans review adopt group; do
   [ -f "$SKILL_DIR/scripts/forge-lib-$forge_lib.sh" ] && source "$SKILL_DIR/scripts/forge-lib-$forge_lib.sh"
 done
 OUTPUT=summary
@@ -588,6 +601,139 @@ forge_features_table() { # forge_features_table <plan>
   return 0
 }
 
+# --- groups (#140) -----------------------------------------------------------------
+# groups.tsv is the plan's frozen sets of tasks (scripts/forge_groups, forge-groups.py). Opt-in:
+# with no groups.tsv, no --groups and no groups.frozen, nothing here runs or writes.
+forge_groups_py() { python3 "$SKILL_DIR/scripts/forge-groups.py" "$@"; }
+
+# forge_groups_id_of <plan> <task>: the id of the task's group, empty when it is in none.
+forge_groups_id_of() { forge_groups_py of "$1" "$2" 2>/dev/null | awk -F'\t' 'NR == 1 { print $1 }'; }
+
+# forge_groups_die <message from forge-groups.py>: its one-line message, without the prefix, exit 2.
+forge_groups_die() { local msg="$1"; die "${msg#forge-groups: }" 2; }
+
+# forge_groups_have_review <plan>: 0 when some group has review=group.
+forge_groups_have_review() {
+  [ -f "$1/groups.tsv" ] || return 1
+  forge_groups_py show "$1" 2>/dev/null | awk -F'\t' '$2 == "group" { found = 1 } END { exit !found }'
+}
+
+# forge_groups_max_tasks <plan> [flag]: the flag, else the plan's group_max_tasks, else 6.
+forge_groups_max_tasks() {
+  local value="${2:-}"
+  [ -n "$value" ] || value="$(head -1 "$1/group_max_tasks" 2>/dev/null)"
+  printf '%s' "${value:-6}"
+}
+
+# Put back the groups a refused derive replaced, or remove the ones it just wrote.
+# A Fractal refusal must not leave a review=group groups.tsv that makes every later plan exit 2.
+forge_groups_snap_restore() { # forge_groups_snap_restore <plan> <snap dir or empty>
+  local plan="$1" snap="${2:-}"
+  if [ -n "$snap" ] && [ -f "$snap/groups.tsv" ]; then cp "$snap/groups.tsv" "$plan/groups.tsv"
+  else rm -f "$plan/groups.tsv"; fi
+  if [ -n "$snap" ] && [ -f "$snap/groups.frozen" ]; then cp "$snap/groups.frozen" "$plan/groups.frozen"
+  else rm -f "$plan/groups.frozen"; fi
+  [ -z "$snap" ] || rm -rf "$snap"
+}
+
+forge_groups_snap_drop() { [ -z "${1:-}" ] || rm -rf "$1"; }
+
+# forge_groups_plan <plan> <--groups value> <--group-review 0|1> <--group-max-tasks value>
+forge_groups_plan() {
+  local plan="$1" src="$2" review="$3" max="$4" out="" snap=""
+  # derive and a --groups file replace groups.tsv before the Fractal check can refuse them.
+  if [ -f "$plan/groups.tsv" ] || [ -f "$plan/groups.frozen" ]; then
+    snap="$(mktemp -d)" || die "could not snapshot the plan's groups" 3
+    [ ! -f "$plan/groups.tsv" ] || cp "$plan/groups.tsv" "$snap/groups.tsv" \
+      || { forge_groups_snap_drop "$snap"; die "could not snapshot $plan/groups.tsv" 3; }
+    [ ! -f "$plan/groups.frozen" ] || cp "$plan/groups.frozen" "$snap/groups.frozen" \
+      || { forge_groups_snap_drop "$snap"; die "could not snapshot $plan/groups.frozen" 3; }
+  fi
+  if [ "$src" = waves ]; then
+    out="$(forge_groups_py derive "$plan" --review "$([ "$review" = 1 ] && echo group || echo task)" \
+      --max-tasks "$(forge_groups_max_tasks "$plan" "$max")" 2>&1)" || { forge_groups_snap_drop "$snap"; forge_groups_die "$out"; }
+  elif [ -n "$src" ]; then
+    cp "$src" "$plan/groups.tsv" || { forge_groups_snap_drop "$snap"; die "could not copy '$src' to $plan/groups.tsv" 3; }
+  fi
+  if [ ! -f "$plan/groups.tsv" ] && [ ! -f "$plan/groups.frozen" ]; then
+    forge_groups_snap_drop "$snap"
+    return 0
+  fi
+  # validate, then resolve (writes the group qa back), then freeze
+  out="$(forge_groups_py validate "$plan" --max-tasks "$(forge_groups_max_tasks "$plan" "$max")" 2>&1)" \
+    || { forge_groups_snap_drop "$snap"; forge_groups_die "$out"; }
+  if forge_groups_have_review "$plan" && forge_plan_is_fractal "$plan"; then
+    forge_groups_snap_restore "$plan" "$snap"
+    die "group review does not support Fractal yet" 2
+  fi
+  forge_groups_snap_drop "$snap"
+  out="$(forge_groups_py resolve "$plan" 2>&1)" || forge_groups_die "$out"
+  out="$(forge_groups_py freeze "$plan" 2>&1)" || forge_groups_die "$out"
+  return 0
+}
+
+# Group flags are refused before do_plan's loop writes a shared flag's file.
+# A bad value, or --group-review without --groups waves, must not leave --qa-threshold
+# (or any earlier shared flag) written into the plan dir.
+forge_groups_flags_early() {
+  local review=0 src=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --groups)
+        [ -n "${2:-}" ] || die "--groups needs waves or a groups.tsv file"
+        if [ "$2" != waves ]; then
+          [ -f "$2" ] && [ -r "$2" ] || die "--groups '$2' is not a readable file (use waves, or a groups.tsv)"
+        fi
+        src="$2"; shift 2 ;;
+      --group-review) review=1; shift ;;
+      --group-max-tasks)
+        printf '%s' "${2:-}" | grep -Eq '^[0-9]{1,6}$' && [ "$((10#$2))" -ge 1 ] \
+          || die "--group-max-tasks needs a positive integer"
+        shift 2 ;;
+      --group-max-diff-kb)
+        printf '%s' "${2:-}" | grep -Eq '^[0-9]{1,9}$' && [ "$((10#$2))" -ge 1 ] \
+          || die "--group-max-diff-kb needs a positive integer"
+        shift 2 ;;
+      --repo|--planner|--decompose-level|--profile|--shadow-qa|--shadow-rate|--explore|--dwarf|--dwarf-high|--dwarf-medium|--dwarf-low|--qa|--qa-high|--qa-medium|--qa-low|--pre-review-parallel|--reviewer-session-rate|--fast|--brief|--brief-scope|--brief-model|--summaries|--summaries-model|--qa-threshold|--max-attempts|--converge-window|--gate|--decide-budget)
+        if [ $# -ge 2 ]; then shift 2; else shift; fi ;;
+      *) shift ;;
+    esac
+  done
+  [ "$review" = 0 ] || [ "$src" = waves ] || die "--group-review goes with --groups waves (it sets the review of the groups waves derives)"
+}
+
+# render_groups <plan>: the table's groups block and, when a group reviews its members together,
+# the reviews line. Nothing without a groups.tsv.
+render_groups() {
+  [ -f "$1/groups.tsv" ] || return 0
+  python3 - "$SKILL_DIR/scripts" "$1" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import forge_groups
+try:
+    groups = forge_groups.load(sys.argv[2])
+except forge_groups.GroupError:
+    groups = []
+if groups:
+    qas = ['qa=' + g.qa if g.qa != '-' else '-' for g in groups]
+    ids = max(len(g.id) for g in groups)
+    qa_w = max(len(q) for q in qas)
+    members = [', '.join(g.members) for g in groups]
+    mem_w = max(len(m) for m in members)
+    print('groups:')
+    for g, q, m in zip(groups, qas, members):
+        print('  %-*s  %-12s  %-*s  %-*s  — %s' % (ids, g.id, 'review=' + g.review, qa_w, q, mem_w, m,
+                                                       g.goal if g.goal != '-' else '(no goal)'))
+    print()
+PY
+}
+
+# forge_groups_review_counts <plan>: "<groups> <members>" of the review=group groups, or nothing.
+forge_groups_review_counts() {
+  [ -f "$1/groups.tsv" ] || return 0
+  forge_groups_py show "$1" 2>/dev/null | awk -F'\t' '$2 == "group" { g++; m += split($4, a, ",") } END { if (g) print g, m }'
+}
+
 do_plan() {
   local PLAN="${1:?plan needs a plan dir}"; shift
   local PF_NAME="" PF_NONE=0 PF_QT=0
@@ -597,12 +743,15 @@ do_plan() {
   local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="" FAIL_FIRST="" REVIEWER_SESSION="" RS_RATE="" IMPLEMENTER_SESSION="" PRE_REVIEW="" PRE_REVIEW_PARALLEL=""
   local FAST_GIVEN=0 FAST_PARSED=""
   local RETRO_FLAG="" BRIEF_FLAG="" BRIEF_SCOPE_FLAG="" BRIEF_MODEL_FLAG="" SUMM_FLAG="" SUMM_MODEL_FLAG=""
-  local COLLAPSE=0 COLLAPSED_NOW=0 FEAT_ERR=""
+  local COLLAPSE=0 COLLAPSED_NOW=0 FEAT_ERR="" GRP_SRC="" GRP_REVIEW=0 GRP_MAX="" GRP_DIFF=""
   # The retro, brief and summaries choices, settled before anything is written: a refusal
   # (a bad value, no model, a spec that does not resolve) leaves the plan dir as it was.
   forge_features_scan "$@"
   [ -d "$PLAN" ] || die "plan dir '$PLAN' does not exist"
   forge_features_resolve "$PLAN" || die "$FEAT_ERR" 2
+  # Before the loop: --qa-threshold and --max-attempts write their files while parsing,
+  # so a group flag refused later on the same command would leave those files behind.
+  forge_groups_flags_early "$@"
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)         REPO="${2:?}"; shift 2 ;;
@@ -621,6 +770,19 @@ do_plan() {
         printf '%s' "${2:-}" | grep -Eq '^(0?\.[0-9]+|0|1|1\.0+)$' || die "--shadow-rate needs a share between 0 and 1"
         SHADOW_RATE="$2"; shift 2 ;;
       --explore)      EXPLORE="${2:?--explore needs a share between 0 and 0.5}"; shift 2 ;;
+      --groups)
+        [ -n "${2:-}" ] || die "--groups needs waves or a groups.tsv file"
+        if [ "$2" != waves ]; then
+          [ -f "$2" ] && [ -r "$2" ] || die "--groups '$2' is not a readable file (use waves, or a groups.tsv)"
+        fi
+        GRP_SRC="$2"; shift 2 ;;
+      --group-review) GRP_REVIEW=1; shift ;;
+      --group-max-tasks)
+        printf '%s' "${2:-}" | grep -Eq '^[0-9]{1,6}$' && [ "$((10#$2))" -ge 1 ] || die "--group-max-tasks needs a positive integer"
+        GRP_MAX="$((10#$2))"; shift 2 ;;
+      --group-max-diff-kb)
+        printf '%s' "${2:-}" | grep -Eq '^[0-9]{1,9}$' && [ "$((10#$2))" -ge 1 ] || die "--group-max-diff-kb needs a positive integer"
+        GRP_DIFF="$((10#$2))"; shift 2 ;;
       --collapse-chains) COLLAPSE=1; shift ;;
       --dwarf)        D_ANY="${2:?}"; shift 2 ;;
       --dwarf-high)   D_HI="${2:?}"; shift 2 ;;
@@ -673,6 +835,7 @@ do_plan() {
     esac
   done
   [ -d "$PLAN" ] || die "plan dir '$PLAN' does not exist"
+  [ "$GRP_REVIEW" = 0 ] || [ "$GRP_SRC" = waves ] || die "--group-review goes with --groups waves (it sets the review of the groups waves derives)"
   # The profile (#48) first: its gates and budget count for every decision-model step below,
   # and its values stand in for the flags this call did not give.
   forge_profile_plan
@@ -700,6 +863,10 @@ do_plan() {
   esac
   [ -z "$SHADOW_RATE" ] || [ "$SHADOW_QA" = none ] || [ "$SHADOW_QA" = off ] \
     || printf '%s\n' "$SHADOW_RATE" > "$PLAN/shadow_rate"
+  # Group options (#140): kept as plan files, only when given, so a re-plan, retry, rerun or split
+  # keeps what the plan was made with.
+  [ -z "$GRP_MAX" ] || printf '%s\n' "$GRP_MAX" > "$PLAN/group_max_tasks"
+  [ -z "$GRP_DIFF" ] || printf '%s\n' "$GRP_DIFF" > "$PLAN/group_max_diff_kb"
   # Fail-first evidence (opt-in, advisory) is part of the plan too: every task's review gets it.
   case "$FAIL_FIRST" in on) : > "$PLAN/fail_first" ;; off) rm -f "$PLAN/fail_first" ;; esac
   # Pre-review tests (opt-in, #85): each attempt's affected tests run before its review, and a
@@ -1013,6 +1180,10 @@ EOF
     note "plan shape could not be recorded (advisory)${shape_err:+: $shape_err}"
   fi
 
+  # Groups (#140): after the last wave computation and the last change to a task's deps, so the
+  # frozen fingerprint is of the table the run will use.
+  forge_groups_plan "$PLAN" "$GRP_SRC" "$GRP_REVIEW" "$GRP_MAX"
+
   render_table "$PLAN"
   # What the gates did, from plan-gates.json: files and deps they added, prompts and
   # requirements still flagged. Prints nothing when no gate recorded anything.
@@ -1092,7 +1263,16 @@ render_table() {
   if [ -s "$PLAN/planner" ]; then
     est=$((est+1)); extra=" + 1 planner ($(cat "$PLAN/planner"))"
   fi
-  echo "tasks: $n   waves: $waves   estimated dispatches: $est ($n dwarf + $n qa$extra)"
+  # A review=group group is reviewed once for all its members (#140): the estimate counts that.
+  local grp_counts grp_n=0 grp_m=0 reviews="$n"
+  grp_counts="$(forge_groups_review_counts "$PLAN")"
+  if [ -n "$grp_counts" ]; then
+    read -r grp_n grp_m <<<"$grp_counts"
+    reviews=$((n - grp_m + grp_n))
+    est=$((n + reviews + (est - n * 2)))
+  fi
+  echo "tasks: $n   waves: $waves   estimated dispatches: $est ($n dwarf + $reviews qa$extra)"
+  [ -z "$grp_counts" ] || echo "reviews: $reviews ($grp_n groups replace $grp_m task reviews)"
   if [ -s "$PLAN/shadow_qa" ]; then
     local rate; rate="$(cat "$PLAN/shadow_rate" 2>/dev/null || echo 0.1)"
     echo "shadow review: $(cat "$PLAN/shadow_qa") on a sampled $rate of reviewed attempts" \
@@ -1167,6 +1347,7 @@ EOF
     done
     echo
   done
+  render_groups "$PLAN"
   # A chain collapsed on this call, or a chain left as a chain. one and branches say nothing.
   # COLLAPSED_NOW is do_plan's: collapsed.json from an earlier plan is not announced again.
   local shape_note=""
@@ -1490,6 +1671,16 @@ do_task_body() (
   [ -s "$PLAN/timeout" ] && export FORGE_TIMEOUT="$(cat "$PLAN/timeout")"
   wt="$(cat "$PLAN/wt_root")/$id"
   br="forge/$run_id/$id"
+  # A member of a review=group group (#140) stops at IMPLEMENTED: its group is reviewed once, later.
+  # Looked up once. A task in no group, or in a review=task group, takes the path below unchanged,
+  # and a plan with no groups.tsv starts no process for it.
+  local grp_id="" grp_review="" grp_qa=""
+  if [ -f "$PLAN/groups.tsv" ]; then
+    IFS=$'\t' read -r grp_id grp_review grp_qa < <(forge_groups_py of "$PLAN" "$id" 2>/dev/null) || true
+    [ "$grp_review" = group ] || grp_id=""
+  fi
+  # No task review happened for a member, so a QA-only resume cannot apply to it.
+  [ -z "$grp_id" ] || rm -f "$tdir/resume"
   # Every attempt gets a distinct number and commit message. A QA-only resume (the
   # reviewer hit an infrastructure failure, or never reached a verdict) re-reviews work
   # that is already committed, so it neither runs the dwarf nor spends an attempt.
@@ -1707,6 +1898,34 @@ do_task_body() (
   else
     reviewed="$(cat "$tdir/reviewed.commit")"
   fi
+  if [ -n "$grp_id" ]; then
+    # The member's own pipeline ends here: no review snapshot, QA, shadow or fail-first. The tests of
+    # --pre-review-tests still run, on a snapshot that lives only for them: a red attempt is FAIL and
+    # goes back unreviewed, as for any task.
+    if [ -f "$PLAN/pre_review_tests" ]; then
+      review="$tdir/review-$attempt-$$"
+      local stale
+      for stale in "$tdir"/review-*; do forge_drop_snapshot "$stale"; done
+      FORGE_REVIEW_SNAPSHOT="$review"
+      forge_review_snapshot "$wt" "$base" "$reviewed" "$review" || { echo ERROR > "$tdir/status"; return 1; }
+      if ! forge_pre_review "$review" "$tdir" "$REPO" "$PLAN"; then
+        : > "$tdir/prereview.failed"
+        rm -f "$tdir/qa.last"
+        echo FAIL > "$tdir/status"
+        note "$id: the tests this attempt affects fail — sent back to the implementer without a review (see $tdir/prereview.md)"
+        return 0
+      fi
+      forge_drop_snapshot "$review"; FORGE_REVIEW_SNAPSHOT=""
+    else
+      rm -f "$tdir/prereview.json" "$tdir/prereview.txt" "$tdir/prereview.md"
+    fi
+    # The fingerprint a review would have recorded, then the status: a reader that sees IMPLEMENTED
+    # can trust reviewed.commit and source.fingerprint.
+    forge_fingerprint "$wt" > "$tdir/source.fingerprint.tmp" && mv "$tdir/source.fingerprint.tmp" "$tdir/source.fingerprint" || return 1
+    echo IMPLEMENTED > "$tdir/status"
+    note "$id: implemented — waits for group $grp_id's review"
+    return 0
+  fi
   review="$tdir/review-$attempt-$$"
   # One review of a task at a time, so any snapshot already here is an interrupted review's: a signal
   # ends this subshell without its EXIT trap (#139).
@@ -1917,17 +2136,10 @@ do_task_body() (
 # Entry point for both the scheduler's `_task` and `retry`: runs the pipeline, then logs
 # the attempt (including infrastructure stops, which spend nothing) for later audit.
 do_task() {
-  local rc crc=0 stop_before
+  local rc
   do_task_body "$@"; rc=$?
   record_attempt "$1" "$2"
-  # The retry policy's state (escalation.next or escalation.stop), decided now rather than
-  # at the next retry so a spent retry budget still reports it and the scheduler sees it.
-  stop_before="$(cat "$1/tasks/$2/escalation.stop" 2>/dev/null)"
-  python3 "$SKILL_DIR/scripts/forge-route.py" escalation --plan "$1" --task "$2" --check \
-    --qa-only-next "$(qa_only_next_flag "$1" "$2")" >/dev/null 2>&1 || crc=$?
-  # A FAIL that does not converge, or that the policy could not move to a stronger model, waits
-  # for a person (NEEDS_DECISION). attempts.tsv was written above and keeps FAIL.
-  decision_after_attempt "$1" "$2" "$stop_before" "$crc"
+  post_attempt "$1" "$2"
   return $rc
 }
 
@@ -2098,6 +2310,8 @@ do_retry() {
   # A decision is judged the same way, before any option writes: a NEEDS_DECISION task is resumed
   # only by --decide or --dwarf with --reason and --approved, and --decide is for no other task.
   if [ "$pre_ok" = 1 ] && [ -s "$PLAN/tasks.tsv" ] && all_ids "$PLAN/tasks.tsv" | grep -qx "$id"; then
+    # Before any option writes: an implemented group member has nothing to retry.
+    [ "$(task_status "$PLAN" "$id")" != IMPLEMENTED ] || plans_implemented_refuse "$PLAN" "$id"
     retry_decision_gate "$PLAN" "$id" "$(task_status "$PLAN" "$id")" "$pre_decide" "$pre_dwarf" "$pre_reason" "$pre_approved"
   fi
   while [ $# -gt 0 ]; do
@@ -2146,6 +2360,7 @@ do_retry() {
   [ -s "$PLAN/wt_root" ] || die "this plan has never been run — use 'run', not 'retry'"
   local st; st="$(task_status "$PLAN" "$id")"
   [ "$st" = "MERGED" ] && die "task '$id' already merged — nothing to retry"
+  [ "$st" != IMPLEMENTED ] || plans_implemented_refuse "$PLAN" "$id"
   # A decision's grant is exactly what it says, and the profile's default budget of further attempts
   # does not stretch it: a task waiting for a decision (resumed by --decide or --dwarf), or an
   # infrastructure stop resumed while a decision's count is kept. Only a --retry-failed typed on this
@@ -2291,8 +2506,9 @@ do_retry() {
   fi
   write_results "$PLAN"
   echo
-  printf '  %-14s %-9s %s\n' id status branch
-  awk -F'\t' '{printf "  %-14s %-9s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
+  # 14 covers NEEDS_DECISION; 9 pushes the branch column out for IMPLEMENTED (11) too.
+  printf '  %-14s %-14s %s\n' id status branch
+  awk -F'\t' '{printf "  %-14s %-14s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
   run_report_extras "$PLAN"
   report_decisions "$PLAN"
   [ "$(task_status "$PLAN" "$id")" = "MERGED" ] || return 5
@@ -2657,6 +2873,9 @@ PY
 forge_brief_start() { # forge_brief_start <plan>
   local plan="$1"
   rm -f "$plan/brief.pid"
+  # The writer's own output goes to brief.out: say the missing-groups note here, on the console, first.
+  PYTHONPATH="$SKILL_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 -c \
+    'import sys, forge_brief; forge_brief.note_missing_groups(sys.argv[1])' "$plan" || true
   python3 - "$plan" "$SKILL_DIR/scripts/forge-brief.py" <<'PY' || { note "brief: could not start the question writer"; return 0; }
 import os, subprocess, sys
 plan, script = sys.argv[1], sys.argv[2]
@@ -2738,7 +2957,7 @@ do_run() {
   local PLAN="${1:?run needs a plan dir}"; shift
   FORGE_RUN_STARTED="$(forge_now)"   # the summary's overridden verdicts are this run's
   local fractal_pipeline_args=("$@")
-  local MAXP=3 DRY=0 jev_rc=0 FORECAST=1
+  local MAXP=3 DRY=0 jev_rc=0 FORECAST=1 fractal_answer=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --no-forecast) FORECAST=0; shift ;;
@@ -2778,6 +2997,15 @@ do_run() {
   local T="$PLAN/tasks.tsv" W="$PLAN/waves.tsv"
   [ -s "$W" ] || die "no waves.tsv — run the plan subcommand first"
   grep -q 'UNASSIGNED' "$T" && die "some tasks are UNASSIGNED — assign a dwarf before running"
+  # groups.tsv and its members' deps and files are as the plan froze them (#140). Nothing to
+  # check without groups; checked before anything is dispatched, a dry run included.
+  if [ -f "$PLAN/groups.tsv" ] || [ -f "$PLAN/groups.frozen" ]; then
+    local groups_out
+    groups_out="$(forge_groups_py check "$PLAN" 2>&1)" || forge_groups_die "$groups_out"
+    if forge_groups_have_review "$PLAN" && { [ "${FRACTAL_CHOICE:-}" = on ] || forge_plan_is_fractal "$PLAN"; }; then
+      die "group review does not support Fractal yet" 2
+    fi
+  fi
 
   compute_waves "$PLAN"
   local REPO run_id wt_root int_wt int_br
@@ -2790,6 +3018,22 @@ do_run() {
     # Plan registers too; this also picks up plans made before it did.
     forge_ui_register "$PLAN"
     forge_storage_check "$PLAN" "$REPO"
+  fi
+  # --fractal and an existing selection are refused above. The other way on is this
+  # prompt, which forge_fractal_parallel_run asks only once stdin is a terminal and
+  # fractal-selection.json does not exist yet (enabled: false has already chosen).
+  # Answering y must refuse before that call writes fractal-selection.json; answering
+  # n is the same as --no-fractal, so it is not asked twice.
+  if [ "$DRY" != 1 ] && [ -t 0 ] && [ -z "${FRACTAL_CHOICE:-}" ] \
+      && [ ! -e "$PLAN/fractal-selection.json" ] && ! forge_plan_is_fractal "$PLAN" \
+      && forge_groups_have_review "$PLAN"; then
+    printf 'Use Fractal for this run? [y/N] ' >&2
+    IFS= read -r fractal_answer || fractal_answer=""
+    fractal_answer="$(printf '%s' "$fractal_answer" | tr -d '\r' | tr '[:upper:]' '[:lower:]')"
+    case "$fractal_answer" in
+      y) die "group review does not support Fractal yet" 2 ;;
+    esac
+    forge_fractal_flag off || exit $?
   fi
   forge_fractal_parallel_run "$PLAN" "$REPO" "$DRY" ${fractal_pipeline_args[@]+"${fractal_pipeline_args[@]}"} || return $?
   forge_fast_fractal_note "$PLAN"
@@ -2925,8 +3169,9 @@ do_run() {
   echo
   echo "results (integration branch: $int_br)"
   echo "artifacts: $PLAN/tasks/<id>/{dwarf,qa}.{last,log}; results: $PLAN/results.tsv"
-  printf '  %-14s %-9s %s\n' id status branch
-  awk -F'\t' '{printf "  %-14s %-9s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
+  # 14 covers NEEDS_DECISION; 9 pushes the branch column out for IMPLEMENTED (11) too.
+  printf '  %-14s %-14s %s\n' id status branch
+  awk -F'\t' '{printf "  %-14s %-14s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
   echo
   if [ -n "$retro_line" ]; then printf '%s\n\n' "$retro_line"; fi
   run_report_extras "$PLAN"
@@ -2975,10 +3220,19 @@ do_run() {
   fi
   # Tasks stopped for a decision (#69): why, and the choices. Not failures to retry either.
   report_decisions "$PLAN"
+  # Members implemented and waiting for their group's review (#140): not failures either.
+  local implemented; implemented="$(awk -F'\t' '$2=="IMPLEMENTED" {print $1}' "$PLAN/results.tsv")"
+  if [ -n "$implemented" ]; then
+    echo "implemented, waiting for their group's review:"
+    for id in $implemented; do
+      printf '  %s: group %s\n' "$id" "$(forge_groups_id_of "$PLAN" "$id")"
+    done
+    echo
+  fi
   # The retry hint is for tasks that actually failed; a run that only failed verification,
   # or only paused on infrastructure, has nothing to retry task by task. An interrupted task
   # has its own hint above, a task waiting for an answer or a decision its own block.
-  if [ "$(awk -F'\t' '$2!="MERGED" && $2!="INFRA" && $2!="PENDING" && $2!="BLOCKED" && $2!="INTERRUPTED" && $2!="NEEDS_INPUT" && $2!="NEEDS_DECISION" {n++} END {print n+0}' "$PLAN/results.tsv")" -gt 0 ]; then
+  if [ "$(awk -F'\t' '$2!="MERGED" && $2!="INFRA" && $2!="PENDING" && $2!="BLOCKED" && $2!="INTERRUPTED" && $2!="NEEDS_INPUT" && $2!="NEEDS_DECISION" && $2!="IMPLEMENTED" {n++} END {print n+0}' "$PLAN/results.tsv")" -gt 0 ]; then
     echo "retry a failed task with its reviewer's findings:"
     echo "  forge-parallel.sh retry $PLAN <task-id> [--dwarf <spec>]"
     echo "or let a run retry them itself:  forge-parallel.sh run $PLAN --retry-failed 1"
@@ -3428,6 +3682,9 @@ case "$CMD" in
   combine)   need_fn do_combine; do_combine "$@" ;;
   _task)     do_task "$@" ;;
   _merge)    merge_task "$@" ;;
+  _group)    need_fn do_group; do_group "$@" ;;
+  _group_settle) need_fn do_group_settle; do_group_settle "$@" ;;
+  _merge_group)  need_fn merge_group; merge_group "$@" ;;
   # The live scheduler's accept (forge control accept, #138): it holds the plan lock already.
   _accept)   need_fn do_accept; FORGE_ACCEPT_LIVE=1 do_accept "$@" ;;
   _prepare_retry) retry_for_scheduler "$@" ;;

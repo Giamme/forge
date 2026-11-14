@@ -26,8 +26,10 @@ from forge_ui import __version__, reader, server
 
 STATIC = server.STATIC_DIR
 # what the exported page runs; every other script index.html loads is in LEFT_OUT, with the reason
+# groupsview.js is the group page. It is named here before that file exists; _page skips a
+# SCRIPTS entry whose file is absent, so the export still builds.
 SCRIPTS = ('theme.js', 'icons.js', 'datatable.js', 'shell.js', 'runmodel.js', 'cloudmodel.js', 'graph.js', 'gantt.js', 'verifyview.js', 'checksview.js',
-           'briefview.js', 'panel.js', 'diffview.js', 'convo.js', 'files.js', 'map3d.js', 'search.js', 'app.js')
+           'briefview.js', 'groupsview.js', 'panel.js', 'diffview.js', 'convo.js', 'files.js', 'map3d.js', 'search.js', 'app.js')
 LEFT_OUT = {
     'uikit.js': 'write helpers and the guards that keep a poll from redrawing what a person holds; a snapshot neither writes nor polls',
     'controls.js': 'changes a live run',
@@ -48,6 +50,9 @@ TRANSCRIPT_CAP = 2 << 20                                    # one execution's tr
 TOTAL_CAP = 25 << 20                                        # every response together
 CDN = 'https://cdn.jsdelivr.net/npm/three@0.160.0/'
 _EXEC = re.compile(r'(?:task|dwarf|qa|solo|verification|parallel)-[0-9a-f]{32}')
+# GET /api/runs/<key>/groups/<gid> is the group dict itself, so its goal and decision are not nested
+# under a `groups` key. clean() is told the parent is `groups` for that path.
+_GROUP_DETAIL = re.compile(r'/groups/[a-z0-9][a-z0-9-]{0,39}$')
 # texts that can hold code, prompts or private notes: nulled unless texts=True
 _TEXT_KEYS = frozenset(('prompt', 'last', 'request', 'log_tail', 'dwarf_tail', 'qa_tail', 'qa_last', 'qa_input',
                         'tasks_summary', 'known_issues', 'texts', 'text', 'planning_last', 'approach', 'retry_findings',
@@ -56,12 +61,19 @@ _TEXT_KEYS = frozenset(('prompt', 'last', 'request', 'log_tail', 'dwarf_tail', '
 # keys that are private text only under one parent: a person's --reason on each decision (`reason` elsewhere is
 # a short machine word, such as a sweep's dropped-finding reason, and stays); the --reason of each adoption too.
 # A task header's goal and criteria are paragraphs of the prompt; the run's own `goal` (its title) stays.
+# A group's goal (the planner's line in groups.tsv) and the first line of its decision.md are private too,
+# on the run's `groups` list and on GET …/groups/<gid>. A group's title stays. A task's `decision` is an
+# object under `tasks` (its `text` is already in _TEXT_KEYS); it is not this string.
 # A brief question's why, the choices in options, its default and the answer a person typed are private
 # only under `questions` and `parked` (`text` is already in _TEXT_KEYS). `scope`, `state` and `id` stay.
+# A proposal's summary, diff and refusal reason are the model's prose and the patch. pid, state, scope,
+# group, hash and the truncation flag stay. `reason` under `affected` is a short machine word and stays.
 _TEXT_KEYS_UNDER = {'decisions': frozenset(('reason',)), 'adoptions': frozenset(('reason',)),
                     'adoption': frozenset(('reason',)), 'header': frozenset(('goal', 'criteria')),
+                    'groups': frozenset(('goal', 'decision')),
                     'questions': frozenset(('why', 'options', 'default', 'answer')),
-                    'parked': frozenset(('why', 'options', 'default', 'answer'))}
+                    'parked': frozenset(('why', 'options', 'default', 'answer')),
+                    'proposals': frozenset(('summary', 'diff', 'reason'))}
 
 
 def _enc(value):
@@ -121,7 +133,9 @@ class _Snapshot:
         value = server.api_get(self.catalog, path)
         if value is server.NO_ROUTE or value is None:
             return None
-        value = self.clean(value)
+        # The group route returns the group at the root, so goal and decision blank the way they do
+        # under the run's `groups` list.
+        value = self.clean(value, 'groups' if _GROUP_DETAIL.search(path) else None)
         size = len(json.dumps(value, ensure_ascii=False).encode('utf-8'))
         if not required and ((cap and size > cap) or self.size + size > TOTAL_CAP):
             self.omitted.append({'path': path, 'bytes': size, 'why': 'larger than 1 MB' if cap and size > cap else 'over the 25 MB total'})
@@ -186,7 +200,20 @@ def build(catalog, key, texts=False, paths=False, now=None):
     tasks = [t for t in (detail.get('tasks') or []) if isinstance(t, dict) and t.get('id')]
     for task in tasks:
         snap.add(f"{base}/tasks/{_enc(task['id'])}")
-    names = sorted(set(_EXEC.findall(json.dumps(run))))
+    # A group's review dispatch is not named on the run, only on its own detail. Snapshot that detail,
+    # and fold the dispatch into the execution list so its transcript is stored with the others.
+    extra_execs = []
+    for item in run.get('groups') or []:
+        if not isinstance(item, dict):
+            continue
+        gid = item.get('id')
+        if not isinstance(gid, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,39}', gid):
+            continue
+        body = snap.add(f'{base}/groups/{_enc(gid)}')
+        execution = body.get('execution') if isinstance(body, dict) else None
+        if isinstance(execution, dict) and isinstance(execution.get('id'), str):
+            extra_execs.append(execution['id'])
+    names = sorted(set(_EXEC.findall(json.dumps(run))) | {name for name in extra_execs if _EXEC.fullmatch(name)})
     for name in names:
         snap.add(f'{base}/executions/{name}')
     reviews = [r.get('name') for r in (run.get('final_reviews') or []) if isinstance(r, dict) and r.get('name')]

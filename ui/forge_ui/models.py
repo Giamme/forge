@@ -82,10 +82,30 @@ def side_role(role) -> bool:
     return isinstance(role, str) and role.startswith('side_')
 
 
+def _group_scope(item) -> bool:
+    """A group review: one QA dispatch for several tasks, not one task's review of record.
+
+    The execution may say so (`scope`, or dataset.json's `scope`). A path under
+    `groups/<gid>/` says so too, which is how a scan of that dir is recognized before
+    the execution dict carries the field. A task whose id is `groups` lives under `tasks/`.
+    """
+    if item.get('scope') == 'group':
+        return True
+    dataset = getattr(item, 'dataset', None)
+    if isinstance(dataset, dict) and dataset.get('scope') == 'group':
+        return True
+    rel = getattr(item, 'rel', None)
+    if not isinstance(rel, str) or not rel:
+        return False
+    head, _, _ = rel.partition('/')
+    return head == 'groups'
+
+
 def _primary_qa(item) -> bool:
-    """The review of record for an attempt. A shadow review and a side dispatch are not one."""
+    """The review of record for an attempt. A shadow review, a side dispatch and a group review are not one."""
     role = item['role']
-    return role == 'qa' and not item['shadow'] and role != 'qa_shadow' and not side_role(role)
+    return (role == 'qa' and not item['shadow'] and role != 'qa_shadow' and not side_role(role)
+            and not _group_scope(item))
 
 
 def _builtin_profiles_path():

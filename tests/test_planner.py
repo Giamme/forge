@@ -19,8 +19,16 @@ def task(tid='parse-config', deps=(), difficulty='medium', files=('src/config.py
             'title': title, 'approach': approach, 'prompt': prompt or f'Do {tid}.{CRITERIA}'}
 
 
-def reply(tasks, text_before='Here is the plan.\n'):
-    return f'{text_before}```forge-plan\n{json.dumps({"tasks": tasks})}\n```\nDone.\n'
+def reply(tasks, text_before='Here is the plan.\n', groups=None):
+    body = {'tasks': tasks}
+    if groups is not None:
+        body['groups'] = groups
+    return f'{text_before}```forge-plan\n{json.dumps(body)}\n```\nDone.\n'
+
+
+def group(gid='limits', title='Config limits', goal='The limits section is read into Config.',
+          members=('parse-config',)):
+    return {'id': gid, 'title': title, 'goal': goal, 'members': list(members)}
 
 
 class PlannerCase(unittest.TestCase):
@@ -39,6 +47,10 @@ class PlannerCase(unittest.TestCase):
 
     def files(self):
         return sorted(str(p.relative_to(self.plan)) for p in self.plan.rglob('*') if p.is_file())
+
+    def wipe(self):
+        for path in sorted(self.plan.rglob('*'), reverse=True):
+            path.rmdir() if path.is_dir() else path.unlink()
 
 
 class ParseTests(PlannerCase):
@@ -147,6 +159,94 @@ class ParseTests(PlannerCase):
                 self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
                 self.assertEqual((self.plan / 'tasks.tsv').read_text(), plain)
                 self.assertEqual(risk.read_text() if risk.exists() else None, written)
+
+    def test_groups_tsv_keeps_the_other_outputs(self):
+        # No groups key: the v0.18 task files, and no groups.tsv. A list writes groups.tsv
+        # (review task, qa -, reply order) without changing those files. An empty list writes the header.
+        tasks = [task('parse-config'),
+                 task('write-docs', ['parse-config'], 'low', ['docs/limits.md'], 'Document the limits section'),
+                 task('notes', files=['notes.md'], title='A one-task group'),
+                 task('aside', files=['aside.md'], title='Left out of every group')]
+        tasks_tsv = (
+            '# id\tdeps\tdifficulty\tfiles\tdwarf\tqa\ttitle\n'
+            'parse-config\t-\tmedium\tsrc/config.py,tests/test_config.py\t-\t-\tParse the new config section\n'
+            'write-docs\tparse-config\tlow\tdocs/limits.md\t-\t-\tDocument the limits section\n'
+            'notes\t-\tmedium\tnotes.md\t-\t-\tA one-task group\n'
+            'aside\t-\tmedium\taside.md\t-\t-\tLeft out of every group\n')
+        r, _ = self.parse(reply(tasks))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.plan / 'tasks.tsv').read_text(), tasks_tsv)
+        self.assertNotIn('groups.tsv', self.files())
+        before = {rel: (self.plan / rel).read_bytes()
+                  for rel in self.files() if rel != 'request.md'}
+
+        self.wipe()
+        title, goal = 'T' * 200, 'G' * 200
+        solo = 'n' * 40
+        # write-docs before parse-config is reply order: not dependency order, not alphabetical.
+        groups = [
+            group('wave-b', title, goal, ['write-docs', 'parse-config']),
+            group(solo, 'Notes', 'The notes file exists.', ['notes']),
+        ]
+        r, _ = self.parse(reply(tasks, groups=groups))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse((self.plan / 'planner.refused').exists())
+        for rel, data in before.items():
+            self.assertEqual((self.plan / rel).read_bytes(), data, rel)
+        self.assertEqual((self.plan / 'groups.tsv').read_text(),
+                         '# id\treview\tqa\tmembers\ttitle\tgoal\n'
+                         'wave-b\ttask\t-\twrite-docs,parse-config\t' + title + '\t' + goal + '\n'
+                         + solo + '\ttask\t-\tnotes\tNotes\tThe notes file exists.\n')
+        self.assertNotIn('aside', (self.plan / 'groups.tsv').read_text())
+
+        self.wipe()
+        r, _ = self.parse(reply(tasks, groups=[]))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for rel, data in before.items():
+            self.assertEqual((self.plan / rel).read_bytes(), data, rel)
+        self.assertEqual((self.plan / 'groups.tsv').read_text(),
+                         '# id\treview\tqa\tmembers\ttitle\tgoal\n')
+
+    def test_malformed_groups_are_refused_and_write_nothing(self):
+        # One mutation each, from a reply whose group would otherwise be accepted.
+        long = 'x' * 201
+        cases = {
+            'member not a task': (reply([task()], groups=[group(members=['ghost'])]),
+                                  'not a task of the reply'),
+            'task in two groups': (reply([task('a', files=['a.py']), task('b', files=['b.py'])], groups=[
+                group('first', members=['a']), group('second', members=['a'])]),
+                                   'in two groups'),
+            'listed twice': (reply([task()], groups=[group(members=['parse-config', 'parse-config'])]),
+                             'listed twice'),
+            'duplicate id': (reply([task('a', files=['a.py']), task('b', files=['b.py'])], groups=[
+                group('same', members=['a']), group('same', members=['b'])]),
+                             'duplicate id'),
+            'id equals a task id': (reply([task()], groups=[group('parse-config')]),
+                                    'also a task id'),
+            'missing field': (reply([task()], groups=[{k: v for k, v in group().items() if k != 'goal'}]),
+                              'missing goal'),
+            'multiline title': (reply([task()], groups=[group(title='Config\nlimits')]),
+                                'title is not one line'),
+            'multiline goal': (reply([task()], groups=[group(goal='Done.\u2028Next')]),
+                               'goal is not one line'),
+            'tab in title': (reply([task()], groups=[group(title='Config\tlimits')]),
+                             'tab or a control character'),
+            'empty title': (reply([task()], groups=[group(title='   ')]), 'title is empty'),
+            'title length': (reply([task()], groups=[group(title=long)]),
+                             'title is longer than 200 characters'),
+            'goal length': (reply([task()], groups=[group(goal=long)]),
+                            'goal is longer than 200 characters'),
+            'bad id': (reply([task()], groups=[group('a' * 41)]), 'does not match'),
+            'extra key': (reply([task()], groups=[dict(group(), review='group')]), 'unexpected review'),
+            'not a list': (reply([task()], groups={'id': 'limits'}), 'groups is not a list'),
+            'empty members': (reply([task()], groups=[group(members=[])]), 'members is empty'),
+            'member type': (reply([task()], groups=[group(members=['parse-config', 2])]),
+                            'not a list of task ids'),
+        }
+        for name, (text, reason) in cases.items():
+            with self.subTest(name):
+                self.wipe()
+                self.assert_refused(text, reason)
 
     def assert_refused(self, text, reason):
         r, path = self.parse(text)
@@ -312,7 +412,11 @@ class PromptTests(PlannerCase):
                        'Prefer branches that can run in parallel', 'Never two tasks that edit the same file',
                        'single-file deliverable', 'src/physics.js', 'final low-difficulty task',
                        '## Acceptance criteria', 'Never ask for the whole test suite',
-                       '7000 characters of prompt and 9 files', '```forge-plan', '"tasks"'):
+                       '7000 characters of prompt and 9 files', '```forge-plan', '"tasks"',
+                       'usually one per wave of the plan\'s dependency order',
+                       'goal sentence that says what is true once its tasks are done',
+                       'A group may have one task', 'left out of every group', '"groups"',
+                       '"config-limits"'):
             self.assertIn(needle, text)
         self.assertLess(text.index('read-only'), text.index(REQUEST.rstrip('\n')))
         self.assertLess(text.index(REQUEST.rstrip('\n')), text.index('A pure chain'))
@@ -338,6 +442,10 @@ class PromptTests(PlannerCase):
         reply_file.write_text(text[start:text.index('```\n', start + 5) + 4])
         r = self.run_planner('parse', '--plan', self.plan, '--reply', reply_file)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.plan / 'groups.tsv').read_text(),
+                         '# id\treview\tqa\tmembers\ttitle\tgoal\n'
+                         'config-limits\ttask\t-\tparse-config\tConfig limits\t'
+                         'The limits section is read into Config with the defaults the request names.\n')
 
     def test_refuses_an_existing_plan(self):
         (self.plan / 'tasks.tsv').write_text('mine\n')

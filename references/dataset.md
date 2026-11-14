@@ -45,6 +45,8 @@ time order: an attempt that PASSed, then a merge that CONFLICTed, then a human `
 | `event` `run_compacted` | `forge runs compact` (by hand, or `auto` in the background at run start) | after the strict import and the removals, fail-open: `path`, `bytes_freed`, `snapshots_removed`, `snapshot_bytes`, `logs_compressed`, `log_bytes_freed`, `auto` |
 | `event` `shadow_review` | shadow review | how an opt-in second review ended (`done`, `invalid`, `overtime`, `orphaned`, ...), with the reviewed commit and both specs. Its dispatch is recorded with role `qa_shadow` |
 | `event` `side_dispatch` | a brief or summary dispatch that `forge run`, `forge brief write`, `forge summarize` or the scheduler's summaries started, or could not start | `kind` (`brief` or `summary`), `task`, `spec`, `ok`, and `reason`: null on success, else `timeout`, `error`, `missing` or `cap`. Its dispatch is recorded with role `side_brief` or `side_summary` |
+| `event` `group_review` | one QA round of a `review=group` group | `group`, `round`, `members`, `reviewer`, `verdict`, `gated`, `implicated`, `ambiguous`, `findings`, `diff_bytes`, `prompt_bytes`. The dispatch itself is a separate `dispatch` with `scope` `group` |
+| `event` `group_merge` | a group merge, conflict, or invalidation | `group`, `status` (`MERGED`, `CONFLICT`, or `INVALIDATED`). `MERGED` also has `commit`, `members` and `integration`. `CONFLICT` has `commit` and `conflicts`. `INVALIDATED` has `reason`. Each member's own `merge` event also carries `group` |
 | `event` `retro_note` | a retro note stored by `forge retro note`, or by `forge retro record` after a dispatch | the note's fields (`type`, `fixable_by`, `summary`, `blocking`, `tried`, `evidence`), forge's context (`role`, `spec`, `alias`, `harness`, `effort`, `tier`, `task`, `attempt`, `run_id`, `version`, `os`, `t`) and `check` (`verified` or `claimed`). Fail-open: the plan's `retro/notes.jsonl` is the record |
 | `event` `brief_question` | a brief question stored by `forge brief write` | `task`, `qid`, `scope`, `must_answer` (kept only under `gated`), and `parked`: true for a `wave` or `plan` question, which is kept in `brief.parked.json` |
 | `event` `brief_answer` | an answer given with `forge brief answer` | `task`, `qid`, `actor` (`cli`, or `ui` from forge-ui), and `late`: true once the task has started. The answer is also logged in `control.log` as an `answer` change |
@@ -83,6 +85,21 @@ recorded as role `side_brief` or `side_summary` (`forge_dataset.is_side_role`), 
 disk stay `side.*`. Review history, finding facts, review exports and forge-ui's model views
 skip every `side_*` role, so a brief or summary is never counted as a review. A bare `side` is
 the dispatch role itself, not one of these.
+
+A group review is one QA dispatch for several tasks (`forge-dispatch.sh qa` with
+`--run-dir <plan>/groups/<gid>`). It is recorded with `scope` `group`, an empty task,
+`group` (the group id), `members` (the task ids from `groups.tsv`, in order) and `round`
+(the number in `groups/<gid>/round` when the dispatch was captured live; an import reads
+the dispatch's own `attempts/qa-*/group.round`, and for a run recorded before that file, the
+round from `members.tsv`, matched to `qa.round-<n>.last` when that file exists). It is
+not a task attempt. Reviewer leaderboards, `forge dataset` reviewers, pairs, routing, tiers
+and efforts, review history, finding facts, the review rows of `forge dataset export`, and
+forge-ui's model views skip `scope` `group` the way they skip a side dispatch. The dispatch
+stays in the store, flagged `scope` `group`, so a later measurement of group review quality
+and cost can use it. A member attempt the group judged is linked on import (`review_scope`
+`group`, plus `group` and `round`) and does not keep a copy of that review's `qa.last` or
+`qa.gate`. It has no task-level QA dispatch of its own. A plan with no group review imports
+the same events as before.
 
 `plan --reviewer-session` writes `$PLAN/reviewer_session` (`on`). The plan event records
 it in `options`, and `--reviewer-session-rate` adds `reviewer_session_rate`; which tasks were

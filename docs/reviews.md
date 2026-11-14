@@ -301,6 +301,38 @@ share a commit, `since=` is that commit and the prompt says nothing changed. The
 labelled-line rule applies: restate only what is still open, because every labelled line
 is filed.
 
+## Group review (opt-in)
+
+`plan --groups waves --group-review` reviews several related tasks in one QA dispatch. It is
+off unless you pass it. A planner's groups, and `--groups` without `--group-review`, are names
+only (`review=task`): they show in the approval table, and each task is still reviewed on its
+own. The mechanics are in
+[Groups and group review](../references/decompose.md#groups-and-group-review-opt-in).
+
+**Fewer dispatches, a larger prompt.** A group is one review instead of one per member, and
+the reviewer sees those tasks together: each task's requirements, and the combined diff. The
+prompt is larger. That is the tradeoff.
+
+**A failure stops the group.** A blocking finding sends the implicated members back. The
+others stay implemented and are not retried, and nothing in the group merges until those
+members are fixed and the group passes. A member also waits for its siblings before anything
+merges, so a task that depends on one of them starts later than it would under per-task review.
+
+**Fewer dispatches are not a measured saving.** They do not by themselves prove a lower token
+cost, or that the same defects are caught. The group's QA dispatch is recorded with `scope`
+`group` and is left out of the per-task reviewer statistics. Read the `group_review` and
+`group_merge` events. Measure with `forge dataset` before treating group review as a cost
+saving. See [the dataset](../references/dataset.md#raw-events-not-training-examples).
+
+**When to use it.** Many small, related, low-risk tasks. Keep a high-risk task on per-task
+review. `--group-review` already leaves high-difficulty tasks out of the groups it derives.
+
+A combined diff over `group_max_diff_kb` (256 KB unless the plan says otherwise) is not
+reviewed and not truncated: the group stops for a decision. That is separate from a
+[whole-run review](#whole-run-review-opt-in), which reads the combined result after the run
+and does truncate. Group review runs no shadow review, does not continue a reviewer session
+across rounds, and does not run under Fractal.
+
 ## Reviewer session (opt-in experiment)
 
 `plan --reviewer-session` continues the same reviewer's session across rounds. It is off

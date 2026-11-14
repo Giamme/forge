@@ -55,6 +55,18 @@ written), and the reader must never raise because of one.
 | `summaries`, `summaries_model` | the run's task-summary switch (`on` or `off`; absent is `off`) and its model spec, from `forge control set summaries`; returned as `summaries`, see RunDetail |
 | `profile.json` | the profile the run froze: `name`, `level` (`user`, `repo` or `builtin`), `body` (the profile object), `shadowed` (levels the winning copy hid), `frozen_at` (UTC, `YYYY-MM-DDTHH:MM:SSZ`), `overridden` (the sorted dotted keys a flag of the run replaced, such as `routing.qa.any`; empty when none). RunDetail returns `settings.profile` `{name, level, overridden}`, `null` when the file is absent, unreadable or not that shape |
 | `deferrals.txt` | one line per task the wave planner deferred |
+| `groups.tsv` | tab-separated, 6 columns: `id review qa members title goal`. `#` lines and blank lines are skipped. `id` matches `[a-z0-9][a-z0-9-]{0,39}`. `review` is `task` or `group`. `qa` is a model spec or `-`. `members` is a comma list of task ids or `-`. `-` in any cell reads as `null`. A row with a bad id, or a repeated id, is skipped with a warning; the first copy of an id wins. Returned as RunDetail `groups` only when this file exists |
+| `groups/<gid>/status` | one word, for a `review=group` group: `REVIEWING PASS FAIL NEEDS_DECISION UNKNOWN CONFLICT INFRA TIMEOUT ERROR INVALIDATED WAITING INTERRUPTED`. Any other word is kept as written |
+| `groups/<gid>/round` | the current round, an integer |
+| `groups/<gid>/merged` | exists when the group's review was merged |
+| `groups/<gid>/rounds.tsv` | `round<TAB>epoch<TAB>status<TAB>implicated<TAB>reviewer` per line. `implicated` is a comma list of task ids or `-`. A row whose round or epoch does not parse is warned and skipped |
+| `groups/<gid>/members.tsv` | `round<TAB>task<TAB>commit<TAB>attempt` per line: who was in each round. Returned on the group detail as `members_by_round` |
+| `groups/<gid>/attribution.json` | `{round, findings: [{n, severity, status, file, line, tasks, blocking, ambiguous}], implicated, ambiguous}`, and `blocking` when it is a boolean. Returned as `attribution` |
+| `groups/<gid>/decision.md` | the group's decision; the detail keeps its first line |
+| `groups/<gid>/qa.last`, `qa.gate`, `known_issues.md` | the group's review, as a task's: the reply, the gate line, the tolerated findings. `qa.last` and `known_issues.md` are returned on the group detail |
+| `groups/<gid>/candidate.base`, `candidate.commit` | one commit each: the base the group reviewed and the candidate it reviewed. Returned as `candidate` `{base, commit}` |
+| `groups/<gid>/qa.input`, `qa.out`, `qa.log` (or `.gz`), `qa.clock` | the group's QA dispatch, sitting in the group dir as a task's sit in its task dir |
+| `groups/<gid>/attempts/qa-<uuid>/` | that dispatch's execution, the same dir a task's QA dispatch writes |
 | `retro.md`, `retro/notes.jsonl` | written when retro mode is on: the report (Markdown) and one JSON note per line (`fixable_by` `user`, `forge` or `unsure`, `check` `verified` or `claimed`, `blocking` a boolean). Returned as `retro`, see RunDetail |
 | `integration.base`, `accepted.integration` | one commit each: where the integration branch started, the revision the run accepted |
 | `attempts/<role>-<uuid>/` | one *execution* (below) of the run itself: `parallel` (a `run`) or `verification` |
@@ -62,7 +74,7 @@ written), and the reader must never raise because of one.
 | `final-review` | a symlink to the newest *published* review dir; `final-review.verdict` a copy of its verdict |
 | `integrate-<epoch>-<pid>/` | one `integrate`: `setup.log`, `merge.log`, `verification.*`, `attempts/verification-<uuid>/`, and `final-review/` (a review dir as above) when it ran one |
 | `tasks/<id>/merged` | exists when the task was merged; its mtime is when |
-| `tasks/<id>/status` | one word: `RUNNING PASS FAIL ERROR INFRA TIMEOUT UNKNOWN INVALIDATED BLOCKED INTERRUPTED NOCHANGES CONFLICT NEEDS_INPUT NEEDS_DECISION` |
+| `tasks/<id>/status` | one word: `RUNNING PASS FAIL ERROR INFRA TIMEOUT UNKNOWN INVALIDATED BLOCKED INTERRUPTED NOCHANGES CONFLICT NEEDS_INPUT NEEDS_DECISION IMPLEMENTED`. `IMPLEMENTED` means the member's own work is in and it is waiting for its group's review |
 | `tasks/<id>/attempt` | the current attempt number |
 | `tasks/<id>/attempts.tsv` | `epoch<TAB>attempt<TAB>status<TAB>infra_class` per line, one per attempt entry; status may also be `MERGED`, `BOUNCED` or `INCOMPLETE` (a send-back that no reviewer judged: the task status stays `FAIL`), `infra_class` may be empty, `-` or missing |
 | `tasks/<id>/escalations.tsv` | `epoch<TAB>attempt<TAB>from_spec<TAB>to_spec[<TAB>source]` per line; `source` (who decided: `policy`, a human's `retry --dwarf` as `retry`, or a `pin`) is missing on older rows, which read as `policy` |
@@ -119,7 +131,14 @@ Only the transcript, checks and environment endpoints open an execution's `.log`
 running one's log for its `now`; no read opens a `.cmd`.
 
 **Task status** is `MERGED` if `tasks/<id>/merged` exists, otherwise the first word of
-`tasks/<id>/status`, otherwise `PENDING`.
+`tasks/<id>/status`, otherwise `PENDING`. `IMPLEMENTED` is a waiting status: the work is in,
+and the task is awaiting its group's review. It is not done, not active and not failed, and a
+task that depends on one waits on it (it is not a stopped dependency). `status_class` in
+`reader.py` returns `waiting` for it, as it does for `NEEDS_INPUT` and `NEEDS_DECISION`.
+`_waiting` uses that class for a dependency: `done` (`MERGED` only) drops it from `on`,
+`failed` (the stopped statuses, `NOCHANGES` included) puts it in `stopped`, and `waiting`
+leaves it in `on` only. `PASS` is neither: it is saved and not merged yet, so a dependent
+still lists it.
 
 Only the ids listed in `tasks.tsv` are tasks: `tasks/` may also hold forge's own dirs (e.g.
 `tasks/_integration/`), and a task dir holds many other files (`attempts/` is a directory of
@@ -186,6 +205,7 @@ def discover(plans=(), roots=(), registry=True, registry_dir=None) -> list[tuple
 def summarize(path, source='plan') -> dict      # a RunSummary, below
 def detail(path, source='plan') -> dict         # a RunDetail, below
 def task_detail(path, task_id, source='plan') -> dict | None       # a TaskDetail
+def group_detail(path, gid, source='plan') -> dict | None         # a Group, or None
 def execution_detail(path, name, source='plan') -> dict | None     # an ExecutionDetail
 def final_review_detail(path, name, source='plan') -> dict | None  # a FinalReviewDetail
 def task_diff(path, task_id, which='current', source='plan') -> dict | None  # a DiffDetail
@@ -208,6 +228,7 @@ class Catalog:
     def get(self, key) -> dict | None   # RunDetail for that run_key, or None
     def identity(self, key) -> dict | None  # {root, worktree, branch, source} of that run; None for an unknown key
     def task(self, key, task_id) -> dict | None
+    def group(self, key, gid) -> dict | None  # a Group, or None for an unknown gid or a gid that cannot name one
     def execution(self, key, name) -> dict | None
     def final_review(self, key, name) -> dict | None
     def diff(self, key, task_id, which='current'), execution_diff(self, key, name),
@@ -254,6 +275,7 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `GET /api/runs` | `200 {"runs": [RunSummary, ...]}` |
 | `GET /api/runs/<key>` | `200 RunDetail`, or `404 {"error": "not found"}` |
 | `GET /api/runs/<key>/tasks/<id>` | `200 TaskDetail`; `<id>` is percent-decoded (strict UTF-8) and must be a `tasks.tsv` id (`solo` for a solo run). An id that decodes to `/`, NUL, U+FFFD, `.` or `..` is a 404 without a read |
+| `GET /api/runs/<key>/groups/<gid>` | `200 Group`; `<gid>` matches `[a-z0-9][a-z0-9-]{0,39}`. An unknown gid, a gid outside that pattern, or an unknown run is `404 {"error": "not found"}` |
 | `GET /api/runs/<key>/executions/<role>-<uuid>` | `200 ExecutionDetail` |
 | `GET /api/runs/<key>/final-reviews/<name>` | `200 FinalReviewDetail`; `<name>` is `final-review-<e>-<p>` or `integrate-<e>-<p>` |
 | `GET /api/runs/<key>/tasks/<id>/diff[/<which>]` | `200 DiffDetail`; `<which>` is `current` (the default: `changes.diff`), `prev`, `committed` (plan tasks), `existing` (solo) |
@@ -298,15 +320,16 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `GET /<name>` | that file from `forge_ui/static/` (`.html .js .css .svg` only, no subdirs) |
 | anything else | `404 {"error": "not found"}` (an unknown path or run); a method a path does not take (PUT, DELETE, OPTIONS, a POST to a read path): `405` with `Allow`, except that a GET to a path that only takes POST (`/api/runs/<key>/delete`, `/api/runs/<key>/issues/dismiss`) answers `404` |
 
-The lazy endpoints answer `404 {"error": "not found"}` for an unknown run, task,
+The lazy endpoints answer `404 {"error": "not found"}` for an unknown run, task, group,
 execution or review; the diff endpoints also for a `<which>` the run kind has not (`existing`
 of a plan task, `prev` of a solo run), the diff and transcript endpoints for an execution that is
 not `qa` or `dwarf`; the
 Fractal node endpoints for an unknown node or a task whose Fractal state is not `available`. A
 diff that is not there yet is a `200` with `available: false`. An execution is looked for only where executions are written:
 `attempts/`, `tasks/<id>/attempts/`, `shadow/<id>/<a>-<k>/attempts/`,
-`final-review-*/attempts/` and `integrate-*/final-review/attempts/`, in that order; a dir
-that resolves outside the run dir (a symlinked `attempts/`, say) is ignored. The verification
+`final-review-*/attempts/`, `integrate-*/final-review/attempts/` and `groups/<gid>/attempts/`,
+in that order; a dir that resolves outside the run dir (a symlinked `attempts/`, say) is ignored.
+A group's QA dispatch is the last of those, so a task execution of the same id is still found first. The verification
 log endpoints answer `404` for a solo run, a `<lane>` not matching `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`
 (so no `..`), a `<k>` or `<n>` that is not a positive decimal without a leading zero, and a log
 that is missing, a symlink or not a regular file.
@@ -577,6 +600,12 @@ Every RunSummary field, plus:
 - `waves` comes from `waves.tsv` (index 0 is wave 1); `[]` when it is missing. A solo run's
   `waves` is `[["solo"]]`.
 - `tasks` keeps the order of `tasks.tsv`. A solo run has one task, described below.
+- `groups` is present only when `groups.tsv` exists: one Group summary per row, in file order
+  (Group, below). Each task then also has `group`, the id of the group that lists it, or `null`
+  when it is in none. A task listed in two groups takes the first group in the file. A plan with
+  no `groups.tsv` has neither key, on the run or on a task, so that run JSON is unchanged. An
+  empty `groups.tsv` still exists: `groups` is `[]` and every task's `group` is `null`. A solo
+  run has neither key.
 - `warnings` names every file or line the reader skipped as malformed. Missing files are
   not warnings.
 
@@ -772,8 +801,9 @@ Every RunSummary field, plus:
   not a scheduler runs); else, while `scheduler.live` is true, for a `PENDING` or `INFRA` task:
   `infra` (a pause in `scheduler.pauses` holds it: scope `all`, or its id in `tasks`; the pause's
   keys plus `kind`), then for a `PENDING` task `deps` (`on`: its deps not merged, `stopped`: those
-  in a stopped status such as `FAIL`; a dep at `NEEDS_INPUT` or `NEEDS_DECISION` is in `on` only, as the user
-  holds it and the retry policy did not stop it), `stopping` (`mode`), `drained`, `brief` (`questions`: a gated
+  in a stopped status such as `FAIL` or `NOCHANGES`; a dep at `NEEDS_INPUT`, `NEEDS_DECISION` or
+  `IMPLEMENTED` is in `on` only — the first two wait for the user, `IMPLEMENTED` waits for the group's
+  review, and none of them is a stopped dependency), `stopping` (`mode`), `drained`, `brief` (`questions`: a gated
   plan holds it for the ids of its `must_answer` questions with no entry in `brief.answers.json`, or `[]`
   while `brief.json` is not written yet and `brief.pid` names a running process; the same two files
   `forge-schedule.py` reads), `overlap` (`on`: running
@@ -835,6 +865,75 @@ and `retry_sources.tsv` are read from the run directory (next to `attempts.tsv`)
 empty, so a later attempt whose dwarf changed is `unknown` unless a retry source or a queued retry
 explains it. `goal` and `criteria` are capped as `tasks/solo/goal` and `tasks/solo/criteria`.
 
+## Group
+
+`GET /api/runs/<key>/groups/<gid>` returns one group. `<gid>` matches
+`[a-z0-9][a-z0-9-]{0,39}`. An unknown gid, a gid outside that pattern, or an unknown run is
+`404 {"error": "not found"}`. A plan with no such group, including a solo run, is the same 404.
+
+RunDetail `groups` (only when `groups.tsv` exists) lists the summary, in file order. A
+`review=task` summary is identity and goal only. A `review=group` summary also carries the
+review state. `-` in a cell is `null`. `members` is a list of task ids, or `null` for `-` or an
+empty cell.
+
+```json
+{"id": "ship", "review": "group", "qa": "opus", "members": ["reader", "page"],
+ "title": "Ship the reader", "goal": "Land it together",
+ "status": "PASS", "round": 2, "merged": true, "implicated": null, "decision": "Accepted",
+ "rounds": [{"round": 1, "epoch": 1760601000.0, "status": "FAIL", "implicated": ["reader"], "reviewer": "opus"},
+            {"round": 2, "epoch": 1760602000.0, "status": "PASS", "implicated": null, "reviewer": "opus"}]}
+```
+
+- `status` is the first word of `groups/<gid>/status`, or `null` when that file is missing. `round`
+  is the integer in `round`, or `null`. `merged` is whether `merged` exists.
+- `rounds` comes from `rounds.tsv`. `implicated` on the summary is the last parsed round's
+  `implicated` (`null` for `-`, or when there is no round). `decision` is the first line of
+  `decision.md`, or `null`. A row with a round or epoch that does not parse is warned and skipped.
+- A `review` other than `task` or `group` is warned and the row is still returned, without the
+  review-state fields. `review` of `-` is `null` and warned the same way. A bad id and a repeated id are warned and skipped; the first copy wins.
+  Missing files are `null` or `[]` or `false`, not warnings. Nothing in a malformed file raises.
+
+The group endpoint returns that summary plus the review itself:
+
+```json
+{"attribution": {"round": 2, "findings": [
+    {"n": 1, "severity": "P1", "status": "CONFIRMED", "file": "ui/reader.py", "line": 42,
+     "tasks": ["reader"], "blocking": true, "ambiguous": false}],
+  "implicated": ["reader"], "ambiguous": [1], "blocking": true},
+ "members_by_round": [{"round": 1, "members": [
+    {"task": "reader", "commit": "abc123", "attempt": 1}]}],
+ "qa_last": "FORGE_VERDICT: PASS\n", "known_issues": null,
+ "candidate": {"base": "aaaaaaaa", "commit": "bbbbbbbb"},
+ "execution": {"id": "qa-…", "role": "qa", "state": "done"},
+ "warnings": [], "truncated": []}
+```
+
+- `attribution` is `attribution.json`, or `null` when the file is missing or its `findings` is not
+  a list (warned: `not an attribution`). Each finding keeps `n`, `severity`, `status`, `file`,
+  `line`, `tasks`, `blocking` and `ambiguous`. A finding that is not an object is skipped. A value
+  of the wrong type is warned and replaced (`n` falls back to its 1-based index, `line` to `null`,
+  `tasks` to `[]`, the flags to `false`). `implicated` is a list of ids and `ambiguous` a list of
+  finding numbers, `[]` when absent or the wrong type. Top-level `blocking` is kept only when it
+  is a boolean.
+- `members_by_round` groups `members.tsv` by round, in file order. `-` for `commit` or `attempt`
+  is `null`. A row with no round or no task is warned and skipped; an attempt that is not an
+  integer is warned and kept as `null`.
+- `qa_last` and `known_issues` use the bounded reader TaskDetail's texts and a final review's
+  `qa.last` use: the first 20,000 and last 8,000 characters, the cut named in `truncated`
+  (`qa_last`, `known_issues`). A missing file is `null`.
+- `candidate` is the first line of `candidate.base` and `candidate.commit`, with `-` as `null`.
+- `execution` is the group's QA dispatch: the newest `qa` execution in
+  `groups/<gid>/attempts/`, built by the same reader a task's QA dispatch uses, or `null` when
+  there is none. It is `running` only while `groups/<gid>/status` is `REVIEWING`; any other
+  unfinished dispatch is `orphaned`. The execution and transcript endpoints open it with
+  `owner` `{"kind": "group", "id": "<gid>"}`, and while it runs they read the group dir's
+  `qa.delivered`, `qa.prompt` and `qa.input` the way a task's owner dir is read.
+- `warnings` and `truncated` are that read's. A warning is kept when its file is under
+  `groups/<gid>/` (this group's rounds, members, attribution and review dispatch). A malformed
+  `groups.tsv` row, and another group's files, are warnings of the run read, not of this group.
+  `truncated` names the texts this read cut (`qa_last`, `known_issues`). A `review=task` group
+  has the same detail fields; with no review dir they are `null` or `[]`, and `warnings` is `[]`.
+
 ## Execution
 
 ```json
@@ -859,8 +958,8 @@ explains it. `goal` and `criteria` are capped as `tasks/solo/goal` and `tasks/so
   and it is the newest execution of its role in its dir, else `orphaned`. The owner is live
   when: the task's status is `RUNNING` (task executions and their children); the solo
   status is `RUNNING`; a shadow has no `shadow.status`; a final review's `state` is
-  `running`; always, for the run's own `parallel` and `verification`. A `dwarf` or `qa`
-  whose parent is not `running` is `orphaned`.
+  `running`; a group's `status` is `REVIEWING` (its QA dispatch); always, for the run's own
+  `parallel` and `verification`. A `dwarf` or `qa` whose parent is not `running` is `orphaned`.
 - `parent`: for `dwarf` and `qa`, the `task` (or `solo`) execution `dataset.json` names, else
   the latest one whose run (`started` to `ended`, open while unfinished) contains this
   start, else `null`. `task`, `solo`, `parallel` and `verification` have no parent.
@@ -981,8 +1080,8 @@ ExecutionDetail: the Execution, plus `resolved` (every `key=value` of `<role>.re
 `<role>.prompt` copy; while running without one, the owner dir's `<role>.delivered`, then
 `.prompt`, then `.input`), `last` (the `<role>.last` copy), `findings` (a list of Findings for
 a finished `qa`, else `null`, in place of the summary), `owner`
-(`{"kind": "task" | "shadow" | "final_review" | "run", "id": ...}`: the task id (`solo` for a
-solo run), `<task>/<attempt>-<k>`, the review name, or `null`), `truncated` and `warnings`.
+(`{"kind": "task" | "shadow" | "final_review" | "run" | "group", "id": ...}`: the task id (`solo` for a
+solo run), `<task>/<attempt>-<k>`, the review name, the group id, or `null`), `truncated` and `warnings`.
 
 FinalReviewDetail: the FinalReviewSummary, plus `meta` (every `review.meta` key),
 `tasks_summary`, `qa_input`, `qa_last`, `known_issues` (texts or `null`), `findings` (a list
@@ -1403,16 +1502,17 @@ difficulty paths deps model` each), `decomposition_history` (its newest 20, each
 
 - It holds `style.css` (with the labels' face, `D-DINCondensed-Bold.woff2`, inlined as a `data:`
   URL) and the classic scripts the run view uses (`theme.js icons.js datatable.js shell.js
-  runmodel.js cloudmodel.js graph.js gantt.js verifyview.js checksview.js panel.js diffview.js convo.js files.js
-  map3d.js search.js app.js`), inline; the import map; a `<script type="application/json" id="forge-snapshot">` with
+  runmodel.js cloudmodel.js graph.js gantt.js verifyview.js checksview.js briefview.js groupsview.js
+  panel.js diffview.js convo.js files.js map3d.js search.js app.js`), inline; the import map; a `<script type="application/json" id="forge-snapshot">` with
   `{meta, api}`; and a `<script type="text/plain" id="forge-stage">` holding `iso.js`,
   `cloud3d.js`, `findings3d.js`, `stagectl.js` and `scene3d.js` bundled into one module (each
   module in its own scope, relative imports bound to the earlier ones' exports, `createStage`
   exported), which `map3d.js` imports from a `blob:` URL.
 - `api` maps each path the page requests to that endpoint's response as the server would answer
   it (server.api_get): `/api/runs` (this run only), the RunDetail, every TaskDetail, every
-  ExecutionDetail the RunDetail names, every FinalReviewDetail, Files, RunFindings, and the
-  Fractal trees and nodes. With `texts=1` also every diff the page can open (each task's diff and its `sources`,
+  Group detail, every ExecutionDetail the RunDetail or a Group names, every FinalReviewDetail, Files, RunFindings, and the
+  Fractal trees and nodes. A script named above whose file is not in `forge_ui/static/` yet is left out,
+  so `groupsview.js` can be listed before the group page adds it. With `texts=1` also every diff the page can open (each task's diff and its `sources`,
   each final review's, each Fractal node's), every `dwarf` and `qa` ExecutionTranscript (at most 2 MB each)
   and ExecutionChecks, every TaskChecks, the RunEnvironment,
   and the VerificationLog tail of `verification.log`, of each lane's log and of each lane run's log
@@ -1422,6 +1522,9 @@ difficulty paths deps model` each), `decomposition_history` (its newest 20, each
   planning_last approach retry_findings needs_input dwarf_input error last_line message excerpt tail lines call split detail`.
   Under each brief `questions` or `parked` entry it also nulls `why`, `options`, `default` and `answer`
   (`scope`, `state`, `id`, `must_answer` and `possibly_stale` stay; a late answer's `text` is in the list above).
+  Under each group, on RunDetail `groups` and on `GET …/groups/<gid>`, it nulls `goal` and `decision`
+  (the planner's line and the first line of `decision.md`). The run's own `goal` stays, and so does a
+  group's `title`. A task's `decision` object stays, with its `text` nulled by the list above.
   It stores no diff, no transcript, no checks and no environment problems (a command is a text). A finding keeps its `summary`, a failing test its `name`.
 - `paths=0` (the default) makes every string that is a whole absolute path (but `/api/…`, `url`s
   and `command`s) its last component, and replaces the run dir, the repo and the home dir inside other
@@ -1847,6 +1950,10 @@ Suggested meaning: merged and pass green, running blue, pending grey, fail, erro
 red, infra and timeout orange, blocked, interrupted, invalidated, unknown and nochanges muted
 purple. `NEEDS_DECISION` takes the same waiting colour as `NEEDS_INPUT` (`--lamp-wait`, the
 `st-needs_input` class in `style.css`): a task that waits for the user is neither done nor failed.
+`IMPLEMENTED` is the same kind of waiting status: the member's work is in and it is awaiting the
+group's review. `reader.status_class` returns `waiting` for it, and a task that depends on one
+lists it in `waiting.on` and not in `waiting.stopped`. The page paints it with
+`st-implemented`, the same waiting colour; until that class exists the stage falls back to `#888`.
 
 ## The graph (`forge_ui/static/graph.js`)
 

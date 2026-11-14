@@ -1510,12 +1510,14 @@ class BriefTests(unittest.TestCase):
         _, tasks = self.loaded()
         self.assertEqual(tasks['reader']['brief']['parked'], [
             {'id': 'q4', 'text': 'Whole plan?', 'why': 'scope', 'options': ['now', 'later'],
-             'default': 'later', 'scope': 'plan', 'must_answer': True, 'possibly_stale': False},
+             'default': 'later', 'scope': 'plan', 'must_answer': True, 'possibly_stale': False,
+             'group': None, 'answer': None},
         ])
         self.assertEqual(tasks['graph']['brief'], {
             'questions': [],
             'parked': [{'id': 'q9', 'text': 'Across the wave?', 'why': 'overlap', 'options': ['hold'],
-                        'default': 'hold', 'scope': 'wave', 'must_answer': True, 'possibly_stale': False}],
+                        'default': 'hold', 'scope': 'wave', 'must_answer': True, 'possibly_stale': False,
+                        'group': None, 'answer': None}],
             'late': [],
         })
         self.assertIsNone(tasks['docs']['brief'])
@@ -1533,14 +1535,138 @@ class BriefTests(unittest.TestCase):
             F.write(self.plan / 'brief', level + '\n')
             data = detail(self.plan)
             self.assertIsNone(data['brief'], repr(level))
+            self.assertNotIn('proposals', data, repr(level))
             self.assertTrue(all(task['brief'] is None for task in data['tasks']), repr(level))
+            self.assertTrue(all('affected' not in task for task in data['tasks']), repr(level))
         (self.plan / 'brief').unlink()
         data = detail(self.plan)
         self.assertIsNone(data['brief'])
+        self.assertNotIn('proposals', data)
         self.assertIsNone({task['id']: task for task in data['tasks']}['reader']['brief'])
         solo = detail(SOLO)
         self.assertIsNone(solo['brief'])
+        self.assertNotIn('proposals', solo)
         self.assertIsNone(solo['tasks'][0]['brief'])
+        self.assertNotIn('affected', solo['tasks'][0])
+
+    def test_proposals_and_affected_only_while_brief_is_on(self):
+        # A plan that never had brief stays byte-identical across two reads, and gains neither key.
+        untouched = json.dumps(detail(FIXTURE), sort_keys=True)
+        self.assertEqual(untouched, json.dumps(detail(FIXTURE), sort_keys=True))
+        parsed = json.loads(untouched)
+        self.assertNotIn('proposals', parsed)
+        self.assertTrue(all('affected' not in task for task in parsed['tasks']))
+
+        data, tasks = self.loaded()
+        self.assertEqual(data['proposals'], [])
+        self.assertTrue(all('affected' not in task for task in tasks.values()))
+
+        # Files for the feature must not change a brief-off run, apart from `updated` (the dirs are stat'd).
+        # server has no task dir in the fixture. Create it first: the reader names a branch from the dir
+        # itself, and the marker file must not be what brings that dir into existence.
+        (self.plan / 'brief').unlink()
+        (self.plan / 'tasks/server').mkdir(parents=True, exist_ok=True)
+        off = detail(self.plan)
+        self._write_feature_files()
+        again = detail(self.plan)
+
+        def stable(body):
+            copy = dict(body)
+            copy.pop('updated', None)
+            return json.dumps(copy, sort_keys=True)
+
+        self.assertEqual(stable(off), stable(again))
+        self.assertNotIn('proposals', again)
+        self.assertTrue(all('affected' not in task for task in again['tasks']))
+        self.assertFalse(any(item.startswith('proposals/') or 'brief.affected' in item for item in again['warnings']))
+
+        F.write(self.plan / 'brief', 'gated\n')
+        data, tasks = self.loaded()
+        digest = 'ab' * 32
+        diff = '--- a/x\n+++ b/x\n@@ -1 +1 @@\n-PROPOSAL-DIFF-SECRET\n'
+        self.assertEqual(data['proposals'], [
+            {'pid': 'p1', 'scope': 'wave', 'group': 'ship', 'task': 'reader', 'qid': 'q4',
+             'summary': 'PROPOSAL-SUMMARY-SECRET', 'state': 'proposed', 'reason': None,
+             'created': '2026-01-01T00:00:00Z', 'hash': digest, 'diff': diff, 'truncated': False},
+            {'pid': 'p2', 'scope': 'plan', 'group': None, 'task': 'page', 'qid': 'q2',
+             'summary': 'split the page', 'state': 'refused', 'reason': 'PROPOSAL-REASON-SECRET',
+             'created': '2026-01-02T00:00:00Z', 'hash': 'fff', 'diff': 'not a hunk\n', 'truncated': False},
+            {'pid': 'p10', 'scope': 'wave', 'group': 'ship', 'task': 'reader', 'qid': 'q4',
+             'summary': 'long', 'state': 'approved', 'reason': None,
+             'created': '2026-01-03T00:00:00Z', 'hash': 'abc', 'diff': 'd' * 20000 + '…', 'truncated': True},
+        ])
+        self.assertNotIn('…', digest)
+        self.assertTrue(all('answer' not in item for item in data['proposals']))
+        self.assertNotIn('SHOULD-NOT-APPEAR', json.dumps(data['proposals']))
+        self.assertIn('proposals/p10/diff', data['truncated'])
+        self.assertIn('proposals/p2/proposal.json: pid does not match the directory', data['warnings'])
+        self.assertEqual(tasks['reader']['affected'], {'pid': 'p1', 'reason': 'c' * 500 + '…', 'flag_only': False})
+        self.assertIn('tasks/reader/brief.affected.reason', data['truncated'])
+        self.assertEqual(tasks['page']['affected'], {'pid': 'p3', 'reason': 'added', 'flag_only': True})
+        self.assertEqual(tasks['docs']['affected'], {'pid': 'p1', 'reason': 'dependent', 'flag_only': False})
+        self.assertIsNone(tasks['docs']['brief'])
+        self.assertNotIn('affected', tasks['graph'])
+        self.assertNotIn('affected', tasks['server'])
+        self.assertIn('tasks/graph/brief.affected: not an affected marker', data['warnings'])
+        self.assertIn('tasks/server/brief.affected: not a JSON object', data['warnings'])
+        parked = tasks['reader']['brief']['parked'][0]
+        self.assertEqual(parked['group'], 'ship')
+        self.assertEqual(parked['answer'], 'do it now')
+        self.assertEqual(parked['scope'], 'plan')
+
+        catalog = Catalog(plans=[self.plan], registry=False)
+        key = run_key(self.plan)
+        _, body = export.build(catalog, key, texts=False)
+        snapshot = json.loads(re.search(
+            r'<script type="application/json" id="forge-snapshot">(.*?)</script>',
+            body.decode('utf-8'), re.DOTALL).group(1))
+        run = snapshot['api'][f'/api/runs/{key}']
+        proposal = run['proposals'][0]
+        self.assertEqual(proposal['pid'], 'p1')
+        self.assertEqual(proposal['state'], 'proposed')
+        self.assertEqual(proposal['hash'], digest)
+        self.assertIs(proposal['truncated'], False)
+        for field in ('summary', 'diff', 'reason'):
+            self.assertIsNone(proposal[field], field)
+        html = body.decode('utf-8')
+        self.assertNotIn('PROPOSAL-SUMMARY-SECRET', html)
+        self.assertNotIn('PROPOSAL-DIFF-SECRET', html)
+        self.assertNotIn('PROPOSAL-REASON-SECRET', html)
+        self.assertEqual(run['proposals'][1]['reason'], None)
+
+    def _write_feature_files(self):
+        F.write(self.plan / 'tasks/reader/brief.parked.json', {
+            'questions': [
+                {'id': 'q4', 'text': 'Whole plan?', 'why': 'scope', 'options': ['now', 'later'],
+                 'default': 'later', 'scope': 'plan', 'group': 'ship', 'must_answer': True},
+            ]})
+        F.write(self.plan / 'tasks/reader/brief.parked.answers.json', {
+            'q4': {'text': 'do it now', 'actor': 'ui', 't': 1}})
+        F.write(self.plan / 'tasks/reader/brief.affected', {'pid': 'p1', 'reason': 'c' * 501, 't': '2026-01-01T00:00:00Z'})
+        F.write(self.plan / 'tasks/page/brief.affected', {'pid': 'p3', 'reason': 'added', 'flag_only': True, 't': 1})
+        F.write(self.plan / 'tasks/docs/brief.affected', {'pid': 'p1', 'reason': 'dependent', 't': 't'})
+        F.write(self.plan / 'tasks/graph/brief.affected', {'pid': '', 'reason': 'x'})
+        F.write(self.plan / 'tasks/server/brief.affected', [])
+        F.write(self.plan / 'proposals/p1/proposal.json', {
+            'pid': 'p1', 'scope': 'wave', 'group': 'ship', 'task': 'reader', 'qid': 'q4',
+            'answer': 'do it now', 'summary': 'PROPOSAL-SUMMARY-SECRET', 'changes': [],
+            'state': 'proposed', 'reason': None, 'created': '2026-01-01T00:00:00Z', 'actor': 'ui'})
+        F.write(self.plan / 'proposals/p1/diff.patch', '--- a/x\n+++ b/x\n@@ -1 +1 @@\n-PROPOSAL-DIFF-SECRET\n')
+        F.write(self.plan / 'proposals/p1/hash', 'ab' * 32 + '\n')
+        F.write(self.plan / 'proposals/p2/proposal.json', {
+            'pid': 'p9', 'scope': 'plan', 'group': None, 'task': 'page', 'qid': 'q2',
+            'answer': 'hidden', 'summary': 'split the page', 'state': 'refused',
+            'reason': 'PROPOSAL-REASON-SECRET', 'created': '2026-01-02T00:00:00Z', 'actor': 'ui'})
+        F.write(self.plan / 'proposals/p2/diff.patch', 'not a hunk\n')
+        F.write(self.plan / 'proposals/p2/hash', 'fff\n')
+        F.write(self.plan / 'proposals/p10/proposal.json', {
+            'pid': 'p10', 'scope': 'wave', 'group': 'ship', 'task': 'reader', 'qid': 'q4',
+            'summary': 'long', 'state': 'approved', 'reason': None, 'created': '2026-01-03T00:00:00Z'})
+        F.write(self.plan / 'proposals/p10/diff.patch', 'd' * 20001)
+        F.write(self.plan / 'proposals/p10/hash', 'abc\n')
+        F.write(self.plan / 'proposals/p0/proposal.json', {'pid': 'p0', 'summary': 'SHOULD-NOT-APPEAR', 'state': 'proposed'})
+        F.write(self.plan / 'proposals/extra/proposal.json', {'pid': 'extra', 'summary': 'SHOULD-NOT-APPEAR', 'state': 'proposed'})
+        F.write(self.plan / 'proposals/notes.txt', 'nope\n')
 
     def test_the_export_leaves_brief_prose_and_answers_out_unless_texts_are_chosen(self):
         # why, options, default and answer are not in the export's global text keys. `text` is.

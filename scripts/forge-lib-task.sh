@@ -15,6 +15,9 @@
 record_attempt() { # record_attempt <plan> <id>
   local tdir="$1/tasks/$2" cls=""
   [ "$(task_status "$1" "$2")" = BLOCKED ] && return 0   # never started: nothing to audit
+  # Implemented, awaiting its group's review (#140): no review judged this attempt yet. The row is
+  # written when the group verdict judges it (record_judged_attempt).
+  [ "$(task_status "$1" "$2")" = IMPLEMENTED ] && return 0
   [ "$(task_status "$1" "$2")" = INFRA ] && cls="$(sed -n 's/^class=//p' "$tdir/infra.txt" 2>/dev/null | head -1)"
   # A send-back that no reviewer judged keeps the task status FAIL; attempts.tsv names its kind.
   local st; st="$(task_status "$1" "$2")"
@@ -22,6 +25,30 @@ record_attempt() { # record_attempt <plan> <id>
   elif [ -f "$tdir/message.failed" ]; then st=INCOMPLETE; fi
   printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$(cat "$tdir/attempt" 2>/dev/null || echo 0)" \
     "$st" "$cls" "$(field "$1/tasks.tsv" "$2" dwarf)" >> "$tdir/attempts.tsv"
+}
+
+# The row a group verdict writes for a member's attempt (#140), in record_attempt's format, with the
+# status the verdict gave it and the attempt the member is on now.
+record_judged_attempt() { # record_judged_attempt <plan> <id> <status>
+  local tdir="$1/tasks/$2"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$(cat "$tdir/attempt" 2>/dev/null || echo 0)" \
+    "$3" "" "$(field "$1/tasks.tsv" "$2" dwarf)" >> "$tdir/attempts.tsv"
+}
+
+# What follows every attempt that was judged: the escalation check, then the decision a FAIL may stop
+# for. do_task runs it after its own attempt, and a group verdict runs it after judging a member's.
+# An IMPLEMENTED attempt was not judged, so neither step runs for it.
+post_attempt() { # post_attempt <plan> <id>
+  local crc=0 stop_before
+  [ "$(task_status "$1" "$2")" = IMPLEMENTED ] && return 0
+  # The retry policy's state (escalation.next or escalation.stop), decided now rather than
+  # at the next retry so a spent retry budget still reports it and the scheduler sees it.
+  stop_before="$(cat "$1/tasks/$2/escalation.stop" 2>/dev/null)"
+  python3 "$SKILL_DIR/scripts/forge-route.py" escalation --plan "$1" --task "$2" --check \
+    --qa-only-next "$(qa_only_next_flag "$1" "$2")" >/dev/null 2>&1 || crc=$?
+  # A FAIL that does not converge, or that the policy could not move to a stronger model, waits
+  # for a person (NEEDS_DECISION). attempts.tsv was written above and keeps FAIL.
+  decision_after_attempt "$1" "$2" "$stop_before" "$crc"
 }
 
 # --- infrastructure stops -------------------------------------------------------

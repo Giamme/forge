@@ -72,31 +72,60 @@ low-difficulty task assembling the required file; each task prompt ends with `##
 criteria` and never asks for the whole suite. A planner you dispatch by hand (above) can be
 given this same prompt file as `--prompt-file`.
 
-**The reply** holds exactly one fenced block opened by ```` ```forge-plan ```` whose body is JSON:
+**The reply** holds exactly one fenced block opened by ```` ```forge-plan ```` whose body is JSON
+with the key `tasks` and, optionally, `groups`:
 
 ```
 {"tasks": [{"id": "parse-config", "deps": [], "difficulty": "medium", "risk": "low",
             "files": ["src/config.py", "tests/test_config.py"],
             "title": "Parse the new config section", "approach": "…",
-            "prompt": "… ## Acceptance criteria …"}]}
+            "prompt": "… ## Acceptance criteria …"}],
+ "groups": [{"id": "config-limits", "title": "Config limits",
+             "goal": "The limits section is read into Config with the defaults the request names.",
+             "members": ["parse-config"]}]}
 ```
 
+`groups` names steps the user will think of as one: tasks that together deliver one goal, usually
+one group per wave of the plan's dependency order. Each group has a short title and a goal
+sentence that says what is true once its tasks are done. A group may hold one task, and a task
+may be left out of every group. Omit the key to return no groups.
+
 **`parse`** is strict and never guesses or repairs. It refuses a reply unless: there is exactly
-one `forge-plan` block whose body is an object with exactly the key `tasks`; `tasks` is 1 to 20
-objects with exactly the keys `id, deps, difficulty, files, title, approach, prompt`; each `id`
-matches `^[a-z0-9][a-z0-9-]{0,39}$` and is unique; `deps` are known ids with no cycle;
-`difficulty` is `low`, `medium` or `high`; `files` is a non-empty list of repo-relative paths (no
-absolute path, no `..`, no tab, comma or newline); `title` is one non-empty line without a tab;
-`approach` is a string (it may be empty); `prompt` is non-empty and has a `## Acceptance
-criteria` heading. `risk` (#122) is the one optional key and never refuses a reply: `low`,
-`medium` or `high` is written to `tasks/<id>/risk`, anything else (or no key) writes nothing.
+one `forge-plan` block whose body is an object with the key `tasks` and no keys other than the
+optional `groups`; `tasks` is 1 to 20 objects with exactly the keys `id, deps, difficulty, files,
+title, approach, prompt`; each `id` matches `^[a-z0-9][a-z0-9-]{0,39}$` and is unique; `deps` are
+known ids with no cycle; `difficulty` is `low`, `medium` or `high`; `files` is a non-empty list of
+repo-relative paths (no absolute path, no `..`, no tab, comma or newline); `title` is one
+non-empty line without a tab; `approach` is a string (it may be empty); `prompt` is non-empty and
+has a `## Acceptance criteria` heading. `risk` (#122) is the one optional task key and never
+refuses a reply: `low`, `medium` or `high` is written to `tasks/<id>/risk`, anything else (or no
+key) writes nothing.
+
+`groups`, when present, is a list of objects with exactly the keys `id`, `title`, `goal` and
+`members`. `id` matches the same slug as a task id, is unique among the groups, and is not a task
+id. `title` and `goal` are one non-empty line each, at most 200 characters, with no tab or other
+control character. `members` is a non-empty list of task ids from this reply, kept in reply order;
+a member that is not a task of the reply, a task in two groups (or listed twice in one), a
+duplicate id, an id equal to a task id, a missing field, or a multi-line title or goal refuses
+the reply. The planner never sets
+`review`: every row is written `review` `task` and `qa` `-`. Group review is the user's opt-in.
 
 On success it writes `tasks.tsv` (dwarf and qa `-`), `tasks/<id>/prompt.md` (the task's prompt,
 then `## The whole request` and `$PLAN/request.md` verbatim, so no requirement is lost) and, for
-a non-empty approach, `tasks/<id>/approach.md`. `$PLAN/request.md` must hold the user's request
-(exit 2 when missing). On a refusal it writes only `$PLAN/planner.refused` (the first reason and
-the reply's path), prints both and exits 4; fix the reply (or re-dispatch the planner with the
-reason appended) and run `parse` again.
+a non-empty approach, `tasks/<id>/approach.md`. When the reply includes `groups`, it also writes
+`groups.tsv` (`id`, `review`, `qa`, `members`, `title`, `goal`; a header alone when the list is
+empty) in that same pass. A reply with no `groups` key writes no `groups.tsv`, and the other
+files are unchanged. `$PLAN/request.md` must hold the user's request (exit 2 when missing). On a
+refusal it writes only `$PLAN/planner.refused` (the first reason and the reply's path), prints
+both and exits 4; nothing else is written, including `groups.tsv`. Fix the reply (or re-dispatch
+the planner with the reason appended) and run `parse` again.
+
+Those rows are how a wave gets a purpose. Brief mode's wave questions are about a group: the
+title is the step and the goal is what the question is deciding. The approval table prints a
+`groups:` block under the tasks (id, title, goal, members). `plan --group-review` opts the groups
+into one review each (`review` becomes `group`, one QA pass for the members). Without that flag
+every group stays `review` `task` and `qa` `-`, and each member is reviewed on its own. Editing
+`groups.tsv` is the other way to opt in.
 
 **`gate`** decides before any planner is paid for: `one-task` when the request has at most 1500
 characters and at most 6 requirements (counted by `split_requirements` of

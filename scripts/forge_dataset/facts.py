@@ -157,8 +157,10 @@ def report(runs: Runs, repo: str = None) -> dict:
     for e in runs.store.of('dispatch'):
         d = e['d']
         role = d.get('role')
-        # qa and qa_shadow are reviews. A side dispatch is neither, even when it carries a findings list.
-        if role not in ('qa', 'qa_shadow') or is_side_role(role) or not mine(e) or not isinstance(d.get('findings'), list):
+        # qa and qa_shadow are reviews. A side dispatch is neither, even when it carries a
+        # findings list. A group review is one dispatch for several tasks, not one review.
+        if (role not in ('qa', 'qa_shadow') or is_side_role(role) or d.get('scope') == 'group'
+                or not mine(e) or not isinstance(d.get('findings'), list)):
             continue
         found = [f for f in d['findings'] if isinstance(f, dict)]
         cov['reviews'] += 1
@@ -196,7 +198,7 @@ def report(runs: Runs, repo: str = None) -> dict:
 
     rules = out['rules']
     for (run, task, role), rows in runs.dispatches.items():
-        if not_an_attempt(role) or role != 'qa' or not rows or not mine(rows[0]):
+        if not rows or not_an_attempt(role, rows[0].get('d')) or role != 'qa' or not mine(rows[0]):
             continue
         ended = sorted(_ending_qa(rows).items(), key=lambda item: item[0] or 0)
         attempts = [n for n, _ in ended]

@@ -1,4 +1,5 @@
 import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
+import hashlib
 import importlib.util
 from pathlib import Path
 import subprocess
@@ -32,6 +33,20 @@ LEGACY_FINDINGS = (
 CHECKED = ('forge checks the verdict against your findings: a PASS that lists a blocking CONFIRMED finding '
            'is turned into FAIL. List only problems still present in the code under review; never list a '
            'fixed problem as a finding.')
+# sha256 of `qa_text` for task and sweep at v0.18, before --kind group. Head does not depend on
+# the threshold; each tail below is one threshold's bytes.
+_V018 = {
+    ('task', 'head', None): '9b3a73b4ef88fe595af6712f6023b52689c6a4e0584a24d6643a6d63a5d3d762',
+    ('task', 'tail', 'P0'): '8ec7fdbcc9cc75293d010318923ea0d5ea9142424d82cd2d1784f3eb50b8e980',
+    ('task', 'tail', 'P1'): '523cb9d4bca8189d654119deb756b750cda308ea47aa4cbe8d3838e00c34842e',
+    ('task', 'tail', 'P2'): 'c9e76bdd8f1ff816c1bb6973217bdc801e053b8080fd74ff5dd57ed7e3148861',
+    ('task', 'tail', 'P3'): 'aa93daf8f7cb372ee68c59d41bcbd1e9dd3a31393eb468762cb853cd905d1b2f',
+    ('sweep', 'head', None): '0a29066017f00f61e3b188e28015b474b18513c2da8eb67d032b597bc6024720',
+    ('sweep', 'tail', 'P0'): '8c6014a0889a5fc25bbd2b20a714745707cc069e8388156a8b37e4fe3a56d8af',
+    ('sweep', 'tail', 'P1'): 'e55707aace075bb27e51a59382e297c561fb3dfd7afe28092e602be030dfb154',
+    ('sweep', 'tail', 'P2'): 'f57bdce7fe43749169a129c117ed665cd3911dfa8b95242079b5fb4283e12e1f',
+    ('sweep', 'tail', 'P3'): '6ca88a50b51ed9d9878f1c8a208283228ab14c7a15fec28e604eda2694207102',
+}
 
 
 def bullet(severity, status='CONFIRMED', where='a.py:1', what='breaks', tags=None):
@@ -322,10 +337,31 @@ class FactsTests(unittest.TestCase):
             ('braces not at the end', head + ' {reach=main} then more', (head + ' {reach=main} then more', None)),
             ('markup, colons, commas and case', head + ' `{Reach: Unusual, ORIGIN=new; evidence=Traced}`.',
              (head, self.ALL)),
+            # Group review: {tasks=…} after the facts no longer lets the facts close the line.
+            # Both braces are cut. A tasks brace before the facts stays; it is not a facts suffix.
+            ('facts, then a tasks tag', head + ' {reach=main origin=new evidence=ran} {tasks=a}',
+             (head, dict(none, reach='main', origin='new', evidence='ran'))),
+            ('tasks tag, then the facts', head + ' {tasks=a,b} {reach=unusual origin=new evidence=traced}',
+             (head + ' {tasks=a,b}', self.ALL)),
+            ('a tasks tag alone is not facts', head + ' {tasks=a}', (head + ' {tasks=a}', None)),
+            ('an empty tasks tag after the facts', head + ' {reach=main origin=new evidence=ran} {tasks=}',
+             (head, dict(none, reach='main', origin='new', evidence='ran'))),
         ]
         for name, line, expected in cases:
             with self.subTest(name):
                 self.assertEqual(contract.split_facts(line), expected)
+
+    def test_facts_survive_a_tasks_tag_on_either_side(self):
+        # The group tail tells a reviewer to put {tasks=…} before the facts brace. A reply that
+        # instead ends on {tasks=…} must still yield the three facts: that is the shadow measurement.
+        wanted = dict(reach='main', origin='new', evidence='ran')
+        forward = '- [P1][CONFIRMED] a.py:1 — x {tasks=a} {reach=main origin=new evidence=ran}'
+        reverse = '- [P1][CONFIRMED] a.py:1 — x {reach=main origin=new evidence=ran} {tasks=a}'
+        wrapped = ('- [P1][CONFIRMED] a.py:1 — x\n'
+                   '  {reach=main origin=new evidence=ran} {tasks=a}\n')
+        self.assertEqual(contract.facts(forward), wanted)
+        self.assertEqual(contract.facts(reverse), wanted)
+        self.assertEqual(contract.facts(wrapped), wanted)
 
     def test_a_wrapped_finding_keeps_its_facts_on_its_last_line(self):
         # The example bullet's own suffix, alone on a line: the echo filter must not take it for the contract.
@@ -550,6 +586,39 @@ class PromptTextTests(unittest.TestCase):
                      lambda: contract.qa_text('tail', 'task', 'P4'), lambda: contract.gate('FAIL', '', 'high')):
             with self.assertRaises(ValueError):
                 call()
+
+    def test_group_kind_adds_the_review_rules_and_task_and_sweep_stay(self):
+        # #140. Group is the task contract plus how to judge several tasks and how to
+        # attribute a finding. Task and sweep stay byte-identical to v0.18.
+        head = contract.qa_text('head', 'group')
+        tail = contract.qa_text('tail', 'group')
+        task_head = contract.qa_text('head', 'task')
+        self.assertTrue(head.startswith(task_head))
+        self.assertNotEqual(head, task_head)
+        flat_head = ' '.join(head.split())
+        for phrase in ('several tasks, listed with their own requirements and acceptance',
+                       'Judge each task against its own criteria',
+                       'judge the combined change as a whole',
+                       'how the tasks fit together'):
+            self.assertIn(phrase, flat_head, phrase)
+            self.assertNotIn(phrase, ' '.join(task_head.split()), phrase)
+            self.assertNotIn(phrase, ' '.join(contract.qa_text('head', 'sweep').split()), phrase)
+        for phrase in ('whose diff changed the file it names',
+                       'end its bullet with {tasks=a,b}',
+                       'A finding with no file needs {tasks=',
+                       'Write {tasks=…} in its own braces',
+                       'immediately before the facts',
+                       'so the facts brace still ends the line',
+                       '{tasks=a,b} {reach=realistic origin=new evidence=traced}'):
+            self.assertIn(phrase, tail, phrase)
+            self.assertNotIn(phrase, contract.qa_text('tail', 'task'), phrase)
+            self.assertNotIn(phrase, contract.qa_text('tail', 'sweep'), phrase)
+        self.assertEqual(tail.splitlines()[-2:], contract.qa_text('tail', 'task').splitlines()[-2:])
+        self.assertIn('List every CONFIRMED finding you find', tail)
+        for (kind, part, threshold), digest in _V018.items():
+            with self.subTest(kind=kind, part=part, threshold=threshold):
+                text = contract.qa_text(part, kind, threshold)
+                self.assertEqual(hashlib.sha256(text.encode()).hexdigest(), digest)
 
     def test_the_verdict_lines_still_parse(self):
         # Reviewers copy the verdict line with its gloss; forge_verdict must accept every variant.

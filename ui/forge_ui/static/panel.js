@@ -12,7 +12,7 @@ window.ForgePanel = (() => {
   const num = v => typeof v === 'number' && Number.isFinite(v) ? v : null;
   const display = v => v === null || v === undefined || v === '' ? '—' : typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v);
   const STATUSES = new Set(['merged', 'pass', 'running', 'pending', 'fail', 'error', 'infra', 'timeout', 'unknown', 'invalidated', 'blocked',
-    'interrupted', 'nochanges', 'conflict', 'accepted', 'none', 'outdated', 'needs_input', 'needs_decision', 'waiting']);
+    'interrupted', 'nochanges', 'conflict', 'accepted', 'none', 'outdated', 'needs_input', 'needs_decision', 'waiting', 'implemented']);
   const cache = new Map();                                  // path → {data, error, at}
   const shownText = new Map();                              // task id → which header text is open (prompt, approach, criteria)
   function el(tag, text, className) {
@@ -703,9 +703,17 @@ window.ForgePanel = (() => {
     const chips = el('div', undefined, 'chips');
     if (RM.taskStatus(task) === 'ACCEPTED') chips.append(acceptedChip(task));
     else {
-      chips.append(RM.taskStatus(task) === 'INFRA' ? chip(RM.statusText(task), 'infra') : chip(RM.taskStatus(task)));
+      chips.append(chip(RM.statusText(task), String(RM.taskStatus(task)).toLowerCase()));
       if (task.accepted === true) chips.append(acceptedChip(task));
       else if (task.verdict) chips.append(chip('review ' + task.verdict, task.verdict.toLowerCase()));
+    }
+    if (task.group && window.ForgeGroups) {
+      const group = window.ForgeGroups.taskChip(task.group, ctx.hash({ kind: 'group', id: task.group }));
+      if (group) chips.append(group);
+    }
+    if (window.ForgeBrief && window.ForgeBrief.affectedBadge) {
+      const affected = window.ForgeBrief.affectedBadge(task);
+      if (affected) chips.append(affected);
     }
     if (task.explored) chips.append(el('span', '* explored', 'tag'));
     head.append(chips);

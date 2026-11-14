@@ -14,7 +14,7 @@ import sys
 import time
 import urllib.parse
 
-from forge_ui import checks, diffs, executions, findings, fractal, links, repos, transcripts
+from forge_ui import checks, diffs, executions, findings, fractal, groups, links, repos, transcripts
 from forge_ui.findings import verdict as _verdict
 
 
@@ -649,7 +649,39 @@ def _scheduler(reader):
 
 
 # Not NEEDS_INPUT or NEEDS_DECISION: those wait for the user, so a task that depends on one waits rather than stops.
+# IMPLEMENTED is not here either: the member's own work is in and it waits for the group's review.
+# A task that depends on one waits, it does not stop.
 _STOPPED = ('FAIL', 'BLOCKED', 'INFRA', 'INTERRUPTED', 'TIMEOUT', 'ERROR', 'CONFLICT', 'NOCHANGES', 'INVALIDATED', 'UNKNOWN')
+
+# How status_class, and through it _waiting, reads a status.
+# done is MERGED only. PASS is saved and not merged yet, so a dependent still lists it.
+# NOCHANGES is failed: it is in _STOPPED and will not merge. The page paints PASS and NOCHANGES
+# as finished; this reader does not, because a dependent is not free of either.
+# IMPLEMENTED is waiting, with NEEDS_INPUT and NEEDS_DECISION: awaiting the group's review.
+# It is not done, not active and not failed.
+_DONE_STATUS = frozenset(('MERGED',))
+_ACTIVE_STATUS = frozenset(('RUNNING',))
+_WAITING_STATUS = frozenset(('NEEDS_INPUT', 'NEEDS_DECISION', 'IMPLEMENTED'))
+
+
+def status_class(status):
+    """'done', 'active', 'waiting' or 'failed', or None for a status in none of those buckets.
+
+    `_waiting` uses this for a dependency: 'done' drops it from `on`, 'failed' puts it in
+    `stopped`, and 'waiting' leaves it in `on` only. PENDING is None (not started). PASS is
+    None too (saved, not merged). IMPLEMENTED is 'waiting': awaiting group review.
+    """
+    if status in _DONE_STATUS:
+        return 'done'
+    if status in _ACTIVE_STATUS:
+        return 'active'
+    if status in _WAITING_STATUS:
+        return 'waiting'
+    if status in _STOPPED:
+        return 'failed'
+    return None
+
+
 _DETAIL_CAP = 400              # characters of an infra stop's detail, a short text
 _ATTEMPT_CAP = 8               # a plan without a max_attempts file
 _LEDGER_KEEP = 50              # the newest ledger rows a task keeps
@@ -889,9 +921,10 @@ def _waiting(reader, tasks, scheduler):
             continue
         if task['status'] != 'PENDING':
             continue
-        on = [dep for dep in task['deps'] if status.get(dep) != 'MERGED']
+        on = [dep for dep in task['deps'] if status_class(status.get(dep)) != 'done']
         if on:
-            task['waiting'] = dict(kind='deps', on=on, stopped=[dep for dep in on if status.get(dep) in _STOPPED])
+            task['waiting'] = dict(kind='deps', on=on,
+                                   stopped=[dep for dep in on if status_class(status.get(dep)) == 'failed'])
         elif scheduler['stopping']:
             task['waiting'] = dict(kind='stopping', mode=scheduler['stopping'])
         elif scheduler['drained']:
@@ -1280,8 +1313,12 @@ def _run_summaries(reader):
 
 
 # --- brief mode (#135): tasks/<id>/brief.json, parked questions, answers and late answers ---------
+# Proposals and affected markers (#136) are read only while brief is on. Off leaves them unread, so a
+# plan without brief keeps the run JSON it had.
 
 _BRIEF_LEVELS = ('advisory', 'gated', 'strict')
+# CLI proposal dirs are p1, p2, … with no leading zero (PID_RE). p0 and p0001 are not proposals.
+_PID_DIR = re.compile(r'^p[1-9][0-9]{0,5}$')
 
 
 def _brief_level(reader):
@@ -1350,7 +1387,11 @@ def _brief_rows(reader, prefix, body, answers, late, parked):
                    possibly_stale=file_stale or question.get('possibly_stale') is True)
         if parked:
             scope = question.get('scope')
+            group = question.get('group')
             row['scope'] = scope if isinstance(scope, str) else None
+            row['group'] = group if isinstance(group, str) and group else None
+            # Parked answers live in brief.parked.answers.json, passed in as `answers`.
+            row['answer'] = _cap_str(reader, _entry_text(answers.get(qid)), stem + '.answer')
         else:
             row['state'] = state
             row['answer'] = _cap_str(reader, _entry_text(entry), stem + '.answer')
@@ -1384,8 +1425,11 @@ def _task_brief(reader, ident):
     parked = reader.object(paths['parked']) if present['parked'] else None
     late = _answer_map(reader.object(paths['late']) if present['late'] else None)
     answers = _answer_map(reader.object(f'{prefix}/brief.answers.json'))
+    # Missing parked answers are no answers. The file is not read when this task has no parked questions,
+    # and a missing file is not tracked, so `updated` does not move.
+    parked_answers = _answer_map(reader.object(f'{prefix}/brief.parked.answers.json')) if present['parked'] else {}
     return dict(questions=_brief_rows(reader, prefix, brief, answers, late, False),
-                parked=_brief_rows(reader, prefix, parked, {}, {}, True),
+                parked=_brief_rows(reader, prefix, parked, parked_answers, {}, True),
                 late=_late_rows(reader, prefix, late))
 
 
@@ -1406,10 +1450,79 @@ def _run_brief(level, tasks):
     return dict(level=level, open=open_n, flagged=flagged)
 
 
+def _affected(reader, ident):
+    """`tasks/<id>/brief.affected` as `{pid, reason, flag_only}`, or None when the marker is absent or not one.
+
+    `t` stays on disk. `flag_only` is true only when the file says exactly that: a task that had already
+    started when the proposal was applied. A bad object is warned about here, or already by the JSON read.
+    """
+    label = f'tasks/{ident}/brief.affected'
+    body = reader.object(label)
+    if body is None:
+        return None
+    pid, reason = body.get('pid'), body.get('reason')
+    if not isinstance(pid, str) or not pid or len(pid) > 32 or not isinstance(reason, str) or not reason:
+        reader.warn(label, 'not an affected marker')
+        return None
+    return dict(pid=pid, reason=reader.cap(reason, label + '.reason', 500),
+                flag_only=body.get('flag_only') is True)
+
+
+def _as_str(value):
+    return value if isinstance(value, str) else None
+
+
+def _proposals(reader):
+    """`<plan>/proposals/<pid>/` in numeric order: the public record, the hash, and the diff.
+
+    The diff is capped like every other text. `truncated` is true when the shown diff is not the file.
+    The hash is not capped: Approve sends the hash the page shows. `answer` and the edit lists stay in
+    the file; the run JSON does not carry them. A directory that is not a proposal id is skipped.
+    """
+    names = []
+    for path in reader.children('proposals'):
+        if not _PID_DIR.fullmatch(path.name):
+            continue
+        try:
+            if not path.is_dir():
+                continue
+        except (OSError, ValueError) as exc:
+            reader.warn(f'proposals/{path.name}', f'cannot stat ({type(exc).__name__})')
+            continue
+        names.append(path.name)
+    names.sort(key=lambda name: int(name[1:]))
+    rows = []
+    for pid in names:
+        prefix = f'proposals/{pid}'
+        body = reader.object(f'{prefix}/proposal.json')
+        if body is None:
+            continue
+        if body.get('pid') != pid:
+            reader.warn(f'{prefix}/proposal.json', 'pid does not match the directory')
+        raw = reader.text(f'{prefix}/diff.patch')
+        if raw is None:
+            diff, cut = '', False
+        else:
+            diff = reader.cap(raw, f'{prefix}/diff')
+            cut = diff != raw
+        raw_hash = reader.text(f'{prefix}/hash')
+        digest = raw_hash.strip() if isinstance(raw_hash, str) else ''
+        rows.append(dict(pid=pid, scope=_as_str(body.get('scope')), group=_as_str(body.get('group')),
+                         task=_as_str(body.get('task')), qid=_as_str(body.get('qid')),
+                         summary=_cap_str(reader, body.get('summary'), f'{prefix}/summary'),
+                         state=_as_str(body.get('state')),
+                         reason=_cap_str(reader, body.get('reason'), f'{prefix}/reason'),
+                         created=_as_str(body.get('created')), hash=digest or None, diff=diff, truncated=cut))
+    return rows
+
+
 def _attach_brief(reader, tasks):
     """Set each task's `brief` and return the run's `{level, open, flagged}`, or None when brief is off.
 
-    Off means the questions are not shown either: a file left from an earlier level stays on disk."""
+    Off means the questions are not shown either: a file left from an earlier level stays on disk.
+    Affected markers are attached only while brief is on, and only when the file is a real marker.
+    The key is omitted otherwise, including when brief is off, so that run JSON does not grow a null.
+    """
     level = _brief_level(reader)
     if level is None:
         for task in tasks:
@@ -1417,6 +1530,9 @@ def _attach_brief(reader, tasks):
         return None
     for task in tasks:
         task['brief'] = _task_brief(reader, task['id'])
+        affected = _affected(reader, task['id'])
+        if affected is not None:
+            task['affected'] = affected
     return _run_brief(level, tasks)
 
 
@@ -2237,7 +2353,22 @@ def detail(path, source='plan') -> dict:
     result['deferrals'] = [line.strip() for line in (reader.text('deferrals.txt') or '').splitlines() if line.strip()]
     result['findings_available'] = findings.available()
     result['fractal'] = fractal.summary(reader)
-    result['brief'] = _attach_brief(reader, tasks)
+    brief = _attach_brief(reader, tasks)
+    result['brief'] = brief
+    # Absent, not empty, when brief is off: proposals/ is not listed, so the run JSON does not change.
+    if brief is not None:
+        result['proposals'] = _proposals(reader)
+    # No groups.tsv: the run JSON gains nothing. A plan that has one carries `groups` and, on
+    # every task, `group` (its group id, or null when it is in none).
+    if reader.exists('groups.tsv'):
+        listed = groups.groups(reader)
+        result['groups'] = listed
+        owner = {}
+        for item in listed:
+            for member in item['members'] or []:
+                owner.setdefault(member, item['id'])
+        for task in tasks:
+            task['group'] = owner.get(task['id'])
     result.update(tasks=tasks, warnings=reader.warnings, truncated=reader.truncated, updated=reader.updated)
     return result
 
@@ -2261,6 +2392,14 @@ def _plan_task(reader, tasks, task_id):
 def _review(kind, item, text):
     return dict(kind=kind, execution=item['id'], attempt=item['attempt'], spec=(item['model'] or {}).get('spec'),
                 verdict=item['verdict'], state=item['state'], findings=findings.listing(text), tests=findings.tests(text))
+
+
+def group_detail(path, gid, source='plan'):
+    """One group of a plan, with its review, or None when the plan has no such group."""
+    reader = _Read(path)
+    if _kind(reader.path) != 'plan':
+        return None
+    return groups.group(reader, gid)
 
 
 def task_detail(path, task_id, source='plan'):
@@ -2322,6 +2461,15 @@ def _execution(reader, name):
         owner, owner_dir = dict(kind='task', id='solo'), ''
     elif parts[0] == 'attempts':
         execs, owner, owner_dir = _run_execs(reader), dict(kind='run', id=None), ''
+    elif parts[0] == 'groups' and len(parts) >= 4 and parts[2] == 'attempts':
+        # A review=group group's QA dispatch lives in groups/<gid>/attempts, and its prompts in the group dir.
+        gid = parts[1]
+        if not groups.GID.fullmatch(gid):
+            return None
+        owner_dir = f'groups/{gid}'
+        execs = executions.scan(reader, owner_dir + '/attempts',
+                                reader.word(owner_dir + '/status') == 'REVIEWING', ('qa',))
+        owner = dict(kind='group', id=gid)
     elif parts[0] in ('tasks', 'shadow'):
         task = _plan_task(reader, tasks, parts[1])
         execs = _task_execs(reader, task)
@@ -3217,6 +3365,9 @@ class Catalog:
 
     def task(self, key, task_id):
         return self._find(key, task_detail, task_id)
+
+    def group(self, key, gid):
+        return self._find(key, group_detail, gid)
 
     def execution(self, key, name):
         return self._find(key, execution_detail, name)

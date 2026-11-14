@@ -236,10 +236,21 @@
   const CAUSE_LABELS = { capacity: 'at capacity', rate_limit: 'rate limited', usage_limit: 'usage limit', budget: 'out of budget',
     auth: 'login needed', network: 'network down', provider_down: 'provider down', empty: 'empty answer', cancelled: 'cancelled' };
   const causeLabel = cause => cause ? (Object.prototype.hasOwnProperty.call(CAUSE_LABELS, cause) ? CAUSE_LABELS[cause] : String(cause)) : null;
+  // Words the page shows in place of a status word. IMPLEMENTED is a member whose work is in and whose group has not reviewed it.
+  const STATUS_LABELS = { IMPLEMENTED: 'awaiting group review' };
+  function statusLabel(status) {
+    const word = status == null ? '' : String(status);
+    return Object.prototype.hasOwnProperty.call(STATUS_LABELS, word) ? STATUS_LABELS[word] : word;
+  }
   // The status word, with an INFRA task's cause after it (`INFRA · usage limit`); plain `INFRA` when no cause was recorded.
+  // IMPLEMENTED reads as its label. The word itself stays the lamp class (taskStatus).
   function statusText(t) {
-    const status = taskStatus(t), label = status === 'INFRA' ? causeLabel(t.infra && t.infra.cause) : null;
-    return label ? `INFRA · ${label}` : status;
+    const status = taskStatus(t);
+    if (status === 'INFRA') {
+      const label = causeLabel(t.infra && t.infra.cause);
+      return label ? `INFRA · ${label}` : status;
+    }
+    return statusLabel(status);
   }
   const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -951,7 +962,7 @@
   }
 
   return { liveNow, runState, execStatus, matchRun, filterOptions, atlasModel, repoKey, repoLabel, compareRepo, columns, planModel, finishState,
-    finalStatus, runReviewStatus, reviewSinceLine, reviewAt, taskStatus, statusText, causeLabel, resetText, taskVerdict, attemptStatus, attemptNote, attemptFailed, isWaiting,
+    finalStatus, runReviewStatus, reviewSinceLine, reviewAt, taskStatus, statusText, statusLabel, causeLabel, resetText, taskVerdict, attemptStatus, attemptNote, attemptFailed, isWaiting,
     attributionLine, taskParts,
     taskTimes, metricValue, overlap, projectSchedule, execModel, verifyLeds, criticalPath, concurrency, stateAt, timeRange, events, lineage, structureKey, innerKey,
     fmtDur, alias, basename, weight, searchIndex, searchRank, statusEvents, fractalTree, sweepLine, sweepState, retroSummary };

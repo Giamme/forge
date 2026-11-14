@@ -306,6 +306,15 @@ class RunBriefTests(unittest.TestCase):
         self.until_gone(plan / 'brief.pid')
         self.assertTrue((plan / 'tasks' / 'a' / 'merged').exists())
 
+    def test_advisory_says_the_missing_groups_note_on_the_console_not_in_brief_out(self):
+        plan = self.plan_of('--brief', 'advisory', '--brief-model', 'sol', '--brief-scope', 'wave',
+                            questions={'a': [], 'b': []})
+        result = self.run_script('forge-parallel.sh', 'run', plan)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(result.stdout.count('brief scope wave: no groups.tsv'), 1, result.stdout)
+        self.until_gone(plan / 'brief.pid')
+        self.assertNotIn('no groups.tsv', (plan / 'brief.out').read_text())
+
     def refused_by_invalid_lanes(self, level):
         plan = self.plan_of('--brief', level, '--brief-model', 'sol')          # no brief.json: the writer has questions to write
         lanes = self.repo / '.forge' / 'verify.d'

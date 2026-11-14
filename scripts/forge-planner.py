@@ -9,8 +9,9 @@ gate and the one-task plan. Standard library only; no shell wiring.
   forge-planner.py parse    --plan P --reply FILE
       Turns the planner's reply into P/tasks.tsv, P/tasks/<id>/prompt.md and, when it is not
       empty, P/tasks/<id>/approach.md; a task's `risk` (#122) goes to P/tasks/<id>/risk, and a
-      missing or unknown one writes nothing. It never guesses or repairs: a reply that breaks one
-      rule writes nothing but P/planner.refused (the first reason and the reply's path), prints
+      missing or unknown one writes nothing. A reply that includes `groups` also writes
+      P/groups.tsv (review always `task`, qa `-`). It never guesses or repairs: a reply that breaks
+      one rule writes nothing but P/planner.refused (the first reason and the reply's path), prints
       both and exits 4. P/request.md must hold the user's request (exit 2 when it is missing);
       it is attached to every task prompt so no requirement is lost.
 
@@ -32,8 +33,10 @@ import os
 from pathlib import Path
 import re
 import sys
+import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import forge_groups  # noqa: E402
 from forge_jev.coverage import split_requirements  # noqa: E402  (read-only use)
 
 # The gate: a request at or under both limits skips the planner. On #86's 16 benchmark plans
@@ -47,6 +50,10 @@ TASK_KEYS = ('id', 'deps', 'difficulty', 'files', 'title', 'approach', 'prompt')
 # #122: a task's risk, recorded in shadow beside its difficulty. Optional, and the one key that never refuses a
 # reply: a missing or unknown value records nothing, because a label nothing routes on must not cost a plan.
 OPTIONAL_KEYS = ('risk',)
+# #136: groups are optional on the reply. A missing key writes no groups.tsv. A present one is
+# checked strictly; the planner never sets review=group (that is plan --group-review, or an edit).
+GROUP_KEYS = ('id', 'title', 'goal', 'members')
+MAX_GROUP_TEXT = 200
 DIFFICULTIES = ('low', 'medium', 'high')
 RISKS = ('low', 'medium', 'high')
 LEVELS = DIFFICULTIES
@@ -85,6 +92,11 @@ EXAMPLE = """\
    "title": "Parse the new config section",
    "approach": "Add parse_section() beside load(); keep load()'s signature.",
    "prompt": "Add the `limits` section to the config parser in src/config.py ...\\n\\n## Acceptance criteria\\n\\n- `limits` is read into Config.limits, with the defaults the request names.\\n- python3 -m unittest tests.test_config passes."}
+],
+ "groups": [
+  {"id": "config-limits", "title": "Config limits",
+   "goal": "The limits section is read into Config with the defaults the request names.",
+   "members": ["parse-config"]}
 ]}
 ```"""
 
@@ -174,6 +186,10 @@ def build_prompt(request: str, level: str | None) -> str:
         '**Keep each task** under about 7000 characters of prompt and 9 files. A smaller task with '
         'stated acceptance criteria passes its first review far more often.',
         f'At most {MAX_TASKS} tasks.',
+        '**Groups.** Tasks that together deliver one goal, and that the user will think of as one '
+        'step, form one group (usually one per wave of the plan\'s dependency order). Each group '
+        'has a short title and a goal sentence that says what is true once its tasks are done. A '
+        'group may have one task. A task may be left out of every group.',
     ]
     numbered = '\n'.join(f'{n}. {rule}' for n, rule in enumerate(rules, 1))
     return f"""\
@@ -195,8 +211,8 @@ The request follows verbatim between the markers. It is the whole requirement.
 # Reply format
 
 Reply with exactly one fenced block whose opening line is ```forge-plan and whose body is one
-JSON object with exactly the key `tasks`: a list of 1 to {MAX_TASKS} objects, each with exactly
-these keys and no others:
+JSON object with the key `tasks` and, optionally, `groups`. `tasks` is a list of 1 to {MAX_TASKS}
+objects, each with exactly these keys and no others:
 
 - `id`: lowercase slug matching `^[a-z0-9][a-z0-9-]{{0,39}}$`, unique in the plan;
 - `deps`: list of ids of tasks that must land first (`[]` for none), no cycles;
@@ -207,6 +223,15 @@ these keys and no others:
 - `title`: one line without a tab;
 - `approach`: a few lines on the intended shape (a string; `""` for none);
 - `prompt`: the task's full instruction, ending with a `## Acceptance criteria` section.
+
+`groups`, when present, is a list of objects with exactly these keys and no others. Omit the key
+to return no groups:
+
+- `id`: the same slug as a task id, unique in the plan, and not a task id;
+- `title`: one short line, at most 200 characters;
+- `goal`: one line, at most 200 characters, what is true once the group's tasks are done;
+- `members`: ids of tasks from this reply, in order. A group may have one task. A task is in at
+  most one group, and a task may be left out of every group.
 
 Put no other `forge-plan` block in the reply. Text outside the block is ignored. Anything that
 breaks these rules makes the whole reply refused; nothing is repaired. A valid reply:
@@ -339,6 +364,73 @@ def check_task(task, index: int, seen: set) -> dict:
     return dict(task, risk=risk if isinstance(risk, str) and risk in RISKS else None)
 
 
+def check_group_line(value, where: str):
+    """A group's title or goal: one non-empty line, at most MAX_GROUP_TEXT characters."""
+    if not isinstance(value, str):
+        raise Refusal(f'{where} is not a string')
+    # Line separators first, so a tab or other control is not reported as a second line.
+    # Not a raw string: \n, \x85 and \u2028 have to be the characters, not the escape text.
+    if re.search('[\n\r\x85\u2028\u2029]', value):
+        raise Refusal(f'{where} is not one line')
+    if LINE_BREAKS_RE.search(value):
+        raise Refusal(f'{where} holds a tab or a control character')
+    if not value.strip():
+        raise Refusal(f'{where} is empty')
+    if len(value) > MAX_GROUP_TEXT:
+        raise Refusal(f'{where} is longer than {MAX_GROUP_TEXT} characters')
+    check_text(value, where)
+
+
+def check_groups(raw, task_ids: set) -> list:
+    """The reply's groups, each forced to review=task and qa=-. Order is the reply's."""
+    if not isinstance(raw, list):
+        raise Refusal('groups is not a list')
+    seen: set = set()
+    owner: dict = {}
+    groups = []
+    for index, group in enumerate(raw):
+        where = f'group {index + 1}'
+        check_keys(group, GROUP_KEYS, where)
+        gid = group['id']
+        if not isinstance(gid, str) or not ID_RE.fullmatch(gid):
+            raise Refusal(f'{where}: id {gid!r} does not match ^[a-z0-9][a-z0-9-]{{0,39}}$')
+        where = f'group {gid}'
+        if gid in seen:
+            raise Refusal(f'{where}: duplicate id')
+        seen.add(gid)
+        if gid in task_ids:
+            raise Refusal(f'{where}: the id is also a task id')
+        check_group_line(group['title'], f'{where}: title')
+        check_group_line(group['goal'], f'{where}: goal')
+        members = group['members']
+        if not isinstance(members, list) or not all(isinstance(m, str) for m in members):
+            raise Refusal(f'{where}: members is not a list of task ids')
+        if not members:
+            raise Refusal(f'{where}: members is empty')
+        for member in members:
+            if member not in task_ids:
+                raise Refusal(f'{where}: member {member!r} is not a task of the reply')
+            if member in owner:
+                prior = owner[member]
+                if prior == gid:
+                    raise Refusal(f'{where}: task {member} is listed twice')
+                raise Refusal(f'{where}: task {member} is in two groups ({prior} and {gid})')
+            owner[member] = gid
+        groups.append(forge_groups.Group(gid, 'task', '-', tuple(members), group['title'], group['goal']))
+    return groups
+
+
+def groups_tsv_bytes(groups) -> bytes:
+    """Bytes `forge_groups.write` emits, held until the other outputs are written too.
+
+    A refusal must write none of the plan. write() would touch the disk now, so the bytes are
+    captured and joined to the outputs list cmd_parse already flushes in one pass.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        forge_groups.write(tmp, groups)
+        return (Path(tmp) / 'groups.tsv').read_bytes()
+
+
 def check_graph(tasks: list):
     ids = {t['id'] for t in tasks}
     for t in tasks:
@@ -363,7 +455,8 @@ def check_graph(tasks: list):
             visit(t['id'], [t['id']])
 
 
-def parse_reply(reply: str) -> list:
+def parse_reply(reply: str):
+    """(tasks, groups). groups is None when the reply has no groups key, else a list (maybe empty)."""
     body = extract_block(reply)
     try:
         data = json.loads(body, object_pairs_hook=no_duplicate_keys)
@@ -371,7 +464,7 @@ def parse_reply(reply: str) -> list:
         # JSONDecodeError is a ValueError; so is Python's limit on integer digits. Nesting deeper
         # than the interpreter allows raises RecursionError.
         raise Refusal(f'the forge-plan body is not valid JSON: {type(err).__name__}: {str(err)[:200]}')
-    check_keys(data, ('tasks',), 'the forge-plan body')
+    check_keys(data, ('tasks',), 'the forge-plan body', ('groups',))
     tasks = data['tasks']
     if not isinstance(tasks, list) or not 1 <= len(tasks) <= MAX_TASKS:
         count = f' ({len(tasks)})' if isinstance(tasks, list) else ''
@@ -379,7 +472,8 @@ def parse_reply(reply: str) -> list:
     seen: set = set()
     checked = [check_task(t, i, seen) for i, t in enumerate(tasks)]
     check_graph(checked)
-    return checked
+    groups = check_groups(data['groups'], seen) if 'groups' in data else None
+    return checked, groups
 
 
 def cmd_parse(args) -> int:
@@ -390,7 +484,7 @@ def cmd_parse(args) -> int:
     request = read_text(request_path, 'request')
     reply = read_text(args.reply, 'reply')
     try:
-        tasks = parse_reply(reply)
+        tasks, groups = parse_reply(reply)
     except Refusal as err:
         # A key or path may hold a lone surrogate; escape it so the reason can be written and printed.
         reason = str(err).encode('utf-8', 'backslashreplace').decode('utf-8')
@@ -412,6 +506,8 @@ def cmd_parse(args) -> int:
         outputs.append((folder / 'approach.md', t['approach'].encode('utf-8') if t['approach'].strip() else None))
         outputs.append((folder / 'risk', (t['risk'] + '\n').encode('utf-8') if t['risk'] else None))
     outputs.append((plan / 'tasks.tsv', ('\n'.join(rows) + '\n').encode('utf-8')))
+    if groups is not None:
+        outputs.append((plan / 'groups.tsv', groups_tsv_bytes(groups)))
     for path, data in outputs:
         if data is None:
             path.unlink(missing_ok=True)       # an empty approach must not keep an older one alive

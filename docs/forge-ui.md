@@ -80,14 +80,34 @@ running task it shares files with, no free slot, a drain or stop, an infrastruct
 its countdown, or the retry policy's stop with the split it proposes. The run's inspector says
 what the scheduler is doing and how many tasks wait on what.
 
+A run with `groups.tsv` shows a Groups block after the task table. Each row is the group's title
+and goal, "one review" or "per-task review", its reviewer and its members. A review group's
+title opens `#/runs/<key>/group/<gid>`, and that row also shows the status, the round and who
+the last review implicated. The group page shows a decision only while the group is
+`NEEDS_DECISION`: the first line of `decision.md`, and a `forge group retry` command to copy.
+The page does not run it. Below that are the findings, with ambiguous ones marked, the rounds,
+known issues, the review text and a link to its transcript. A task at `IMPLEMENTED` reads
+"awaiting group review" in the Status column and in its inspector. The lamp class stays
+`IMPLEMENTED`. The task table adds a Group column while the run has groups, and the inspector
+shows a `group <id>` chip. See [the forge-ui reference](../references/ui.md).
+
 A task's inspector opens on its header: its title and goal, its links (`#N` and GitHub issue and pull
 request URLs; `#N` links to the repo's GitHub origin when there is one), and the Prompt, Approach and
 Acceptance criteria buttons. Then comes its attempt trail, one line per attempt with the reason it ran
 (for example *after review findings* or *escalated to a stronger model*). Then its Summary: the
 generated summary, the model and time it was made, its sources, and an *Out of date* mark once the
-task has changed since. Then its Questions: the brief questions, each with an answer box, and parked
-questions behind a collapsed block. A solo run has the header and the trail only. Above a plan's task
-table sit its open brief questions, flagged first and then by projected start, and the summaries switch.
+task has changed since. Then its Questions: the brief questions, each with an answer box. When a
+question belongs to a group, or one is plan-scoped, the list is split: each group's title and
+goal, then a Plan heading, then No group for a question with no group. A list with neither stays
+flat. Parked questions stay behind a collapsed *Parked (wider scope)* block, grouped
+the same way. An answered parked `wave` or `plan` question has *Propose a change*. A solo run has
+the header and the trail only. Above a plan's task table sit its open brief questions, flagged
+first and then by projected start, in those same groups, and under them the proposals. Each
+proposal shows its state, scope, group, summary, diff and hash. One in state `proposed` has
+*Approve* and *Reject*; the reject reason is optional. A task an approved proposal marked carries
+an affected badge beside its status and in its inspector: `affected by <pid>`, or `flagged:
+already started` when the task had already started. The marker's reason (`changed`, `added` or
+`dependent`) is the badge's tooltip. The summaries switch sits with that list.
 A run with a retro report or notes shows a Retro section in its run details: the note counts on one line,
 then the report, collapsed.
 
@@ -116,7 +136,7 @@ forge-ui reads everything, and it changes things only by calling forge's own com
 never writes a run file, a repo or a config itself. That keeps one set of rules (validation,
 locks, the audit log) whichever way you change something, and a change from the page is
 indistinguishable from the same command typed in a terminal, except that `control.log` says
-`ui` instead of `cli`. Every change asks you to confirm and says when it takes effect, except a brief answer, which is sent when you press *Send*.
+`ui` instead of `cli`. Every change asks you to confirm and says when it takes effect, except a brief answer, a proposal, and approving or rejecting one. Those are sent when you press *Send*, *Propose a change*, *Approve* or *Reject*.
 
 - **Run controls** (a plan's inspector): the QA threshold (shown with its source, `P2 (default)`
   or `P1 (set)`); it accepts `P0`–`P3`, *Default* (drop the setting; P2) and *None* (P3, nothing
@@ -172,16 +192,20 @@ indistinguishable from the same command typed in a terminal, except that `contro
 - **Summaries:** a switch above a plan's task table turns summaries on or off for the run. A task's own
   switch, in its Summary section, sets it to *On*, *Off* or *Inherit* (the run's setting). Each change is
   confirmed first. Turning them on for a finished run starts `forge summarize` in the background.
-- **Brief answers:** each brief question in a task's inspector has an answer box, and *Send* records the
+- **Brief answers and proposals:** each brief question in a task's inspector has an answer box, and *Send* records the
   answer (`forge brief answer`, logged as `ui`). A late answer, given after the task started, shows the
-  CLI's notice under its question. Answers are sent at once, without a confirm.
+  CLI's notice under its question. An answered parked `wave` or `plan` question has *Propose a change*
+  (`forge brief propose`, logged as `ui`). A proposal in state `proposed` has *Approve*
+  (`forge brief apply PLAN PID --approve HASH --actor ui`, using the hash on the card) and *Reject*
+  (`forge brief reject`, with an optional reason, logged as `ui`). Answers, proposals, approvals and
+  rejections are sent at once, without a confirm.
 
 Writing is protected, because anything that can reach the server could otherwise change your
 runs. The server makes a random token each time it starts and puts it in the page it serves;
 the page sends it with every change, and the server also checks the `Host` and `Origin`
 headers, so another website open in your browser cannot make your browser change a run. Reading
 needs no token. `--read-only` (or `FORGE_UI_READONLY=1`) turns writing off altogether: no
-token is issued and every change is refused. The summaries and the questions still show, without their switches and answer boxes. `FORGE_UI_READONLY=1 forge ui open` starts such a
+token is issued and every change is refused. The summaries and the questions still show, without their switches, answer boxes, or Propose, Approve and Reject buttons. `FORGE_UI_READONLY=1 forge ui open` starts such a
 server, and the launcher never reuses a server running in the other mode; it replaces it.
 
 Also: replay, critical path, Fractal child-task trees, quick jump (Ctrl K, ⌘K on a Mac, or
