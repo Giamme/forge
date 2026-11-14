@@ -3018,9 +3018,11 @@ do_run() {
   fi
   # --fractal and an existing selection are refused above. The other way on is this
   # prompt, which forge_fractal_parallel_run asks only once stdin is a terminal and
-  # nothing has chosen yet. Answering y must refuse before that call writes
-  # fractal-selection.json; answering n is the same as --no-fractal, so it is not asked twice.
-  if [ "$DRY" != 1 ] && [ -t 0 ] && [ -z "${FRACTAL_CHOICE:-}" ] && ! forge_plan_is_fractal "$PLAN" \
+  # fractal-selection.json does not exist yet (enabled: false has already chosen).
+  # Answering y must refuse before that call writes fractal-selection.json; answering
+  # n is the same as --no-fractal, so it is not asked twice.
+  if [ "$DRY" != 1 ] && [ -t 0 ] && [ -z "${FRACTAL_CHOICE:-}" ] \
+      && [ ! -e "$PLAN/fractal-selection.json" ] && ! forge_plan_is_fractal "$PLAN" \
       && forge_groups_have_review "$PLAN"; then
     printf 'Use Fractal for this run? [y/N] ' >&2
     IFS= read -r fractal_answer || fractal_answer=""

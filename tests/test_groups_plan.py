@@ -439,6 +439,18 @@ class GroupsPlanTests(unittest.TestCase):
         self.assertEqual((p / 'tasks' / 'a' / 'status').read_text().strip(), 'PASS')
         self.assertTrue((p / 'tasks' / 'a' / 'merged').is_file())
 
+    def test_a_plan_that_already_declined_fractal_is_not_asked_again(self):
+        # enabled: false is a choice. Answering y here used to refuse a run the selector would have left alone.
+        p = self.frozen_plan()
+        (p / 'fractal-selection.json').write_text(json.dumps({'enabled': False}))
+        rc, out = self.pty_run(p, b'y\n', 90)
+        self.assertEqual(out.count('Use Fractal for this run? [y/N]'), 0, out[-2000:])
+        self.assertNotIn('group review does not support Fractal yet', out)
+        self.assertNotEqual(rc, 2, out[-2000:])
+        self.assertFalse(json.loads((p / 'fractal-selection.json').read_text())['enabled'])
+        self.assertEqual((p / 'tasks' / 'a' / 'status').read_text().strip(), 'PASS')
+        self.assertTrue((p / 'tasks' / 'a' / 'merged').is_file())
+
     # --- split ---------------------------------------------------------------------------------------------------------------------------
     def split_fixture(self):
         """a and e merged; b, c and d fail review. g1 (b, c) reviews together, g2 (d, e) per task."""
