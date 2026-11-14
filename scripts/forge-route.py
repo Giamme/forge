@@ -107,7 +107,7 @@ TIERS = ('low', 'medium', 'high')
 SCRIPTS = Path(__file__).resolve().parent
 REGISTRY = SCRIPTS.parent / 'registry.tsv'
 FAILED = ('FAIL', 'TIMEOUT', 'BOUNCED', 'INCOMPLETE')   # a judgment against the spec that ran
-NEUTRAL = ('INFRA', 'UNKNOWN', 'ERROR', 'RUNNING', 'INTERRUPTED', 'NEEDS_INPUT', 'NEEDS_DECISION')   # say nothing about it
+NEUTRAL = ('INFRA', 'UNKNOWN', 'ERROR', 'RUNNING', 'INTERRUPTED', 'NEEDS_INPUT', 'NEEDS_DECISION', 'STALE')   # say nothing about it
 DEFAULT_ESCALATE_AFTER = 3
 DEFAULT_MAX_ATTEMPTS = 8                          # `plan --max-attempts`; a plan without the file
 DEFAULT_EFFORT = 'medium'                         # forge-dispatch.sh dwarf default
@@ -716,10 +716,11 @@ def max_attempts_setting(plan: Path) -> int:
 
 
 def attempts_spent(tdir: Path) -> int:
-    """Attempts the task has used: the attempts.tsv rows whose status is not INFRA. An infrastructure stop
-    spends none. A QA-only resume re-reviews the same attempt number and writes a row of its own, and that
+    """Attempts the task has used: the attempts.tsv rows whose status is not INFRA or STALE. An infrastructure
+    stop spends none, and neither does an attempt whose prompt was edited while it ran (STALE). A QA-only
+    resume re-reviews the same attempt number and writes a row of its own, and that
     row spends one too: a task whose reviews return no verdict reaches its cap like any other."""
-    return sum(1 for _number, status, _spec in attempt_rows(tdir) if status != 'INFRA')
+    return sum(1 for _number, status, _spec in attempt_rows(tdir) if status not in ('INFRA', 'STALE'))
 
 
 def granted_attempts(tdir: Path) -> int:
