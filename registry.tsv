@@ -45,9 +45,14 @@ sol	opencode	github-copilot/gpt-6.1-sol	-
 astra	codex	gpt-6-astra	<=ultra
 astra	openclaude	gpt-6-astra	<=max
 astra	opencode	github-copilot/gpt-6-astra	-
-terra	codex	gpt-5.6-terra	<=ultra
-terra	openclaude	gpt-5.6-terra	<=max
-terra	opencode	github-copilot/gpt-5.6-terra	-
+terra	codex	gpt-6.1-terra	<=ultra
+terra	openclaude	gpt-6.1-terra	<=max
+terra	opencode	github-copilot/gpt-6.1-terra	-
+# The terra before 6.1. Dispatches recorded as `terra` on this model are counted under
+# terra-5.6, not under the newer terra (forge_dataset/names.py).
+terra-5.6	codex	gpt-5.6-terra	<=ultra
+terra-5.6	openclaude	gpt-5.6-terra	<=max
+terra-5.6	opencode	github-copilot/gpt-5.6-terra	-
 luna	codex	gpt-6-luna	<=max
 luna	openclaude	gpt-6-luna	<=max
 luna	opencode	opencode-go/gpt-6-luna	-

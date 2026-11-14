@@ -69,6 +69,44 @@ def _is_side_role():
         return fn
 
 
+_NAMES = _DATASET.parent / 'names.py'
+_NAME_FN = {}
+
+
+def _dispatch_name():
+    """forge_dataset.names.dispatch_name, loaded read-only. None when it cannot be."""
+    with _SIDE_LOCK:
+        if 'fn' in _NAME_FN:
+            return _NAME_FN['fn']
+        fn = None
+        try:
+            spec = importlib.util.spec_from_file_location(
+                'forge_dataset_names_for_ui', _NAMES,
+                loader=findings._ReadOnlyLoader('forge_dataset_names_for_ui', str(_NAMES)))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            candidate = getattr(module, 'dispatch_name', None)
+            fn = candidate if callable(candidate) else None
+        except Exception:
+            fn = None
+        _NAME_FN['fn'] = fn
+        return fn
+
+
+def _named(model):
+    """The alias a model row is counted under: an alias that has since moved to a newer model
+    names its old dispatches by the alias that resolves to their model today (`terra-5.6`)."""
+    if not model:
+        return None
+    fn = _dispatch_name()
+    if fn is None:
+        return model.get('alias')
+    try:
+        return fn(dict(alias=model.get('alias'), model=model.get('model'), harness=model.get('harness'))) or model.get('alias')
+    except Exception:
+        return model.get('alias')
+
+
 def side_role(role) -> bool:
     """A side dispatch: harvested `side_*`, or the on-disk role `side` (`is_side_role` rejects the bare name).
 
@@ -213,7 +251,7 @@ def _attempts(rows, execs, plan_spec):
         else:
             spec = source = None
         verdict = reviews[-1]['verdict'] if reviews else None
-        result.append(dict(n=n, alias=model['alias'] if model else _alias(spec), spec=spec, source=source,
+        result.append(dict(n=n, alias=_named(model) if model else _alias(spec), spec=spec, source=source,
                            outcome=outcome, reason=reason, gate=outcome == 'pass' and verdict == 'FAIL',
                            gate_fail=outcome == 'fail' and verdict == 'PASS',
                            model_s=last['phases'].get('model') if last is not None else None,
@@ -241,7 +279,7 @@ def _reviews(key, ident, execs, shadows):
     for item in execs:
         if _primary_qa(item) and item['state'] == 'done':
             model = item['model'] or {}
-            rows.append(dict(run=key, task=ident, n=item['attempt'], kind='primary', alias=model.get('alias'),
+            rows.append(dict(run=key, task=ident, n=item['attempt'], kind='primary', alias=_named(model),
                              spec=model.get('spec'), verdict=item['verdict'], findings=item['findings'],
                              duration_s=item['duration_s'], tokens=item['tokens'], agreement=None, primary_alias=None))
     for entry, items, _ in shadows:
@@ -251,11 +289,11 @@ def _reviews(key, ident, execs, shadows):
         spec = entry['spec'] if isinstance(entry['spec'], str) else model.get('spec')
         primaries = [item for item in execs if _primary_qa(item)
                      and item['attempt'] == entry['attempt'] and item['model']]
-        rows.append(dict(run=key, task=ident, n=entry['attempt'], kind='shadow', alias=model.get('alias') or _alias(spec),
+        rows.append(dict(run=key, task=ident, n=entry['attempt'], kind='shadow', alias=_named(model) or _alias(spec),
                          spec=spec, verdict=entry['verdict'], findings=entry['findings'],
                          duration_s=entry['duration_s'], tokens=items[-1]['tokens'] if items else None,
                          agreement=entry['agreement'],
-                         primary_alias=primaries[-1]['model']['alias'] if primaries else _alias(entry['primary'])))
+                         primary_alias=_named(primaries[-1]['model']) if primaries else _alias(entry['primary'])))
     return rows
 
 
@@ -294,7 +332,7 @@ def _facts(path, summary, root):
             run = execs[-1] if execs else None
             model = (run['model'] if run else None) or {}
             spec = review['spec'] or model.get('spec')
-            reviews.append(dict(run=key, task=None, n=None, kind='final', alias=model.get('alias') or _alias(spec),
+            reviews.append(dict(run=key, task=None, n=None, kind='final', alias=_named(model) or _alias(spec),
                                 spec=spec, verdict=review['verdict'] if review['verdict'] in ('PASS', 'FAIL') else None,
                                 findings=review['findings'], duration_s=review['duration_s'],
                                 tokens=run['tokens'] if run else None, agreement=None, primary_alias=None))

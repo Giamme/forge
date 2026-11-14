@@ -93,6 +93,26 @@ class ReviewerReportTests(unittest.TestCase):
         [opus_line] = [line for line in text.splitlines() if line.split()[:1] == ['opus']]
         self.assertTrue(opus_line.endswith('20% [6%-51%] (2/10)'), opus_line)
 
+    def test_an_alias_that_moved_to_a_newer_model_keeps_its_old_dispatches_apart(self):
+        # terra was gpt-5.6-terra and is gpt-6.1-terra now (registry.tsv). A dispatch recorded as
+        # terra on the old model is counted under terra-5.6, the alias that resolves to it today;
+        # a model no alias resolves to any more is counted under its model id.
+        from forge_dataset.names import dispatch_name
+        for model, n in (('gpt-5.6-terra', 3), ('gpt-6.1-terra', 2), ('gpt-5.1-terra', 1)):
+            for _ in range(n):
+                self.landed([('qa', 'terra', 'PASS')])
+                self.events[-2]['data'].update(model=model, harness='codex')
+        self.assertEqual(store.record(self.events, repo=self.repo), len(self.events))
+        rows = {r['reviewer']: r['landed'] for r in json.loads(self.forge('--json'))['reviewers']}
+        self.assertEqual(rows, {'terra-5.6': 3, 'terra': 3})
+        # No harness recorded: compared with the alias's default row.
+        self.assertEqual(dispatch_name(dict(alias='terra', model='gpt-5.6-terra')), 'terra-5.6')
+        self.assertEqual(dispatch_name(dict(alias='terra', model='gpt-6.1-terra')), 'terra')
+        # An alias forge does not know, or a dispatch with no model, keeps its name.
+        self.assertEqual(dispatch_name(dict(alias='mine', model='x', harness='codex')), 'mine')
+        self.assertEqual(dispatch_name(dict(alias='terra')), 'terra')
+        self.assertEqual(dispatch_name(dict(model='gpt-x')), 'gpt-x')
+
     def test_no_store_is_an_empty_report_and_creates_none(self):
         report = json.loads(self.forge('--json'))
         self.assertEqual((report['reviewers'], report['horizon_days'], report['min_landed']), ([], 14, 10))
