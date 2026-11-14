@@ -2007,6 +2007,18 @@ do_task_body() (
       echo "A promise of later work means a check may never have run; judge the diff on its own merits."
       echo
     fi
+    local blocked_claims=""
+    [ ! -f "$tdir/dwarf.last" ] || blocked_claims="$(python3 "$SKILL_DIR/scripts/forge-contract.py" blocked --message "$tdir/dwarf.last" 2>/dev/null \
+      | python3 -c 'import json, sys
+for r in json.load(sys.stdin):
+    print("  - %s: %s" % (r["path"], r["why"]))' 2>/dev/null)" || blocked_claims=""
+    if [ -n "$blocked_claims" ]; then
+      # A claim, not a fact: only the reviewer's {outside=...} on a finding can stop the task (#149).
+      echo "The implementer says these fixes need files outside the task:"
+      printf '%s\n' "$blocked_claims"
+      echo "Confirm a real one with {outside=<path>} on the finding it blocks, or refute it."
+      echo
+    fi
     if [ -s "$tdir/drift.txt" ]; then
       # The reviewer is already asked about scope and had no way to know the answer.
       echo "Scope note: this task declared it would touch $(field "$T" "$id" files), and the"
