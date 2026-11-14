@@ -213,6 +213,10 @@ def write(plan, groups) -> None:
 def _atomic(path: Path, text: str) -> None:
     fd, temp = tempfile.mkstemp(dir=str(path.parent), prefix='.' + path.name + '.')
     try:
+        # mkstemp makes the file 0600, and os.replace keeps that: give it the mode a plain open would.
+        mask = os.umask(0)
+        os.umask(mask)
+        os.fchmod(fd, 0o666 & ~mask)
         with os.fdopen(fd, 'w') as handle:
             handle.write(text)
         os.replace(temp, path)

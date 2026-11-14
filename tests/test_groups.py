@@ -5,6 +5,8 @@ import json
 import subprocess
 import sys
 import tempfile
+import os
+import stat
 import unittest
 from pathlib import Path
 
@@ -227,6 +229,19 @@ class ResolveTests(unittest.TestCase):
                          ['qa-b', 'qa-d', 'qa-c', 'mine', '-'])
         tied = [fg.Group('g', 'group', '-', ('f', 'b'), '-', '-')]
         self.assertEqual(fg.resolve_qa(plan, tied)[0].qa, 'qa-f')
+
+
+    def test_written_files_get_a_plain_files_mode(self):
+        # mkstemp's 0600 would survive the rename: groups.tsv and groups.frozen get what open() gives.
+        plan = make_plan(waves=DeriveTests.WAVES)
+        old = os.umask(0o022)
+        try:
+            fg.write(plan, fg.derive(plan, review='group'))
+            fg.freeze(plan)
+        finally:
+            os.umask(old)
+        self.assertEqual(stat.S_IMODE((plan / 'groups.tsv').stat().st_mode), 0o644)
+        self.assertEqual(stat.S_IMODE((plan / 'groups.frozen').stat().st_mode), 0o644)
 
 
 class FreezeTests(unittest.TestCase):
