@@ -6,6 +6,7 @@ and how `split` treats the groups. Driven like test_feature_plan_options: `plan`
 fake agent CLI of test_forge (fixtures borrowed, not inherited)."""
 import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -108,6 +109,28 @@ class GroupsPlanTests(unittest.TestCase):
             self.assertEqual(r.returncode, 2, (flags, r.stdout))
             # dataset.uid is written before any flag is read, whatever the flags are
             self.assertEqual(sorted(x.name for x in p.iterdir() if x.name != 'dataset.uid'), before, flags)
+
+    def test_a_shared_flag_before_a_refused_group_flag_writes_nothing(self):
+        # --qa-threshold and --max-attempts write their files while parsing. A group flag
+        # refused later on the same command must not leave them. A valid pair still writes.
+        cases = (
+            (('--qa-threshold', 'P3', '--group-review'), 'goes with --groups waves'),
+            (('--qa-threshold', 'P3', '--group-max-tasks', '0'), '--group-max-tasks needs a positive integer'),
+            (('--max-attempts', '4', '--group-max-diff-kb', 'x'), '--group-max-diff-kb needs a positive integer'),
+        )
+        for flags, reason in cases:
+            p = self.new_plan()
+            before = sorted(x.name for x in p.iterdir())
+            r = self.plan_cmd(p, *flags)
+            self.assertEqual(r.returncode, 2, (flags, r.stdout))
+            self.assertIn(reason, r.stdout)
+            self.assertEqual(sorted(x.name for x in p.iterdir() if x.name != 'dataset.uid'), before, flags)
+            self.assertFalse((p / 'qa_threshold').exists(), flags)
+            self.assertFalse((p / 'max_attempts').exists(), flags)
+        ok = self.new_plan()
+        self.planned(ok, '--qa-threshold', 'P3', '--groups', 'waves', '--group-max-tasks', '4')
+        self.assertEqual((ok / 'qa_threshold').read_text(), 'P3')
+        self.assertEqual((ok / 'group_max_tasks').read_text(), '4\n')
 
     # --- groups.tsv by hand or from a file ------------------------------------------------------------------------
     def test_a_groups_file_in_the_plan_dir_is_used_without_the_flag(self):
@@ -316,6 +339,117 @@ class GroupsPlanTests(unittest.TestCase):
         r = self.run_script('forge-parallel.sh', 'run', p, '--dry-run', '--fractal')
         self.assertEqual(r.returncode, 2, r.stdout)
         self.assertIn('group review does not support Fractal yet', r.stdout)
+
+    def test_a_refused_waves_derive_does_not_leave_groups_tsv(self):
+        p = self.new_plan()
+        (p / 'fractal-selection.json').write_text(json.dumps({'enabled': True}))
+        r = self.plan_cmd(p, '--groups', 'waves', '--group-review')
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn('group review does not support Fractal yet', r.stdout)
+        self.assertFalse((p / 'groups.tsv').exists())
+        self.assertFalse((p / 'groups.frozen').exists())
+        # a later plan is not stuck on the file the refused derive wrote
+        self.planned(p)
+        self.assertFalse((p / 'groups.tsv').exists())
+
+    def test_a_refused_replan_puts_back_the_groups_it_replaced(self):
+        p = self.new_plan()
+        (p / 'fractal-selection.json').write_text(json.dumps({'enabled': True}))
+        self.planned(p, '--groups', 'waves')
+        before = ((p / 'groups.tsv').read_text(), (p / 'groups.frozen').read_text())
+        r = self.plan_cmd(p, '--groups', 'waves', '--group-review')
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertEqual(((p / 'groups.tsv').read_text(), (p / 'groups.frozen').read_text()), before)
+        self.planned(p)
+        self.frozen_ok(p)
+
+    def pty_run(self, plan, answer, timeout):
+        """Run `run` on a terminal and write `answer` at the Fractal prompt. (rc, output)."""
+        import pty
+        import select
+        import time
+        pid, fd = pty.fork()
+        if pid == 0:
+            try:
+                os.chdir(self.repo)
+                os.execve('/bin/bash', ['bash', str(ROOT / 'scripts' / 'forge-parallel.sh'), 'run', str(plan)],
+                          {key: str(value) for key, value in self.env.items()})
+            finally:
+                os._exit(127)
+        output = b''
+        status = None
+        try:
+            deadline = time.monotonic() + timeout
+            prompted = False
+            while time.monotonic() < deadline:
+                if select.select([fd], [], [], 0.2)[0]:
+                    try:
+                        output += os.read(fd, 4096)
+                    except OSError:
+                        pass
+                if not prompted and b'Use Fractal for this run? [y/N]' in output:
+                    os.write(fd, answer)
+                    prompted = True
+                done, waited = os.waitpid(pid, os.WNOHANG)
+                if done:
+                    status = waited
+                    while select.select([fd], [], [], 0.05)[0]:
+                        try:
+                            chunk = os.read(fd, 4096)
+                        except OSError:
+                            break
+                        if not chunk:
+                            break
+                        output += chunk
+                    break
+            else:
+                self.fail('run did not finish:\n' + output.decode(errors='replace')[-2000:])
+        finally:
+            os.close(fd)
+            if status is None:
+                try:
+                    os.kill(pid, 9)
+                except ProcessLookupError:
+                    pass
+                try:
+                    status = os.waitpid(pid, 0)[1]
+                except ChildProcessError:
+                    status = None
+        self.assertIsNotNone(status)
+        return os.waitstatus_to_exitcode(status), output.decode(errors='replace')
+
+    def test_answering_yes_to_the_fractal_prompt_refuses_before_selecting_it(self):
+        p = self.frozen_plan()
+        self.assertFalse((p / 'fractal-selection.json').exists())
+        rc, out = self.pty_run(p, b'y\n', 30)
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out.count('Use Fractal for this run? [y/N]'), 1)
+        self.assertIn('group review does not support Fractal yet', out)
+        self.assertFalse((p / 'fractal-selection.json').exists())
+        self.assertFalse((p / 'tasks' / 'a' / 'status').exists())
+
+    def test_answering_no_to_the_fractal_prompt_runs_without_fractal(self):
+        p = self.frozen_plan()
+        rc, out = self.pty_run(p, b'n\n', 90)
+        self.assertEqual(out.count('Use Fractal for this run? [y/N]'), 1, out[-2000:])
+        self.assertNotIn('group review does not support Fractal yet', out)
+        self.assertNotEqual(rc, 2, out[-2000:])
+        self.assertFalse(json.loads((p / 'fractal-selection.json').read_text())['enabled'])
+        # A passing group writes PASS into the member's status and records the merge beside it.
+        self.assertEqual((p / 'tasks' / 'a' / 'status').read_text().strip(), 'PASS')
+        self.assertTrue((p / 'tasks' / 'a' / 'merged').is_file())
+
+    def test_a_plan_that_already_declined_fractal_is_not_asked_again(self):
+        # enabled: false is a choice. Answering y here used to refuse a run the selector would have left alone.
+        p = self.frozen_plan()
+        (p / 'fractal-selection.json').write_text(json.dumps({'enabled': False}))
+        rc, out = self.pty_run(p, b'y\n', 90)
+        self.assertEqual(out.count('Use Fractal for this run? [y/N]'), 0, out[-2000:])
+        self.assertNotIn('group review does not support Fractal yet', out)
+        self.assertNotEqual(rc, 2, out[-2000:])
+        self.assertFalse(json.loads((p / 'fractal-selection.json').read_text())['enabled'])
+        self.assertEqual((p / 'tasks' / 'a' / 'status').read_text().strip(), 'PASS')
+        self.assertTrue((p / 'tasks' / 'a' / 'merged').is_file())
 
     # --- split ---------------------------------------------------------------------------------------------------------------------------
     def split_fixture(self):

@@ -97,7 +97,12 @@ class MemberTests(MemberCase):
     def test_the_table_the_summary_and_the_results_name_the_status(self):
         p = self.plan_of('group')
         r = self.run_script('forge-parallel.sh', 'run', p)
-        self.assertRegex(r.stdout, r'\n  a +IMPLEMENTED +forge/plan/a\n')
+        # The status column is 14 wide: IMPLEMENTED (11) and NEEDS_DECISION (14) keep the branch
+        # column on the header's mark. A 9-wide column prints IMPLEMENTED in full and shoves the branch.
+        header = next(line for line in r.stdout.splitlines() if line.startswith('  id ') and line.endswith('branch'))
+        member = next(line for line in r.stdout.splitlines() if 'IMPLEMENTED' in line and line.endswith('forge/plan/a'))
+        self.assertEqual(member.index('forge/plan/a'), header.index('branch'))
+        self.assertGreaterEqual(header.index('branch') - header.index('status'), len('NEEDS_DECISION') + 1)
         self.assertIn("implemented, waiting for their group's review:\n  a: group g1\n  b: group g1\n", r.stdout)
         self.assertNotIn('retry a failed task', r.stdout)            # not a failure to retry
         self.assertIn('a\tIMPLEMENTED\tforge/plan/a', (p / 'results.tsv').read_text())
