@@ -277,7 +277,14 @@
     const decision = decisionSection(group, ctx.plan);
     if (decision) page.append(decision);
     const findings = el('section', undefined, 'group-section group-findings-section');
-    findings.append(el('h2', 'Findings', 'plate'), findingsTable(group.attribution));
+    findings.append(el('h2', 'Findings', 'plate'));
+    // attribution.json is kept across rounds (the next prompt quotes it): a round that left no review has
+    // none of its own, so the table is an earlier round's and says so.
+    const attribution = group.attribution;
+    if (attribution && Number.isInteger(attribution.round) && Number.isInteger(group.round) && attribution.round !== group.round) {
+      findings.append(el('p', 'From round ' + attribution.round + ': round ' + group.round + ' has no attributed findings.', 'muted group-stale'));
+    }
+    findings.append(findingsTable(attribution));
     page.append(findings, roundsSection(group));
     page.append(textSection('Known issues', group.known_issues, 'None.', 'group-known'));
     page.append(textSection('Review', group.qa_last, 'No review yet.', 'group-review'));

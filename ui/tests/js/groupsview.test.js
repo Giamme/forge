@@ -184,6 +184,12 @@ test('NEEDS_DECISION shows the retry command, quoted when the plan path has a sp
   assert.match(page.querySelector('.group-rounds').textContent, /Round 1/);
   assert.match(page.querySelector('.group-rounds').textContent, /abc123/);
   assert.equal(page.querySelector('.group-back').href, '#/runs/demo');
+  assert.equal(page.querySelector('.group-stale'), null);
+  const later = G.pageView({
+    id: 'ship', review: 'group', status: 'UNKNOWN', round: 2, members: ['reader'], rounds: [],
+    attribution: { round: 1, findings: [{ n: 1, severity: 'P1', status: 'CONFIRMED', file: 'ui/reader.py', tasks: ['reader'], blocking: true }] },
+  }, {});
+  assert.equal(later.querySelector('.group-stale').textContent, 'From round 1: round 2 has no attributed findings.');
   const passing = G.pageView({ id: 'ship', review: 'group', status: 'PASS', members: [], rounds: [], qa_last: null, known_issues: null, execution: null }, {});
   assert.equal(passing.querySelector('.group-decision'), null);
   assert.equal(passing.querySelector('.group-known').textContent.includes('None.'), true);
