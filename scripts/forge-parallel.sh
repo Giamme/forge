@@ -1652,6 +1652,13 @@ record_retry_source() { # record_retry_source <tdir> <attempt>
   printf '%s\t%s\t%s\n' "$n" "$src" "$(date +%s)" >> "$tmp" && mv "$tmp" "$trail" || { rm -f "$tmp"; return 1; }
 }
 
+# The reviewer's harness refused the prompt for its size (#145): codex's input_too_large, claude's
+# "Prompt is too long". A retry would send the same prompt; the task's note says what to do instead.
+qa_input_too_large() { # qa_input_too_large <task dir>
+  grep -qE 'input_too_large|Input exceeds the maximum length|[Pp]rompt is too long|context_length_exceeded' \
+    "$1/qa.log" "$1/qa.out" 2>/dev/null
+}
+
 do_task_body() (
   local PLAN="${1:?}" id="${2:?}"
   local T="$PLAN/tasks.tsv" REPO run_id base wt br tdir attempt resume=""
@@ -1987,6 +1994,15 @@ do_task_body() (
   # QA uses the dispatch-time ownership and baseline, never later merge state.
   /bin/bash "$MEMORY" inject "$REPO" qa --task "$tdir/prompt.md" \
       --run-dir "$tdir" > "$tdir/qa.memory"
+  # The diff goes inline up to the whole-run review's limit (#145). Over it, the prompt holds the
+  # stat and the reviewer reads the diff in its snapshot, which holds this attempt as one commit over
+  # its base, as the whole-run review and adopt already do. At most the limit plus one byte is read.
+  # --irreversible-delete: a deleted file shows as a header, not every line it had (one deleted
+  # data directory once made a 7.1M-character prompt that the reviewer's CLI refused).
+  local qa_inline=1
+  git -C "$wt" diff --binary --irreversible-delete "$base" "$reviewed" -- . ':(exclude).forge' 2>/dev/null |
+    head -c $((REVIEW_DIFF_LIMIT + 1)) > "$tdir/.qa.diff"
+  [ "$(wc -c < "$tdir/.qa.diff" | tr -d ' ')" -le "$REVIEW_DIFF_LIMIT" ] || qa_inline=0
   {
     python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --retry-source "$(cat "$tdir/retry_findings.source" 2>/dev/null || echo review)" ${prompt_extra[@]+"${prompt_extra[@]}"} --memory "$tdir/dwarf.memory" --memory "$tdir/qa.memory"
     python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind "$qa_kind"
@@ -2018,15 +2034,24 @@ do_task_body() (
     fi
     python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind "$qa_kind" --threshold "$qa_thr"
     echo
-    # --irreversible-delete: a deleted file shows as a header, not every line it had (one deleted
-    # data directory once made a 7.1M-character prompt that the reviewer's CLI refused).
-    echo '```diff'; git -C "$wt" diff --binary --irreversible-delete "$base" "$reviewed" -- . ':(exclude).forge'; echo '```'
+    if [ "$qa_inline" = 1 ]; then
+      echo '```diff'; cat "$tdir/.qa.diff"; echo '```'
+    else
+      echo "The diff is larger than $((REVIEW_DIFF_LIMIT / 1024)) KB, so it is not inlined. Read it in your"
+      echo "working directory, which holds this attempt as the last commit over its base:"
+      echo "  git diff HEAD~1 HEAD -- . ':(exclude).forge'"
+      echo "Its stat ($(git -C "$wt" diff --shortstat "$base" "$reviewed" -- . ':(exclude).forge' 2>/dev/null | sed 's/^ *//')):"
+      echo '```text'
+      git -C "$wt" diff --stat=200 "$base" "$reviewed" -- . ':(exclude).forge' 2>/dev/null | head -c 65536
+      echo '```'
+    fi
     echo; /bin/bash "$MEMORY" note qa
     echo "Place any learning notes before the final FORGE_VERDICT: PASS or FORGE_VERDICT: FAIL line."
     # Last, so a shadow review, which copies this file byte for byte, carries the same
     # instruction. Its notes are not recorded: only this task's own dispatch is.
     forge_retro_prompt "$PLAN" qa
   } > "$tdir/qa.input"
+  rm -f "$tdir/.qa.diff"
   # Opt-in (plan --shadow-qa): a second, independent review of this same diff, to measure
   # how often two reviewers agree. It reviews its own snapshot from its own dir under
   # $PLAN/shadow/, and nothing in this script ever reads its result.
@@ -2095,7 +2120,13 @@ do_task_body() (
     case "$rc" in
       7) echo TIMEOUT > "$tdir/status"; note "$id: qa hit the dispatch timeout — see $tdir/qa.out" ;;
       8) infra_stop "$tdir" "$id" qa "$attempt"; return 8 ;;
-      *) echo ERROR > "$tdir/status"; note "$id: qa dispatch failed — see $tdir/qa.out" ;;
+      *) echo ERROR > "$tdir/status"
+         if qa_input_too_large "$tdir"; then
+           # The same prompt fails the same way: say so, and what does work (#145).
+           note "$id: the reviewer's harness refused the prompt as too large ($(wc -c < "$tdir/qa.input" | tr -d ' ') bytes; see $tdir/qa.log). A retry sends the same prompt. Review the commit from a snapshot instead: forge-parallel.sh adopt $PLAN $(cut -c1-12 "$tdir/reviewed.commit" 2>/dev/null) --qa <spec> --reason \"...\", or split the task"
+         else
+           note "$id: qa dispatch failed — see $tdir/qa.out"
+         fi ;;
     esac
     return 1
   fi
