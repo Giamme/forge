@@ -2116,6 +2116,12 @@ class IndependenceTests(unittest.TestCase):
                            if 'forge_dataset' in line and 'import' in line]
                 self.assertEqual(imports, ['from forge_dataset.capture import point'], path)
                 continue
+            if path.parent.name == 'forge_brief' and path.name == 'proposals.py':
+                # A proposal's state change records one `brief_diff` point event. It reads nothing back.
+                imports = [line.strip() for line in text.splitlines()
+                           if 'forge_dataset' in line and 'import' in line]
+                self.assertEqual(imports, ['from forge_dataset.capture import point'], path)
+                continue
             if path.parent.name == 'forge_brief' and path.name == 'answers.py':
                 # An answer records a point event. Whether a question is possibly stale reads the files this
                 # run's own attempts changed (its diff, else its attempt events): no verdict, no earlier run.
