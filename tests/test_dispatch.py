@@ -214,10 +214,10 @@ class ContinueSessionTests(DispatchBase):
         self.env['CWDS'] = str(cwds)
         result = self.cont('sol:high')
         self.assertEqual(result.returncode, 0, result.stdout)
-        argv = self.argv()
+        argv, _tmp = read_only_codex(self.run_dir, self.argv(), 'qa')
         self.assertEqual(argv[:4], ['codex', 'exec', 'resume', self.SESSION])
         self.assertEqual(argv[4:], ['--json', '-m', 'gpt-6.1-sol', '--skip-git-repo-check', '-o', str(self.run_dir / 'qa.last'),
-                                    '-c', 'model_reasoning_effort=high', '-c', 'sandbox_mode="read-only"', '-'])
+                                    '-c', 'model_reasoning_effort=high', *read_only_tail(self.run_dir, 'qa'), '-'])
         for flag in ('-C', '-s', '--cd'):
             self.assertNotIn(flag, argv)
         self.assertEqual([os.path.realpath(c) for c in cwds.read_text().split()], [os.path.realpath(self.repo)])
@@ -1051,7 +1051,7 @@ class FastTierTests(DispatchBase):
             with self.subTest(role=role, spec=spec, extra=extra):
                 plain = self.dispatch(role, spec, *extra)
                 self.assertEqual(plain.returncode, 0, plain.stdout)
-                plain_argv = self.argv(role)
+                plain_argv = read_only_codex(self.run_dir, self.argv(role), role)[0]
                 plain_fields = self.resolved_without_duration(role)
                 self.assertNotIn('service_tier=fast', plain_argv)
                 self.assertNotIn('--fast-mode', plain_argv)
@@ -1060,7 +1060,7 @@ class FastTierTests(DispatchBase):
                     self.assertEqual(plain_argv, pinned)
                 fast = self.dispatch(role, spec, *extra, '--service-tier', 'fast')
                 self.assertEqual(fast.returncode, plain.returncode, fast.stdout)
-                fast_argv = self.argv(role)
+                fast_argv = read_only_codex(self.run_dir, self.argv(role), role)[0]
                 self.assertEqual(self.without_tier(fast_argv), plain_argv)
                 self.assertNotEqual(fast_argv, plain_argv)
                 if harness == 'codex':
@@ -1163,6 +1163,22 @@ class FastTierTests(DispatchBase):
         self.assertEqual(failed.stdout.count(note), 1)
 
 
+def read_only_codex(run_dir, argv, role):
+    """The codex read-only tail (#148): the sandbox, then a profile writing only the role's temp dir.
+    Returns argv with that dir's random suffix replaced by XXXXXX, and the dir it named."""
+    prefix = str(run_dir / ('.%s-tmp.' % role))
+    found = [a for a in argv if a.startswith('permissions.forge-read-only.filesystem=')]
+    tmp = found[0].split('"')[5] if found else None
+    norm = [a.replace(tmp, prefix + 'XXXXXX') if tmp else a for a in argv]
+    return norm, tmp
+
+
+def read_only_tail(run_dir, role):
+    return ['-c', 'sandbox_mode="read-only"', '-c', 'default_permissions="forge-read-only"',
+            '-c', 'permissions.forge-read-only.filesystem={"/"="read", "%s"="write"}'
+            % (str(run_dir / ('.%s-tmp.' % role)) + 'XXXXXX')]
+
+
 class SideRoleTests(DispatchBase):
     """`side` is a read-only dispatch, default effort low, refused when the role is unknown."""
 
@@ -1172,7 +1188,8 @@ class SideRoleTests(DispatchBase):
     def test_codex_and_claude_are_read_only_at_effort_low(self):
         codex = [
             'codex', 'exec', '--json', '-m', 'gpt-6.1-sol', '-C', str(self.repo), '--skip-git-repo-check',
-            '-o', str(self.run_dir / 'side.last'), '-c', 'model_reasoning_effort=low', '-s', 'read-only', '-',
+            '-o', str(self.run_dir / 'side.last'), '-c', 'model_reasoning_effort=low',
+            *read_only_tail(self.run_dir, 'side'), '-',
         ]
         claude = [
             'claude', '-p', '--model', 'opus', '--add-dir', str(self.run_dir), '--output-format', 'stream-json',
@@ -1183,7 +1200,7 @@ class SideRoleTests(DispatchBase):
             with self.subTest(spec=spec):
                 result = self.dispatch('side', spec)
                 self.assertEqual(result.returncode, 0, result.stdout)
-                self.assertEqual(self.argv(), pinned)
+                self.assertEqual(read_only_codex(self.run_dir, self.argv(), 'side')[0], pinned)
                 self.assertEqual(self.kv('side.resolved')['role'], 'side')
                 self.assertEqual(self.kv('side.resolved')['effort'], 'low')
                 self.assertTrue((self.run_dir / 'side.log').is_file())
@@ -1195,9 +1212,33 @@ class SideRoleTests(DispatchBase):
         result = self.dispatch('side', 'sol:high', '--dry-run')
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertEqual(self.kv('side.resolved')['effort'], 'high')
-        self.assertIn('-s', self.argv())
-        self.assertEqual(self.argv()[self.argv().index('-s') + 1], 'read-only')
+        self.assertIn('sandbox_mode="read-only"', self.argv())
         self.assertNotIn('--approve-for-me', self.argv())
+
+    def test_a_read_only_role_gets_its_own_temp_dir_and_the_implementer_does_not(self):
+        # #148: a test runner needs a writable temp dir, and a read-only sandbox gives none. The
+        # role's TMPDIR is a dir of its own in the run dir (outside the repository), writable in
+        # codex's profile, and gone when the dispatch ends. An implementer keeps the caller's.
+        tmps = self.root / 'tmps'
+        self.env['TMPS'] = str(tmps)
+        caller = self.env.get('TMPDIR', '')
+        for role, spec in (('qa', 'sol'), ('qa', 'opus'), ('side', 'sol'), ('dwarf', 'sol')):
+            with self.subTest(role=role, spec=spec):
+                tmps.write_text('')
+                result = self.dispatch(role, spec)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                [line] = tmps.read_text().split('\n')[:1]
+                seen, existed = line.rsplit(' ', 2)[1:]
+                if role == 'dwarf':
+                    self.assertEqual(seen, caller)
+                    continue
+                self.assertTrue(seen.startswith(str(self.run_dir / ('.%s-tmp.' % role))), seen)
+                self.assertEqual(existed, 'True')
+                self.assertFalse(Path(seen).exists(), 'the temp dir outlived the dispatch')
+                self.assertFalse(str(seen).startswith(str(self.repo)))
+                if spec == 'sol':
+                    _norm, named = read_only_codex(self.run_dir, self.argv(role), role)
+                    self.assertEqual(named, seen)
 
     def test_every_other_harness_is_read_only(self):
         # opencode has no effort ladder and antigravity's opus row has no effort dial,

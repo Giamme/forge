@@ -446,6 +446,7 @@ if [ "$PREFLIGHT" != 1 ] && [ "$DRY" != 1 ]; then
     for watcher in ${wpid:-} ${spid:-}; do pkill -P "$watcher" 2>/dev/null; kill "$watcher" 2>/dev/null; done
     [ -z "${cpid:-}" ] || kill "$cpid" 2>/dev/null
     rm -f "$RUN_DIR/$ROLE.harness" "$RUN_DIR/$ROLE.tracked"
+    case "${ROLE_TMP:-}" in "$RUN_DIR"/.*-tmp.*) [ ! -d "$ROLE_TMP" ] || rm -rf -- "$ROLE_TMP" ;; esac
   }
   # What the EXIT trap's `finish` archives. Pessimistic until an outcome is known, so every
   # path out of a continue request (a signal, a usage error after this point) leaves a record.
@@ -531,6 +532,19 @@ cp "$PROMPT_FILE" "$RUN_DIR/$ROLE.delivered"
 case "$HARNESS" in opencode|antigravity) PROMPT="$(cat "$PROMPT_FILE")" ;; esac
 
 # --- build argv ---------------------------------------------------------------
+# A read-only codex role: the read-only sandbox, plus a permissions profile that reads everything
+# and writes only ROLE_TMP (#148). The sandbox mode stays as the fallback: a codex that does not
+# know profiles keeps a plain read-only sandbox. Probed with `codex sandbox -P` and
+# `codex debug prompt-input` (0.164): the profile wins, and the repository stays read-only.
+codex_read_only() {
+  CMD+=(-c 'sandbox_mode="read-only"')
+  [ -n "$ROLE_TMP" ] || return 0
+  local path="${ROLE_TMP//\\/\\\\}"
+  path="${path//\"/\\\"}"
+  CMD+=(-c 'default_permissions="forge-read-only"'
+        -c "permissions.forge-read-only.filesystem={\"/\"=\"read\", \"$path\"=\"write\"}")
+}
+
 # Sets CMD (and PROMPT_VIA_STDIN) for the dispatch, or for the fresh one when CONTINUE_ID is empty.
 build_cmd() {
   CMD=()
@@ -558,7 +572,7 @@ build_cmd() {
         [ -n "$EFFORT" ] && CMD+=(-c "model_reasoning_effort=$EFFORT")
         [ "$SERVICE_TIER" = fast ] && CMD+=(-c "service_tier=fast")
         if [ "$YOLO" = 1 ]; then CMD+=(--dangerously-bypass-approvals-and-sandbox)
-        else CMD+=(-c 'sandbox_mode="read-only"'); fi
+        else codex_read_only; fi
         case "$CONTINUE_ID" in -*) CMD+=(-- "$CONTINUE_ID") ;; esac
         CMD+=(-)
         PROMPT_VIA_STDIN=1
@@ -569,7 +583,7 @@ build_cmd() {
         # --approve-for-me and --dangerously-bypass-... are mutually exclusive.
         if [ "$YOLO" = 1 ]; then CMD+=(--dangerously-bypass-approvals-and-sandbox)
         elif [ "$ROLE" = "dwarf" ]; then CMD+=(--approve-for-me)
-        else CMD+=(-s read-only); fi
+        else codex_read_only; fi
         CMD+=(-)
         PROMPT_VIA_STDIN=1
       fi
@@ -679,6 +693,19 @@ build_cmd() {
     *) die "no dispatch recipe for harness '$HARNESS'" ;;
   esac
 }
+# A read-only role's own writable temp dir (#148). Test runners need one (Vitest's EPERM in a
+# read-only sandbox), and the role gets none otherwise. It sits in the run dir, outside the
+# repository, so the tree under review and its fingerprint are untouched; TMPDIR, TMP and TEMP
+# point at it, and the dispatch removes it when it ends. A dry run or a preflight only shows
+# its shape.
+ROLE_TMP=""
+if read_only_role; then
+  if [ -n "$ATTEMPT" ]; then
+    ROLE_TMP="$(mktemp -d "$RUN_DIR/.$ROLE-tmp.XXXXXX")" || ROLE_TMP=""
+  else
+    ROLE_TMP="$RUN_DIR/.$ROLE-tmp.XXXXXX"
+  fi
+fi
 build_cmd
 
 # Offline validation uses the exact command recipe, never a model request.
@@ -834,10 +861,11 @@ case "${FORGE_ORPHAN_GUARD:-on}" in off|OFF|Off|0|no|false) ;; *)
 esac
 RUNCMD=("${CMD[@]}")
 [ "$GUARD_ON" != 1 ] || RUNCMD=(python3 "$GUARD" session -- "${CMD[@]}")
+role_env() { [ -z "$ROLE_TMP" ] || export TMPDIR="$ROLE_TMP" TMP="$ROLE_TMP" TEMP="$ROLE_TMP"; }
 if [ "$PROMPT_VIA_STDIN" = 1 ]; then
-  ( cd "$REPO" && exec "${RUNCMD[@]}" < "$PROMPT_FILE" ) > "$LOG" 2>&1 &
+  ( cd "$REPO" && role_env && exec "${RUNCMD[@]}" < "$PROMPT_FILE" ) > "$LOG" 2>&1 &
 else
-  ( cd "$REPO" && exec "${RUNCMD[@]}" </dev/null ) > "$LOG" 2>&1 &
+  ( cd "$REPO" && role_env && exec "${RUNCMD[@]}" </dev/null ) > "$LOG" 2>&1 &
 fi
 hpid=$!
 # Log clock: when the log grew, so forge-ui can time the commands of a harness whose events
