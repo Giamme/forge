@@ -210,6 +210,23 @@ class AttributeTests(unittest.TestCase):
         self.assertEqual(result['implicated'], ['a', 'b'])
         self.assertTrue(all(row['blocking'] and not row['ambiguous'] for row in result['findings']))
 
+    def test_a_members_own_path_beats_a_host_and_counts_without_an_extension(self):
+        # A dotted host with a port looks like a path:line; the file a member changed is the
+        # location. An extensionless file a member changed counts with its line. Neither
+        # prefix nor suffix of a longer name matches.
+        members = [('a', ['Makefile', 'src/a.py']), ('b', ['docs/c.md'])]
+        text = reply(
+            '- [P1][CONFIRMED] docs/c.md — cannot reach example.com:443',
+            '- [P1][CONFIRMED] Makefile:12 drops the test target',
+            '- [P1][CONFIRMED] src/a.pyc is stale, src/a.py.bak too; see docs/c.md.',
+            '- [P1][CONFIRMED] example.com:443 times out; ./src/a.py retries it at src/a.py:7',
+        )
+        result = attr.attribute(text, members, 'P2')
+        self.assertEqual([(row['file'], row['line']) for row in result['findings']], [
+            ('docs/c.md', None), ('Makefile', 12), ('docs/c.md', None), ('src/a.py', 7)])
+        self.assertEqual([row['tasks'] for row in result['findings']], [['b'], ['a'], ['b'], ['a']])
+        self.assertEqual(result['ambiguous'], [])
+
     def test_blocking_is_the_gate_decision_and_the_parser_drops_what_it_always_drops(self):
         text = reply(
             '- [P1][CONFIRMED] src/a.py:1 — blocks',

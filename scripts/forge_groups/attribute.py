@@ -18,8 +18,10 @@ The dict is `{"findings", "implicated", "ambiguous", "blocking"}`. Each finding 
 
 - `n` is 1-based in the parser's order. `severity` is `P0`–`P3` or null. `status` is the
   parser's CONFIRMED, PLAUSIBLE or UNSTATED.
-- `file` and `line` are the block's first `path:line`, or, when the block has no `path:line`,
-  the first path. `line` is null then. A `path:line` is a path: a slash or an extension, so
+- `file` and `line` are, first, the first path a member changed that the block names (its
+  `path:line` before a bare mention), matched literally, so an extensionless `Makefile:12`
+  counts and `example.com:443` does not beat the file the bullet names. When the block names
+  no member's path: the block's first `path:line`, or, when it has none, the first path. `line` is null then. A `path:line` is a path: a slash or an extension, so
   `localhost:8080`, `12:30` and `a:1` are not one. A dotted word earlier in the prose
   (`os.path.join`, `json.loads`, `node.js`) is not that path when a `path:line` follows it.
 - `tasks` is `{tasks=…}` when the bullet has one: comma or space separated, trimmed,
@@ -98,14 +100,40 @@ def _usable(path: str) -> bool:
     return bool(path) and path.lower() not in _NOT_PATH
 
 
-def _locate(text: str):
+def _known(text: str, known):
+    """(file, line) of the first member-changed path the block names, or None.
+
+    A path:line of one wins over a bare mention of one, as in `_locate`. Matching the members'
+    own paths literally is what lets an extensionless file (`Makefile:12`) count, and keeps a
+    host with a port (`example.com:443`) from beating the file the bullet names."""
+    with_line = bare = None
+    for path in known:
+        pattern = re.compile(r'(?<![\w./])(?:\./)?' + re.escape(path) + r'(?::(\d+))?(?!\.?[\w/-])')
+        for match in pattern.finditer(text):
+            if match.group(1) is not None:
+                if with_line is None or match.start() < with_line[0]:
+                    with_line = (match.start(), path, int(match.group(1)))
+                break
+            if bare is None or match.start() < bare[0]:
+                bare = (match.start(), path, None)
+    hit = with_line or bare
+    return None if hit is None else hit[1:]
+
+
+def _locate(text: str, known=()):
     """(file, line) of the first path:line, else the first path, else (None, None).
+
+    When the block names a path a member changed (`known`), that path is the location
+    (see `_known`); the rules below apply only when it names none.
 
     A path:line anywhere in the block wins over a bare path, including one that starts
     earlier. `Calls os.path.join badly in src/a.py:3` is `src/a.py` line 3, and `src/a.py:10`
     keeps its line rather than the bare `src/a.py` at the same character. The path:line has
     to be a path, with a slash or an extension: `localhost:8080`, `12:30` and `a:1` are not
     one, so the file named beside them stays the location."""
+    hit = _known(text, known)
+    if hit is not None:
+        return hit
     for match in _PATH_LINE.finditer(text):
         path = _clean_file(match.group(1))
         if _usable(path):
@@ -178,7 +206,7 @@ def attribute(qa_last_text, members, threshold=None) -> dict:
     ambiguous_ns = []
     for number, finding in enumerate(contract.parse_findings(qa_last_text or ''), 1):
         tags = list(_TASKS_TAG.finditer(finding.text))
-        file, line = _locate(_TASKS_TAG.sub(' ', finding.text))
+        file, line = _locate(_TASKS_TAG.sub(' ', finding.text), by_path)
         if not tags:
             if file is None:
                 tasks, ambiguous = [], True
