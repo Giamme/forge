@@ -169,7 +169,7 @@ def _task_group(plan, task_id):
     """
     try:
         return forge_groups.group_of(plan, task_id)
-    except forge_groups.GroupError:
+    except (forge_groups.GroupError, OSError, UnicodeDecodeError):
         return None
 
 
@@ -485,6 +485,22 @@ def _note_missing_groups(plan: Path, scope: str) -> None:
     sys.stderr.flush()
 
 
+def note_missing_groups(plan) -> None:
+    """Say the missing-groups note now, on this process's stderr, if it is due.
+
+    `forge-parallel.sh` calls this before it starts the writer in the background (advisory and
+    gated), whose output goes to brief.out where nobody would read the note. The marker then
+    keeps the writer quiet. Never raises: a note is not worth stopping a run for.
+    """
+    try:
+        plan = Path(plan)
+        found = forge_side.settings(plan)['brief']
+        if found['level'] != 'off':
+            _note_missing_groups(plan, found['scope'])
+    except Exception:
+        pass
+
+
 def _guard(plan) -> tuple:
     """`(plan Path, brief settings)`, or raise `NotAPlan` / `BriefOff`."""
     plan = Path(plan)
@@ -724,7 +740,7 @@ def _group_titles(plan) -> dict:
         return {}
     try:
         return {g.id: g.title for g in forge_groups.load(plan)}
-    except forge_groups.GroupError:
+    except (forge_groups.GroupError, OSError, UnicodeDecodeError):
         return {}
 
 

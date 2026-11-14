@@ -2873,6 +2873,9 @@ PY
 forge_brief_start() { # forge_brief_start <plan>
   local plan="$1"
   rm -f "$plan/brief.pid"
+  # The writer's own output goes to brief.out: say the missing-groups note here, on the console, first.
+  PYTHONPATH="$SKILL_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 -c \
+    'import sys, forge_brief; forge_brief.note_missing_groups(sys.argv[1])' "$plan" || true
   python3 - "$plan" "$SKILL_DIR/scripts/forge-brief.py" <<'PY' || { note "brief: could not start the question writer"; return 0; }
 import os, subprocess, sys
 plan, script = sys.argv[1], sys.argv[2]

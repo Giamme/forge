@@ -779,6 +779,15 @@ class GroupBriefTests(BriefCase):
         self.assertIn('run alongside it', with_groups)
         self.assertNotIn('several tasks of this group', with_groups)
 
+    def test_an_unreadable_groups_file_gives_the_ungrouped_prompt(self):
+        tasks = self.two_tasks()
+        task = next(item for item in tasks if item['id'] == 'b')
+        (self.plan / 'groups.tsv').write_bytes(b'# id\treview\n\xff\xfe broken\n')
+        self.assertEqual(forge_brief.build_prompt(self.plan, task, tasks, '/repo'), UNGROUPED_PROMPT)
+        (self.plan / 'groups.tsv').unlink()
+        (self.plan / 'groups.tsv').mkdir()
+        self.assertEqual(forge_brief.build_prompt(self.plan, task, tasks, '/repo'), UNGROUPED_PROMPT)
+
     def test_prompt_with_a_group_names_the_title_goal_and_siblings(self):
         tasks = self.two_tasks()
         self.groups()
