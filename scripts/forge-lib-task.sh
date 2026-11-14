@@ -37,10 +37,12 @@ record_judged_attempt() { # record_judged_attempt <plan> <id> <status>
 
 # What follows every attempt that was judged: the escalation check, then the decision a FAIL may stop
 # for. do_task runs it after its own attempt, and a group verdict runs it after judging a member's.
-# An IMPLEMENTED attempt was not judged, so neither step runs for it.
+# An IMPLEMENTED or STALE attempt was not judged, so neither step runs for it.
 post_attempt() { # post_attempt <plan> <id>
   local crc=0 stop_before
   [ "$(task_status "$1" "$2")" = IMPLEMENTED ] && return 0
+  # A STALE attempt (its prompt changed while it ran, #150) was not judged and spends nothing.
+  [ "$(task_status "$1" "$2")" = STALE ] && return 0
   # A FAIL whose every blocking finding needs a file this task does not declare is the plan's fault (#149):
   # stop for a decision now, before the escalation check can write a marker for a model that cannot help.
   if outside_stop_check "$1" "$2"; then

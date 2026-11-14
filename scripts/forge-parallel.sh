@@ -1642,7 +1642,7 @@ record_retry_source() { # record_retry_source <tdir> <attempt>
   trail="$tdir/retry_sources.tsv"; tmp="$tdir/.retry_sources.tsv.tmp"
   [ -s "$tdir/retry_findings.md" ] || return 0
   src="$(cat "$tdir/retry_findings.source" 2>/dev/null)"
-  case "$src" in review|prereview|bounce|message|answer) ;; *) src=review ;; esac
+  case "$src" in review|prereview|bounce|message|answer|prompt) ;; *) src=review ;; esac
   if [ -e "$trail" ]; then
     [ -f "$trail" ] && [ -r "$trail" ] || return 1
     awk -F'\t' -v n="$n" '$1 != n' "$trail" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
@@ -1650,6 +1650,55 @@ record_retry_source() { # record_retry_source <tdir> <attempt>
     : > "$tmp" || return 1
   fi
   printf '%s\t%s\t%s\n' "$n" "$src" "$(date +%s)" >> "$tmp" && mv "$tmp" "$trail" || { rm -f "$tmp"; return 1; }
+}
+
+# What the implementer was given (#150): prompt.md and approach.md as they were when dwarf.input was
+# built, kept next to them as prompt.dispatched / approach.dispatched. A missing approach.md is an empty
+# copy. Each goes through a temp file and mv; prompt.dispatched is written last, because its presence is
+# what says the pair is complete.
+record_dispatched_inputs() { # record_dispatched_inputs <tdir>
+  local tdir="$1" f tmp
+  for f in approach prompt; do
+    tmp="$tdir/.$f.dispatched.tmp"
+    if [ -f "$tdir/$f.md" ]; then cp "$tdir/$f.md" "$tmp" || { rm -f "$tmp"; return 1; }
+    else : > "$tmp" || return 1; fi
+    mv "$tmp" "$tdir/$f.dispatched" || { rm -f "$tmp"; return 1; }
+  done
+}
+
+# Whether the planner edited prompt.md or approach.md while the attempt ran (#150). Returns 0 when it did:
+# the attempt is then STALE, written to stale.diff and control.log, and the caller stops before any review.
+# Returns 1 when nothing changed, or when the attempt predates the .dispatched copies (no check possible).
+prompt_drifted() { # prompt_drifted <plan> <id> <tdir> <attempt>
+  local PLAN="$1" id="$2" tdir="$3" attempt="$4" f cur old changed=() tmp="$3/.stale.diff.tmp" what
+  [ -f "$tdir/prompt.dispatched" ] || return 1
+  : > "$tmp" || return 1
+  for f in prompt approach; do
+    cur="$tdir/$f.md"; [ -f "$cur" ] || cur=/dev/null
+    old="$tdir/$f.dispatched"; [ -f "$old" ] || continue
+    cmp -s "$old" "$cur" && continue
+    changed+=("$f.md")
+    diff -u --label "$f.md (attempt $attempt)" --label "$f.md (now)" "$old" "$cur" >> "$tmp" || true
+  done
+  if [ "${#changed[@]}" -eq 0 ]; then rm -f "$tmp" "$tdir/stale.diff"; return 1; fi
+  mv "$tmp" "$tdir/stale.diff" || rm -f "$tmp"
+  python3 - "$SKILL_DIR/scripts/forge-control.py" "$PLAN" "$id" "$attempt" "${changed[@]}" <<'PY' 2>/dev/null \
+    || note "$id: control.log not updated with the prompt change"
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('forge_control', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules['forge_control'] = module
+spec.loader.exec_module(module)
+module.audit(Path(sys.argv[2]), 'scheduler', 'prompt-changed', sys.argv[3], 'prompt', int(sys.argv[4]), None,
+             files=sys.argv[5:])
+PY
+  what="${changed[0]}"; [ "${#changed[@]}" -eq 1 ] || what="${changed[0]} and ${changed[1]}"
+  note "$id: $what changed during attempt $attempt — not reviewed; the implementer gets the new text (no attempt spent)"
+  echo STALE > "$tdir/status"
+  # The implementer has to run again, so a saved QA-only resume of this attempt no longer applies.
+  rm -f "$tdir/resume"
+  return 0
 }
 
 do_task_body() (
@@ -1732,6 +1781,8 @@ do_task_body() (
     # Persist each source separately; QA receives complete context once.
     write_capsule "$PLAN" "$id" dwarf >/dev/null
     cp "$tdir/capsule.md" "$tdir/baseline.capsule"
+    # What this attempt's implementer is given, to tell later whether the planner edited it (#150).
+    record_dispatched_inputs "$tdir" || { rm -f "$tdir/prompt.dispatched"; note "$id: could not record the dispatched prompt; a later edit will not be detected"; }
     # --task lets Jev narrow the injected slice to facts that bear on THIS task. Without
     # it, or with Jev off, the full role slice is injected exactly as before.
     /bin/bash "$MEMORY" inject "$REPO" dwarf --task "$tdir/prompt.md" \
@@ -1898,6 +1949,9 @@ do_task_body() (
   else
     reviewed="$(cat "$tdir/reviewed.commit")"
   fi
+  # A prompt or approach edited since the implementer was given it: judged against text it never saw.
+  # STALE, not reviewed, nothing spent; the committed work stays on the branch (#150).
+  if prompt_drifted "$PLAN" "$id" "$tdir" "$attempt"; then return 0; fi
   if [ -n "$grp_id" ]; then
     # The member's own pipeline ends here: no review snapshot, QA, shadow or fail-first. The tests of
     # --pre-review-tests still run, on a snapshot that lives only for them: a red attempt is FAIL and
