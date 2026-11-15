@@ -121,20 +121,49 @@ window.ForgePanel = (() => {
     s.append(line);
     const U = window.ForgeUI;
     if (!U || !U.controlsEnabled) return;
+    // In the tree before controlsEnabled answers, with data-hold. A poll rebuilds this inspector
+    // through controls.js hold(), which only puts back a [data-hold][data-editing] node that the
+    // new tree already contains. Appending the box from the promise leaves the draft behind.
+    const box = answerField(ctx, task, U);
+    s.append(box);
     U.controlsEnabled().then(on => {
-      if (!on || !s.isConnected) return;
-      const box = el('div', undefined, 'waiting-cmd');
-      const field = el('textarea');
-      field.setAttribute('aria-label', 'Answer');
-      field.rows = 3;
-      field.maxLength = 8000;
-      field.autocomplete = 'off';
-      const send = el('button', 'Send answer'); send.type = 'button';
-      const msgs = el('div');
-      send.addEventListener('click', () => { sendWaitingAnswer(box, field, send, msgs, ctx, task, U); });
-      box.append(field, send, msgs);
-      s.append(box);
+      if (!s.isConnected || on) return;
+      dropHold(s, 'answer:');
     });
+  }
+  // The draft of one waiting task. data-editing is set while the field is in use, so hold() keeps
+  // this node (its text and its focus) instead of the empty one the next draw builds.
+  function answerField(ctx, task, U) {
+    const run = ctx.run || {};
+    const box = el('div', undefined, 'waiting-cmd');
+    box.dataset.hold = 'answer:' + run.key + ':' + task.id;
+    const field = el('textarea');
+    field.setAttribute('aria-label', 'Answer');
+    field.rows = 3;
+    field.maxLength = 8000;
+    field.autocomplete = 'off';
+    const send = el('button', 'Send answer'); send.type = 'button';
+    const msgs = el('div');
+    const mark = () => { box.dataset.editing = '1'; };
+    field.addEventListener('focus', mark);
+    field.addEventListener('input', mark);
+    field.addEventListener('blur', () => {
+      if (box.dataset.busy) return;
+      if (!String(field.value || '').trim()) delete box.dataset.editing;
+    });
+    send.addEventListener('click', () => { sendWaitingAnswer(box, field, send, msgs, ctx, task, U); });
+    box.append(field, send, msgs);
+    return box;
+  }
+  function dropHold(root, prefix) {
+    const pending = [root];
+    while (pending.length) {
+      const node = pending.pop();
+      for (const child of [...(node.children || [])]) {
+        if (child.dataset && String(child.dataset.hold || '').startsWith(prefix)) child.remove();
+        else pending.push(child);
+      }
+    }
   }
   // What the answer endpoint means for the page. `live` is the scheduler's word; anything else is the error
   // sentence outcomeText already uses for every other write.
@@ -161,6 +190,7 @@ window.ForgePanel = (() => {
       if (U && U.outcome) U.outcome(msgs, { ok: false, status: 400, error: 'invalid', detail: 'the answer is empty' });
       return;
     }
+    box.dataset.editing = '1';
     box.dataset.busy = '1';
     send.disabled = true;
     const run = ctx.run || {};

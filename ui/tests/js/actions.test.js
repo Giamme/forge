@@ -78,11 +78,45 @@ class Node {
     this.parentNode = null;
   }
   contains(node) { return node === this || this.children.some(c => c.contains && c.contains(node)); }
+  replaceWith(...nodes) {
+    const parent = this.parentNode;
+    if (!parent) return;
+    const at = parent.children.indexOf(this);
+    this.remove();
+    const prepared = [];
+    for (const node of nodes) {
+      if (!node) continue;
+      if (node.parentNode) node.remove();
+      node.parentNode = parent;
+      prepared.push(node);
+    }
+    parent.children.splice(at, 0, ...prepared);
+  }
+  querySelectorAll(selector) {
+    const out = [];
+    for (const child of this.children || []) {
+      if (matchesSel(child, selector)) out.push(child);
+      if (child.querySelectorAll) out.push(...child.querySelectorAll(selector));
+    }
+    return out;
+  }
+  closest(selector) {
+    let node = this;
+    while (node) {
+      if (matchesSel(node, selector)) return node;
+      node = node.parentNode;
+    }
+    return null;
+  }
   setAttribute(name, value) { this.attrs[name] = String(value); }
   getAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null; }
   removeAttribute(name) { delete this.attrs[name]; }
   addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
   focus() { document.activeElement = this; }
+  click() {
+    const event = { preventDefault() {}, stopPropagation() {}, target: this };
+    for (const fn of this.listeners.click || []) fn(event);
+  }
   getBoundingClientRect() { return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }; }
   scrollIntoView() {}
 }
@@ -124,6 +158,20 @@ global.ForgeTable = require(path.join(root, 'datatable.js'));
 const Projects = require(path.join(root, 'projectsview.js'));
 const Storage = require(path.join(root, 'storageview.js'));
 const Panel = require(path.join(root, 'panel.js'));
+const Controls = require(path.join(root, 'controls.js'));
+
+function matchesSel(node, selector) {
+  const parts = String(selector).match(/\[[^\]]+\]/g);
+  if (!parts || parts.join('') !== selector) return false;
+  return parts.every(part => {
+    const body = part.slice(1, -1);
+    const eq = body.indexOf('=');
+    const name = (eq === -1 ? body : body.slice(0, eq)).replace(/^data-/, '');
+    const value = node.dataset && node.dataset[name];
+    if (eq === -1) return value != null && value !== '';
+    return String(value) === body.slice(eq + 1).replace(/^["']|["']$/g, '');
+  });
+}
 
 function walk(node) {
   const out = [];
@@ -476,5 +524,111 @@ test.describe('forget, compact and answer on the page', { concurrency: 1 }, () =
     assert.equal(walk(soloHost).some(n => n.tagName === 'TEXTAREA'), false);
     assert.equal(button(soloHost, 'Send answer'), undefined);
     assert.equal(button(soloHost, 'Copy command'), undefined);
+  });
+
+  test('a redraw while forget is confirming cancels it and leaves forget usable', async () => {
+    state.controls = true;
+    state.getReply = projectGet;
+    state.postReply = () => forgetPreview;
+    const h = mount();
+    const view = Projects.render(h, { id: 'proj1', tab: 'memories', runHref: k => '#/runs/' + k });
+    await until(() => button(h, 'Forget selected (0)'));
+    click(labelled(h, 'Select trap:alpha'));
+    click(button(h, 'Forget selected (1)'));
+    await until(() => confirmText(h).includes('trap:alpha — Alpha landmine'));
+    assert.equal(button(h, 'Forget selected (1)').disabled, true);
+    assert.equal(labelled(h, 'Select all shown learnings').disabled, true);
+    assert.equal(state.posts.length, 1);
+
+    click(button(h, 'Read again'));
+    await until(() => confirmText(h) === '' && button(h, 'Forget selected (1)'));
+    for (let i = 0; i < 8; i++) await new Promise(r => setTimeout(r, 0));
+    assert.deepEqual(state.posts.map(p => p.body.dry_run), [true]);
+    assert.equal(button(h, 'Forget selected (1)').disabled, false);
+    assert.equal(labelled(h, 'Select trap:alpha').disabled, false);
+    assert.equal(labelled(h, 'Select all shown learnings').disabled, false);
+
+    view.go('proj1', 'runs');
+    state.posts = [];
+    view.go('proj1', 'memories');
+    await until(() => button(h, 'Forget selected (1)'));
+    click(button(h, 'Forget selected (1)'));
+    await until(() => confirmText(h).includes('trap:alpha — Alpha landmine'));
+    view.go('proj1', 'findings');
+    for (let i = 0; i < 8; i++) await new Promise(r => setTimeout(r, 0));
+    assert.equal(state.posts.length, 1);
+    assert.equal(state.posts[0].body.dry_run, true);
+    view.go('proj1', 'memories');
+    await until(() => button(h, 'Forget selected (1)'));
+    assert.equal(button(h, 'Forget selected (1)').disabled, false);
+    assert.equal(labelled(h, 'Select trap:alpha').disabled, false);
+  });
+
+  test('changing checkout while forget is confirming does not stick the controls', async () => {
+    state.controls = true;
+    state.getReply = p => {
+      if (p.startsWith('/api/projects/proj1/memories')) return { ok: true, status: 200, data: {
+        ...memories,
+        sources: [memories.sources[0], { path: '/other', root: false, branch: 'side', max_lines: 40, memory: [] }],
+      } };
+      return projectGet(p);
+    };
+    state.postReply = () => forgetPreview;
+    const h = mount();
+    Projects.render(h, { id: 'proj1', tab: 'memories', runHref: k => '#/runs/' + k });
+    await until(() => walk(h).find(n => n.dataset && n.dataset.filter === 'source'));
+    click(labelled(h, 'Select trap:alpha'));
+    click(button(h, 'Forget selected (1)'));
+    await until(() => confirmText(h).includes('trap:alpha — Alpha landmine'));
+    const sel = walk(h).find(n => n.dataset && n.dataset.filter === 'source');
+    sel.value = '/other';
+    for (const fn of sel.listeners.change) fn({});
+    assert.equal(confirmText(h), '');
+    assert.equal(labelled(h, 'Select trap:alpha').disabled, false);
+    assert.equal(labelled(h, 'Select all shown learnings').disabled, false);
+    for (let i = 0; i < 8; i++) await new Promise(r => setTimeout(r, 0));
+    assert.deepEqual(state.posts.map(p => p.body.dry_run), [true]);
+
+    state.posts = [];
+    click(labelled(h, 'Select trap:alpha'));
+    click(button(h, 'Forget selected (1)'));
+    await until(() => confirmText(h).includes('trap:alpha — Alpha landmine'));
+    assert.deepEqual(state.posts.map(p => p.body), [{ keys: ['trap:alpha'], dry_run: true, path: '/other' }]);
+    click(button(h, 'Cancel'));
+    for (let i = 0; i < 4; i++) await new Promise(r => setTimeout(r, 0));
+    assert.equal(state.posts.length, 1);
+    assert.equal(button(h, 'Forget selected (1)').disabled, false);
+  });
+
+  test('a typed answer survives the inspector being drawn again', async () => {
+    state.controls = true;
+    const h = mount();
+    const run = { kind: 'plan', key: 'bbbbbbbbbbbb', path: '/tmp/plans/b', tasks: [waitingTask()], settings: {}, updated: 1 };
+    Panel.render(h, panelCtx(run));
+    const field = walk(h).find(n => n.tagName === 'TEXTAREA');
+    assert.ok(field, 'the answer box is in the tree before controlsEnabled resolves');
+    assert.equal(field.parentNode.dataset.hold, 'answer:bbbbbbbbbbbb:reader');
+    field.value = '   ';
+    for (const fn of field.listeners.input) fn({});
+    for (const fn of field.listeners.blur) fn({});
+    assert.equal(field.parentNode.dataset.editing, undefined);
+    field.value = 'keep this answer';
+    field.focus();
+    for (const fn of field.listeners.focus) fn({});
+    for (const fn of field.listeners.input) fn({});
+    assert.equal(field.parentNode.dataset.editing, '1');
+    const held = Controls.hold(h);
+    assert.ok(held, 'the draft is held across the rebuild');
+    Panel.render(h, panelCtx(run));
+    const blank = walk(h).find(n => n.tagName === 'TEXTAREA');
+    assert.notEqual(blank, field);
+    assert.equal(blank.value, '');
+    held.restore();
+    const again = walk(h).find(n => n.tagName === 'TEXTAREA');
+    assert.equal(again, field);
+    assert.equal(again.value, 'keep this answer');
+    assert.equal(document.activeElement, field);
+    for (let i = 0; i < 4; i++) await new Promise(r => setTimeout(r, 0));
+    assert.equal(walk(h).find(n => n.tagName === 'TEXTAREA').value, 'keep this answer');
   });
 });

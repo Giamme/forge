@@ -135,7 +135,7 @@
     const s = { id: ctx.id || null, tab: TABS.includes(ctx.tab) ? ctx.tab : 'runs', list: null, detail: null, findings: null, memories: null,
       ffilter: { severity: 'all', status: 'open', run: '', reviewer: '', path: '', since: 0, shadow: false },
       mfilter: { category: 'all', state: 'all', text: '' }, source: null, checkout: '', error: null, seq: 0, timer: null,
-      writes: false, picked: new Set(), forgetNote: null, forgetting: false };
+      writes: false, picked: new Set(), forgetNote: null, forgetting: false, forgetEpoch: 0, forgetHost: null };
     const tablePrefs = id => ctx.tablePrefs ? ctx.tablePrefs(id) : null, savePrefs = id => p => ctx.saveTablePrefs && ctx.saveTablePrefs(id, p);
 
     function table(parent, id, label, columns, rows, extra) {
@@ -146,11 +146,35 @@
       const b = el('button', 'Read again'); b.type = 'button'; b.title = 'Read the run dirs, forge issues, the ledgers and the dataset again now';
       b.addEventListener('click', onClick); return b;
     }
+    // confirmInline settles only when its own host answers. A redraw drops that host (another checkout,
+    // Read again, leaving the tab), the await never finishes, and `forgetting` stays true, so every later
+    // checkbox and the Forget button are drawn disabled. Cancel the strip now and retire the attempt.
+    function press(node) {
+      if (node && typeof node.click === 'function') node.click();
+    }
+    function dismissConfirm(host) {
+      if (!host) return;
+      for (const child of [...(host.children || [])]) {
+        if (!child.classList || !child.classList.contains('ui-confirm')) continue;
+        for (const button of child.children || []) {
+          if (button.tagName === 'BUTTON' && button.textContent === 'Cancel') { press(button); return; }
+        }
+      }
+    }
+    function abandonForget() {
+      if (!s.forgetting) return;
+      const host = s.forgetHost;
+      s.forgetting = false;
+      s.forgetEpoch += 1;
+      s.forgetHost = null;
+      dismissConfirm(host);
+    }
     const notes = n => el('div', undefined, 'prj-notes muted');
     function fill(node, items) { node.replaceChildren(...list(items).map(t => el('p', String(t)))); }
 
     /* the list */
     function drawList() {
+      abandonForget();
       const head = el('div', undefined, 'prj-head'), body = el('div', undefined, 'prj-body');
       head.append(el('h1', 'Projects', 'module-title'));
       host.replaceChildren(head, el('p', 'Each repository forge has run in: its runs, every finding its reviews wrote and every memory forge keeps for it, whichever checkout a run started in.', 'muted prj-lede'), body);
@@ -178,6 +202,7 @@
 
     /* one project */
     function drawProject() {
+      abandonForget();
       const head = el('div', undefined, 'prj-head'), tabs = el('nav', undefined, 'seg prj-tabs'), body = el('div', undefined, 'prj-body');
       tabs.setAttribute('aria-label', 'Project tabs');
       for (const t of TABS) { const a = el('a', t[0].toUpperCase() + t.slice(1)); a.href = routeOf(s.id, t); a.dataset.tab = t; if (t === s.tab) a.setAttribute('aria-current', 'page'); tabs.append(a); }
@@ -200,7 +225,7 @@
       return draw;
     }
     function drawTab(body, note) {
-      if (!s.detail) { body.replaceChildren(el('p', s.error ? `Could not read this project (${s.error}).` : 'Reading the project…', s.error ? 'warn' : 'muted')); return; }
+      if (!s.detail) { abandonForget(); body.replaceChildren(el('p', s.error ? `Could not read this project (${s.error}).` : 'Reading the project…', s.error ? 'warn' : 'muted')); return; }
       if (s.tab === 'runs') return drawRuns(body, note);
       if (s.tab === 'findings') return drawFindings(body, note);
       return drawMemories(body, note);
@@ -208,6 +233,7 @@
 
     /* Runs */
     function drawRuns(body, note) {
+      abandonForget();
       fill(note, []);
       const runs = list(s.detail.runs), checkouts = list(s.detail.checkouts);
       const bar = el('div', undefined, 'prj-filters');
@@ -236,6 +262,7 @@
 
     /* Findings */
     function drawFindings(body, note) {
+      abandonForget();
       const d = s.findings;
       if (!d) { fill(note, []); body.replaceChildren(el('p', s.ferror ? `Could not read the findings (${s.ferror}).` : 'Reading every review of every run… the first read parses each reply, so it can take a few seconds.', s.ferror ? 'warn' : 'muted')); return; }
       fill(note, list(d.notes).concat(d.dataset_runs ? [`${d.dataset_runs} run(s) whose directory is gone are read from the dataset: their findings link to no run page or diff.`] : []));
@@ -318,6 +345,7 @@
 
     /* Memories */
     function drawMemories(body, note) {
+      abandonForget();
       const d = s.memories;
       if (!d) { fill(note, []); body.replaceChildren(el('p', s.merror ? `Could not read the memories (${s.merror}).` : 'Reading each checkout\'s ledger…', s.merror ? 'warn' : 'muted')); return; }
       fill(note, d.notes);
@@ -358,6 +386,7 @@
       tx.addEventListener('input', () => { s.mfilter.text = tx.value; drawLearnings(); }); tl.append(el('span', 'Text', 'plate'), tx); lbar.append(tl);
       let allBox = null, forget = null;
       const faction = el('div'), noteHost = el('div'); faction.append(noteHost);
+      s.forgetHost = faction;
       if (s.writes) {
         const lab = el('label', undefined, 'fnd-toggle');
         allBox = el('input'); allBox.type = 'checkbox'; allBox.setAttribute('aria-label', 'Select all shown learnings');
@@ -398,30 +427,34 @@
         if (s.forgetting) return;
         const keys = forgetKeys(shownNow(), s.picked);
         if (!keys.length) return;
+        const epoch = s.forgetEpoch;
+        const host = faction;
+        const current = () => epoch === s.forgetEpoch && host.isConnected;
         s.forgetting = true; s.forgetNote = null; syncForget(); paintNote();
-        for (const child of [...faction.children]) if (child !== noteHost) child.remove();
+        for (const child of [...host.children]) if (child !== noteHost) child.remove();
         const path = '/api/projects/' + encodeURIComponent(s.id) + '/memories/forget';
         const base = { keys }; if (s.source) base.path = s.source;
         try {
           // Dry run first. Nothing is forgotten until the confirm, and a cancel sends nothing more.
           const preview = await UI.post(path, { ...base, dry_run: true });
-          if (!faction.isConnected) return;
+          if (!current()) return;
           if (!preview || !preview.ok || (preview.data && preview.data.ok === false)) {
-            UI.outcome(faction, preview && preview.ok ? { ok: false, status: preview.status || 500, error: 'failed', detail: 'Could not preview what would be forgotten' } : preview);
+            UI.outcome(host, preview && preview.ok ? { ok: false, status: preview.status || 500, error: 'failed', detail: 'Could not preview what would be forgotten' } : preview);
             return;
           }
-          const yes = await UI.confirmInline(faction, forgetConfirmText(learnings, keys, preview), { danger: true });
-          if (!faction.isConnected || !yes) return;
+          const yes = await UI.confirmInline(host, forgetConfirmText(learnings, keys, preview), { danger: true });
+          if (!current() || !yes) return;
           const res = await UI.post(path, { ...base, dry_run: false });
-          if (!faction.isConnected) return;
-          if (!res || !res.ok) { UI.outcome(faction, res); return; }
+          if (!current()) return;
+          if (!res || !res.ok) { UI.outcome(host, res); return; }
           s.forgetNote = forgetResultLines(res);
           for (const key of keys) s.picked.delete(key);
           s.forgetting = false;
           await loadTab(true);
         } finally {
+          if (epoch !== s.forgetEpoch) return;
           s.forgetting = false;
-          if (faction.isConnected) syncForget();
+          if (host.isConnected) syncForget();
         }
       }
       function drawLearnings() {
