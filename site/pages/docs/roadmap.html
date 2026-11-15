@@ -1,26 +1,14 @@
 <!--
 title: What's coming
-description: What's on forge's dev branch now and what's planned next, from the open issues.
+description: What's planned for forge next, from the open issues, and what recent releases brought.
 source: CHANGELOG.md
 -->
 <h1>What's coming</h1>
-<p class="lede">forge is developed in the open, mostly with forge itself. This is what's merged on the dev branch but not released yet, and what's planned. Plans change; the issue tracker is the source of truth.</p>
-
-<h2>On the dev branch</h2>
-<dl class="terms">
-  <dt>Group review</dt><dd>Related tasks share one reviewer over their combined diff (<code>plan --groups waves --group-review</code>). Each finding goes back only to the task whose files it names, the group merges in one step once it passes, and a finding that names no task stops the group for your decision. <a href="https://github.com/Giamme/forge/issues/140">#140</a></dd>
-  <dt>Brief proposals</dt><dd>Brief questions can cover a wave or the whole plan, and an answer becomes a proposal. Nothing changes until you approve its exact diff by hash; a plan proposal can add, remove or split tasks. <a href="https://github.com/Giamme/forge/issues/136">#136</a></dd>
-  <dt>Reviewer-session sampling</dt><dd><code>plan --reviewer-session-rate R</code> continues the reviewer's session on a sampled share of tasks, so one run compares continued and fresh review rounds. <a href="https://github.com/Giamme/forge/issues/116">#116</a></dd>
-</dl>
+<p class="lede">forge is developed in the open, mostly with forge itself. This is what's planned next and what recent releases brought. Plans change; the issue tracker is the source of truth.</p>
 
 <h2>Planned</h2>
 <dl class="terms">
-  <dt>Resume from any CLI</dt><dd>A <code>forge handoff</code> summary that lets any agent CLI pick up a detached run: start it in Claude Code, finish it in Codex, without a second scheduler or repeated questions. Planned for 0.19. <a href="https://github.com/Giamme/forge/issues/146">#146</a></dd>
   <dt>Decomposition at every level</dt><dd>Goal to plans to tasks to subtasks with the same rules throughout, native to forge. Each split is a recorded decision within depth and size limits you approve up front, and forge-ui shows the whole tree. <a href="https://github.com/Giamme/forge/issues/153">#153</a>. It replaces the optional Fractal runtime, which will be removed. <a href="https://github.com/Giamme/forge/issues/154">#154</a></dd>
-  <dt>Chained plans</dt><dd>Start a plan from another plan's integration branch. <a href="https://github.com/Giamme/forge/issues/143">#143</a></dd>
-  <dt>Scripted tasks</dt><dd>A plan row that runs a repository command instead of a model. <a href="https://github.com/Giamme/forge/issues/142">#142</a></dd>
-  <dt>A budget per tier</dt><dd>An escalated model gets attempts of its own. <a href="https://github.com/Giamme/forge/issues/141">#141</a></dd>
-  <dt>Commands from forge-ui</dt><dd>Run forge's commands from the page, and remove worktrees and memories in bulk. <a href="https://github.com/Giamme/forge/issues/147">#147</a></dd>
   <dt>Steering a live dwarf</dt><dd>An investigation into prompting a running dwarf from forge-ui, harness by harness. <a href="https://github.com/Giamme/forge/issues/134">#134</a></dd>
 </dl>
 
@@ -28,6 +16,7 @@ source: CHANGELOG.md
 <table>
   <thead><tr><th>Version</th><th>Highlights</th></tr></thead>
   <tbody>
+    <tr><td><code>0.19</code></td><td>Group review; brief answers for a wave or the whole plan, applied as a diff you approve; a retry budget per model; scripted tasks; chained plans; <code>forge handoff</code>; early stops when a fix belongs to another task, and for prompts edited mid-attempt; forge-ui runs its own commands.</td></tr>
     <tr><td><code>0.18</code></td><td>Brief mode, task summaries, retro notes, the task inspector; <code>forge du</code>, <code>forge runs compact</code> and the Disk screen.</td></tr>
     <tr><td><code>0.17</code></td><td>Outcomes recorded after every run; finding facts, paired reviews, task risk and tier analysis, all measured in shadow.</td></tr>
     <tr><td><code>0.16</code></td><td>Worktrees and Projects screens; <code>adopt</code>; reviewers say whether their tests ran.</td></tr>

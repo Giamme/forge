@@ -6,6 +6,7 @@
   "license": "MIT",
   "author": "Giamme",
   "repository": { "type": "git", "url": "git+https://github.com/Giamme/forge.git" },
+  "homepage": "https://giamme.github.io/forge/",
   "bin": { "forge": "forge" },
   "os": ["darwin", "linux"],
   "files": [

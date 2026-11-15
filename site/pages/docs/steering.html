@@ -43,4 +43,12 @@ forge control accept "$PLAN" tooling --reason "the P2 is a test-only nit" --appr
 
 <h2>Answering questions while it runs</h2>
 <p>With brief mode on, answer each task's questions while earlier waves work; see <a href="brief.html">Questions before a task</a>.</p>
-<p><span class="coming">Planned</span> Resume a run from another AI session or CLI from a handoff, with an explicit, logged take-over (<a href="https://github.com/Giamme/forge/issues/146">#146</a>), and an investigation into steering a running dwarf live from forge-ui (<a href="https://github.com/Giamme/forge/issues/134">#134</a>).</p>
+<p>A task that asked you something mid-run waits as <code>NEEDS_INPUT</code>. Answer it with <code>forge control retry "$PLAN" TASK --answer "…"</code>, or from forge-ui's task panel; when no run is live, forge prepares the retry for the next <code>run</code>.</p>
+
+<h2>Carrying on from another session</h2>
+<p>A run outlives the agent session that started it. <code>forge handoff</code> tells the next session, in any CLI, what the run is doing and what it needs: its tasks, what waits on a person, the latest changes, and the next commands.</p>
+<pre>forge handoff                                  <span class="c"># the newest open run here</span>
+forge handoff note "$PLAN" "release after integrate"
+forge handoff resume "$PLAN" --harness codex   <span class="c"># follow or restart it</span></pre>
+<p>Resume never starts a second scheduler: when the run is live it follows it. When the run stopped, it saves the work of any task left running, resets it without counting the attempt twice, and restarts the run in the background with the choices you made at launch. A session already driving the run holds it for 12 hours; taking over takes <code>--take-over</code>, and that's logged.</p>
+<p><span class="coming">Planned</span> An investigation into steering a running dwarf live from forge-ui (<a href="https://github.com/Giamme/forge/issues/134">#134</a>).</p>

@@ -65,5 +65,11 @@ bash scripts/forge-parallel.sh run "$PLAN" --max-parallel 4 --retry-failed 2
 bash scripts/forge-parallel.sh integrate "$PLAN" --approved</pre>
 <p><code>forge-parallel.sh auto</code> goes from a goal file to the approval table in one blocking command, so even a small model can orchestrate. Until step 4, all work lives on branches forge made for itself.</p>
 
+<h2>Tasks that are a command</h2>
+<p>A codemod or a generated file doesn't need a model to type it. Put <code>script</code> in a row's dwarf column and write the command as an executable <code>tasks/&lt;id&gt;/run</code>: forge runs it in the task's worktree, from the task's starting point on every attempt, under the plan's timeout. A command that fails isn't reviewed; one that succeeds is reviewed as a script's output, like any other task.</p>
+
+<h2>A plan that starts where another ended</h2>
+<p>A second milestone can build on the first before either reaches your branch. <code>plan &lt;dir&gt; --after &lt;earlier plan&gt;</code> starts from the earlier plan's integration branch, once all its tasks merged. If the earlier plan moves on, <code>run</code> stops and says so, and <code>integrate</code> names the whole chain it brings in.</p>
+
 <h2>Interrupted runs</h2>
 <p>Ctrl-C stops the running tasks, keeps their partial work, and prints how to retry each. Run the same <code>run</code> again and it picks up: merged tasks are skipped, saved passes merge, and tasks paused by a provider problem start again on their own. To pause on purpose, drain the run instead; see <a href="steering.html">Steering a live run</a>.</p>

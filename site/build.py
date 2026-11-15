@@ -7,6 +7,7 @@ ready for GitHub Pages.
 
     python3 site/build.py            # build into site/_site
     python3 site/build.py --serve    # build, then serve it on http://localhost:8000
+    python3 site/build.py --out DIR  # build somewhere else
 """
 
 from __future__ import annotations
@@ -227,7 +228,8 @@ def build() -> int:
     problems = check_links()
     for problem in problems:
         print(f"broken link: {problem}", file=sys.stderr)
-    print(f"built {built} pages into {OUT.relative_to(REPO)}")
+    where = OUT.relative_to(REPO) if OUT.is_relative_to(REPO) else OUT
+    print(f"built {built} pages into {where}")
     return 1 if problems else 0
 
 
@@ -249,7 +251,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--serve", action="store_true", help="serve the built site on localhost")
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--out", type=Path, help="build here instead of site/_site (the tests use a temp dir)")
     args = parser.parse_args()
+    if args.out:
+        global OUT
+        OUT = args.out.resolve()
     status = build()
     if args.serve:
         import functools

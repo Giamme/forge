@@ -38,8 +38,13 @@ forge ui stop</pre>
 <p>A running task names the model at work, the command it's running and for how long, and flags a log that has gone quiet. A waiting task says what it waits on: another task, a free slot, a drain, or a paused provider with a countdown. The task inspector opens on its goal, acceptance criteria and links, then an attempt trail saying why each attempt ran, then its summary and its brief questions with answer boxes.</p>
 
 <h2>Changing a run from the page</h2>
-<p>forge-ui reads everything and changes things only by calling forge's own commands, so the page and the terminal share one set of rules and one log. Every change asks you to confirm. Start it with <code>FORGE_UI_READONLY=1 forge ui open</code> to make it watch-only.</p>
+<p>forge-ui reads everything and changes things only by calling forge's own commands, so the page and the terminal share one set of rules and one log. Every change asks you to confirm. Start it with <code>FORGE_UI_READONLY=1 forge ui open</code> to make it watch-only; it then shows each command to copy instead of a button.</p>
+<ul>
+  <li><strong>Worktrees:</strong> select finished or failed worktrees, or all of them, and remove them in one go. A dry run says first what goes and what's skipped and why; one in use, dirty or still needed can't be selected.</li>
+  <li><strong>Memories:</strong> on a project's Memories tab, select learnings and forget them. The confirm lists what <code>memory.md</code> loses.</li>
+  <li><strong>Disk:</strong> compact one run or all of them, with the space it frees shown first.</li>
+  <li><strong>A waiting task:</strong> answer its question in the task panel.</li>
+</ul>
 
 <h2>Privacy and sharing</h2>
 <p>Everything stays on your machine. Any local program can read what the page shows; changes need a token the server makes at each start, and it checks where requests come from. A run can be exported as one HTML file that opens without forge-ui, with prompts, diffs and local paths left out unless you include them.</p>
-<p><span class="coming">Planned</span> Running forge's commands from the page, and removing worktrees and memories in bulk (<a href="https://github.com/Giamme/forge/issues/147">#147</a>).</p>

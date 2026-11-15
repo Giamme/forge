@@ -14,11 +14,13 @@ station: review,retry
     <tr><td><span class="lamp is-red"></span> <code>FAIL</code></td><td>A blocking finding. <a href="reviews.html#retry">Retry</a> with the findings, maybe on a stronger model.</td></tr>
     <tr><td><span class="lamp is-hollow"></span> <code>UNKNOWN</code></td><td>No verdict. A retry asks the reviewer again on the same work; no dwarf runs, no attempt is spent.</td></tr>
     <tr><td><span class="lamp is-hollow"></span> <code>INVALIDATED</code></td><td>The reviewer edited a tracked file in its copy, so its verdict counts for nothing. Retry reviews the unchanged work.</td></tr>
-    <tr><td><span class="lamp is-red"></span> <code>INFRA</code></td><td>A provider problem: rate limit, quota, sign-in, network. No attempt spent. If it says "needs you", log in or add credits; otherwise run the same command again, or use <code>--infra-retries</code>.</td></tr>
+    <tr><td><span class="lamp is-red"></span> <code>INFRA</code></td><td>A provider problem: rate limit, quota, sign-in, network, or a CLI that cancelled its own session (grok does at a command it can't approve headless). No attempt spent. If it says "needs you", log in or add credits; otherwise run the same command again, or use <code>--infra-retries</code>.</td></tr>
     <tr><td><span class="lamp is-red"></span> <code>TIMEOUT</code></td><td>A model ran past the limit. Raise <code>--timeout</code>, or retry; partial work is in the worktree.</td></tr>
     <tr><td><span class="lamp is-red"></span> <code>CONFLICT</code></td><td>Review passed but the merge conflicted, usually a file the task didn't declare. The scope-drift list names it.</td></tr>
     <tr><td><span class="lamp is-red"></span> <code>ERROR</code></td><td>A worktree or dispatch failed. Read <code>tasks/&lt;id&gt;/dwarf.out</code> or <code>qa.out</code>.</td></tr>
-    <tr><td><span class="lamp"></span> <code>NEEDS_DECISION</code></td><td>The retry policy stopped. Decide with <code>forge control retry --decide</code>; see <a href="steering.html">Steering</a>.</td></tr>
+    <tr><td><span class="lamp"></span> <code>NEEDS_DECISION</code></td><td>The retry policy stopped, or every blocking finding needs a file another task owns. <code>tasks/&lt;id&gt;/decision.md</code> lists the choices. Decide with <code>forge control retry --decide</code>; see <a href="steering.html">Steering</a>.</td></tr>
+    <tr><td><span class="lamp"></span> <code>NEEDS_INPUT</code></td><td>The task asked you a question. Answer it with <code>retry --answer</code>, or in forge-ui's task panel.</td></tr>
+    <tr><td><span class="lamp is-hollow"></span> <code>STALE</code></td><td>Its prompt changed while the attempt ran. Not reviewed, no attempt spent; the dwarf runs again with the new text.</td></tr>
   </tbody>
 </table>
 
@@ -53,6 +55,7 @@ station: review,retry
   <li><strong>An interrupted run</strong> isn't lost: run the same <code>run</code> again. Merged tasks are skipped.</li>
   <li><strong>A failed task</strong> is cheap to redo: <code>retry</code> reuses its worktree and findings.</li>
   <li><strong>"Already exists" on retry</strong> means a worktree folder was deleted by hand. Run the command again rather than deleting the branch.</li>
-  <li><strong>A wrong memory fact keeps coming back:</strong> delete its rows in <code>.forge/ledger.tsv</code>.</li>
+  <li><strong>A wrong memory fact keeps coming back:</strong> <code>forge memory forget REPO category:key</code>.</li>
+  <li><strong>The session that started a run is gone:</strong> <code>forge handoff</code> in any CLI, then <code>forge handoff resume</code>.</li>
   <li><strong>A locked plan</strong> tells you which command holds it. On a live run, use <code>forge control</code>.</li>
 </ul>

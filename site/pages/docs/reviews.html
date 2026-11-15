@@ -42,7 +42,13 @@ bash scripts/forge-parallel.sh retry "$PLAN" token-model --dwarf sol:xhigh
 
 <span class="c"># or retry rejected tasks automatically inside the run, up to twice</span>
 bash scripts/forge-parallel.sh run "$PLAN" --retry-failed 2</pre>
-<p>A retry that produces the same diff isn't reviewed again. A task that keeps failing can move to a stronger model from your pools (<code>--escalate-after</code>), and the table records who decided. A review with no verdict is asked again on the same work, without paying a dwarf.</p>
+<p>A retry that produces the same diff isn't reviewed again. A task that keeps failing moves to a stronger model from your pools: with <code>plan --retry-per-model N</code> each model gets N attempts before the next tier takes over, and the approval table prints the most dispatches that can cost if every model fails. The table records who decided. A review with no verdict is asked again on the same work, without paying a dwarf.</p>
+
+<h3>When the fix belongs to another task</h3>
+<p>Sometimes a blocking finding can only be fixed in a file the task doesn't own. The reviewer marks it <code>{outside=path}</code>, and a dwarf can say so itself with a <code>FORGE_BLOCKED: &lt;path&gt;: &lt;why&gt;</code> line for the reviewer to confirm. When every blocking finding is outside the task, forge stops it as <code>NEEDS_DECISION</code> instead of spending attempts on edits it may not make. It names the task that owns each file and the plan change that fixes it: add the file, depend on its owner, or merge the two rows.</p>
+
+<h3>When you edit a prompt mid-attempt</h3>
+<p>Edit a task's <code>prompt.md</code> or <code>approach.md</code> while its dwarf works, and that attempt isn't reviewed against text it never saw. It's marked <code>STALE</code>, costs no attempt, and the dwarf runs again with the new requirements and a diff of what changed.</p>
 
 <h3>A stuck provider isn't a failed task</h3>
 <p>A rate limit, used-up quota, sign-in problem or network error says nothing about the code. The task is marked <code>INFRA</code>, no attempt is spent, and forge pauses only the model or CLI that's stuck. It can move the task sideways to a healthy model in the same tier (<code>--infra-fallback</code>) or wait it out (<code>--infra-retries</code>).</p>
@@ -58,12 +64,12 @@ bash scripts/forge-parallel.sh run "$PLAN" --retry-failed 2</pre>
   <thead><tr><th>Ask for</th><th>What it does</th></tr></thead>
   <tbody>
     <tr><td><code>integrate --final-review opus</code></td><td>One reviewer reads the whole combined result before your branch moves, looking for problems between tasks.</td></tr>
+    <tr><td><code>plan --groups waves --group-review</code></td><td>Related tasks share one reviewer over their combined diff. Each finding goes back only to the task whose files it names, and the group merges in one step once it passes. A finding that names no task stops the group for your decision.</td></tr>
     <tr><td><code>run --sweep P3</code></td><td>After every task merges, fixes the findings the threshold let through, while the context is fresh.</td></tr>
     <tr><td><code>plan --shadow-qa sonnet</code></td><td>Sends a sample of reviews to a second reviewer, to measure how much a verdict depends on who gave it. It never changes a result.</td></tr>
     <tr><td><code>--native-review</code></td><td>Uses Codex's own reviewer against the recorded baseline.</td></tr>
   </tbody>
 </table>
-<p><span class="coming">On the dev branch</span> Group review: related tasks share one reviewer over their combined diff, and each finding goes back only to the task whose files it names (<a href="https://github.com/Giamme/forge/issues/140">#140</a>).</p>
 
 <h2>Findings left over</h2>
 <p>Tolerated findings aren't forgotten. After a run, forge offers once to file them as GitHub issues, each with its severity, task, reviewer and a link to the code. A finding is never filed twice.</p>

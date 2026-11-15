@@ -13,9 +13,10 @@ keeps working and only the 3D is missing.
 ```sh
 python3 site/build.py            # build into site/_site (git-ignored)
 python3 site/build.py --serve    # build, then serve on http://localhost:8000
+python3 site/build.py --out DIR  # build somewhere else (tests/test_site.py does)
 ```
 
-The build fails on a broken internal link.
+The build fails on a broken internal link, and so does `tests/test_site.py` in the suite.
 
 ## Layout
 

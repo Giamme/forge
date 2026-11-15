@@ -22,4 +22,9 @@ forge config set storage.warn-gb 20       <span class="c"># or off</span></pre>
 <h2>Delete a run</h2>
 <pre>forge runs rm "$PLAN" --dry-run
 forge runs rm "$PLAN" --worktrees --branches</pre>
-<p>The run's lessons stay in the dataset. Failed tasks' worktrees are the record of what went wrong, so forge never removes them on its own; forge-ui's Worktrees screen gives the safe command for each one, never with <code>--force</code>.</p>
+<p>The run's lessons stay in the dataset. Failed tasks' worktrees are the record of what went wrong, so forge never removes them on its own.</p>
+
+<h2>Remove worktrees</h2>
+<pre>forge worktrees rm ../.forge-worktrees/plan/* --dry-run
+forge worktrees rm ../.forge-worktrees/plan/* --branches</pre>
+<p>It removes finished and failed worktrees and leftover folders by forge-ui's rules: one in use, with uncommitted changes, locked or still needed by its run is skipped, with the reason, and nothing is forced. forge-ui's Worktrees screen does the same for the rows you select.</p>

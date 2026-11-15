@@ -278,8 +278,8 @@ FORGE_VERDICT: <span class="bad">FAIL</span></div>
     <div>
       <h2>Built with forge</h2>
       <p class="lede">forge develops itself. Its own history is full of runs: tasks attempted, reviewed, retried and merged by forge, then checked by a person.</p>
-      <ol class="releases" aria-label="Releases, oldest first"><li><b>0.2</b></li><li><b>0.3</b></li><li><b>0.4</b></li><li><b>0.5</b></li><li><b>0.6</b></li><li><b>0.7</b></li><li><b>0.7.1</b></li><li><b>0.8</b></li><li><b>0.9</b></li><li><b>0.10</b></li><li><b>0.11</b></li><li><b>0.11.1</b></li><li><b>0.12</b></li><li><b>0.12.1</b></li><li><b>0.13</b></li><li><b>0.13.1</b></li><li><b>0.14</b></li><li><b>0.14.1</b></li><li><b>0.15</b></li><li><b>0.16</b></li><li><b>0.17</b></li><li><b>0.18</b></li></ol>
-      <p class="releases-note">22 releases between 6 October and 13 November 2026.</p>
+      <ol class="releases" aria-label="Releases, oldest first"><li><b>0.2</b></li><li><b>0.3</b></li><li><b>0.4</b></li><li><b>0.5</b></li><li><b>0.6</b></li><li><b>0.7</b></li><li><b>0.7.1</b></li><li><b>0.8</b></li><li><b>0.9</b></li><li><b>0.10</b></li><li><b>0.11</b></li><li><b>0.11.1</b></li><li><b>0.12</b></li><li><b>0.12.1</b></li><li><b>0.13</b></li><li><b>0.13.1</b></li><li><b>0.14</b></li><li><b>0.14.1</b></li><li><b>0.15</b></li><li><b>0.16</b></li><li><b>0.17</b></li><li><b>0.18</b></li><li><b>0.19</b></li></ol>
+      <p class="releases-note">23 releases since 6 October 2026.</p>
     </div>
 <pre class="gitlog" data-nocopy><span class="c"># git log on forge's dev branch</span>
 <span class="h">d8a6eed</span> forge: merge sweep-1
@@ -297,25 +297,25 @@ FORGE_VERDICT: <span class="bad">FAIL</span></div>
   <div class="band-inner">
     <div class="band-head">
       <h2>What's coming</h2>
-      <p class="lede">forge moves fast and in the open. Here is what's on the dev branch now and what's planned next, straight from the issue tracker.</p>
+      <p class="lede">forge moves fast and in the open. Here is what 0.19 brought and what's planned next, straight from the issue tracker.</p>
     </div>
     <div class="next">
       <div class="next-col">
-        <h3><span class="lamp is-amber is-blink"></span>On the dev branch</h3>
+        <h3><span class="lamp is-green"></span>New in 0.19</h3>
         <ul>
           <li><b>Group review</b><span>Related tasks share one reviewer over their combined diff; each finding goes back only to the task whose files it names.</span><a href="https://github.com/Giamme/forge/issues/140">#140</a></li>
           <li><b>Brief proposals</b><span>Answer questions for a whole wave or plan; the answer becomes a plan change you approve by its exact diff.</span><a href="https://github.com/Giamme/forge/issues/136">#136</a></li>
-          <li><b>Reviewer-session sampling</b><span>Compare continued and fresh review rounds inside one run.</span><a href="https://github.com/Giamme/forge/issues/116">#116</a></li>
+          <li><b>Resume from any CLI</b><span>Start a run in Claude Code, carry it on in Codex from <code>forge handoff</code>, without a second scheduler.</span><a href="https://github.com/Giamme/forge/issues/146">#146</a></li>
+          <li><b>Scripted tasks and chained plans</b><span>A plan row that runs a repository command; a plan that starts where another ended.</span><a href="https://github.com/Giamme/forge/issues/142">#142</a></li>
+          <li><b>Commands from forge-ui</b><span>Remove worktrees, forget memories, compact runs and answer a waiting task from the page.</span><a href="https://github.com/Giamme/forge/issues/147">#147</a></li>
         </ul>
       </div>
       <div class="next-col">
         <h3><span class="lamp"></span>Planned</h3>
         <ul>
-          <li><b>Resume from any CLI</b><span>Start a run in Claude Code, finish it in Codex from a handoff, without a second scheduler.</span><a href="https://github.com/Giamme/forge/issues/146">#146</a></li>
           <li><b>Decomposition at every level</b><span>Goal to plans to tasks to subtasks, native to forge, each split a recorded decision within limits you set.</span><a href="https://github.com/Giamme/forge/issues/153">#153</a></li>
-          <li><b>Chained plans</b><span>Start a plan from another plan's integration branch.</span><a href="https://github.com/Giamme/forge/issues/143">#143</a></li>
-          <li><b>Scripted tasks</b><span>A plan row that runs a repository command instead of a model.</span><a href="https://github.com/Giamme/forge/issues/142">#142</a></li>
-          <li><b>Commands from forge-ui</b><span>Run forge's commands from the page, and clean up worktrees and memories in bulk.</span><a href="https://github.com/Giamme/forge/issues/147">#147</a></li>
+          <li><b>One way to split</b><span>The optional Fractal runtime goes once decomposition is native.</span><a href="https://github.com/Giamme/forge/issues/154">#154</a></li>
+          <li><b>Steering a live dwarf</b><span>Prompting a running dwarf from forge-ui, harness by harness.</span><a href="https://github.com/Giamme/forge/issues/134">#134</a></li>
         </ul>
       </div>
     </div>

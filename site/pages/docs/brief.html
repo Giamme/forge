@@ -22,7 +22,12 @@ station: approve,build
 <pre>forge brief show "$PLAN"                                       <span class="c"># open questions, flagged first</span>
 forge brief answer "$PLAN" login-route q1 "one message for both cases"</pre>
 <p>You can also answer in forge-ui's inspector. Answer while earlier waves run: an answer that lands after its task started is kept as late, and forge prints the command to queue a follow-up. When a merge changes files a waiting task depends on, that task's open questions are flagged as possibly stale. forge never answers for you and never picks the brief model.</p>
-<p><span class="coming">On the dev branch</span> Questions about a whole wave or plan, whose answers become plan changes you approve by their exact diff (<a href="https://github.com/Giamme/forge/issues/136">#136</a>).</p>
+<h3>Questions for a wave or the whole plan</h3>
+<p>Some questions cover more than one task. With <code>--brief-scope wave</code> or <code>plan</code>, those are answered once, and the answer becomes a proposal. A wave answer may only change that wave's tasks that haven't started; a plan answer can also add, remove or split tasks. Nothing changes until you approve the exact diff by its hash, and only the tasks it affects get their questions asked again.</p>
+<pre>forge brief proposals "$PLAN"                  <span class="c"># what each would change</span>
+forge brief apply "$PLAN" p1 --approve 3f9c2a  <span class="c"># that exact diff</span>
+forge brief reject "$PLAN" p1</pre>
+<p>A wave is a group of tasks with a title and a goal. The planner writes them; for groups forge derives from the waves, <code>forge group set</code> gives them yours.</p>
 
 <h2>Task summaries</h2>
 <p>A few plain sentences per task, plus one line for the task table, written by a cheap model from the task's facts only: its status, attempts, verdicts and findings. It never sees your code. A summary is rewritten only when those facts change.</p>
