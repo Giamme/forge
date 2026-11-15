@@ -206,8 +206,12 @@ def load_registry() -> list:
 def spec_pair(registry: list, spec: str) -> tuple | None:
     """(harness, model) for a spec, resolved the way forge-dispatch.sh's lookup does: an
     alias's first row is its default harness, alias:effort:harness picks that row, and an
-    unknown alias with a harness is a literal model id. None when it cannot be resolved."""
-    if not spec or spec in ('-', 'UNASSIGNED') or ',' in spec:
+    unknown alias with a harness is a literal model id. None when it cannot be resolved.
+
+    `script` is a task kind (it runs tasks/<id>/run), not a model. It is none even when a
+    registry alias is named script, so a pause on that alias's harness cannot hold the task
+    through its implementer."""
+    if not spec or spec in ('-', 'UNASSIGNED', 'script') or ',' in spec:
         return None
     parts = spec.split(':')
     alias, harness = parts[0], ':'.join(parts[2:])
@@ -966,13 +970,17 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
 
     def next_pairs(name: str) -> list:
         """The pairs the task's next dispatch uses: QA only when its next entry is a QA-only
-        resume (decided by forge-parallel.sh's own check), the implementer and QA otherwise."""
+        resume (decided by forge-parallel.sh's own check), the implementer and QA otherwise.
+
+        A scripted task has no implementer model, so only its reviewer is in the list: a pause
+        holds it only through that reviewer, and a lateral move can only move the reviewer."""
         if name not in pairs_cache:
             row = row_now(name)
             qa_only = (plan / 'tasks' / name / 'resume').exists() and subprocess.run(
                 ['/bin/bash', script, '_qa_only', str(plan), name],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
-            pairs_cache[name] = [spec_pair(registry, spec) for spec in ([row[5]] if qa_only else [row[4], row[5]])]
+            specs = [row[5]] if qa_only or row[4] == 'script' else [row[4], row[5]]
+            pairs_cache[name] = [spec_pair(registry, spec) for spec in specs]
         return pairs_cache[name]
 
     def scope_held(name: str) -> bool:

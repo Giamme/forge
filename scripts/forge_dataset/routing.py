@@ -100,13 +100,18 @@ def tasks(runs: Runs, *, repo=None, since=None) -> list:
                 continue
             if since and not (events and events[0]['ts'] >= since):
                 continue
+            # The first counted attempt's dwarf cell. `script` ran tasks/<id>/run, not a model,
+            # so the task is not a model's result (history and the tier tables read this list).
+            ran = first['events'][0]['d'].get('dwarf') if first else None
+            if ran == 'script':
+                continue
             started = _started(runs, run, tid, first) if first else None
             decision = decision_before(decisions.get(tid), started)
             resolved = runs.resolved(run, tid, 'dwarf', first['n']) if first else {}
             model = ':'.join(x for x in (resolved.get('model'), resolved.get('effort')) if x) or None
             out.append(dict(
                 run=run, task=tid, tier=row.get('declared_difficulty') or row.get('difficulty'),
-                ran=first['events'][0]['d'].get('dwarf') if first else None, model=model,
+                ran=ran, model=model,
                 model_id=resolved.get('model'), effort=resolved.get('effort'),
                 first_pass=first['outcome'] if first else None,
                 censored=(first['reason'] if first and first['outcome'] is None else (None if first else 'not_run')),

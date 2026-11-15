@@ -14,7 +14,9 @@ import time
 from forge_ui import findings
 
 
-NAME = re.compile(r'(task|dwarf|qa|solo|verification|parallel)-[0-9a-f]{32}')
+# A model dispatch's id is <role>-<32 hex>. A scripted task's command is script-<16 hex>
+# (forge-parallel.sh). It is an execution, not a model role.
+NAME = re.compile(r'(?:(?:task|dwarf|qa|solo|verification|parallel)-[0-9a-f]{32}|script-[0-9a-f]{16})')
 _KIND = re.compile(r'(final-review|integrate)-([0-9]+)-([0-9]+)')
 _SHADOW = re.compile(r'[0-9]+-[0-9]+')
 # A group dir under groups/. The same shape as a group id (forge_groups, the group route).

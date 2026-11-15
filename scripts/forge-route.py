@@ -354,7 +354,9 @@ def qa_fallback_pick(current: str, implementer: str, pools: dict, registry: dict
     own = canonical(current, registry)
     if not any(canonical(s, registry) == own for pool in order for s in pool):
         return None
-    wrote = implementer if implementer not in ('', '-', 'UNASSIGNED') else None
+    # `script` names the command that implements the task, not a model, so it cannot
+    # exclude a reviewer that shares a registry alias of that name.
+    wrote = implementer if implementer not in ('', '-', 'UNASSIGNED', 'script') else None
     for pool in order:
         keys = [canonical(s, registry) for s in pool]
         start = keys.index(own) if own in keys else -1
@@ -393,7 +395,9 @@ def running_tier(plan: Path, task: str, current: str = '') -> str:
     the task still runs its spec: an older record never beats a newer pick of the same model (#106).
     With neither, or when the newest is for another spec (the table was edited by hand), the
     difficulty. `current` is the spec the task runs, read from tasks.tsv when not given. '' when the
-    difficulty is no tier."""
+    difficulty is no tier, and when the task is scripted: `script` is not a model, so nothing is recorded."""
+    if current == 'script' or _is_script(plan, task):
+        return ''
     tier = _row_cell(plan, task, 2)
     if tier not in TIERS:
         return ''
@@ -425,9 +429,14 @@ def write_running_tier(plan: str, task: str, tier: str, spec: str, control) -> N
 
 def record_running_tier(plan: str, task: str, row: str, control) -> None:
     """tasks/<id>/running.tier for an escalations.tsv row: the tier the row moved the task to, decided
-    here with the pools of this moment. A fallback stays in its tier."""
+    here with the pools of this moment. A fallback stays in its tier. A scripted task has no model
+    tier to record, and an existing file is left as it is."""
+    if _is_script(Path(plan), task):
+        return
     cells = row.rstrip('\n').split('\t')
     frm, to, source = cells[2], cells[3], cells[4] if len(cells) > 4 else 'policy'
+    if to == 'script':
+        return
     tier = running_tier(Path(plan), task, frm)
     if tier and source != 'fallback':
         tier = escalation_target(source, frm, to, tier, load_pools(Path(plan) / 'fractal-routing.json'),
@@ -438,6 +447,8 @@ def record_running_tier(plan: str, task: str, row: str, control) -> None:
 
 def fallback(args) -> int:
     plan = Path(os.path.realpath(args.plan))
+    if _is_script(plan, args.task):
+        return 1
     current = _dwarf_of(plan, args.task)
     if not current or current in ('-', 'UNASSIGNED'):
         return 1
@@ -499,7 +510,11 @@ def explore(args) -> tuple:
 def assign(args) -> str:
     """`plan`'s resolution of a row: the exploration draw, then the record of the tier its pick runs in,
     newer than any record it replaces. A record that cannot be written is removed rather than left to
-    speak for the new pick. Prints the pick; any failure prints SPEC, as explore does."""
+    speak for the new pick. Prints the pick; any failure prints SPEC, as explore does.
+
+    A scripted row is not a model to explore or to record a tier for: the cell comes back unchanged."""
+    if args.default == 'script' or _is_script(Path(args.plan), args.task):
+        return 'script'
     chosen, tier = args.default, args.tier
     with contextlib.suppress(Exception):
         chosen, tier = explore(args)
@@ -532,6 +547,14 @@ def _dwarf_of(plan: Path, task: str) -> str:
         if not line.startswith('#') and cells and cells[0] == task and len(cells) > 4:
             return cells[4]
     return ''
+
+
+def _is_script(plan: Path, task: str) -> bool:
+    """True when the task's dwarf cell is the literal `script`: it runs tasks/<id>/run, not a model."""
+    try:
+        return _dwarf_of(plan, task) == 'script'
+    except OSError:
+        return False
 
 
 def _spec_parts(spec: str):
@@ -1027,6 +1050,9 @@ def _apply(plan: Path, tdir: Path, clear=(), writes=(), policy=True, pin=None):
 def _decide(plan: Path, tdir: Path, args, after: int):
     """What the policy wants done to the markers: (clear, writes, spec to print, exit code)."""
     current = _dwarf_of(plan, args.task)
+    if current == 'script':
+        # No implementer to escalate, and no pin to report: drop any markers a model once left.
+        return MARKERS, (), '', 0
     if not current or current in ('-', 'UNASSIGNED'):
         return (), (), '', 0
     registry = registry_models()
@@ -1057,6 +1083,12 @@ def escalation(args) -> int:
     plan = Path(os.path.realpath(args.plan))
     tdir = _task_dir(plan, args.task)
     if tdir is None:
+        return 0
+    # A scripted task has no model to change. Idle, even with a pending pin or a failed streak:
+    # print nothing, leave no escalation marker, and remove ones already there. The pin file
+    # itself stays; nothing here applies it.
+    if _is_script(plan, args.task):
+        _clear(tdir, *MARKERS)
         return 0
     after = per_model_setting(plan) or _setting(plan)     # N failures on each rung (#141), else the plan's patience
     fractal = _fractal(plan)
