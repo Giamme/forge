@@ -76,6 +76,10 @@
 #                           still what the review judged, and starts fresh whenever it cannot;
 #                           each attempt is logged in tasks/<id>/implementer_sessions.tsv.
 #                           `--no-implementer-session` turns it off (the default)
+#   --retry-per-model N     a task may fail N times (1-99) on each model the retry policy
+#                           gives it, then it moves a rung up. Replaces --escalate-after for
+#                           this plan. Kept in retry_per_model. `--no-retry-per-model` removes
+#                           it; a re-plan with neither keeps the file
 #   --retro | --no-retro   agents record what got in their way (retro, #132); plan file `retro_mode`
 #                           (on or off; not `retro`, the notes directory). Without a flag the plan
 #                           keeps its earlier choice, else (first plan only) takes the user
@@ -743,6 +747,7 @@ do_plan() {
   local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="" FAIL_FIRST="" REVIEWER_SESSION="" RS_RATE="" IMPLEMENTER_SESSION="" PRE_REVIEW="" PRE_REVIEW_PARALLEL=""
   local FAST_GIVEN=0 FAST_PARSED=""
   local RETRO_FLAG="" BRIEF_FLAG="" BRIEF_SCOPE_FLAG="" BRIEF_MODEL_FLAG="" SUMM_FLAG="" SUMM_MODEL_FLAG=""
+  local RETRY_PER_MODEL=""
   local COLLAPSE=0 COLLAPSED_NOW=0 FEAT_ERR="" GRP_SRC="" GRP_REVIEW=0 GRP_MAX="" GRP_DIFF=""
   # The retro, brief and summaries choices, settled before anything is written: a refusal
   # (a bad value, no model, a spec that does not resolve) leaves the plan dir as it was.
@@ -806,6 +811,11 @@ do_plan() {
       --reviewer-session-rate)
         printf '%s' "${2:-}" | grep -Eq '^(0?\.[0-9]+|0|1|1\.0+)$' || die "--reviewer-session-rate needs a share between 0 and 1"
         REVIEWER_SESSION=on; RS_RATE="$2"; shift 2 ;;
+      --retry-per-model)
+        printf '%s' "${2:-}" | grep -Eq '^[1-9][0-9]?$' \
+          || die "--retry-per-model needs an integer from 1 to 99" 2
+        RETRY_PER_MODEL="$((10#$2))"; shift 2 ;;
+      --no-retry-per-model) RETRY_PER_MODEL=off; shift ;;
       --implementer-session)    IMPLEMENTER_SESSION=on; shift ;;
       --no-implementer-session) IMPLEMENTER_SESSION=off; shift ;;
       --fast)
@@ -889,6 +899,12 @@ do_plan() {
   fi
   # Implementer-session continuation (opt-in, #90): the same `on` file, read the same way.
   case "$IMPLEMENTER_SESSION" in on) printf '%s\n' on > "$PLAN/implementer_session" ;; off) rm -f "$PLAN/implementer_session" ;; esac
+  # N failures on each rung (#141). Omitted on a re-plan, so an earlier choice stays.
+  case "$RETRY_PER_MODEL" in
+    '') ;;
+    off) rm -f "$PLAN/retry_per_model" ;;
+    *) printf '%s\n' "$RETRY_PER_MODEL" > "$PLAN/retry_per_model" || die "could not write $PLAN/retry_per_model" ;;
+  esac
   # Which roles ask for the fast tier. Omitted on a re-plan, so an earlier choice stays.
   forge_fast_store "$PLAN"
   # Retro, brief and summaries (#132, #133, #135), as forge_features_resolve settled them.
@@ -1252,6 +1268,39 @@ compute_waves() {
   mv -f "$D" "$PLAN/deferrals.txt" && mv -f "$W" "$PLAN/waves.tsv"
 }
 
+# Under the dispatch estimate when the plan set --retry-per-model (#141). Nothing without the file.
+# The worst case and the tasks the attempt cap cuts short come from forge-route.py worst-case.
+render_retry_per_model() { # render_retry_per_model <plan>
+  [ -f "$1/retry_per_model" ] || return 0
+  python3 - "$SKILL_DIR/scripts/forge-route.py" "$1" <<'PY'
+import json, re, subprocess, sys
+route, plan = sys.argv[1], sys.argv[2]
+try:
+    n = open(plan + '/retry_per_model', encoding='utf-8').read().strip()
+except OSError:
+    sys.exit(0)
+print('retry per model: %s (a task may fail %s times on each model the retry policy gives it, then it moves a rung up)' % (n, n))
+try:
+    raw = subprocess.check_output([sys.executable, route, 'worst-case', '--plan', plan], text=True)
+    data = json.loads(raw)
+except (OSError, subprocess.CalledProcessError, ValueError):
+    sys.exit(0)
+print('worst case with retry-per-model %s: %s dispatches' % (n, data.get('total', 0)))
+capped = data.get('capped') or []
+if not capped:
+    sys.exit(0)
+cap = 8
+try:
+    text = open(plan + '/max_attempts', encoding='utf-8').read().strip()
+except OSError:
+    text = ''
+if re.fullmatch(r'[0-9]{1,9}', text):
+    cap = int(text)
+print('max-attempts %s stops these tasks before the top of their ladder: %s (plan --max-attempts N raises it)'
+      % (cap, ', '.join(str(task) for task in capped)))
+PY
+}
+
 render_table() {
   local PLAN="$1" T="$1/tasks.tsv" W="$1/waves.tsv"
   local run_id; run_id="$(cat "$PLAN/run_id")"
@@ -1273,6 +1322,7 @@ render_table() {
   fi
   echo "tasks: $n   waves: $waves   estimated dispatches: $est ($n dwarf + $reviews qa$extra)"
   [ -z "$grp_counts" ] || echo "reviews: $reviews ($grp_n groups replace $grp_m task reviews)"
+  render_retry_per_model "$PLAN"
   if [ -s "$PLAN/shadow_qa" ]; then
     local rate; rate="$(cat "$PLAN/shadow_rate" 2>/dev/null || echo 0.1)"
     echo "shadow review: $(cat "$PLAN/shadow_qa") on a sampled $rate of reviewed attempts" \
@@ -3060,6 +3110,10 @@ do_run() {
   export FORGE_OUTPUT="$OUTPUT"
   case "$MAXP" in ''|*[!0-9]*) die "--max-parallel must be positive" ;; esac
   [ "$MAXP" -gt 0 ] || die "--max-parallel must be positive"
+  # Said once, before any dispatch. The run itself still follows retry_per_model.
+  if [ -f "$PLAN/retry_per_model" ] && [ -f "$PLAN/escalate_after" ]; then
+    note "retry-per-model $(tr -d '[:space:]' < "$PLAN/retry_per_model") replaces --escalate-after for this plan"
+  fi
   local T="$PLAN/tasks.tsv" W="$PLAN/waves.tsv"
   [ -s "$W" ] || die "no waves.tsv — run the plan subcommand first"
   grep -q 'UNASSIGNED' "$T" && die "some tasks are UNASSIGNED — assign a dwarf before running"
