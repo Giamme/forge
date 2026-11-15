@@ -148,6 +148,32 @@ class HandoffDriverTests(unittest.TestCase):
             self.assertEqual(missing.read_bytes(), before)
         self.assertFalse((plan / 'control.log').exists())
 
+    def test_a_note_with_an_undecodable_byte_is_refused(self):
+        # argv delivers a non-UTF-8 byte surrogate-escaped (`note . $'bad\udcff'`).
+        # That must be a usage refusal, not a UnicodeEncodeError traceback.
+        plan = self.make()
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), 'note', str(plan), 'bad\udcff'],
+            capture_output=True, encoding='utf-8', errors='replace', env=self.env,
+            cwd=str(self.root), timeout=60)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
+        self.assertEqual(result.stdout, '')
+        self.assertFalse((plan / 'handoff.notes.jsonl').exists())
+        self.assertFalse((plan / 'control.log').exists())
+        # The actor is stored on the same line and takes the same refusal.
+        actor = subprocess.run(
+            [sys.executable, str(SCRIPT), 'note', str(plan), 'kept', '--actor', 'bad\udcff'],
+            capture_output=True, encoding='utf-8', errors='replace', env=self.env,
+            cwd=str(self.root), timeout=60)
+        self.assertEqual(actor.returncode, 2, actor.stderr)
+        self.assertNotIn('Traceback', actor.stderr)
+        self.assertFalse((plan / 'handoff.notes.jsonl').exists())
+        # The same text without that byte is a note, so the refusal is the byte.
+        ok = self.run_cli('note', plan, 'bad')
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        self.assertEqual(json.loads((plan / 'handoff.notes.jsonl').read_text())['text'], 'bad')
+
     # ------------------------------------------------------------------------------------ claim
 
     def test_the_first_claim_writes_the_driver(self):
@@ -226,6 +252,33 @@ class HandoffDriverTests(unittest.TestCase):
         rows = [json.loads(line) for line in text.splitlines()]
         self.assertEqual(len(rows), 2)
         self.assert_takeover(rows[1], 'codex/s2', 'claude-code/s1')
+
+    def test_a_take_over_refuses_an_unsafe_control_log_before_writing(self):
+        # control.log as a dangling symlink cannot be appended to. The driver
+        # file must stay byte-identical, or a retry sees the new driver and logs nothing.
+        plan = self.make()
+        now = time.time()
+        self.put_driver(plan, 'claude-code', 's1', now - 10, now)
+        driver_before = (plan / 'handoff.driver.json').read_bytes()
+        log = plan / 'control.log'
+        log.symlink_to('missing-log')
+        result = self.claim(plan, '--harness', 'codex', '--session', 's2', '--take-over', '--json')
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stdout, '')
+        self.assertNotIn('Traceback', result.stderr)
+        self.assertIn('control.log', result.stderr)
+        self.assertEqual((plan / 'handoff.driver.json').read_bytes(), driver_before)
+        self.assertEqual(os.readlink(log), 'missing-log')
+        # A stale driver is the other path that audits. It must refuse the same way.
+        stale = self.make('stale-log')
+        seen = time.time() - 13 * 3600
+        self.put_driver(stale, 'claude-code', 's1', seen - 50, seen)
+        stale_before = (stale / 'handoff.driver.json').read_bytes()
+        (stale / 'control.log').symlink_to('missing-log')
+        stale_result = self.claim(stale, '--harness', 'codex', '--session', 's2', '--json')
+        self.assertEqual(stale_result.returncode, 2, stale_result.stderr)
+        self.assertEqual((stale / 'handoff.driver.json').read_bytes(), stale_before)
+        self.assertEqual(os.readlink(stale / 'control.log'), 'missing-log')
 
     def test_a_stale_driver_is_replaced_without_take_over(self):
         held = self.make('held')
@@ -331,6 +384,14 @@ class HandoffDriverTests(unittest.TestCase):
             result = self.claim(plan, *args)
             self.assertEqual(result.returncode, 2, args + (result.stderr,))
             self.assertEqual((plan / 'handoff.driver.json').read_bytes(), good)
+        # A non-UTF-8 session byte is usage too, not an encode traceback during the write.
+        bad_session = subprocess.run(
+            [sys.executable, str(SCRIPT), 'claim', str(plan), '--harness', 'codex', '--session', 'bad\udcff'],
+            capture_output=True, encoding='utf-8', errors='replace', env=self.env,
+            cwd=str(self.root), timeout=60)
+        self.assertEqual(bad_session.returncode, 2, bad_session.stderr)
+        self.assertNotIn('Traceback', bad_session.stderr)
+        self.assertEqual((plan / 'handoff.driver.json').read_bytes(), good)
         self.assertFalse((plan / 'control.log').exists())
         # The same shape, one change back to a legal harness, is accepted on a free run.
         free = self.make('free')

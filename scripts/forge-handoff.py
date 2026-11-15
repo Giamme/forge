@@ -14,14 +14,16 @@
   note RUN_DIR TEXT [--actor A] [--json]
       Append one session note to handoff.notes.jsonl: what is not on disk, such as an
       acceptance or a hand fix in progress. Whitespace in TEXT collapses to single spaces.
-      Empty text, and text over 2000 characters, is refused. The actor defaults to cli.
+      Empty text, text over 2000 characters, and text that is not valid UTF-8, is refused.
+      The actor defaults to cli.
 
   claim RUN_DIR --harness H [--session S] [--take-over] [--json]
       Record this session as the driver in handoff.driver.json (harness, session, since,
       last_seen). The same harness and session keep since and refresh last_seen. A different
       driver whose last_seen is under 12 hours ago is refused unless --take-over is given;
       a different driver older than that is replaced. Replacing a different driver appends
-      one control.log take-over line through forge-control's audit.
+      one control.log take-over line through forge-control's audit. A control.log that is
+      not a regular file refuses that replacement before the driver file changes.
 
 Exit codes: 0 ok, 2 usage or a path that is not a run dir, 3 no run to report, or another
 driver still holds the run (claim without --take-over).
@@ -591,13 +593,26 @@ def collapse_text(text):
     return re.sub(r'\s+', ' ', text).strip()
 
 
+def require_utf8(value, what):
+    """Usage when value cannot be stored as UTF-8.
+
+    A non-UTF-8 argv byte arrives surrogate-escaped. The writers encode with UTF-8,
+    which would otherwise raise UnicodeEncodeError and exit 1.
+    """
+    try:
+        value.encode('utf-8')
+    except UnicodeEncodeError:
+        raise Usage(f'the {what} is not valid text') from None
+    return value
+
+
 def note_text(text):
     collapsed = collapse_text(text)
     if not collapsed:
         raise Usage('the note is empty')
     if len(collapsed) > NOTE_MAX:
         raise Usage(f'the note is longer than {NOTE_MAX} characters')
-    return collapsed
+    return require_utf8(collapsed, 'note')
 
 
 def check_harness(harness):
@@ -612,7 +627,7 @@ def check_session(session):
     if (not isinstance(session, str) or not session or any(ch.isspace() for ch in session)
             or len(session) > SESSION_MAX):
         raise Usage('session must be an id with no whitespace, at most 200 characters')
-    return session
+    return require_utf8(session, 'session')
 
 
 def _epoch(value):
@@ -689,6 +704,7 @@ def cmd_note(args):
     actor = args.actor.strip()
     if not actor:
         raise Usage('the actor is empty')
+    actor = require_utf8(actor, 'actor')
     plan = require_run(args.run_dir)
     line = json.dumps({'at': time.time(), 'actor': actor, 'text': text}, ensure_ascii=False) + '\n'
 
@@ -719,6 +735,10 @@ def cmd_claim(args):
         else:
             record = {'harness': args.harness, 'session': session, 'since': now, 'last_seen': now}
             took_over = True
+        if took_over:
+            # Same order as forge-control change: an unsafe log refuses the take-over
+            # before the driver file changes, so a failed audit cannot leave the new driver.
+            ctrl.probe(plan, 'control.log')
         ctrl.write_atomic(plan, 'handoff.driver.json', json.dumps(record, ensure_ascii=False) + '\n')
         if took_over:
             ctrl.audit(plan, 'cli', 'take-over', None, 'driver', driver_ref(record), driver_ref(previous))
