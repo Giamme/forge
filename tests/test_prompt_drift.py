@@ -47,7 +47,15 @@ class PromptDriftCase(unittest.TestCase):
         return p
 
     def edit_during_dwarf(self, p, name, text):
-        return {'a.dwarf.1': {'files': {str(p / 'tasks' / 'a' / name): text}}}
+        # The scheduler re-dispatches a STALE task (test_prompt_drift_schedule.py); that second attempt writes
+        # something new, or forge fails it as a byte-identical retry.
+        return {'a.dwarf.1': {'files': {str(p / 'tasks' / 'a' / name): text}},
+                'a.dwarf.2': {'content': 'written for the new text'}}
+
+    def stale_diff(self, p):
+        """stale.diff as the stale attempt wrote it: the re-dispatched attempt removes the file after its own check,
+        and the diff stays in the findings it was given."""
+        return self.read(p, 'retry_findings.md')
 
     def read(self, p, name):
         return (p / 'tasks' / 'a' / name).read_text()
@@ -56,23 +64,22 @@ class PromptDriftCase(unittest.TestCase):
         return [json.loads(line) for line in (p / 'control.log').read_text().splitlines()]
 
     def assert_stale_and_free(self, p, r):
-        self.assertEqual(self.read(p, 'status').strip(), 'STALE', r.stdout)
-        self.assertNotIn('qa', self.calls(), r.stdout)                  # no review of any kind was dispatched
+        # The stale attempt came first and was not reviewed: both dispatches are implementers, QA comes after.
+        self.assertEqual(self.calls(), ['dwarf', 'dwarf', 'qa'], r.stdout)
         rows = [line.split('\t') for line in self.read(p, 'attempts.tsv').splitlines()]
-        self.assertEqual([row[1:3] for row in rows], [['1', 'STALE']])
+        self.assertEqual([row[1:3] for row in rows], [['1', 'STALE'], ['1', 'PASS']])   # the attempt number is reused
         used = subprocess.run([sys.executable, str(ROUTE), 'attempt-cap', '--plan', str(p), '--task', 'a'],
                               capture_output=True, text=True, timeout=60).stdout.split()
-        self.assertEqual(used[0], '0')
+        self.assertEqual(used[0], '1')                                  # the stale attempt spent nothing
         for name in ('escalation.next', 'escalation.stop', 'decision.md'):
             self.assertFalse((p / 'tasks' / 'a' / name).exists(), name)
-        self.assertFalse((p / 'tasks' / 'a' / 'merged').exists())
 
     def test_a_prompt_edited_mid_attempt_is_stale_and_unreviewed(self):
         p = self.plan_of()
         self.scenario(self.edit_during_dwarf(p, 'prompt.md', 'Implement change. TASK_a\nNEW_LINE\n'))
         r = self.run_script('forge-parallel.sh', 'run', p)
         self.assert_stale_and_free(p, r)
-        diff = self.read(p, 'stale.diff')
+        diff = self.stale_diff(p)
         self.assertIn('--- prompt.md (attempt 1)', diff)
         self.assertIn('+++ prompt.md (now)', diff)
         self.assertIn('-OLD_LINE', diff)
@@ -93,7 +100,7 @@ class PromptDriftCase(unittest.TestCase):
         self.assert_stale_and_free(p, r)
         self.assertIn('approach.md changed during attempt 1', self.read(p, 'task.out'))
         self.assertNotIn('prompt.md changed', self.read(p, 'task.out'))
-        self.assertIn('+use the new way', self.read(p, 'stale.diff'))
+        self.assertIn('+use the new way', self.stale_diff(p))
         self.assertEqual(self.control_log(p)[-1]['files'], ['approach.md'])
 
     def test_an_approach_created_mid_attempt_counts(self):
@@ -101,7 +108,9 @@ class PromptDriftCase(unittest.TestCase):
         self.scenario(self.edit_during_dwarf(p, 'approach.md', 'a new approach\n'))
         r = self.run_script('forge-parallel.sh', 'run', p)
         self.assert_stale_and_free(p, r)
-        self.assertEqual((p / 'tasks/a/approach.dispatched').read_text(), '')
+        # The stale attempt had an empty approach; the re-dispatch was given, and recorded, the new one.
+        self.assertIn('+a new approach', self.stale_diff(p))
+        self.assertEqual((p / 'tasks/a/approach.dispatched').read_text(), 'a new approach\n')
 
     def test_an_unedited_attempt_is_reviewed_as_before(self):
         p = self.plan_of()
@@ -135,11 +144,13 @@ class PromptDriftCase(unittest.TestCase):
     def test_a_qa_only_resume_checks_the_copies_of_the_attempt_it_reviews(self):
         p = self.resume_state()
         (p / 'tasks/a/prompt.md').write_text('Implement change. TASK_a\nEDITED\n')
+        self.scenario({'a.dwarf.2': {'content': 'written for the new text'}})   # the re-dispatch must change something
         r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 1)
-        self.assertEqual(self.read(p, 'status').strip(), 'STALE', r.stdout)
-        self.assertEqual(self.calls().count('qa'), 1)                 # the first review only
-        self.assertIn('+EDITED', self.read(p, 'stale.diff'))
-        self.assertFalse((p / 'tasks/a/resume').exists())             # the implementer has to run again
+        # The resumed review found the edit and did not review: the implementer ran again, and its attempt was reviewed.
+        self.assertEqual(self.calls(), ['dwarf', 'qa', 'dwarf', 'qa'], r.stdout)
+        self.assertEqual(self.read(p, 'status').strip(), 'PASS', r.stdout)
+        self.assertIn('+EDITED', self.read(p, 'retry_findings.md'))
+        self.assertFalse((p / 'tasks/a/resume').exists())
 
 
 class StaleCountingTests(unittest.TestCase):
