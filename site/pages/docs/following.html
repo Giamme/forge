@@ -1,0 +1,36 @@
+<!--
+title: From the terminal
+description: Follow, list, compare and report on forge runs without opening forge-ui: forge watch, forge runs, rerun and compare, forge issues and forge pr.
+source: docs/commands.md
+station: build,merge
+side: the terminal
+-->
+<h1>From the terminal</h1>
+<p class="lede">Everything forge-ui shows, you can also get in a terminal: follow runs live, get notified, list them, rerun a plan on another model and compare.</p>
+
+<h2>Follow runs live</h2>
+<pre>forge watch                      <span class="c"># this repo's runs, new ones too</span>
+forge watch "$PLAN"              <span class="c"># one run, until it ends</span>
+forge watch --all --until-done   <span class="c"># every repo; stop once nothing is running</span></pre>
+<p>Every task status change prints a line. A run finishing or failing, a task newly failing and a final review's verdict also raise a desktop notification and can run a command: <code>--exec CMD</code>, or an executable <code>.forge/on-finish</code> in the repo. forge runs that hook only if it's yours, untracked by git and not writable by others, so a cloned repo can't run code on you.</p>
+
+<h2>List runs</h2>
+<pre>forge runs                 <span class="c"># this repo's recent runs, newest first</span>
+forge runs --all --json    <span class="c"># every repo, as JSON</span></pre>
+<p>Each line has the run id, its kind, age, task states, verification and final review, and the goal: the same summaries forge-ui shows.</p>
+
+<h2>Would another model have done better?</h2>
+<pre>forge runs rerun "$PLAN" --dwarf opus:high     <span class="c"># set up the same plan on another builder; spends nothing</span>
+forge runs rerun "$PLAN" --dwarf opus:high --run --yes
+forge runs compare "$PLAN" "$PLAN-opus-high"   <span class="c"># side by side, per task</span></pre>
+<p>A rerun starts from the same commit as the original, with the same tasks and prompts, and never merges. It prints what the original spent and a forecast before you start it. One pair of runs is one sample: read it as what happened, not as which model is better.</p>
+
+<h2>File leftover findings as issues</h2>
+<pre>./forge issues "$PLAN"                         <span class="c"># drafts: titles, severity, already filed</span>
+./forge issues "$PLAN" --include-plausible --apply --label bug</pre>
+<p>Each issue gets the finding, its severity, the task, the reviewer and a link to the code at the merged commit. A hidden fingerprint keeps a finding from being filed twice. Where the gh-proman skill is set up, issues land on the team's project board.</p>
+
+<h2>Write the pull request</h2>
+<pre>forge pr                            <span class="c"># the newest finished run, on stdout</span>
+forge pr --create --base main       <span class="c"># a draft PR for its integration branch</span></pre>
+<p>See <a href="verification.html">Merge and verification</a> for what goes in it.</p>

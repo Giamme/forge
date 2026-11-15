@@ -1,0 +1,45 @@
+<!--
+title: forge-ui
+description: forge-ui is an optional local page that draws every run in 3D, with diffs, findings on their lines, each agent's conversation and how your models compare.
+source: docs/forge-ui.md
+station: build,review,merge
+side: forge-ui
+-->
+<h1>forge-ui</h1>
+<p class="lede">forge-ui is an optional page on your own machine that shows runs as they happen. It answers two questions at a glance: where is this run, and why did that task pass or fail?</p>
+
+<h2>Opening it</h2>
+<p>At the start of every new run forge asks <em>"Open forge-ui to watch this run? [y/N]"</em> and never opens it without a yes. Or open it any time:</p>
+<pre>forge ui open            <span class="c"># the list of runs</span>
+forge ui open "$PLAN"    <span class="c"># one run</span>
+forge ui status
+forge ui stop</pre>
+<p>It's one small server on <code>127.0.0.1:8765</code> that every run shares, and it stops after four idle hours. If it can't start, the run carries on. Offline, the 3D view can't load its library and the page switches to 2D. Both themes are finished; your system decides.</p>
+<p>To look around before your first run, open it on made-up runs from a checkout of forge:</p>
+<pre>python3 ui/tools/demo_runs.py /tmp/forge-demo
+(cd ui &amp;&amp; python3 -m forge_ui --no-registry --root /tmp/forge-demo --open)</pre>
+
+<h2>What it shows</h2>
+<dl class="terms">
+  <dt>The map</dt><dd>Every run as a block, grouped by repository, with a lamp per task. Filter by state, repository, model, age or verdict.</dd>
+  <dt>The run cloud</dt><dd>Every run at once, full screen in 3D, in five layouts: helix, sphere, galaxy, timeline and constellation. Drag runs anywhere; it remembers.</dd>
+  <dt>A run's plate</dt><dd>Tasks as blocks in their planned waves with dependency cables, ending in integration, verification and the final review. Findings stand over their block, shaped by severity. Choose a task to light its route.</dd>
+  <dt>Execution</dt><dd>The same run on the clock: one block per attempt in the lane it ran in, failed ones in red, with the critical path named.</dd>
+  <dt>Files</dt><dd>A heatmap of which task planned, touched or drifted into which file, wave by wave.</dd>
+  <dt>Diffs</dt><dd>Any diff of a task, or exactly the diff one reviewer read, with every finding pinned under the line it names.</dd>
+  <dt>Conversations</dt><dd>What each dwarf and reviewer said, ran (with exit codes) and changed, read from its CLI's own log, live while it runs.</dd>
+  <dt>Models</dt><dd>A leaderboard of your models on your runs: first-attempt pass rate with a confidence interval, retries, escalations, time and tokens.</dd>
+  <dt>Projects</dt><dd>One page per repository: its runs, every finding of every review, and what its memory gives each role.</dd>
+  <dt>Worktrees and disk</dt><dd>Every worktree forge created and its state, and what forge takes on disk, each with the command that safely removes it.</dd>
+</dl>
+<p>The lamps mean one thing everywhere: <span class="lamp is-amber"></span> amber running, <span class="lamp is-green"></span> green merged, <span class="lamp is-red"></span> red failed, unlit pending. Every state also has a text label.</p>
+
+<h2>Where a task stands</h2>
+<p>A running task names the model at work, the command it's running and for how long, and flags a log that has gone quiet. A waiting task says what it waits on: another task, a free slot, a drain, or a paused provider with a countdown. The task inspector opens on its goal, acceptance criteria and links, then an attempt trail saying why each attempt ran, then its summary and its brief questions with answer boxes.</p>
+
+<h2>Changing a run from the page</h2>
+<p>forge-ui reads everything and changes things only by calling forge's own commands, so the page and the terminal share one set of rules and one log. Every change asks you to confirm. Start it with <code>FORGE_UI_READONLY=1 forge ui open</code> to make it watch-only.</p>
+
+<h2>Privacy and sharing</h2>
+<p>Everything stays on your machine. Any local program can read what the page shows; changes need a token the server makes at each start, and it checks where requests come from. A run can be exported as one HTML file that opens without forge-ui, with prompts, diffs and local paths left out unless you include them.</p>
+<p><span class="coming">Planned</span> Running forge's commands from the page, and removing worktrees and memories in bulk (<a href="https://github.com/Giamme/forge/issues/147">#147</a>).</p>

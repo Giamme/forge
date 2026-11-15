@@ -1,0 +1,42 @@
+<!--
+title: Merge and verification
+description: How passing tasks merge, how forge checks the combined result, and how the work reaches your branch or a pull request.
+source: docs/safety.md
+station: merge,integrate
+-->
+<h1>Merge and verification</h1>
+<p class="lede">Passing tasks merge into a branch forge made for itself. Your project's checks run once on the combined result. Your own branch moves only when you say so.</p>
+
+<h2>Where the work goes</h2>
+<p>Each task works on <code>forge/&lt;run-id&gt;/&lt;task&gt;</code>. When it passes review, forge merges that exact reviewed commit into <code>forge/&lt;run-id&gt;-integration</code>, one merge at a time. Later tasks start from that branch, so they build on what already merged. If a merge conflicts, the task is marked <code>CONFLICT</code>; it usually means a task touched a file it didn't declare, and the run's summary names it.</p>
+
+<h2>Verifying the combined result</h2>
+<p>Give forge your project's check, once, and it runs on everything merged at the end of the run, rather than on every attempt.</p>
+<pre>bash scripts/forge-parallel.sh run "$PLAN" --verify 'pytest -q'
+<span class="c"># or keep it in the repo</span>
+forge config set repo.verify 'pytest -q' --repo ~/dev/api</pre>
+<ul>
+  <li><strong>Coverage warnings.</strong> forge reads your test configuration and warns, before any model is paid, about suites your verify command never runs.</li>
+  <li><strong>Flaky reruns.</strong> A failing check is rerun once on the same code. If the rerun passes, the result is <code>PASS</code> with a loud <code>FLAKY</code> line, never a quiet clean pass.</li>
+  <li><strong>Lanes.</strong> Split verification into named lanes that run in parallel. Only a lane that failed reruns, and failures name the failing tests, new or already known.</li>
+  <li>A missing command is reported as unverified. A failing configured check blocks integration.</li>
+</ul>
+<pre>bash scripts/forge-parallel.sh run "$PLAN" \
+  --verify-lane 'unit=pytest -q tests/unit' --verify-lane 'db=pytest -q tests/db'</pre>
+
+<h2 id="integrate">Integrating</h2>
+<pre>bash scripts/forge-parallel.sh integrate "$PLAN" --approved</pre>
+<p><code>integrate</code> refuses without <code>--approved</code> and refuses on a working tree with uncommitted changes. It checks a candidate containing your current branch before updating it, and names any task that didn't merge and so isn't part of what it delivers.</p>
+<p>Want one more look first? A whole-run review reads the combined diff for problems no single-task review could see:</p>
+<pre>bash scripts/forge-parallel.sh review "$PLAN" --qa opus                         <span class="c"># read-only look</span>
+bash scripts/forge-parallel.sh integrate "$PLAN" --approved --final-review opus  <span class="c"># gate on it</span></pre>
+
+<h2>A pull request instead</h2>
+<p><code>forge pr</code> writes the description a finished run deserves from what it recorded: the goal, a table of tasks with their builders and reviewers, what didn't merge, the verification result and the final review's open findings. Private text and local paths stay out.</p>
+<pre>forge pr "$PLAN" --out pr.md
+git push -u origin forge/a1c4-integration
+forge pr "$PLAN" --create --base main      <span class="c"># gh pr create --draft; never pushes for you</span></pre>
+
+<h2>Bringing in outside work</h2>
+<p>Fixed something by hand in the middle of a run? <code>adopt</code> brings a commit made outside forge into the run, and the run's reviewer reviews just that range against your reason. A failed review puts the branch back unless you keep it with <code>--approved</code>.</p>
+<pre>bash scripts/forge-parallel.sh adopt "$PLAN" 3f2a9c1 --reason "hand fix for the flaky lane"</pre>

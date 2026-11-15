@@ -1,0 +1,97 @@
+<!--
+title: How forge works
+description: A forge run as a route map: install, plan, approve, build, review, retry, merge and integrate, with memory, steering, forge-ui and measurement beside it.
+source: docs/README.md
+-->
+<h1>How forge works</h1>
+<p class="lede">A forge run is a route from your goal to reviewed code on your branch. Every station below is a page of these docs. Pick one to see what happens there, what you control, and the command that drives it.</p>
+
+<div class="map-wrap module">
+  <div class="routemap" data-routemap>
+    <svg viewBox="0 0 780 340" role="group" aria-label="The stations of a forge run">
+      <path class="trk" data-ends="install plan" d="M108 160H128"/>
+      <path class="trk" data-ends="plan approve" d="M216 160H236"/>
+      <path class="trk" data-ends="approve build" d="M324 160H344"/>
+      <path class="trk" data-ends="build review" d="M432 160H452"/>
+      <path class="trk" data-ends="review merge" d="M540 160H560"/>
+      <path class="trk" data-ends="merge integrate" d="M648 160H668"/>
+      <path class="trk" data-ends="review retry" d="M496 183V244" stroke-dasharray="4 4"/>
+      <path class="trk" data-ends="retry build" d="M452 270H388V183" stroke-dasharray="4 4"/>
+      <path class="trk side" data-ends="plan memory" d="M172 183V244"/>
+      <path class="trk side" data-ends="build steering" d="M388 137V76"/>
+      <path class="trk side" data-ends="merge forge-ui" d="M604 137V76"/>
+      <path class="trk side" data-ends="integrate measuring" d="M712 183V244"/>
+
+      <g class="stn" data-id="install" data-route="install" tabindex="0" role="button" aria-label="Install"><rect x="20" y="137" width="88" height="46" rx="5"/><circle cx="96" cy="149" r="4"/><text x="30" y="160">Install</text><text class="sub" x="30" y="175">npm</text></g>
+      <g class="stn" data-id="plan" data-route="install plan" tabindex="0" role="button" aria-label="Plan"><rect x="128" y="137" width="88" height="46" rx="5"/><circle cx="204" cy="149" r="4"/><text x="138" y="160">Plan</text><text class="sub" x="138" y="175">tasks</text></g>
+      <g class="stn" data-id="approve" data-route="plan approve" tabindex="0" role="button" aria-label="Approve"><rect x="236" y="137" width="88" height="46" rx="5"/><circle cx="312" cy="149" r="4"/><text x="246" y="160">Approve</text><text class="sub" x="246" y="175">the table</text></g>
+      <g class="stn" data-id="build" data-route="approve build" tabindex="0" role="button" aria-label="Build"><rect x="344" y="137" width="88" height="46" rx="5"/><circle cx="420" cy="149" r="4"/><text x="354" y="160">Build</text><text class="sub" x="354" y="175">dwarves</text></g>
+      <g class="stn" data-id="review" data-route="build review" tabindex="0" role="button" aria-label="Review"><rect x="452" y="137" width="88" height="46" rx="5"/><circle cx="528" cy="149" r="4"/><text x="462" y="160">Review</text><text class="sub" x="462" y="175">qa reads</text></g>
+      <g class="stn" data-id="retry" data-route="review retry build" tabindex="0" role="button" aria-label="Retry"><rect x="452" y="247" width="88" height="46" rx="5"/><circle cx="528" cy="259" r="4"/><text x="462" y="270">Retry</text><text class="sub" x="462" y="285">findings</text></g>
+      <g class="stn" data-id="merge" data-route="review merge" tabindex="0" role="button" aria-label="Merge"><rect x="560" y="137" width="88" height="46" rx="5"/><circle cx="636" cy="149" r="4"/><text x="570" y="160">Merge</text><text class="sub" x="570" y="175">verify</text></g>
+      <g class="stn" data-id="integrate" data-route="merge integrate" tabindex="0" role="button" aria-label="Integrate"><rect x="668" y="137" width="96" height="46" rx="5"/><circle cx="752" cy="149" r="4"/><text x="678" y="160">Integrate</text><text class="sub" x="678" y="175">--approved</text></g>
+
+      <g class="stn" data-id="memory" data-route="plan memory" tabindex="0" role="button" aria-label="Project memory"><rect x="128" y="247" width="88" height="46" rx="5"/><circle cx="204" cy="259" r="4"/><text x="138" y="270">Memory</text><text class="sub" x="138" y="285">.forge/</text></g>
+      <g class="stn" data-id="steering" data-route="build steering" tabindex="0" role="button" aria-label="Steering a live run"><rect x="344" y="30" width="88" height="46" rx="5"/><circle cx="420" cy="42" r="4"/><text x="354" y="53">Steer</text><text class="sub" x="354" y="68">control</text></g>
+      <g class="stn" data-id="forge-ui" data-route="merge forge-ui" tabindex="0" role="button" aria-label="forge-ui"><rect x="560" y="30" width="88" height="46" rx="5"/><circle cx="636" cy="42" r="4"/><text x="570" y="53">forge-ui</text><text class="sub" x="570" y="68">watch it</text></g>
+      <g class="stn" data-id="measuring" data-route="integrate measuring" tabindex="0" role="button" aria-label="Measuring models"><rect x="668" y="247" width="96" height="46" rx="5"/><circle cx="752" cy="259" r="4"/><text x="678" y="270">Measure</text><text class="sub" x="678" y="285">dataset</text></g>
+    </svg>
+  </div>
+  <div class="inspector" data-inspector aria-live="polite"></div>
+</div>
+<p class="map-hint">Solid lines are the run itself; dashed lines are what you can do beside it. Press a station, or use Tab and Enter. Esc clears the route.</p>
+
+<template id="stn-install"><h2>Install</h2><p>forge installs from npm and links itself into every agent CLI it finds. The doctor tells you which CLIs it can reach.</p><pre data-nocopy>npm install -g @giamme/forge
+forge install</pre><div class="go"><a class="key small" href="install.html">Install</a><a class="key small" href="first-run.html">Your first run</a></div></template>
+<template id="stn-plan"><h2>Plan</h2><p>For a big goal, forge splits it into tasks and rates each one low, medium or high by the judgment it needs, not its size. Your routing sends each tier to a model and CLI. One planner designs every task's approach, so the seams fit.</p><pre data-nocopy>/forge "add auth: tokens, middleware, login" \
+  --decompose-level medium --profile balanced</pre><div class="go"><a class="key small" href="parallel-runs.html">Parallel runs</a><a class="key small" href="models.html">Models and CLIs</a></div></template>
+<template id="stn-approve"><h2>Approve</h2><p>forge shows you the table: every task, its difficulty, the model that builds it and the one that reviews it, and its approach. Then it stops. Retier a row or swap a model for free; nothing is dispatched until you say so. Brief mode can also ask you questions here.</p><div class="go"><a class="key small" href="parallel-runs.html#approve">The approval table</a><a class="key small" href="brief.html">Questions before a task</a></div></template>
+<template id="stn-build"><h2>Build</h2><p>Each task goes to a dwarf, an implementer model, alone in its own git worktree with a fresh session and a short brief. Tasks run in waves: together only when they don't share files.</p><div class="go"><a class="key small" href="first-run.html">Your first run</a><a class="key small" href="parallel-runs.html#waves">Waves</a></div></template>
+<template id="stn-review"><h2>Review</h2><p>qa, a reviewer model, reads the task's real diff in a throwaway copy of your repo and rates every finding P0 to P3. forge decides from the findings: a confirmed P2 or worse fails the task.</p><div class="go"><a class="key small" href="reviews.html">Reviews and retries</a></div></template>
+<template id="stn-retry"><h2>Retry</h2><p>A failed task keeps its branch. A retry hands the dwarf the reviewer's findings in the same worktree, optionally on a stronger model, and the next review reads the whole task again.</p><pre data-nocopy>forge-parallel.sh retry "$PLAN" token-model --dwarf sol:xhigh</pre><div class="go"><a class="key small" href="reviews.html#retry">Retrying</a></div></template>
+<template id="stn-merge"><h2>Merge</h2><p>A passing task merges into an integration branch forge made for itself. When the run ends, your verify command runs once on the combined result, lane by lane if you set lanes.</p><div class="go"><a class="key small" href="verification.html">Merge and verification</a></div></template>
+<template id="stn-integrate"><h2>Integrate</h2><p>Your branch changes only when you run <code>integrate --approved</code>. Ask for a final whole-run review first, or open a draft pull request with <code>forge pr</code>. forge never pushes.</p><pre data-nocopy>forge-parallel.sh integrate "$PLAN" --approved</pre><div class="go"><a class="key small" href="verification.html#integrate">Integrating</a><a class="key small" href="safety.html">What forge never does</a></div></template>
+<template id="stn-memory"><h2>Project memory</h2><p>What a run learns about your repo (the test command, a file never to hand-edit, a bug that keeps coming back) goes into a small <code>.forge/memory.md</code> that every later run reads.</p><div class="go"><a class="key small" href="memory.html">Project memory</a></div></template>
+<template id="stn-steering"><h2>Steer</h2><p>Change a live run without stopping it: drain, resume, stop, retry a task, pin a model, change the review threshold or accept a task. Every change is logged.</p><pre data-nocopy>forge control drain "$PLAN"</pre><div class="go"><a class="key small" href="steering.html">Steering a live run</a></div></template>
+<template id="stn-forge-ui"><h2>forge-ui</h2><p>An optional local page that draws every run in 3D, with each diff, each finding on its line, each agent's conversation, and how your models compare.</p><pre data-nocopy>forge ui open</pre><div class="go"><a class="key small" href="forge-ui.html">forge-ui</a><a class="key small" href="following.html">From the terminal</a></div></template>
+<template id="stn-measuring"><h2>Measure</h2><p>Every run records its inputs and outcomes outside your repos, so forge can forecast a plan, grade reviewers, and show which models pass first time on your code.</p><pre data-nocopy>forge dataset forecast "$PLAN"</pre><div class="go"><a class="key small" href="measuring.html">Measuring models</a></div></template>
+
+<h2>The words forge uses</h2>
+<dl class="terms">
+  <dt>goal</dt><dd>What you want done, in your own words, after <code>/forge</code>.</dd>
+  <dt>run</dt><dd>One trip from a goal to reviewed code, with a folder of records.</dd>
+  <dt>task</dt><dd>A piece of the goal. A small goal is one task.</dd>
+  <dt>dwarf</dt><dd>The model that builds a task. You pick it with <code>--dwarf</code>.</dd>
+  <dt>qa</dt><dd>The model that reviews a task's diff. <code>--qa</code>; <code>opus</code> if you don't say.</dd>
+  <dt>finding</dt><dd>A problem the reviewer found: <span class="sev p0">P0</span> data loss, security or crash, <span class="sev p1">P1</span> wrong on realistic input, <span class="sev p2">P2</span> an edge case, <span class="sev p3">P3</span> minor.</dd>
+  <dt>wave</dt><dd>Tasks that can run at the same time because they don't share files.</dd>
+  <dt>harness</dt><dd>An agent CLI forge sends work through: codex, claude, openclaude, opencode, antigravity or grok.</dd>
+  <dt>spec</dt><dd>How you name a model: <code>alias:effort:harness</code>, like <code>sol:xhigh:codex</code>.</dd>
+</dl>
+
+<h2>Every page</h2>
+<div class="index-cols">
+  <div><h2>Start and run</h2><ul>
+    <li><a href="install.html">Install</a><span>npm, the doctor, updating</span></li>
+    <li><a href="first-run.html">Your first run</a><span>One goal, one dwarf, one review</span></li>
+    <li><a href="models.html">Models and CLIs</a><span>The spec, efforts, profiles</span></li>
+    <li><a href="parallel-runs.html">Parallel runs</a><span>Split, route, approve, waves</span></li>
+    <li><a href="brief.html">Questions before a task</a><span>Brief mode, summaries, retro notes</span></li>
+    <li><a href="reviews.html">Reviews and retries</a><span>Verdicts, findings, thresholds</span></li>
+  </ul></div>
+  <div><h2>During and after</h2><ul>
+    <li><a href="verification.html">Merge and verification</a><span>Lanes, final review, integrate, PRs</span></li>
+    <li><a href="steering.html">Steering a live run</a><span>forge control, adopt, accept</span></li>
+    <li><a href="forge-ui.html">forge-ui</a><span>The 3D viewer</span></li>
+    <li><a href="following.html">From the terminal</a><span>watch, runs, issues, rerun</span></li>
+    <li><a href="memory.html">Project memory</a><span>.forge/memory.md and the ledger</span></li>
+    <li><a href="measuring.html">Measuring models</a><span>The dataset, routing, reviewers</span></li>
+  </ul></div>
+  <div><h2>Reference</h2><ul>
+    <li><a href="disk.html">Disk and cleanup</a><span>forge du, compact, rm</span></li>
+    <li><a href="safety.html">What forge never does</a><span>The guarantees</span></li>
+    <li><a href="troubleshooting.html">When something goes wrong</a><span>Statuses and fixes</span></li>
+    <li><a href="roadmap.html">What's coming</a><span>Dev branch and planned work</span></li>
+    <li><a href="reference.html">Full reference</a><span>Every flag, in the repo</span></li>
+  </ul></div>
+</div>

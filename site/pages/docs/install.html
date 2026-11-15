@@ -1,0 +1,57 @@
+<!--
+title: Install
+description: Install forge from npm or a git checkout, check which agent CLIs it can reach, and keep it current.
+source: docs/install.md
+station: install
+-->
+<h1>Install</h1>
+<p class="lede">Two commands put forge into every agent CLI on your machine. A third tells you which of them it can actually reach.</p>
+
+<h2>What you need</h2>
+<ul>
+  <li>macOS or Linux, with bash, git and Python 3.9 or later.</li>
+  <li>At least one agent CLI to send work to: Claude Code (<code>claude</code>), Codex (<code>codex</code>), OpenClaude, OpenCode, Antigravity (<code>agy</code>) or Grok. forge uses the ones you already have; npm installs none of them.</li>
+</ul>
+
+<h2>From npm</h2>
+<pre><span class="p">$ </span>npm install -g @giamme/forge
+<span class="p">$ </span>forge install</pre>
+<p><code>forge install</code> links forge into each agent CLI it finds, so <code>/forge</code> works inside them. It's a separate step rather than an npm install script, so it works where scripts are turned off. Restart any agent session that was already open.</p>
+<div class="callout"><span class="lamp is-amber"></span><div><p><strong>Using Foundry?</strong> Foundry's command is also called <code>forge</code>, and whichever comes first on your <code>PATH</code> wins. Runs start from your agent CLI, so this only matters for <code>forge install</code> and the helper commands. Keep Foundry first if you like, and run ours as <code>"$(npm root -g)/@giamme/forge/forge"</code>.</p></div></div>
+
+<h2>From a git checkout</h2>
+<p>Handy if you want to read or change forge itself.</p>
+<pre><span class="p">$ </span>git clone https://github.com/Giamme/forge.git ~/.claude/skills/forge
+<span class="p">$ </span>bash ~/.claude/skills/forge/scripts/forge-install.sh</pre>
+<p>Clone it anywhere; <code>~/.claude/skills/forge</code> is just the tidiest home, because Claude Code reads it directly. <code>--dry-run</code> shows what the installer would do. It never overwrites a real folder.</p>
+
+<h2>Check which CLIs forge can reach</h2>
+<pre><span class="p">$ </span>bash "$(npm root -g)/@giamme/forge/scripts/forge-dispatch.sh" doctor
+<span class="out">HARNESS      STATUS     DETAIL
+codex        found      /Users/you/.nvm/versions/node/v24.18.0/bin/codex
+claude       found      /Users/you/.local/bin/claude
+openclaude   found      /Users/you/.nvm/versions/node/v24.18.0/bin/openclaude
+opencode     found      /Users/you/.opencode/bin/opencode
+antigravity  MISSING    agy not on PATH
+grok         found      /Users/you/.grok/bin/grok</span></pre>
+<p><code>MISSING</code> is fine for any CLI you won't use. But found isn't the same as working: a CLI can be installed and still fail on sign-in or billing mid-run. To prove one model end to end before a real run:</p>
+<pre>bash "$(npm root -g)/@giamme/forge/scripts/forge-dispatch.sh" dwarf sol \
+  --prompt-file /dev/stdin --repo /tmp/scratch &lt;&lt;&lt; 'Reply with exactly: FORGE_OK'</pre>
+
+<h2>Keep it current</h2>
+<p>forge checks for a new release at most once a day, silently offline and in CI, and prints one line when there is one.</p>
+<pre><span class="c"># installed from npm</span>
+npm install -g @giamme/forge@latest &amp;&amp; forge install
+
+<span class="c"># installed from a git checkout</span>
+./forge update</pre>
+<p><code>forge version</code> shows what you have; <code>forge version --check</code> asks for the newest release now. Restart open agent sessions afterwards.</p>
+<div class="callout"><span class="lamp is-amber"></span><div><p><strong>Antigravity keeps a copy.</strong> It copies forge's files into its plugin rather than linking them. Run <code>forge install</code> again after every update, or it keeps running the old version.</p></div></div>
+
+<h2>Optional add-ons</h2>
+<p>forge works fully without these. The installer offers them and declines by default.</p>
+<ul>
+  <li><strong>Ripwire</strong> adds repository evidence to every planner, dwarf and reviewer prompt. Turn it off with <code>--no-ripwire</code>.</li>
+  <li><strong>Decision gates</strong> (<code>forge decide</code>) let a small external model advise on things like scope drift or a vague prompt. Off by default; each gate you enable sends a narrow slice of the run to an external API, so read what it sends first.</li>
+  <li><strong>Fractal</strong> lets a dwarf split its own task into child tasks. It's being replaced by native decomposition (see <a href="roadmap.html">What's coming</a>), so new setups can skip it.</li>
+</ul>

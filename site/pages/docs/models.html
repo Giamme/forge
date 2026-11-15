@@ -1,0 +1,73 @@
+<!--
+title: Models and CLIs
+description: How forge names a model, what effort and harness mean, the defaults, the built-in profiles and how to teach forge a new model.
+source: docs/models.md
+station: plan
+-->
+<h1>Models and CLIs</h1>
+<p class="lede">Everywhere forge takes a model, it takes the same short name: <code>alias:effort:harness</code>. Only the alias is required. That's how one command can build with GPT on Codex and review with Claude on Claude Code.</p>
+
+<h2>Reading a model name</h2>
+<table>
+  <thead><tr><th>You write</th><th>forge runs</th></tr></thead>
+  <tbody>
+    <tr><td><code>sol</code></td><td>sol at the role's default effort, on its default CLI (codex)</td></tr>
+    <tr><td><code>sol:xhigh</code></td><td>the same model, thinking harder</td></tr>
+    <tr><td><code>sol:xhigh:openclaude</code></td><td>the same model and effort, through openclaude</td></tr>
+    <tr><td><code>opus::claude</code></td><td>opus on claude, effort left to the default</td></tr>
+    <tr><td><code>gpt-5.6-sol::codex</code></td><td>a model id forge doesn't know, passed straight through; only with a CLI named</td></tr>
+  </tbody>
+</table>
+<p>The <strong>alias</strong> comes from forge's registry, <code>registry.tsv</code>: today <code>sol</code>, <code>astra</code>, <code>terra</code>, <code>luna</code>, <code>opus</code>, <code>sonnet</code>, <code>fable</code>, <code>haiku</code>, <code>gemini</code>, <code>gemini-pro</code>, <code>grok</code>, <code>kimi</code>, <code>glm</code>, <code>qwen</code> and a few more. Each alias's first row is its default CLI. forge never guesses a CLI for a model it doesn't know: that guess could spend quota on the wrong provider.</p>
+
+<h2>Effort, and when forge lowers it</h2>
+<table>
+  <thead><tr><th>CLI</th><th>Efforts</th></tr></thead>
+  <tbody>
+    <tr><td>codex</td><td><code>low medium high xhigh max ultra</code></td></tr>
+    <tr><td>claude</td><td><code>low medium high xhigh max</code></td></tr>
+    <tr><td>openclaude</td><td><code>low medium high xhigh max ultracode</code></td></tr>
+    <tr><td>grok</td><td><code>low medium high xhigh max</code> (grok-4.7 up to <code>xhigh</code>)</td></tr>
+    <tr><td>antigravity</td><td><code>low medium high</code></td></tr>
+    <tr><td>opencode</td><td>depends on the provider; passed through as written</td></tr>
+  </tbody>
+</table>
+<p>Models have ceilings and gaps: <code>luna</code> tops out at <code>max</code>, and <code>gemini-pro</code> offers <code>low</code> and <code>high</code> but not <code>medium</code>. When you ask for more than a model offers, forge lowers it and says so (<code>clamped=ultra -&gt; max</code>). Some CLIs quietly run at another level when given one they don't support; forge checks first, so you never get less thinking than you paid for without knowing. A word that isn't an effort at all is an error.</p>
+
+<h2>Defaults when you leave things out</h2>
+<ul>
+  <li><strong>No <code>--dwarf</code>:</strong> forge asks. Every dispatch spends your quota.</li>
+  <li><strong>No <code>--qa</code>:</strong> <code>opus</code> at <code>high</code>, through Claude Code.</li>
+  <li><strong>No effort:</strong> a dwarf builds at <code>medium</code>, a reviewer reviews at <code>high</code>, a planner plans at <code>xhigh</code>. A reviewer thinking less than its builder tends to wave things through.</li>
+</ul>
+
+<h2>Profiles: routing you can name</h2>
+<p>A profile keeps routing, retry policy and budgets under a name. forge ships two, measured on benchmark runs:</p>
+<table>
+  <thead><tr><th>Difficulty</th><th>Builds with</th><th>Reviewed by</th></tr></thead>
+  <tbody>
+    <tr><td>low</td><td><code>haiku:xhigh</code></td><td><code>sonnet:medium</code></td></tr>
+    <tr><td>medium</td><td><code>sonnet:medium</code></td><td><code>sonnet:high</code></td></tr>
+    <tr><td>high, <code>balanced</code></td><td><code>opus:high</code></td><td><code>opus:high</code></td></tr>
+    <tr><td>high, <code>lite</code></td><td><code>sonnet:high</code></td><td><code>sonnet:high</code></td></tr>
+  </tbody>
+</table>
+<p>Both retry a failed task up to twice and move it to a stronger model after two failures.</p>
+<pre>/forge "add CRUD endpoints for projects, users and teams" --decompose-level medium --profile balanced
+
+forge config profile show balanced                     <span class="c"># everything it sets</span>
+forge config profile create mine --from balanced        <span class="c"># your own copy</span>
+forge config profile use mine                           <span class="c"># make it the default</span></pre>
+<p>A run freezes a copy of its profile, so editing a profile later never changes a run in flight. <code>--fast dwarf,qa</code> asks for the fast service tier on chosen roles. Only Codex and Claude offer it, and it's billed at a higher rate, which the approval table says.</p>
+
+<h2>Dropping the sandbox</h2>
+<p><code>--yolo-dwarf</code> and <code>--yolo-qa</code> run one role without its sandbox and approval prompts, for work that installs packages, writes outside the repo or uses the network. Usually you want <code>--yolo-dwarf</code> alone.</p>
+<div class="callout"><span class="lamp is-amber"></span><div><p><strong>Antigravity needs it to run anything.</strong> Without <code>--yolo-dwarf</code> an Antigravity dwarf can't run a single shell command, and one refusal ends its whole run. forge tells it not to try, so its work arrives untested.</p></div></div>
+
+<h2>Teaching forge a new model</h2>
+<p>Add one line to <code>registry.tsv</code>: alias, CLI, model id, efforts, and optionally a timeout. Nothing else changes.</p>
+<pre><span class="c"># alias   harness     model          effort     [timeout]</span>
+sol       codex       gpt-6.1-sol    &lt;=ultra
+gemini-pro antigravity gemini-3.1-pro low,high
+opus      antigravity claude-opus-4-6-thinking none</pre>
+<p><code>&lt;=X</code> means any effort up to X, <code>a,b</code> exactly those, <code>none</code> takes no effort flag, <code>-</code> passes it through unchecked.</p>

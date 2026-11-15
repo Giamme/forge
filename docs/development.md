@@ -44,6 +44,7 @@ forge/
 │   ├── forge-pr.py              `forge pr`: a draft PR description for a finished run (reads with forge-ui's reader)
 │   └── forge-install.sh         install into every harness that needs it (opencode and grok find it themselves)
 ├── ui/                          forge-ui: read-only local run viewer (`forge_ui` package, tests, API contract)
+├── site/                        the website and plain-language docs, published by GitHub Pages (see site/README.md)
 └── references/
     ├── ui.md                    forge-ui: commands, env vars, shared server, state, privacy
     ├── harnesses.md             per-harness invocation, ladders, failure modes
@@ -56,7 +57,7 @@ forge/
 ## Offline checks
 
 Run `bash tests/check.sh` for offline regression checks. See [tests](../tests/README.md) for skill
-invocation scenarios and verification limits. There is currently no CI workflow.
+invocation scenarios and verification limits. The only CI workflow builds and publishes the website ([site/README.md](../site/README.md)).
 
 ## Runtime efficiency and measurement
 

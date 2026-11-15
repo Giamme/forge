@@ -1,0 +1,56 @@
+<!--
+title: Project memory
+description: What forge learns about a repository, where it keeps it, what each role is told, and whether to commit it.
+source: docs/memory.md
+station: plan
+side: project memory
+-->
+<h1>Project memory</h1>
+<p class="lede">Every dispatch starts a fresh model session. Without help, the tenth run in a repo would rediscover what the first one learned. Project memory is that help.</p>
+
+<h2>Two small files</h2>
+<table>
+  <thead><tr><th>File</th><th>What it is</th></tr></thead>
+  <tbody>
+    <tr><td><code>.forge/memory.md</code></td><td>A short list of facts about the repo, given to every later run. At most 40 lines.</td></tr>
+    <tr><td><code>.forge/ledger.tsv</code></td><td>One line per dispatch, ever. Never shown to a model; memory is rebuilt from it.</td></tr>
+  </tbody>
+</table>
+<pre>## Verify
+- pytest -q runs the suite; make test also lints and is 4x slower
+
+## Known traps
+- tests/test_api.py::test_timeout is flaky under -n auto  [tests/test_api.py]
+
+## Recurring QA findings
+- 3x: route added without updating openapi.yaml  [src/routes]</pre>
+
+<h2>How a fact gets in</h2>
+<p>The model that just did the work writes it down in its final message. The one that stepped on the landmine records it, with no extra model call:</p>
+<pre data-nocopy>FORGE_LEARNING: trap | src/proto/*_pb2.py is generated, never hand-edit [src/proto]</pre>
+<ul>
+  <li>A test command or a trap is kept the first time. A review finding must show up in two different runs to count as a pattern.</li>
+  <li>A fact tied to a path is dropped once that path is gone, so memory stays true as code moves.</li>
+  <li>When it's full, the least useful facts are trimmed.</li>
+  <li>Models are told most runs teach nothing durable. A wrong fact costs every future run; a missing one costs one rediscovery.</li>
+</ul>
+<p>Builders and planners get everything. Reviewers get the traps and the recurring findings, so they notice the fourth time the same bug ships.</p>
+
+<h2>Should you commit it?</h2>
+<p>forge never commits <code>.forge/</code>. Your choice:</p>
+<table>
+  <thead><tr><th>You want</th><th>Do this</th></tr></thead>
+  <tbody>
+    <tr><td>memory shared with your team</td><td>commit <code>.forge/</code>, both files</td></tr>
+    <tr><td>memory on your machine only</td><td>add <code>.forge/</code> to <code>.gitignore</code></td></tr>
+    <tr><td>no memory</td><td><code>--no-memory</code>, or <code>FORGE_MEMORY=off</code></td></tr>
+  </tbody>
+</table>
+<div class="callout"><span class="lamp is-red"></span><div><p><strong>Commit both files or neither.</strong> <code>memory.md</code> is rebuilt from <code>ledger.tsv</code>. A teammate with your memory but not your ledger rebuilds it from their own short ledger on their next run, and your shared facts are gone.</p></div></div>
+<p>Ignoring the folder doesn't turn memory off; it just stays on your machine. Contributing to someone else's project? Ignore it: forge's notes to itself are noise in their pull requests.</p>
+
+<h2>Looking inside</h2>
+<pre>forge memory show ~/dev/api        <span class="c"># what a dwarf would be told</span>
+forge memory learnings ~/dev/api   <span class="c"># every learning and whether it's in memory yet</span>
+forge memory spend ~/dev/api       <span class="c"># what forge has spent in this repo</span></pre>
+<p>Editing <code>memory.md</code> by hand doesn't stick; remove the ledger rows instead. forge-ui's Projects screen shows each repository's memory too.</p>

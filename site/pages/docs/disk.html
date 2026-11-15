@@ -1,0 +1,25 @@
+<!--
+title: Disk and cleanup
+description: What forge keeps on disk, how to see it, and how to take space back without losing what runs taught forge.
+source: docs/commands.md
+station: integrate
+-->
+<h1>Disk and cleanup</h1>
+<p class="lede">Runs keep their records, worktrees and logs so you can always see what happened. forge also keeps a list of everything it puts on disk, so taking space back is one command.</p>
+
+<h2>See what forge takes</h2>
+<pre>forge du               <span class="c"># this repo</span>
+forge du --all         <span class="c"># every repo forge knows</span></pre>
+<p>It lists each run folder's review snapshots, logs and other files, each run's worktree folder, and forge's data home, with the command that takes each part back. forge-ui's Disk screen charts the same report by kind and by repository.</p>
+
+<h2>Take space back, keep every run</h2>
+<pre>forge runs compact --repo .            <span class="c"># remove leftover review snapshots</span>
+forge runs compact --repo . --logs     <span class="c"># also gzip each agent's log copy</span></pre>
+<p>Compaction imports the run into the dataset first, holds the run's lock, skips active runs and worktrees, and reports anything forge didn't create instead of deleting it. On one real 2.3 GB plan folder it took back 2.2 GB. At run start forge also compacts idle runs in the background and warns past a size you set:</p>
+<pre>forge config set storage.compact auto     <span class="c"># or off</span>
+forge config set storage.warn-gb 20       <span class="c"># or off</span></pre>
+
+<h2>Delete a run</h2>
+<pre>forge runs rm "$PLAN" --dry-run
+forge runs rm "$PLAN" --worktrees --branches</pre>
+<p>The run's lessons stay in the dataset. Failed tasks' worktrees are the record of what went wrong, so forge never removes them on its own; forge-ui's Worktrees screen gives the safe command for each one, never with <code>--force</code>.</p>
