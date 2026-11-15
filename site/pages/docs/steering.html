@@ -1,0 +1,46 @@
+<!--
+title: Steering a live run
+description: Change a running forge plan without stopping it: drain, resume, stop, retry, pin a model, set the threshold, add a task or accept one.
+source: docs/decomposed-runs.md
+station: build
+side: steering
+-->
+<h1>Steering a live run</h1>
+<p class="lede">A parallel run can take an hour. You don't have to stop it to change it. <code>forge control</code> changes a live plan's settings and steers its scheduler, and forge-ui's buttons call the very same commands.</p>
+
+<h2>Change a setting</h2>
+<pre>forge control show "$PLAN"                                    <span class="c"># every setting, override, pin and recent change</span>
+forge control set "$PLAN" max-parallel 2                      <span class="c"># tasks at once</span>
+forge control set "$PLAN" qa-threshold P1 --task tooling      <span class="c"># looser bar for one task</span>
+forge control set "$PLAN" retry-budget 3                      <span class="c"># automatic retries</span>
+forge control pin "$PLAN" token-model sol:high:codex          <span class="c"># the model its next full retry uses, once</span></pre>
+<p>Settings take effect at the scheduler's next pass. Every change, from the terminal or the page, is logged in <code>control.log</code> with who asked.</p>
+
+<h2>Steer the scheduler</h2>
+<table>
+  <thead><tr><th>Command</th><th>What happens</th></tr></thead>
+  <tbody>
+    <tr><td><code>drain</code></td><td>Start nothing new. Running tasks finish, then the run waits.</td></tr>
+    <tr><td><code>resume</code></td><td>End the drain; eligible tasks start again.</td></tr>
+    <tr><td><code>stop</code></td><td>Finish what runs, start nothing, end the run.</td></tr>
+    <tr><td><code>stop --now</code></td><td>Interrupt running tasks too, like Ctrl-C. Their partial work is kept.</td></tr>
+    <tr><td><code>retry TASK</code></td><td>Queue a retry of a stopped or failed task, optionally <code>--dwarf</code> on another model.</td></tr>
+    <tr><td><code>add TASK</code></td><td>Queue a row you appended to <code>tasks.tsv</code>, with its prompt.</td></tr>
+    <tr><td><code>accept TASK</code></td><td>Accept a failed task with <code>--reason</code> and <code>--approved</code>; the tasks waiting on it start.</td></tr>
+  </tbody>
+</table>
+<pre>forge control drain "$PLAN"
+forge control retry "$PLAN" docs --dwarf opus:high
+forge control accept "$PLAN" tooling --reason "the P2 is a test-only nit" --approved</pre>
+<p>A retry or add only queues a request; the scheduler applies or refuses it and logs the outcome under the same request id.</p>
+
+<h2>When a task keeps failing</h2>
+<p>forge's retry policy can stop a task as <code>NEEDS_DECISION</code> with a suggestion, such as splitting it. Decide with more attempts, a different threshold or another model, each with a reason:</p>
+<pre>forge control retry "$PLAN" parser --decide retry=2 --dwarf sol:xhigh --reason "bigger model, two more tries" --approved</pre>
+
+<h2>Several stopped tasks at once</h2>
+<p><code>retry --no-dispatch</code> records the decision for each stopped task and carries its findings forward without starting anything, so one <code>run</code> then dispatches them all side by side.</p>
+
+<h2>Answering questions while it runs</h2>
+<p>With brief mode on, answer each task's questions while earlier waves work; see <a href="brief.html">Questions before a task</a>.</p>
+<p><span class="coming">Planned</span> Resume a run from another AI session or CLI from a handoff, with an explicit, logged take-over (<a href="https://github.com/Giamme/forge/issues/146">#146</a>), and an investigation into steering a running dwarf live from forge-ui (<a href="https://github.com/Giamme/forge/issues/134">#134</a>).</p>

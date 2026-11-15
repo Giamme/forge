@@ -1,0 +1,58 @@
+<!--
+title: When something goes wrong
+description: The task statuses forge reports, what each means, and the common problems with their fixes.
+source: docs/troubleshooting.md
+station: review,retry
+-->
+<h1>When something goes wrong</h1>
+<p class="lede">Every task's records live in its run folder, so you can always read what a model actually said. Start with the status.</p>
+
+<h2>Task statuses</h2>
+<table>
+  <thead><tr><th>Status</th><th>What it means, and what to do</th></tr></thead>
+  <tbody>
+    <tr><td><span class="lamp is-red"></span> <code>FAIL</code></td><td>A blocking finding. <a href="reviews.html#retry">Retry</a> with the findings, maybe on a stronger model.</td></tr>
+    <tr><td><span class="lamp is-hollow"></span> <code>UNKNOWN</code></td><td>No verdict. A retry asks the reviewer again on the same work; no dwarf runs, no attempt is spent.</td></tr>
+    <tr><td><span class="lamp is-hollow"></span> <code>INVALIDATED</code></td><td>The reviewer edited a tracked file in its copy, so its verdict counts for nothing. Retry reviews the unchanged work.</td></tr>
+    <tr><td><span class="lamp is-red"></span> <code>INFRA</code></td><td>A provider problem: rate limit, quota, sign-in, network. No attempt spent. If it says "needs you", log in or add credits; otherwise run the same command again, or use <code>--infra-retries</code>.</td></tr>
+    <tr><td><span class="lamp is-red"></span> <code>TIMEOUT</code></td><td>A model ran past the limit. Raise <code>--timeout</code>, or retry; partial work is in the worktree.</td></tr>
+    <tr><td><span class="lamp is-red"></span> <code>CONFLICT</code></td><td>Review passed but the merge conflicted, usually a file the task didn't declare. The scope-drift list names it.</td></tr>
+    <tr><td><span class="lamp is-red"></span> <code>ERROR</code></td><td>A worktree or dispatch failed. Read <code>tasks/&lt;id&gt;/dwarf.out</code> or <code>qa.out</code>.</td></tr>
+    <tr><td><span class="lamp"></span> <code>NEEDS_DECISION</code></td><td>The retry policy stopped. Decide with <code>forge control retry --decide</code>; see <a href="steering.html">Steering</a>.</td></tr>
+  </tbody>
+</table>
+
+<h2>Surprising results</h2>
+<table>
+  <thead><tr><th>What happened</th><th>Why, and the fix</th></tr></thead>
+  <tbody>
+    <tr><td>Merged although the reviewer said FAIL</td><td>Every finding was milder than the threshold, so it passed with known issues, listed in <code>known_issues.md</code>.</td></tr>
+    <tr><td>Failed although the reviewer said PASS</td><td>It listed a confirmed finding at the threshold or worse. forge goes by the findings.</td></tr>
+    <tr><td>The dwarf produced no changes</td><td>Usually a goal it couldn't settle alone. Make it more specific, or turn on brief mode.</td></tr>
+    <tr><td>Several tasks produced nothing</td><td>The split made tasks that can't stand alone. Use a coarser <code>--decompose-level</code>.</td></tr>
+    <tr><td>Every wave has one task</td><td>Most tasks share files. Split the goal differently.</td></tr>
+    <tr><td>Pieces don't fit together</td><td>The shared interface was never agreed. Plan first, or use <code>--planner</code>.</td></tr>
+    <tr><td><code>FLAKY</code> with a passing verification</td><td>The check failed once and passed on rerun. Read <code>verification.log</code>; it can be a real bug.</td></tr>
+    <tr><td>Reviews say their tests couldn't run</td><td>The reviewer's sandbox lacked something. The run summary lists those reviews; check the dependency or the verify command.</td></tr>
+  </tbody>
+</table>
+
+<h2>Installation</h2>
+<table>
+  <thead><tr><th>Problem</th><th>Fix</th></tr></thead>
+  <tbody>
+    <tr><td><code>/forge</code> missing in a CLI</td><td>Run <code>forge install</code> again and restart the session.</td></tr>
+    <tr><td>Antigravity runs an old version</td><td>It copies forge's files. Run <code>forge install</code> after every update.</td></tr>
+    <tr><td>Antigravity dwarf ends with an empty diff</td><td>It tried a shell command without <code>--yolo-dwarf</code>; one refusal ends its run.</td></tr>
+    <tr><td>OpenCode shows forge twice</td><td>It finds forge in <code>~/.claude/</code> on its own. Remove the extra copy.</td></tr>
+  </tbody>
+</table>
+
+<h2>Recovering</h2>
+<ul>
+  <li><strong>An interrupted run</strong> isn't lost: run the same <code>run</code> again. Merged tasks are skipped.</li>
+  <li><strong>A failed task</strong> is cheap to redo: <code>retry</code> reuses its worktree and findings.</li>
+  <li><strong>"Already exists" on retry</strong> means a worktree folder was deleted by hand. Run the command again rather than deleting the branch.</li>
+  <li><strong>A wrong memory fact keeps coming back:</strong> delete its rows in <code>.forge/ledger.tsv</code>.</li>
+  <li><strong>A locked plan</strong> tells you which command holds it. On a live run, use <code>forge control</code>.</li>
+</ul>

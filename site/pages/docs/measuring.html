@@ -1,0 +1,32 @@
+<!--
+title: Measuring models
+description: forge records every run's inputs and outcomes outside your repos, to forecast plans, grade reviewers and show which models work on your code.
+source: docs/dataset.md
+station: integrate
+side: measurement
+-->
+<h1>Measuring models</h1>
+<p class="lede">Benchmarks tell you how a model does on someone else's code. forge records every run you make, so over time you know how each model does on yours.</p>
+
+<h2>The run dataset</h2>
+<p>Run folders get deleted, so every run also records its inputs and outcomes in <code>~/.local/share/forge/dataset/</code>, outside every repo: the models it resolved, prompts, each attempt's diff, verdicts and findings, tokens, and whether merged work held up later. <code>FORGE_DATASET=off</code> turns it off; deleting a run keeps what it taught the dataset.</p>
+<pre>forge dataset status              <span class="c"># size, counts, anything that looks incomplete</span>
+forge dataset forecast "$PLAN"    <span class="c"># likely tokens, time and first-try pass rate, per task</span>
+forge dataset routing             <span class="c"># pass rates per model and effort, per difficulty</span>
+forge dataset reviewers           <span class="c"># how often each reviewer's PASS was later reverted or rewritten</span>
+forge dataset outcomes            <span class="c"># which integrated lines survived, from git history</span></pre>
+
+<h2>What it's used for</h2>
+<dl class="terms">
+  <dt>Forecasts</dt><dd>Before a run dispatches, forge prints a forecast from past tasks at the same difficulty and model, and flags tasks unlikely to pass first time. Advisory only.</dd>
+  <dt>Exploration</dt><dd>Now and then a task you left to forge gets the neighbouring tier's model from your own pools, marked in the table. That's how routing data gets fair comparisons.</dd>
+  <dt>Reviewer report card</dt><dd>How often work each reviewer passed was later reverted or rewritten. It says "not enough data" rather than make up a rate from a handful of tasks.</dd>
+  <dt>Paired reviews</dt><dd>With <code>--shadow-qa</code>, a sample of reviews gets a second reviewer. <code>forge dataset pairs</code> reports agreement by model, family or effort, and what each side found and cost.</dd>
+  <dt>Finding facts</dt><dd><code>forge dataset facts</code> replays candidate blocking rules on past reviews, such as "existing problems don't block", and lists what each would have let through.</dd>
+</dl>
+<p>forge-ui's Models screen shows the same numbers as a leaderboard. It warns, as you should remember, that routing is observational: a model sent the hard tasks looks worse than it is.</p>
+
+<h2>Decision gates</h2>
+<p><code>forge decide</code> can put a small external model at a few decision points: scope drift, a vague prompt, a retry that didn't address its findings, which merge broke verification. Each gate is <code>off</code>, <code>shadow</code> (it answers, nothing acts) or <code>on</code>, and turning one on requires it to have passed a replay against past runs. Off by default; each gate sends a narrow slice of the run to the provider you choose, and a repo can be set to never send.</p>
+<pre>forge decide status
+forge decide gate drift shadow</pre>

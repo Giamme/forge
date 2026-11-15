@@ -1,0 +1,69 @@
+<!--
+title: Parallel runs
+description: Split one goal into tasks, route each to a model by difficulty, approve the plan, and run tasks in waves in their own worktrees.
+source: docs/decomposed-runs.md
+station: plan,approve,build
+-->
+<h1>Parallel runs</h1>
+<p class="lede">For a goal with several parts, forge splits it into tasks, gives each one a model that fits, runs them at the same time in separate worktrees, and reviews each one on its own diff.</p>
+
+<h2>Turning it on</h2>
+<p>Add <code>--decompose-level</code>. It sets how finely the goal is split:</p>
+<table>
+  <thead><tr><th>Level</th><th>Split</th></tr></thead>
+  <tbody>
+    <tr><td><code>low</code></td><td>only the obviously separate pieces: 2 to 3 tasks</td></tr>
+    <tr><td><code>medium</code></td><td>one task per module or feature slice: usually 4 to 6</td></tr>
+    <tr><td><code>high</code></td><td>as fine as each task can still be reviewed on its own: usually 7 to 12</td></tr>
+  </tbody>
+</table>
+<pre>/forge "add auth: tokens, middleware, login, rate limit, docs" \
+  --decompose-level medium --profile balanced</pre>
+<p>When an agent drives the run through <code>forge-parallel.sh auto</code>, a small goal skips the planner and runs as one task, and a plan that could only run one task after another is merged into a single task, since waves of one buy nothing. <code>--collapse-chains</code> asks for that merge on any plan.</p>
+
+<h2>Routing each task to a model</h2>
+<p>forge rates every task <code>low</code>, <code>medium</code> or <code>high</code> by the judgment it needs, not its size: a 500-line rename is <code>low</code>, a 10-line concurrency fix is <code>high</code>. Tasks don't exist yet when you type the command, so you map models to difficulties up front:</p>
+<pre><span class="c"># one dwarf for everything</span>
+--dwarf sol:xhigh
+
+<span class="c"># one per difficulty; plain --dwarf covers any level you don't name</span>
+--dwarf-high sol:xhigh --dwarf-low haiku:xhigh --dwarf sonnet:medium
+
+<span class="c"># share a level between models, taking turns: neither quota carries it alone</span>
+--dwarf-medium sonnet:medium,gemini:high:antigravity,grok:high</pre>
+<p>Reviewers work the same way with <code>--qa</code>, <code>--qa-high</code>, <code>--qa-medium</code> and <code>--qa-low</code>. Sizing the reviewer to the task costs less for the same verdicts. Or skip all of it with <code>--profile balanced</code>.</p>
+<p>Now and then forge tries the neighbouring level's model on a row you left to it, to learn which models do well on your code. Those rows are marked <code>*</code> in the table, before anything is spent. <code>--explore 0</code> turns it off.</p>
+
+<h2 id="approve">You approve the table</h2>
+<p>After planning, forge shows every task, its difficulty, the model that builds it and the one that reviews it, and its planned approach. Then it stops. Nothing has been dispatched.</p>
+<p>This is the free moment: say "task 2 is really medium" and it re-routes by your rules, or name another model for one row. A big <code>high</code> split can be 20 dispatches or more, and this is where you see it. If a task ends up with no model, forge refuses to run rather than invent one. With history, forge also prints a forecast: likely tokens, time and first-try pass rate per task.</p>
+<div class="callout"><span class="lamp is-amber"></span><div><p><strong>Commit first.</strong> Worktrees start from your last commit, so edits you haven't committed are invisible to every dwarf. forge warns loudly when it sees them. A parallel run also needs a git repository.</p></div></div>
+
+<h2>One plan for every seam</h2>
+<p>Two dwarves can each stay in their lane, pass their own review, and still invent interfaces that don't fit. So forge plans the approach for every task in one pass before dispatching. By default your agent does it; <code>--planner &lt;model&gt;</code> hands it to a model you name, once per run. The reviewer gets the plan as the intended shape, so it can say "this works, but it isn't what was agreed".</p>
+
+<h2 id="waves">How tasks run</h2>
+<h3>One dwarf per worktree</h3>
+<p>Every task gets its own git worktree and a fresh model session, so one confused task can't spill into another. Each dwarf also gets a short brief: the goal, its own task, the files it owns, and which tasks have already merged into its starting point.</p>
+<h3>Waves follow the files</h3>
+<p>Tasks run together only when what they depend on has merged and they own different files. Two dwarves editing one file would make a conflict no reviewer could untangle, so forge holds one back and says why. A scheduler starts each task the moment it can, up to <code>--max-parallel</code> (3 by default). If almost every task waits on another, the goal needs a different split, not more parallelism.</p>
+
+<h2>Plan, run, integrate</h2>
+<p>Through <code>/forge</code> your agent drives these steps. They're also plain commands:</p>
+<pre>PLAN=/tmp/forge-auth
+
+<span class="c"># 1. plan and read the routing</span>
+bash scripts/forge-parallel.sh plan "$PLAN" --repo ~/dev/api --profile balanced
+
+<span class="c"># 2. see exactly what would be dispatched</span>
+bash scripts/forge-parallel.sh run "$PLAN" --dry-run
+
+<span class="c"># 3. run it, four at a time, retrying rejected tasks up to twice</span>
+bash scripts/forge-parallel.sh run "$PLAN" --max-parallel 4 --retry-failed 2
+
+<span class="c"># 4. bring the passing work into your branch</span>
+bash scripts/forge-parallel.sh integrate "$PLAN" --approved</pre>
+<p><code>forge-parallel.sh auto</code> goes from a goal file to the approval table in one blocking command, so even a small model can orchestrate. Until step 4, all work lives on branches forge made for itself.</p>
+
+<h2>Interrupted runs</h2>
+<p>Ctrl-C stops the running tasks, keeps their partial work, and prints how to retry each. Run the same <code>run</code> again and it picks up: merged tasks are skipped, saved passes merge, and tasks paused by a provider problem start again on their own. To pause on purpose, drain the run instead; see <a href="steering.html">Steering a live run</a>.</p>

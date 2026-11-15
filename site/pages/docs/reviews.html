@@ -1,0 +1,71 @@
+<!--
+title: Reviews and retries
+description: What the reviewer reads, how findings are rated and gated, what happens when a task fails, and how to retry, tolerate or accept.
+source: docs/reviews.md
+station: review,retry
+-->
+<h1>Reviews and retries</h1>
+<p class="lede">The reviewer is why forge exists. It reads the code a dwarf actually changed and decides, finding by finding, whether that code can merge.</p>
+
+<h2>What the reviewer reads</h2>
+<p>The reviewer, <strong>qa</strong>, gets the task's requirements, the planned approach and the real diff, every line, new files included. It works in a throwaway copy of your repo with the attempt's own dependencies linked in, so it can run your tests. If it edits a tracked file there, its review is void and runs again on the unchanged work.</p>
+<p>It ends with two lines: whether its tests ran, and the verdict.</p>
+<pre data-nocopy>FORGE_TESTS: RAN
+FORGE_VERDICT: FAIL</pre>
+<p>A review that never reaches a verdict counts as a fail. Merging code nobody finished judging would defeat the point.</p>
+
+<h2>How findings are rated</h2>
+<table>
+  <thead><tr><th>Severity</th><th>Means</th></tr></thead>
+  <tbody>
+    <tr><td><span class="sev p0">P0</span></td><td>data loss, a security hole, or a crash on the main path</td></tr>
+    <tr><td><span class="sev p1">P1</span></td><td>wrong behaviour on realistic input</td></tr>
+    <tr><td><span class="sev p2">P2</span></td><td>a bug in an edge case</td></tr>
+    <tr><td><span class="sev p3">P3</span></td><td>minor</td></tr>
+  </tbody>
+</table>
+<p>Each finding is <strong>confirmed</strong> or <strong>plausible</strong>, names a file and line, and ends with three facts: how likely its trigger is (<code>reach</code>), whether this change introduced it (<code>origin</code>), and how the reviewer knows (<code>evidence</code>: ran, traced or suspected). Those facts are recorded to test better blocking rules; today they decide nothing.</p>
+
+<h2>When a task passes</h2>
+<p>forge decides from the findings, not the reviewer's word, against a threshold: <span class="sev p2">P2</span> unless you set <code>--qa-threshold</code>.</p>
+<ul>
+  <li>A confirmed finding at P2 or worse fails the task, even under a PASS.</li>
+  <li>A FAIL made only of milder confirmed findings passes <em>with known issues</em>: it merges, and the findings are kept in <code>known_issues.md</code>.</li>
+  <li>Plausible findings never block.</li>
+</ul>
+<p><code>--qa-threshold P3</code> blocks on every confirmed finding; <code>P1</code> tolerates edge cases, which suits tooling work. You can change it on a live run, per task too.</p>
+
+<h2 id="retry">When a task fails</h2>
+<p>A failed task stays out of the merge, keeps its branch and worktree, and the rest of the run goes on. A retry hands the dwarf the reviewer's report and continues in the same worktree, so it fixes its own code. The next review reads the whole task again, with the previous round's findings and what changed since.</p>
+<pre><span class="c"># retry one task with its findings, on a stronger model</span>
+bash scripts/forge-parallel.sh retry "$PLAN" token-model --dwarf sol:xhigh
+
+<span class="c"># or retry rejected tasks automatically inside the run, up to twice</span>
+bash scripts/forge-parallel.sh run "$PLAN" --retry-failed 2</pre>
+<p>A retry that produces the same diff isn't reviewed again. A task that keeps failing can move to a stronger model from your pools (<code>--escalate-after</code>), and the table records who decided. A review with no verdict is asked again on the same work, without paying a dwarf.</p>
+
+<h3>A stuck provider isn't a failed task</h3>
+<p>A rate limit, used-up quota, sign-in problem or network error says nothing about the code. The task is marked <code>INFRA</code>, no attempt is spent, and forge pauses only the model or CLI that's stuck. It can move the task sideways to a healthy model in the same tier (<code>--infra-fallback</code>) or wait it out (<code>--infra-retries</code>).</p>
+
+<h2>Overriding a reviewer</h2>
+<p>When a reviewer keeps finding new corners of something that should ship, that's a person's call. It takes a written reason and an explicit approval, and only works on the exact code that was reviewed.</p>
+<pre>bash scripts/forge-parallel.sh accept "$PLAN" tooling \
+  --reason "only an unreachable option left; tracked in the backlog" --approved</pre>
+<p>On a live run, <code>forge control accept</code> does the same and lets the tasks waiting on it start. An agent driving forge never accepts on its own.</p>
+
+<h2>Optional extra checks</h2>
+<table>
+  <thead><tr><th>Ask for</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td><code>integrate --final-review opus</code></td><td>One reviewer reads the whole combined result before your branch moves, looking for problems between tasks.</td></tr>
+    <tr><td><code>run --sweep P3</code></td><td>After every task merges, fixes the findings the threshold let through, while the context is fresh.</td></tr>
+    <tr><td><code>plan --shadow-qa sonnet</code></td><td>Sends a sample of reviews to a second reviewer, to measure how much a verdict depends on who gave it. It never changes a result.</td></tr>
+    <tr><td><code>--native-review</code></td><td>Uses Codex's own reviewer against the recorded baseline.</td></tr>
+  </tbody>
+</table>
+<p><span class="coming">On the dev branch</span> Group review: related tasks share one reviewer over their combined diff, and each finding goes back only to the task whose files it names (<a href="https://github.com/Giamme/forge/issues/140">#140</a>).</p>
+
+<h2>Findings left over</h2>
+<p>Tolerated findings aren't forgotten. After a run, forge offers once to file them as GitHub issues, each with its severity, task, reviewer and a link to the code. A finding is never filed twice.</p>
+<pre>./forge issues "$PLAN"                         <span class="c"># drafts only</span>
+./forge issues "$PLAN" --apply --label bug     <span class="c"># file them</span></pre>

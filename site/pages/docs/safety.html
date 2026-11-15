@@ -1,0 +1,45 @@
+<!--
+title: What forge never does
+description: The guarantees forge keeps about your branch, your working tree, your quota, sandboxes and its own records.
+source: docs/safety.md
+station: integrate
+-->
+<h1>What forge never does</h1>
+<p class="lede">forge runs other models against your code, so it's strict about where their changes can go. These hold for every run.</p>
+
+<h2>Your branch and working tree</h2>
+<ul>
+  <li><strong>It never pushes.</strong> There's no push step anywhere in forge, and <code>forge pr --create</code> stops if the branch has no upstream.</li>
+  <li><strong>It never commits on your branch during a run.</strong> A single task's change is left uncommitted in your tree. A parallel run commits and merges only on branches forge creates for itself. Your branch moves when you run <code>integrate --approved</code>.</li>
+  <li><strong>It never merges unreviewed code.</strong> Only the exact commit a reviewer passed can merge. If code changes after its review, the review no longer counts. Overriding a reviewer takes a written reason and <code>--approved</code>.</li>
+  <li><strong>It checks before your branch moves.</strong> With a verify command set, integration tests a candidate that includes your current branch. A failing check blocks it.</li>
+</ul>
+
+<h2>Models and sandboxes</h2>
+<ul>
+  <li><strong>It never picks a builder for you.</strong> Leave out <code>--dwarf</code> and forge asks. A task with no model makes the run refuse.</li>
+  <li><strong>It never drops a sandbox on its own.</strong> <code>--yolo-dwarf</code> and <code>--yolo-qa</code> are the only way out, one role each.</li>
+  <li><strong>One dwarf per working tree.</strong> Parallelism comes from separate worktrees, never two models in one tree.</li>
+  <li><strong>The reviewer judges a throwaway copy.</strong> Editing the code it's reviewing voids its verdict.</li>
+  <li><strong>Timeouts stop everything a dispatch started,</strong> including test runners and servers in their own process groups, before a retry can collide with them.</li>
+</ul>
+
+<h2>Records</h2>
+<ul>
+  <li><strong>It never deletes a failed attempt.</strong> Its branch and worktree are the record and the place to retry from.</li>
+  <li><strong>The only thing it writes into your repo is <code>.forge/</code>,</strong> its project memory, and it never commits it.</li>
+  <li><strong>Cleanup never touches an active run,</strong> a worktree, or a file forge didn't create.</li>
+  <li><strong>Private text stays local.</strong> Exports, PR bodies and retro issues leave out prompts and local paths unless you include them, and retro issues post only what you approve by hash.</li>
+</ul>
+
+<h2>When forge refuses</h2>
+<table>
+  <thead><tr><th>Situation</th><th>What forge does</th></tr></thead>
+  <tbody>
+    <tr><td>Not a git repository</td><td>Parallel runs refuse; worktrees need git.</td></tr>
+    <tr><td>Uncommitted changes</td><td>Warns loudly: dwarves start from your last commit and can't see them.</td></tr>
+    <tr><td><code>integrate</code> without <code>--approved</code>, or on a dirty tree</td><td>Refuses.</td></tr>
+    <tr><td><code>accept</code> on code that changed since its review</td><td>Refuses and asks for a fresh review.</td></tr>
+    <tr><td>Another command holds the plan's lock</td><td>Refuses, says which command holds it, and on a live run which <code>forge control</code> to use instead.</td></tr>
+  </tbody>
+</table>

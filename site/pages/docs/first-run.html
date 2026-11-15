@@ -1,0 +1,41 @@
+<!--
+title: Your first run
+description: Hand forge one small goal, follow the build and the review, and read what comes back.
+source: docs/commands.md
+station: build,review
+-->
+<h1>Your first run</h1>
+<p class="lede">Pick something small you'd normally do yourself: a bug fix, a helper, a test. A first run takes minutes, and nothing it does is hard to throw away.</p>
+
+<ol class="steps">
+  <li><strong>Open your agent CLI in the repo</strong><p>Start Claude Code, Codex or any CLI forge is installed in, from your project's folder. Commit or stash your own edits first, so forge's change is the only thing in <code>git diff</code>.</p></li>
+  <li><strong>Give it a goal and a builder</strong>
+<pre>/forge "add retry with exponential backoff to the HTTP client" --dwarf sol:high</pre>
+  <p>That's the whole minimum. <code>sol</code> builds it at <code>high</code> effort on Codex; <code>opus</code> reviews it at <code>high</code> on Claude Code, because that's the default reviewer. Write the goal like a good issue: what should change and how you'll know it works. The dwarf can't ask you questions halfway through.</p></li>
+  <li><strong>Answer two quick questions</strong><p>forge asks whether to use Fractal (say no for now) and whether to open <a href="forge-ui.html">forge-ui</a> to watch. Answer up front with <code>--no-fractal</code> and <code>--ui</code> or <code>--no-ui</code>.</p></li>
+  <li><strong>The dwarf builds, the reviewer reads</strong><p>The dwarf edits your code and can run your tests in its sandbox. forge then captures exactly what changed, new files included, and hands that diff to the reviewer, who runs what it needs, lists findings and ends with a verdict.</p></li>
+  <li><strong>Read what comes back</strong><p>You get a summary and the review: each finding rated <span class="sev p0">P0</span> to <span class="sev p3">P3</span>, with its file and line. The change is in your working tree, uncommitted. Read it with <code>git diff</code>, then keep, edit or drop it like your own work.</p></li>
+</ol>
+
+<h2>Try a few variations</h2>
+<pre><span class="c"># a strong reviewer for a tricky change</span>
+/forge "fix the off-by-one in the pagination cursor" --dwarf luna:max --qa sol:xhigh
+
+<span class="c"># the same model, through another CLI</span>
+/forge "port the config loader to TOML" --dwarf sol:high:openclaude
+
+<span class="c"># a cheap builder and an expensive reviewer</span>
+/forge "update the docstrings to match the new signatures" --dwarf haiku --qa opus:max
+
+<span class="c"># another repo</span>
+/forge "bump the pinned deps and fix the fallout" --dwarf sol:xhigh --repo ~/dev/other-project
+
+<span class="c"># a saved routing profile</span>
+/forge "add CRUD endpoints for projects, users and teams" --decompose-level medium --profile balanced</pre>
+
+<h2>When the dwarf needs out of its sandbox</h2>
+<p>A dwarf can edit files and run tests, but not install packages, write outside the repo or use the network. If the goal needs that, say so with <code>--yolo-dwarf</code>. It frees the builder only; the reviewer stays sandboxed and still can't edit what it's judging.</p>
+<pre>/forge "add integration tests against a real Postgres container" --dwarf sol:xhigh --yolo-dwarf</pre>
+
+<h2>Bigger goals</h2>
+<p>When a goal has several parts, add <code>--decompose-level</code> and forge splits it into tasks that run in parallel, each reviewed on its own. You approve the plan before anything is spent. See <a href="parallel-runs.html">Parallel runs</a>.</p>

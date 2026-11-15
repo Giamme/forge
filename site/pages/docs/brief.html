@@ -1,0 +1,39 @@
+<!--
+title: Questions before a task
+description: Brief mode asks you what only you can answer before each task starts; task summaries say where each task stands; retro notes record what got in the way.
+source: references/decompose.md
+station: approve,build
+-->
+<h1>Questions before a task</h1>
+<p class="lede">A dwarf can't stop and ask you anything mid-run. Three opt-in features close that gap: brief mode asks first, task summaries keep you informed, and retro notes tell you what got in the way.</p>
+
+<h2>Brief mode</h2>
+<p>Before each task starts, a cheap read-only model reads the plan and writes the questions only you can answer, each with why it matters, a few options, and the default forge will assume if you don't answer. Your answers go into that task's prompt as decisions you made.</p>
+<pre>/forge "add auth: tokens, middleware, login" --decompose-level medium \
+  --profile balanced --brief gated --brief-model haiku:medium</pre>
+<table>
+  <thead><tr><th>Level</th><th>What waits</th></tr></thead>
+  <tbody>
+    <tr><td><code>advisory</code></td><td>Nothing. Unanswered questions reach the prompt with their defaults.</td></tr>
+    <tr><td><code>gated</code></td><td>A task with an unanswered must-answer question is held until you answer. The rest run.</td></tr>
+    <tr><td><code>strict</code></td><td>The whole run waits while any question of a task that hasn't started is open.</td></tr>
+  </tbody>
+</table>
+<pre>forge brief show "$PLAN"                                       <span class="c"># open questions, flagged first</span>
+forge brief answer "$PLAN" login-route q1 "one message for both cases"</pre>
+<p>You can also answer in forge-ui's inspector. Answer while earlier waves run: an answer that lands after its task started is kept as late, and forge prints the command to queue a follow-up. When a merge changes files a waiting task depends on, that task's open questions are flagged as possibly stale. forge never answers for you and never picks the brief model.</p>
+<p><span class="coming">On the dev branch</span> Questions about a whole wave or plan, whose answers become plan changes you approve by their exact diff (<a href="https://github.com/Giamme/forge/issues/136">#136</a>).</p>
+
+<h2>Task summaries</h2>
+<p>A few plain sentences per task, plus one line for the task table, written by a cheap model from the task's facts only: its status, attempts, verdicts and findings. It never sees your code. A summary is rewritten only when those facts change.</p>
+<pre>/forge "..." --decompose-level medium --summaries on --summaries-model haiku:low
+
+forge control set "$PLAN" summaries on               <span class="c"># switch it during or after a run</span>
+forge control set "$PLAN" summaries off --task docs  <span class="c"># or per task</span></pre>
+<p>forge-ui shows each summary in the task inspector with its model, time and sources, and marks one out of date once the task has moved on.</p>
+
+<h2>Retro notes</h2>
+<p>With <code>--retro</code> (or <code>forge config set retro on</code>), builders and reviewers note what got in their way: a missing tool, a flaky test, a sandbox that blocked a command, a wrong instruction. Each note carries its command and error and is checked against the run's own logs.</p>
+<pre>forge retro report "$PLAN"   <span class="c"># retro.md: forge's problems, your project's, the environment's</span>
+forge retro issues "$PLAN"   <span class="c"># drafts redacted issues for forge's own repository</span></pre>
+<p>Nothing leaves your machine unless you approve a draft by its hash. The notes are about your setup as much as forge's: a missing dependency or a slow test lane shows up there too.</p>

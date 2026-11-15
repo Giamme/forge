@@ -1,0 +1,338 @@
+<!--
+title: forge: multi-model coding where a second model reviews every diff
+description: forge is a skill for Claude Code, Codex, OpenCode, OpenClaude, Antigravity and Grok. It plans your goal into tasks, routes each to the model and CLI you choose, has a second model review every real diff, and merges only what passes.
+-->
+<section class="stage" aria-label="A forge run, replayed">
+  <div class="stage-canvas" aria-hidden="true"><div class="stage-tags"></div></div>
+  <svg class="stage-fallback" viewBox="0 0 1200 700" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+    <g fill="none" stroke="currentColor" opacity=".35"><rect x="520" y="200" width="600" height="320" rx="14"/><path d="M640 300h80M640 420h80M800 300h80M880 360h80"/></g>
+  </svg>
+
+  <div class="float intro module">
+    <h1>One command. Many models. Every diff reviewed.</h1>
+    <p class="lede">forge is a skill for your coding agent. It plans your goal into tasks, sends each one to the model and CLI you choose, has a second model read every real diff, and merges only what passes.</p>
+    <div class="install">
+      <code><span class="nw"><span class="p">$ </span>npm install -g</span> <span class="nw">@giamme/forge &amp;&amp;</span> <span class="nw">forge install</span></code>
+      <button class="key" type="button" data-copy="npm install -g @giamme/forge &amp;&amp; forge install">Copy</button>
+    </div>
+    <div class="intro-keys">
+      <a class="key is-primary" href="docs/first-run.html">Your first run</a>
+      <a class="key" href="docs/index.html">How it works</a>
+      <span class="works">Runs inside Claude Code, Codex, OpenCode, OpenClaude, Antigravity and Grok.</span>
+    </div>
+  </div>
+
+  <div class="float session module" aria-label="Session transcript">
+    <div class="module-head">
+      <span class="plate">Session</span>
+      <span class="lamp"></span>
+      <span class="describer"><span data-session-status>waiting</span><span class="dim">demo run</span></span>
+      <button class="key small" type="button" data-replay>Replay</button>
+    </div>
+    <div class="session-pin" aria-live="polite"><span class="lamp is-red"></span><span data-pin></span></div>
+    <div class="session-body" role="log" aria-live="off"></div>
+  </div>
+</section>
+
+<section class="band" id="reviewed">
+  <div class="band-inner">
+    <div class="band-head">
+      <h2>forge reads the diff, not the claim</h2>
+      <p class="lede">Every builder model says it's done. forge doesn't take its word. A different model, the reviewer, is handed the real diff and has to break it. Here is a real kind of catch, on demo code.</p>
+    </div>
+    <div class="ledger">
+      <div class="ledger-page module">
+        <div class="module-head"><span class="plate">What the dwarf said</span><span class="mono">attempt 1</span></div>
+        <div class="claim">
+          <p class="who">sol  xhigh  codex  token-model</p>
+          <p>Done. Added the token model with issue, verify and revoke, plus expiry handling.</p>
+          <p><span class="ok">All 14 tests pass.</span> Ready to merge.</p>
+          <p class="claim-next">attempt 2 gets both findings, in this same worktree, and fixes its own code. The next review reads the whole task again.</p>
+          <p class="tail">changed  src/auth/tokens.py  +36 -0<br>ran      pytest -q tests/test_tokens.py<br>        14 passed in 0.41s<br>said     nothing about timing or revocation</p>
+        </div>
+      </div>
+      <div class="gutter">
+        <div class="verdict-box"><p class="v-head"><span class="lamp is-red"></span>forge: fail</p><p>Decided from the findings, not the reviewer's word: a confirmed P1 is at or above the P2 threshold.</p><p>A review with no verdict at all would fail too.</p></div>
+        <div class="verdict-box is-next"><p class="v-head"><span class="lamp is-amber"></span>Retry</p><p>The findings go back to the dwarf. Nothing merges until a review passes.</p></div>
+      </div>
+      <div class="ledger-page module">
+        <div class="module-head"><span class="plate">What qa read</span><span class="mono">opus  high  claude</span></div>
+        <div class="diff" role="group" aria-label="The reviewed diff of src/auth/tokens.py with two findings">
+          <div class="diff-file"><b>src/auth/tokens.py</b> +36 -0 <span class="sev p1">2 findings</span></div>
+          <div class="dl add"><span class="n">29</span><span class="s">+</span><span>def verify(token: Token, presented: str) -&gt; bool:</span></div>
+          <div class="dl add"><span class="n">30</span><span class="s">+</span><span>    if token.expires_at &lt; datetime.now(timezone.utc):</span></div>
+          <div class="dl add"><span class="n">31</span><span class="s">+</span><span>        return False</span></div>
+          <div class="dl add hit"><span class="n">32</span><span class="s">+</span><span>    return token.digest == _digest(presented)</span></div>
+          <div class="finding">
+            <div class="finding-head"><span class="sev p1">P1</span><span class="chip">Confirmed</span>line 32  reach=realistic  origin=new  evidence=traced</div>
+            The digest comparison is not constant-time, so response timing leaks how much of a token matched. Use <code>hmac.compare_digest</code>.
+          </div>
+          <div class="dl add"><span class="n">33</span><span class="s">+</span><span></span></div>
+          <div class="dl add hit"><span class="n">34</span><span class="s">+</span><span>def revoke(store, token: Token) -&gt; None:</span></div>
+          <div class="finding">
+            <div class="finding-head"><span class="sev p2">P2</span><span class="chip">Confirmed</span>line 34</div>
+            <code>revoke</code> deletes the stored digest, but <code>verify</code> never checks the store, so a revoked token keeps working until it expires.
+          </div>
+          <div class="dl add"><span class="n">35</span><span class="s">+</span><span>    store.delete(token.digest)</span></div>
+          <div class="diff-foot"><span class="c"># read in a throwaway copy of the repo; editing it would void the review</span>
+FORGE_TESTS: <span class="ok">RAN</span>
+FORGE_VERDICT: <span class="bad">FAIL</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="models">
+  <div class="band-inner">
+    <div class="band-head">
+      <h2>Any model, from any CLI</h2>
+      <p class="lede">One name picks a model everywhere: <code>alias:effort:cli</code>. Mix providers in one command, keep the reviewer on a different family, and move a model to another CLI when an account runs dry. Try it: this reads forge's own registry.</p>
+    </div>
+    <div class="composer module" data-composer data-registry="assets/registry.json">
+      <div class="composer-controls">
+        <div class="control-row"><div class="row-head"><span class="plate">Role</span></div><div class="bank" data-bank="role"></div></div>
+        <div class="control-row"><div class="row-head"><span class="plate">Model</span><small>the alias you type</small></div><div class="bank" data-bank="alias"></div></div>
+        <div class="control-row"><div class="row-head"><span class="plate">CLI</span><small>the first listed is its default</small></div><div class="bank" data-bank="harness"></div></div>
+        <div class="control-row"><div class="row-head"><span class="plate">Effort</span><small>struck through: forge would clamp it</small></div><div class="bank" data-bank="effort"></div></div>
+      </div>
+      <div class="composer-out" data-out aria-live="polite">
+        <div class="flag"></div>
+        <dl class="resolve">
+          <dt>model</dt><dd data-r="model"></dd>
+          <dt>runs on</dt><dd data-r="cli"></dd>
+          <dt>effort</dt><dd data-r="effort"></dd>
+        </dl>
+        <div class="note" data-r="note"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="approve">
+  <div class="band-inner">
+    <div class="band-head">
+      <h2>Nothing runs until you approve the table</h2>
+      <p class="lede">Ask for a parallel run and forge splits the goal, rates each task by the judgment it needs, and routes it by your rules. Then it stops and shows you this. Retier a row and its models change. Approve, and the waves run.</p>
+    </div>
+    <div class="approval module" data-approval>
+      <div class="module-head"><span class="plate">Approval table</span><code class="cmd">/forge "add auth: tokens, middleware, login, rate limit, docs" --decompose-level medium --profile balanced</code></div>
+      <div class="table-scroll">
+        <table class="atable">
+          <thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">Task</th><th scope="col">Difficulty</th><th scope="col">Builds</th><th scope="col">Reviews</th><th scope="col">Wave</th><th scope="col">Approach</th></tr></thead>
+          <tbody>
+            <tr data-tier="high" data-wave="1"><td><span class="lamp"></span></td><td class="t">token-model</td><td><span class="bank"><button type="button" data-tier="low">low</button><button type="button" data-tier="medium">med</button><button type="button" data-tier="high">high</button></span></td><td data-dwarf></td><td data-qa></td><td class="files">1</td><td class="approach">Token dataclass, issue and verify, digest at rest; owns src/auth/tokens.py</td></tr>
+            <tr data-tier="medium" data-wave="1"><td><span class="lamp"></span></td><td class="t">middleware</td><td><span class="bank"><button type="button" data-tier="low">low</button><button type="button" data-tier="medium">med</button><button type="button" data-tier="high">high</button></span></td><td data-dwarf></td><td data-qa></td><td class="files">1</td><td class="approach">Bearer check before every /api route; owns src/auth/middleware.py</td></tr>
+            <tr data-tier="medium" data-wave="2"><td><span class="lamp"></span></td><td class="t">login-route</td><td><span class="bank"><button type="button" data-tier="low">low</button><button type="button" data-tier="medium">med</button><button type="button" data-tier="high">high</button></span></td><td data-dwarf></td><td data-qa></td><td class="files">2</td><td class="approach">POST /login issues a token through the token model; waits on both</td></tr>
+            <tr data-tier="medium" data-wave="2"><td><span class="lamp"></span></td><td class="t">rate-limit</td><td><span class="bank"><button type="button" data-tier="low">low</button><button type="button" data-tier="medium">med</button><button type="button" data-tier="high">high</button></span></td><td data-dwarf></td><td data-qa></td><td class="files">2</td><td class="approach">Token bucket per IP on /login, in the middleware's hook</td></tr>
+            <tr data-tier="low" data-wave="3"><td><span class="lamp"></span></td><td class="t">docs</td><td><span class="bank"><button type="button" data-tier="low">low</button><button type="button" data-tier="medium">med</button><button type="button" data-tier="high">high</button></span></td><td data-dwarf></td><td data-qa></td><td class="files">3</td><td class="approach">docs/auth.md: issuing, verifying and revoking tokens</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="table-notes">
+        <p><b>Own worktree</b><span>Each row runs alone in its own git worktree on <code>forge/a1c4/&lt;task&gt;</code>, with a fresh session and a brief of what already merged.</span></p>
+        <p><b>Waves</b><span>Wave 2 waits for wave 1 to merge; tasks run together only when they own different files, and forge says why one waits.</span></p>
+        <p><b>Approach</b><span>One planner wrote every row's approach, so the seams between tasks fit. The reviewer gets the same plan.</span></p>
+      </div>
+      <div class="approval-foot"><span data-count></span><button class="key is-primary" type="button" data-approve>Approve and run</button></div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="steer">
+  <div class="band-inner">
+    <div class="band-head">
+      <h2>Steer it while it runs</h2>
+      <p class="lede">A run can take an hour. You stay in charge the whole time: answer the questions only you can answer, resize it, pin a model, retry, or accept a task the reviewer won't let go, from the terminal or from forge-ui.</p>
+    </div>
+    <div class="steer">
+      <div class="steer-col">
+        <div class="qcard module">
+          <div class="module-head"><span class="plate">Brief</span><span class="describer">login-route <span class="dim">must answer</span></span></div>
+          <div class="qcard-body">
+            <p class="q">Should a failed login say whether the email exists?</p>
+            <p class="why">Why it matters: telling them apart helps users, and helps attackers list accounts. The task can't pick for you.</p>
+            <div class="opts" role="radiogroup" aria-label="Answer">
+              <label><input type="radio" name="brief" checked> One message for both cases</label>
+              <label><input type="radio" name="brief"> Say which one failed</label>
+            </div>
+            <p class="default">default if unanswered: one message for both cases</p>
+          </div>
+        </div>
+        <ul class="steer-list">
+          <li><b>Brief mode</b><span>Before a task starts, a cheap read-only model writes the questions only you can answer, with options and a default. <code>gated</code> holds a task until its must-answer questions are answered.</span></li>
+          <li><b>Task summaries</b><span>A few plain sentences per task, rewritten only when its attempts or review change, so you know where it stands without reading logs.</span></li>
+          <li><b>Retro notes</b><span>Builders and reviewers note what got in their way: a missing tool, a flaky test, a wrong instruction. You decide what becomes an issue.</span></li>
+        </ul>
+      </div>
+      <div class="controls-log module" data-steer>
+        <div class="module-head"><span class="plate">forge control</span><span class="describer">run a1c4 <span class="dim">live</span></span></div>
+        <div class="bank" role="group" aria-label="Controls">
+          <button type="button" data-control="drain"><span class="lamp"></span>Drain</button>
+          <button type="button" data-control="resume"><span class="lamp"></span>Resume</button>
+          <button type="button" data-control="pin"><span class="lamp"></span>Pin model</button>
+          <button type="button" data-control="retry"><span class="lamp"></span>Retry</button>
+          <button type="button" data-control="accept"><span class="lamp"></span>Accept</button>
+          <button type="button" data-control="stop"><span class="lamp"></span>Stop</button>
+        </div>
+<pre data-nocopy><span class="c"># press a control. each one is a forge command,
+# logged with who asked and applied at the scheduler's next pass.</span></pre>
+        <ul class="steer-list" style="margin: 0 14px 14px">
+          <li><b>Infra isn't failure</b><span>A rate limit, quota, sign-in or network stop spends no attempt. forge pauses only the model or CLI that's stuck, moves sideways to a healthy one in the same tier, or waits it out.</span></li>
+          <li><b>Escalation</b><span>A task that keeps failing moves to a stronger model from your own pools, and the table shows who decided.</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band cloud-band" id="forge-ui">
+  <div class="band-inner">
+    <div class="band-head">
+      <h2>Every run, live, in 3D</h2>
+      <p class="lede">forge-ui is the optional local viewer forge offers at the start of a run. This is its run cloud, drawn here live: every run as a block, grouped by repository, lamps lit by state. Drag it, hover a run, change the layout.</p>
+    </div>
+    <div class="cloud-wrap">
+    <div class="cloud">
+      <div class="cloud-controls">
+        <div class="bank" data-layouts role="group" aria-label="Layout">
+          <button type="button" data-layout="helix" aria-pressed="true"><span class="lamp"></span>Helix</button>
+          <button type="button" data-layout="sphere" aria-pressed="false"><span class="lamp"></span>Sphere</button>
+          <button type="button" data-layout="galaxy" aria-pressed="false"><span class="lamp"></span>Galaxy</button>
+          <button type="button" data-layout="timeline" aria-pressed="false"><span class="lamp"></span>Timeline</button>
+        </div>
+      </div>
+      <div class="cloud-card module" hidden>
+        <span class="lamp"></span>
+        <p class="goal" data-c="goal"></p>
+        <p class="meta" data-c="meta"></p>
+      </div>
+      <div data-cloud style="position:absolute;inset:0" aria-label="Run cloud, demo data"></div>
+      <div class="cloud-legend module" aria-hidden="true"><span><span class="lamp is-green"></span>merged</span><span><span class="lamp is-amber"></span>running</span><span><span class="lamp is-red"></span>failed</span><span>demo data</span></div>
+    </div>
+    <div class="screens module" aria-label="What else forge-ui shows">
+      <div><b>The plate</b><span>A run's tasks in their waves, then on the clock attempt by attempt, with the critical path lit.</span></div>
+      <div><b>Findings on lines</b><span>Exactly the diff each reviewer read, every P0 to P3 finding under the line it names.</span></div>
+      <div><b>Each conversation</b><span>What every dwarf and reviewer said, ran and changed, read from its CLI's own log.</span></div>
+      <div><b>Projects, worktrees, disk</b><span>Each repository's runs, findings and memory; every worktree forge made; what forge takes on disk.</span></div>
+    </div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="measured">
+  <div class="band-inner">
+    <div class="measure">
+      <div class="measure-notes">
+        <h2>Measured on your code, not on benchmarks</h2>
+        <p class="lede">forge remembers what each run taught it about your repository, and records every run's inputs and outcomes outside your repos. Over time you know which models pass first time on your code, and what a reviewer's PASS was worth.</p>
+<pre data-nocopy><span class="c"># .forge/memory.md  (small, capped, given to every run)</span>
+## Verify
+- pytest -q runs the suite; make test also lints and is 4x slower
+
+## Known traps
+- src/proto/*_pb2.py is generated, never hand-edit  [src/proto]
+
+## Recurring QA findings
+- 3x: route added without updating openapi.yaml  [src/routes]</pre>
+        <p>The model that hit the landmine writes it down. A review finding has to show up in two runs before it counts, a fact about a deleted file is dropped, and the file never grows past 40 lines.</p>
+      </div>
+      <div class="board module">
+        <div class="module-head"><span class="plate">Models</span><span class="describer">demo data <span class="dim">first attempts</span></span></div>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Implementer</th><th>Tasks</th><th>First-attempt pass</th><th>Retries</th><th>Median time</th></tr></thead>
+            <tbody>
+              <tr><td><span class="mplate"><b>sol</b><i>xhigh</i></span></td><td class="num">47</td><td class="num">79% <span class="ci"><i style="left:56%;width:28%"></i><b style="left:66%"></b></span></td><td class="num">13</td><td class="num">19m18s</td></tr>
+              <tr><td><span class="mplate"><b>opus</b><i>high</i></span></td><td class="num">28</td><td class="num">78% <span class="ci"><i style="left:50%;width:36%"></i><b style="left:65%"></b></span></td><td class="num">7</td><td class="num">21m28s</td></tr>
+              <tr><td><span class="mplate"><b>sonnet</b><i>medium</i></span></td><td class="num">42</td><td class="num">61% <span class="ci"><i style="left:38%;width:30%"></i><b style="left:51%"></b></span></td><td class="num">17</td><td class="num">11m08s</td></tr>
+              <tr><td><span class="mplate"><b>haiku</b><i>xhigh</i></span></td><td class="num">42</td><td class="num">68% <span class="ci"><i style="left:44%;width:30%"></i><b style="left:57%"></b></span></td><td class="num">11</td><td class="num">13m27s</td></tr>
+              <tr><td><span class="mplate"><b>grok</b><i>high</i></span></td><td class="num">45</td><td class="num">64% <span class="ci"><i style="left:41%;width:29%"></i><b style="left:54%"></b></span></td><td class="num">14</td><td class="num">13m49s</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="caveat">Observational, not causal: forge sends hard tasks to strong models, so a model that gets the hard ones looks worse than it is. forge-ui says so too.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="never">
+  <div class="band-inner">
+    <div class="never-wrap">
+      <div><h2>What forge never does</h2><p class="lede">forge works next to your code, not on top of it. Every run keeps these.</p></div>
+      <ul class="never module">
+      <li><b>It never pushes.</b><span>There is no push step. Your remote changes only when you push.</span></li>
+      <li><b>It never commits to your branch.</b><span>Parallel work lives on branches forge makes for itself until you run <code>integrate --approved</code>. A single task's change stays uncommitted.</span></li>
+      <li><b>It never picks a model for you.</b><span>Every dispatch spends your quota. Leave out the builder and forge asks.</span></li>
+      <li><b>It never merges unreviewed code.</b><span>Only the exact commit a reviewer passed can merge. Overriding a reviewer takes a written reason and <code>--approved</code>.</span></li>
+      <li><b>It never deletes a failed attempt.</b><span>The branch and worktree stay: the record of what went wrong and the place to retry from.</span></li>
+      <li><b>It never drops a sandbox on its own.</b><span>Only <code>--yolo-dwarf</code> or <code>--yolo-qa</code> lets a role out, and only that role.</span></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="built-with-forge">
+  <div class="band-inner selfbuilt">
+    <div>
+      <h2>Built with forge</h2>
+      <p class="lede">forge develops itself. Its own history is full of runs: tasks attempted, reviewed, retried and merged by forge, then checked by a person.</p>
+      <ol class="releases" aria-label="Releases, oldest first"><li><b>0.2</b></li><li><b>0.3</b></li><li><b>0.4</b></li><li><b>0.5</b></li><li><b>0.6</b></li><li><b>0.7</b></li><li><b>0.7.1</b></li><li><b>0.8</b></li><li><b>0.9</b></li><li><b>0.10</b></li><li><b>0.11</b></li><li><b>0.11.1</b></li><li><b>0.12</b></li><li><b>0.12.1</b></li><li><b>0.13</b></li><li><b>0.13.1</b></li><li><b>0.14</b></li><li><b>0.14.1</b></li><li><b>0.15</b></li><li><b>0.16</b></li><li><b>0.17</b></li><li><b>0.18</b></li></ol>
+      <p class="releases-note">22 releases between 6 October and 13 November 2026.</p>
+    </div>
+<pre class="gitlog" data-nocopy><span class="c"># git log on forge's dev branch</span>
+<span class="h">d8a6eed</span> forge: merge sweep-1
+<span class="h">68114ae</span> forge(sweep-1) attempt 3: Fix 4 review findings in scripts/forge-parallel.sh
+<span class="h">5cfa8df</span> forge(sweep-1) attempt 2: Fix 4 review findings in scripts/forge-parallel.sh
+<span class="h">06fcecd</span> forge(sweep-1) attempt 1: Fix 4 review findings in scripts/forge-parallel.sh
+<span class="h">b262e21</span> forge: merge sweep-2
+<span class="h">595f6ae</span> forge(sweep-2) attempt 1: Fix 4 review findings in scripts/forge_brief/proposals.py
+<span class="h">61ef643</span> forge(sweep-5) attempt 1: Fix 1 review finding in scripts/forge-lib-plans.sh
+<span class="h">4d6349d</span> forge(sweep-3) attempt 1: Fix 1 review finding in scripts/forge-groups.py</pre>
+  </div>
+</section>
+
+<section class="band" id="next">
+  <div class="band-inner">
+    <div class="band-head">
+      <h2>What's coming</h2>
+      <p class="lede">forge moves fast and in the open. Here is what's on the dev branch now and what's planned next, straight from the issue tracker.</p>
+    </div>
+    <div class="next">
+      <div class="next-col">
+        <h3><span class="lamp is-amber is-blink"></span>On the dev branch</h3>
+        <ul>
+          <li><b>Group review</b><span>Related tasks share one reviewer over their combined diff; each finding goes back only to the task whose files it names.</span><a href="https://github.com/Giamme/forge/issues/140">#140</a></li>
+          <li><b>Brief proposals</b><span>Answer questions for a whole wave or plan; the answer becomes a plan change you approve by its exact diff.</span><a href="https://github.com/Giamme/forge/issues/136">#136</a></li>
+          <li><b>Reviewer-session sampling</b><span>Compare continued and fresh review rounds inside one run.</span><a href="https://github.com/Giamme/forge/issues/116">#116</a></li>
+        </ul>
+      </div>
+      <div class="next-col">
+        <h3><span class="lamp"></span>Planned</h3>
+        <ul>
+          <li><b>Resume from any CLI</b><span>Start a run in Claude Code, finish it in Codex from a handoff, without a second scheduler.</span><a href="https://github.com/Giamme/forge/issues/146">#146</a></li>
+          <li><b>Decomposition at every level</b><span>Goal to plans to tasks to subtasks, native to forge, each split a recorded decision within limits you set.</span><a href="https://github.com/Giamme/forge/issues/153">#153</a></li>
+          <li><b>Chained plans</b><span>Start a plan from another plan's integration branch.</span><a href="https://github.com/Giamme/forge/issues/143">#143</a></li>
+          <li><b>Scripted tasks</b><span>A plan row that runs a repository command instead of a model.</span><a href="https://github.com/Giamme/forge/issues/142">#142</a></li>
+          <li><b>Commands from forge-ui</b><span>Run forge's commands from the page, and clean up worktrees and memories in bulk.</span><a href="https://github.com/Giamme/forge/issues/147">#147</a></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="close">
+  <div class="close-inner">
+    <div>
+      <h2>Hand forge one goal</h2>
+      <p>Install it, open your agent CLI in a repo, and give it something small you'd normally do yourself. Pick the builder; the reviewer defaults to opus.</p>
+      <div class="close-keys"><a class="key" href="docs/first-run.html">Your first run</a><a class="key ghost" href="docs/index.html">How forge works</a></div>
+    </div>
+<pre><span class="p">$ </span>npm install -g @giamme/forge &amp;&amp; forge install
+
+<span class="c"># then, inside Claude Code, Codex or any CLI forge found</span>
+/forge "make the cache key include the tenant id" --dwarf sol:high</pre>
+  </div>
+</section>
+<script type="module" src="assets/home.js"></script>

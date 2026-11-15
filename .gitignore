@@ -24,3 +24,9 @@ giamme-forge-*.tgz
 # September routing-research output. Untracked so a review export does not copy it
 # into every run dir (#35).
 jev-backtests/
+
+# The website's build output (site/build.py); GitHub Pages builds it in CI
+site/_site/
+
+# Impeccable decision-round sketches (the chosen direction lives in the surface briefs)
+.impeccable/mocks/

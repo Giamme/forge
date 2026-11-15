@@ -18,6 +18,7 @@
   <a href="#quick-start">Quick start</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#forge-ui">forge-ui</a> ·
+  <a href="https://giamme.github.io/forge/">Website</a> ·
   <a href="docs/README.md">Docs</a> ·
   <a href="CHANGELOG.md">Changelog</a>
 </p>
