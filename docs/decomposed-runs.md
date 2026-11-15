@@ -227,6 +227,21 @@ For Fractal execution, pass tier pools to `plan` and backend/limit flags to `run
 `--max-parallel` limits task pipelines; the shared `--fractal-concurrency` limit includes
 all their child invocations and QA. See [decomposed Fractal execution](../references/decompose.md#fractal-within-decomposed-tasks).
 
+A plan can start from a finished plan's integration branch. `A` and `B` are plan directories:
+
+```
+plan B --after A
+run B
+integrate B --approved
+```
+
+`plan` exits 2 unless `A` is a plan of the same repo, every task is `MERGED`, the integration
+branch tip is `A`'s `accepted.integration`, and `A`'s scheduler is not live. It writes `after`
+and `integration.base`, and creates `B`'s integration branch at that tip. `run` exits 3 if `A`
+moved and `B` has not yet merged a task. `integrate` prints `this brings plans` and the run
+ids, oldest first. `forge runs` shows `after <run>` on `B`. See
+[Chained plans](../references/decompose.md#chained-plans).
+
 ## Resuming an interrupted run
 
 Ctrl-C (or a SIGTERM) on `run` stops the running tasks' process groups, waiting up to
@@ -251,6 +266,65 @@ For a Fractal-backed run, use `forge fractal resume RUN_ID` to recover recorded 
 and pipeline checkpoints. A task/subtree selector resumes only that execution scope.
 Explicit `retry` retains the backend and frozen pools; a replacement dwarf must already
 belong to that pool. See [recovery](../references/fractal.md#limits-and-lifecycle).
+
+### From another session or harness
+
+Start with `forge handoff`. With no argument inside a checkout, or with `--repo DIR`, it
+reports that repository's newest registered plan that is live or still has a task not
+`MERGED` (run-dir mtime; a plan is one with `tasks.tsv`). `forge handoff [show] RUN_DIR
+[--json]` reports the run you name and writes nothing: id, kind, the first five non-empty
+lines of `request.md`, the plan dir, repo, worktree root and integration branch, plus the
+recorded base and accepted commits; the option files and `run.flags.json`; whether the
+scheduler is live; each task; what needs a person (a `NEEDS_INPUT` question verbatim, the
+first line of a `NEEDS_DECISION`'s `decision.md`, an `INFRA` cause and hint); the last
+`control.log` changes; tasks left `RUNNING` with no live scheduler; session notes, newest
+first; the driver; and the exact next commands. A path that is not a run dir exits 2. No
+matching run exits 3.
+
+`forge handoff resume RUN_DIR` carries a decomposed run on. It claims the run first; a
+refused claim exits 3 and changes nothing else. A live scheduler is followed and nothing is
+started — leave that run to `forge control show`, and do not start `run` beside it. A
+Fractal plan is not restarted here; resume names `forge fractal resume`. Otherwise each
+task still `RUNNING` is recovered, and only when its worktree is exactly `<wt_root>/<id>`
+on `forge/<run_id>/<id>` and any leftover `dwarf.harness` or `qa.harness` has been stopped:
+the uncommitted work, untracked files included, is saved to
+`tasks/<id>/interrupted-<epoch>.diff`, and only then is the worktree reset and cleaned, the
+status set to `INTERRUPTED`, and the attempt counter rewound when `attempts.tsv` has no row
+for that attempt, so the attempt is not counted twice. A guard that fails leaves that
+worktree untouched. Every `INTERRUPTED` task, including one that was already interrupted,
+is prepared with `retry --no-dispatch`. `run` then starts again, detached, from
+`run.flags.json`. Output goes to `resume-<epoch>.log`; the exit code is written to
+`resume-<epoch>.done` when the run ends. A launch that fails exits 1.
+
+`run` writes `run.flags.json` at each real start. A dry run and a `retry` do not, and a
+split or rerun does not copy it. The fields are `retry_failed`, `infra_retries`, `sweep`,
+`sweep_max`, `sweep_plausible`, `sweep_ahead`, `max_parallel`, `timeout`, `verify`,
+`fractal`, `argv` and `at`. `retry_failed` and `infra_retries` are the budgets the
+scheduler removes when it stops (`retry_budget`, `infra_budget`, and each task's
+`retry_budget`), so resume can pass them again. Resume rebuilds the `run` command from
+those fields; it does not replay `argv` as typed. A run from before 0.19 has no file:
+resume still saves and prepares, then prints the `run` command to finish by hand and
+starts nothing. An unreadable file does the same, and says the file cannot be read.
+
+`forge handoff note RUN_DIR TEXT [--actor A]` appends one JSON line to
+`handoff.notes.jsonl` (`at`, `actor`, `text`): a decision the user made, or a hand fix
+under way, that is not in the plan. Whitespace collapses to single spaces. Empty text,
+text over 2000 characters, and text that is not UTF-8 are refused. `--actor` defaults to
+`cli`.
+
+`forge handoff claim RUN_DIR --harness H [--session S]` writes `handoff.driver.json`
+(`harness`, `session`, `since`, `last_seen`). `--harness` matches `[a-z0-9._-]{1,40}`.
+`--session` is an id with no whitespace, at most 200 characters. `resume` claims the same
+way, and its `--harness` defaults to `unknown`. The same harness and session keep `since`
+and refresh `last_seen`. A different driver last seen under 12 hours ago is refused
+(exit 3) unless `--take-over`. One last seen 12 hours ago or earlier is replaced without that flag.
+Replacing a driver appends one `control.log` line (`action` `take-over`, `actor` `cli`,
+`key` `driver`) and a dataset `control` event. When `control.log` is not a regular file
+the replacement is refused before the driver file changes. Take over only when asked.
+
+Running `run` again, and an explicit `retry` for a failed or interrupted task, stays
+the way to finish by hand. That is also the command resume prints when
+`run.flags.json` is missing.
 
 ## Changing a run while it works
 
@@ -296,6 +370,11 @@ waiting on it start in the same run. `control.log` records who asked (`--actor`)
 `tasks/<id>/accepted.by` the same. With no live run it is refused and names the plain `accept`.
 A forge command the plan lock refuses says which command holds it (pid and since when), and on a
 live run which `forge control` command to use instead.
+
+Editing a task's `prompt.md` or `approach.md` while a run is going is allowed. An attempt
+already running is not reviewed against the new text: it is marked `STALE` and re-dispatched
+with the new requirements, and the attempt is not spent. `control.log` records `prompt-changed`
+with actor `scheduler`. See [failures that are the plan's](reviews.md#failures-that-are-the-plans).
 
 Each change is validated, written under `control.lock`, and says when it applies:
 
@@ -391,7 +470,7 @@ docs	-	low	README.md	-	-	Document the auth flow
 | `deps` | comma-list of task ids that must land first, or `-` |
 | `difficulty` | `low` \| `medium` \| `high` |
 | `files` | expected touch set, comma-separated — **drives disjointness** |
-| `dwarf` / `qa` | `-` to resolve from the routing rules; an explicit spec always wins |
+| `dwarf` / `qa` | `-` to resolve from the routing rules; an explicit spec always wins. `script` in `dwarf` runs `tasks/<id>/run` |
 | `title` | one line, shown in the approval table and the capsule |
 
 Each task also needs `tasks/<id>/prompt.md`, written the same way a single-task forge goal is.
@@ -403,3 +482,9 @@ understated `files` is how two dwarves end up in the same file.
 `plan` writes resolved specs back into the `dwarf`/`qa` columns, so `run` never consults the
 routing rules — and an explicit value survives a re-plan, which is what makes a gate override
 durable. (`UNASSIGNED` is treated as a leftover marker and re-resolved.)
+
+A `dwarf` value of `script` runs the executable `tasks/<id>/run` and is not given a model.
+`plan` exits 2 when that file is missing or not executable, shows the row, and counts no
+implementer dispatch. A non-zero exit or a timeout is `FAIL` with no review and no escalation.
+A retry runs the command again from the base, so the way to change the diff is to edit `run`.
+See [Scripted tasks](../references/decompose.md#scripted-tasks).

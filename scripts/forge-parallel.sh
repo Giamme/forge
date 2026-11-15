@@ -76,6 +76,14 @@
 #                           still what the review judged, and starts fresh whenever it cannot;
 #                           each attempt is logged in tasks/<id>/implementer_sessions.tsv.
 #                           `--no-implementer-session` turns it off (the default)
+#   --retry-per-model N     a task may fail N times (1-99) on each model the retry policy
+#                           gives it, then it moves a rung up. Replaces --escalate-after for
+#                           this plan. Kept in retry_per_model. `--no-retry-per-model` removes
+#                           it; a re-plan with neither keeps the file
+#   --after PREV            start this plan from plan PREV's integration branch (#143): PREV must be
+#                           fully merged, on its accepted tip, not running, and in the same repo.
+#                           Kept in `after` (PREV's path) and `integration.base`; plan creates
+#                           forge/<run>-integration there. A re-plan without the flag keeps it
 #   --retro | --no-retro   agents record what got in their way (retro, #132); plan file `retro_mode`
 #                           (on or off; not `retro`, the notes directory). Without a flag the plan
 #                           keeps its earlier choice, else (first plan only) takes the user
@@ -235,6 +243,16 @@ pool_pick() { # pool_pick <comma-list> <index>
     n=$((n+1)); last="$w"
   done
   echo "$last"
+}
+
+# `script` is a task kind (tasks/<id>/run), not a model. A pool that can hand it out would
+# make a blank row look scripted without a run file, or run a model under that name.
+forge_refuse_script_pool() { # forge_refuse_script_pool <flag> <comma-list>
+  local spec
+  for spec in $(printf '%s' "${2:-}" | tr ',' ' '); do
+    [ "$spec" = script ] || continue
+    die "the $1 pool names 'script', which is reserved for a task that runs tasks/<id>/run"
+  done
 }
 
 # --- profiles (#48) -------------------------------------------------------------
@@ -694,7 +712,7 @@ forge_groups_flags_early() {
         printf '%s' "${2:-}" | grep -Eq '^[0-9]{1,9}$' && [ "$((10#$2))" -ge 1 ] \
           || die "--group-max-diff-kb needs a positive integer"
         shift 2 ;;
-      --repo|--planner|--decompose-level|--profile|--shadow-qa|--shadow-rate|--explore|--dwarf|--dwarf-high|--dwarf-medium|--dwarf-low|--qa|--qa-high|--qa-medium|--qa-low|--pre-review-parallel|--reviewer-session-rate|--fast|--brief|--brief-scope|--brief-model|--summaries|--summaries-model|--qa-threshold|--max-attempts|--converge-window|--gate|--decide-budget)
+      --repo|--after|--planner|--decompose-level|--profile|--shadow-qa|--shadow-rate|--explore|--dwarf|--dwarf-high|--dwarf-medium|--dwarf-low|--qa|--qa-high|--qa-medium|--qa-low|--pre-review-parallel|--reviewer-session-rate|--fast|--brief|--brief-scope|--brief-model|--summaries|--summaries-model|--qa-threshold|--max-attempts|--converge-window|--gate|--decide-budget)
         if [ $# -ge 2 ]; then shift 2; else shift; fi ;;
       *) shift ;;
     esac
@@ -749,18 +767,24 @@ do_plan() {
   local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="" FAIL_FIRST="" REVIEWER_SESSION="" RS_RATE="" IMPLEMENTER_SESSION="" PRE_REVIEW="" PRE_REVIEW_PARALLEL=""
   local FAST_GIVEN=0 FAST_PARSED=""
   local RETRO_FLAG="" BRIEF_FLAG="" BRIEF_SCOPE_FLAG="" BRIEF_MODEL_FLAG="" SUMM_FLAG="" SUMM_MODEL_FLAG=""
+  local RETRY_PER_MODEL=""
   local COLLAPSE=0 COLLAPSED_NOW=0 FEAT_ERR="" GRP_SRC="" GRP_REVIEW=0 GRP_MAX="" GRP_DIFF=""
+  local CHAIN_PREV="" CHAIN_BASE="" CHAIN_MOVE=0
   # The retro, brief and summaries choices, settled before anything is written: a refusal
   # (a bad value, no model, a spec that does not resolve) leaves the plan dir as it was.
   forge_features_scan "$@"
   [ -d "$PLAN" ] || die "plan dir '$PLAN' does not exist"
   forge_features_resolve "$PLAN" || die "$FEAT_ERR" 2
+  # --after (#143), settled before anything is written: every refusal leaves the plan dir and the
+  # branches as they were. Its files and the integration branch are written below, once the repo is known.
+  plans_chain_early "$PLAN" "$@"
   # Before the loop: --qa-threshold and --max-attempts write their files while parsing,
   # so a group flag refused later on the same command would leave those files behind.
   forge_groups_flags_early "$@"
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)         REPO="${2:?}"; shift 2 ;;
+      --after)        [ -n "${2:-}" ] || die "--after needs a plan directory" 2; shift 2 ;;
       --planner)      PLANNER="${2:?}"; shift 2 ;;
       --decompose-level)
         case "${2:-}" in low|medium|high) DLEVEL="$2"; shift 2 ;;
@@ -812,6 +836,11 @@ do_plan() {
       --reviewer-session-rate)
         printf '%s' "${2:-}" | grep -Eq '^(0?\.[0-9]+|0|1|1\.0+)$' || die "--reviewer-session-rate needs a share between 0 and 1"
         REVIEWER_SESSION=on; RS_RATE="$2"; shift 2 ;;
+      --retry-per-model)
+        printf '%s' "${2:-}" | grep -Eq '^[1-9][0-9]?$' \
+          || die "--retry-per-model needs an integer from 1 to 99" 2
+        RETRY_PER_MODEL="$((10#$2))"; shift 2 ;;
+      --no-retry-per-model) RETRY_PER_MODEL=off; shift ;;
       --implementer-session)    IMPLEMENTER_SESSION=on; shift ;;
       --no-implementer-session) IMPLEMENTER_SESSION=off; shift ;;
       --fast)
@@ -845,6 +874,11 @@ do_plan() {
   # The profile (#48) first: its gates and budget count for every decision-model step below,
   # and its values stand in for the flags this call did not give.
   forge_profile_plan
+  # Pools are flags or the profile just applied. `script` in either is a reserved word.
+  forge_refuse_script_pool --dwarf "$D_ANY"
+  forge_refuse_script_pool --dwarf-high "$D_HI"
+  forge_refuse_script_pool --dwarf-medium "$D_MD"
+  forge_refuse_script_pool --dwarf-low "$D_LO"
   [ "$JEV_OPTS" = 1 ] && forge_jev_export
   # Freeze the selection next to the task table, so run and retry restore it rather
   # than re-deciding. Written on every plan: a re-plan is a new decision.
@@ -895,6 +929,12 @@ do_plan() {
   fi
   # Implementer-session continuation (opt-in, #90): the same `on` file, read the same way.
   case "$IMPLEMENTER_SESSION" in on) printf '%s\n' on > "$PLAN/implementer_session" ;; off) rm -f "$PLAN/implementer_session" ;; esac
+  # N failures on each rung (#141). Omitted on a re-plan, so an earlier choice stays.
+  case "$RETRY_PER_MODEL" in
+    '') ;;
+    off) rm -f "$PLAN/retry_per_model" ;;
+    *) printf '%s\n' "$RETRY_PER_MODEL" > "$PLAN/retry_per_model" || die "could not write $PLAN/retry_per_model" ;;
+  esac
   # Which roles ask for the fast tier. Omitted on a re-plan, so an earlier choice stays.
   forge_fast_store "$PLAN"
   # Retro, brief and summaries (#132, #133, #135), as forge_features_resolve settled them.
@@ -956,7 +996,7 @@ PY
   # Uncommitted work is invisible to every dwarf, because worktrees branch from a
   # commit. That is the likeliest way to get a confusingly wrong result, so it is
   # stated loudly rather than left for the user to deduce from an odd diff.
-  if [ -n "$(cd "$REPO" && git status --porcelain 2>/dev/null)" ]; then
+  if [ ! -s "$PLAN/after" ] && [ -z "${CHAIN_PREV:-}" ] && [ -n "$(cd "$REPO" && git status --porcelain 2>/dev/null)" ]; then
     note "WARNING: '$REPO' has uncommitted changes. Task worktrees branch from HEAD,"
     note "         so those edits will NOT be visible to any dwarf. Commit or stash first"
     note "         if the tasks depend on them."
@@ -1088,8 +1128,12 @@ EOF
     fi
     # resolve dwarf. UNASSIGNED is a marker from a previous plan, not a user
     # choice, so it must be re-resolved rather than preserved like a real override.
+    # `script` is an override too: no pool, no exploration, and the cell stays `script`.
     [ "$dw" = "UNASSIGNED" ] && dw="-"
-    if [ "$dw" = "-" ] || [ -z "$dw" ]; then
+    if [ "$dw" = "script" ]; then
+      [ -x "$PLAN/tasks/$id/run" ] \
+        || die "task '$id' is a script task but tasks/$id/run is missing or not executable"
+    elif [ "$dw" = "-" ] || [ -z "$dw" ]; then
       case "$diff" in
         high)   if [ -n "$D_HI" ]; then dw="$(pool_pick "$D_HI" "$hi_i")"; hi_i=$((hi_i+1)); fi ;;
         medium) if [ -n "$D_MD" ]; then dw="$(pool_pick "$D_MD" "$md_i")"; md_i=$((md_i+1)); fi ;;
@@ -1137,6 +1181,8 @@ EOF
   fi
 
   compute_waves "$PLAN"
+  # Only once tasks.tsv has passed its checks: a refused plan leaves no after, integration.base or branch.
+  plans_chain_store "$PLAN" "$REPO" "$(cat "$PLAN/run_id")"
 
   # --- jev: forward dependency ----------------------------------------------------
   # Wave order is structural, but it cannot see an earlier-wave task written against
@@ -1258,14 +1304,58 @@ compute_waves() {
   mv -f "$D" "$PLAN/deferrals.txt" && mv -f "$W" "$PLAN/waves.tsv"
 }
 
+# Under the dispatch estimate when the plan set --retry-per-model (#141). Nothing without the file.
+# The worst case and the tasks the attempt cap cuts short come from forge-route.py worst-case.
+render_retry_per_model() { # render_retry_per_model <plan>
+  [ -f "$1/retry_per_model" ] || return 0
+  python3 - "$SKILL_DIR/scripts/forge-route.py" "$1" <<'PY'
+import json, re, subprocess, sys
+route, plan = sys.argv[1], sys.argv[2]
+try:
+    n = open(plan + '/retry_per_model', encoding='utf-8').read().strip()
+except OSError:
+    sys.exit(0)
+print('retry per model: %s (a task may fail %s times on each model the retry policy gives it, then it moves a rung up)' % (n, n))
+try:
+    raw = subprocess.check_output([sys.executable, route, 'worst-case', '--plan', plan], text=True)
+    data = json.loads(raw)
+except (OSError, subprocess.CalledProcessError, ValueError):
+    sys.exit(0)
+print('worst case with retry-per-model %s: %s dispatches' % (n, data.get('total', 0)))
+capped = data.get('capped') or []
+if not capped:
+    sys.exit(0)
+cap = 8
+try:
+    text = open(plan + '/max_attempts', encoding='utf-8').read().strip()
+except OSError:
+    text = ''
+if re.fullmatch(r'[0-9]{1,9}', text):
+    cap = int(text)
+print('max-attempts %s stops these tasks before the top of their ladder: %s (plan --max-attempts N raises it)'
+      % (cap, ', '.join(str(task) for task in capped)))
+PY
+}
+
 render_table() {
   local PLAN="$1" T="$1/tasks.tsv" W="$1/waves.tsv"
   local run_id; run_id="$(cat "$PLAN/run_id")"
   local n; n="$(all_ids "$T" | wc -l | tr -d ' ')"
   local waves; waves="$(awk -F'\t' '{print $1}' "$W" | sort -u | wc -l | tr -d ' ')"
   echo "run forge/$run_id   repo $(cat "$PLAN/repo")"
+  plans_chain_line "$PLAN"
   [ -s "$PLAN/goal.txt" ] && echo "goal: $(head -1 "$PLAN/goal.txt")"
-  local est=$((n*2)) extra=""
+  # A scripted task runs tasks/<id>/run: no implementer dispatch. Its review still counts.
+  local dwarfs scripted=0 script_ids="" sid
+  dwarfs="$(awk -F'\t' '!/^#/ && NF && $5 != "script" { c++ } END { print c + 0 }' "$T")"
+  while IFS= read -r sid; do
+    [ -n "$sid" ] || continue
+    scripted=$((scripted + 1))
+    script_ids="${script_ids:+$script_ids, }$sid"
+  done <<EOF
+$(awk -F'\t' '!/^#/ && NF && $5 == "script" { print $1 }' "$T")
+EOF
+  local est=$((dwarfs + n)) extra=""
   if [ -s "$PLAN/planner" ]; then
     est=$((est+1)); extra=" + 1 planner ($(cat "$PLAN/planner"))"
   fi
@@ -1275,10 +1365,14 @@ render_table() {
   if [ -n "$grp_counts" ]; then
     read -r grp_n grp_m <<<"$grp_counts"
     reviews=$((n - grp_m + grp_n))
-    est=$((n + reviews + (est - n * 2)))
+    est=$((dwarfs + reviews + (est - dwarfs - n)))
   fi
-  echo "tasks: $n   waves: $waves   estimated dispatches: $est ($n dwarf + $reviews qa$extra)"
+  echo "tasks: $n   waves: $waves   estimated dispatches: $est ($dwarfs dwarf + $reviews qa$extra)"
   [ -z "$grp_counts" ] || echo "reviews: $reviews ($grp_n groups replace $grp_m task reviews)"
+  if [ "$scripted" -gt 0 ]; then
+    echo "scripted tasks: $scripted ($script_ids) run tasks/<id>/run; no implementer model"
+  fi
+  render_retry_per_model "$PLAN"
   if [ -s "$PLAN/shadow_qa" ]; then
     local rate; rate="$(cat "$PLAN/shadow_rate" 2>/dev/null || echo 0.1)"
     echo "shadow review: $(cat "$PLAN/shadow_qa") on a sampled $rate of reviewed attempts" \
@@ -1425,6 +1519,10 @@ preflight_plan() {
       flags=""; [ -f "$plan/yolo_$role" ] && flags=--yolo
       ft="$(forge_fast_tier "$plan" "$role")"
       spec="$(field "$plan/tasks.tsv" "$id" "$role")"
+      # A scripted task has no implementer model. Its reviewer is still checked.
+      if [ "$role" = dwarf ] && [ "$spec" = script ]; then
+        continue
+      fi
       # Once per spec, role and options: the same arguments get the same answer, and a note doctor
       # adds (a slow effort) is said once, not once per task.
       key="$role|$spec|$flags|$ft"
@@ -1648,7 +1746,7 @@ record_retry_source() { # record_retry_source <tdir> <attempt>
   trail="$tdir/retry_sources.tsv"; tmp="$tdir/.retry_sources.tsv.tmp"
   [ -s "$tdir/retry_findings.md" ] || return 0
   src="$(cat "$tdir/retry_findings.source" 2>/dev/null)"
-  case "$src" in review|prereview|bounce|message|answer) ;; *) src=review ;; esac
+  case "$src" in review|prereview|bounce|message|answer|prompt) ;; *) src=review ;; esac
   if [ -e "$trail" ]; then
     [ -f "$trail" ] && [ -r "$trail" ] || return 1
     awk -F'\t' -v n="$n" '$1 != n' "$trail" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
@@ -1663,6 +1761,148 @@ record_retry_source() { # record_retry_source <tdir> <attempt>
 qa_input_too_large() { # qa_input_too_large <task dir>
   grep -qE 'input_too_large|Input exceeds the maximum length|[Pp]rompt is too long|context_length_exceeded' \
     "$1/qa.log" "$1/qa.out" 2>/dev/null
+}
+
+# What the implementer was given (#150): prompt.md and approach.md as they were when dwarf.input was
+# built, kept next to them as prompt.dispatched / approach.dispatched. A missing approach.md is an empty
+# copy. Each goes through a temp file and mv; prompt.dispatched is written last, because its presence is
+# what says the pair is complete.
+record_dispatched_inputs() { # record_dispatched_inputs <tdir>
+  local tdir="$1" f tmp
+  for f in approach prompt; do
+    tmp="$tdir/.$f.dispatched.tmp"
+    if [ -f "$tdir/$f.md" ]; then cp "$tdir/$f.md" "$tmp" || { rm -f "$tmp"; return 1; }
+    else : > "$tmp" || return 1; fi
+    mv "$tmp" "$tdir/$f.dispatched" || { rm -f "$tmp"; return 1; }
+  done
+}
+
+# Whether the planner edited prompt.md or approach.md while the attempt ran (#150). Returns 0 when it did:
+# the attempt is then STALE, written to stale.diff and control.log, and the caller stops before any review.
+# Returns 1 when nothing changed, or when the attempt predates the .dispatched copies (no check possible).
+prompt_drifted() { # prompt_drifted <plan> <id> <tdir> <attempt>
+  local PLAN="$1" id="$2" tdir="$3" attempt="$4" f cur old changed=() tmp="$3/.stale.diff.tmp" what
+  [ -f "$tdir/prompt.dispatched" ] || return 1
+  : > "$tmp" || return 1
+  for f in prompt approach; do
+    cur="$tdir/$f.md"; [ -f "$cur" ] || cur=/dev/null
+    old="$tdir/$f.dispatched"; [ -f "$old" ] || continue
+    cmp -s "$old" "$cur" && continue
+    changed+=("$f.md")
+    diff -u --label "$f.md (attempt $attempt)" --label "$f.md (now)" "$old" "$cur" >> "$tmp" || true
+  done
+  if [ "${#changed[@]}" -eq 0 ]; then rm -f "$tmp" "$tdir/stale.diff"; return 1; fi
+  mv "$tmp" "$tdir/stale.diff" || rm -f "$tmp"
+  python3 - "$SKILL_DIR/scripts/forge-control.py" "$PLAN" "$id" "$attempt" "${changed[@]}" <<'PY' 2>/dev/null \
+    || note "$id: control.log not updated with the prompt change"
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('forge_control', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules['forge_control'] = module
+spec.loader.exec_module(module)
+module.audit(Path(sys.argv[2]), 'scheduler', 'prompt-changed', sys.argv[3], 'prompt', int(sys.argv[4]), None,
+             files=sys.argv[5:])
+PY
+  what="${changed[0]}"; [ "${#changed[@]}" -eq 1 ] || what="${changed[0]} and ${changed[1]}"
+  note "$id: $what changed during attempt $attempt — not reviewed; the implementer gets the new text (no attempt spent)"
+  echo STALE > "$tdir/status"
+  # The implementer has to run again, so a saved QA-only resume of this attempt no longer applies.
+  rm -f "$tdir/resume"
+  return 0
+}
+
+# A scripted task (#142) has the literal `script` in its dwarf column: its command is the executable
+# tasks/<id>/run, and its qa column reviews the result.
+task_is_script() { # task_is_script <plan> <id>
+  [ "$(field "$1/tasks.tsv" "$2" dwarf)" = script ]
+}
+
+# A fenced block of a file (its last <chars> characters when given), the fence longer than any run of
+# backticks inside it so the content cannot close it early.
+script_fenced() { # script_fenced <file> [chars]
+  python3 - "$1" "${2:-}" <<'PY'
+import re, sys
+text = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+if sys.argv[2]:
+    text = text[-int(sys.argv[2]):]
+fence = '`' * max([3] + [len(m) + 1 for m in re.findall(r'`+', text)])
+print(fence)
+print(text, end='' if text.endswith('\n') or not text else '\n')
+print(fence)
+PY
+}
+
+# Runs a scripted task's command from the task's base and records the run. Returns 0 when the command
+# exited 0 (the caller goes on to the snapshot and the review); otherwise the status and qa.last are
+# written and it returns 1: no review, no noretry (a person may edit run, and the next attempt resets
+# the worktree).
+run_script_task() { # run_script_task <plan> <id> <tdir> <wt> <base>
+  local PLAN="$1" id="$2" tdir="$3" wt="$4" base="$5" run="$3/run"
+  local limit="${FORGE_TIMEOUT:-2700}" pid rc=0 timed_out=0 started deadline waited=0 hex rec exit_json note_txt
+  # As for a dispatch: 0 is no limit, and a leading zero is decimal (bash would read 08 as octal).
+  case "$limit" in ''|*[!0-9]*) limit=2700 ;; esac
+  limit=$(( 10#$limit ))
+  local cmd=("$run")
+  if [ ! -f "$run" ] || [ ! -x "$run" ]; then
+    echo FAIL > "$tdir/status"
+    echo "tasks/$id/run is missing or not executable." > "$tdir/qa.last"
+    note "$id: tasks/$id/run is missing or not executable"; return 1
+  fi
+  head -c 2 "$run" | grep -q '^#!' || cmd=(/bin/bash "$run")
+  # Every attempt starts from the base, so the cumulative diff is what the command produced. The branch
+  # history stays; .forge is forge's own.
+  if ! { git -C "$wt" read-tree -u --reset "$base" && git -C "$wt" clean -fdq -e .forge; } >"$tdir/script.reset.out" 2>&1; then
+    echo ERROR > "$tdir/status"
+    note "$id: could not reset the worktree to its base — see $tdir/script.reset.out"; return 1
+  fi
+  : > "$tdir/script.log"
+  started="$(python3 -c 'import time; print(time.time())')"
+  # exec keeps the pid: forge-guard.py session makes it a process group leader, so pid is the group id.
+  ( cd "$wt" && export FORGE_TASK_ID="$id" FORGE_PLAN="$PLAN" FORGE_WORKTREE="$wt" FORGE_BASE_REF="$base" \
+      && exec python3 "$SKILL_DIR/scripts/forge-guard.py" session -- "${cmd[@]}" ) </dev/null >"$tdir/script.log" 2>&1 &
+  pid=$!
+  deadline=$(( SECONDS + limit ))
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$limit" -gt 0 ] && [ "$SECONDS" -ge "$deadline" ]; then timed_out=1; break; fi
+    sleep 0.2
+  done
+  if [ "$timed_out" = 1 ]; then
+    # TERM the group, KILL after 10 s whatever is left of it (timeout(1) is not on macOS).
+    kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+    while kill -0 -- "-$pid" 2>/dev/null && [ "$waited" -lt 50 ]; do sleep 0.2; waited=$(( waited + 1 )); done
+    kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+  else
+    wait "$pid"; rc=$?
+    # What the command left running in its group is stopped with it.
+    python3 "$SKILL_DIR/scripts/forge-guard.py" reap "$pid" "$tdir/script.orphans" >/dev/null 2>&1 || true
+  fi
+  exit_json="$rc"; [ "$timed_out" = 0 ] || exit_json=""
+  hex="$(python3 -c 'import uuid; print(uuid.uuid4().hex[:16])')"
+  rec="$tdir/attempts/script-$hex"
+  rm -f "$tdir/script.ran"
+  if mkdir -p "$rec" && cp "$tdir/script.log" "$rec/script.log" && cp "$run" "$rec/run"; then
+    # The review shows this copy: run may be edited before a QA-only resume reviews this attempt.
+    printf '%s\n' "$rec" > "$tdir/script.ran"
+    python3 - "$rec/metrics.json" "$started" "$exit_json" <<'PY' || note "$id: the script run was not recorded in attempts/"
+import json, os, sys, time
+path, started, code = sys.argv[1:4]
+data = {'role': 'script', 'harness': 'script', 'exit_code': int(code) if code else None,
+        'wall_started': float(started), 'elapsed_s': {'total': time.time() - float(started)}}
+with open(path + '.tmp', 'w') as handle:
+    json.dump(data, handle, indent=2)
+os.replace(path + '.tmp', path)
+PY
+  else
+    note "$id: the script run was not recorded in attempts/"
+  fi
+  [ "$timed_out" = 1 ] || [ "$rc" != 0 ] || return 0
+  if [ "$timed_out" = 1 ]; then note_txt="The script timed out after ${limit}s."; else note_txt="The script exited $rc."; fi
+  { echo "$note_txt"; echo; echo "Its output (last 3000 characters of script.log):"; script_fenced "$tdir/script.log" 3000; } > "$tdir/qa.last"
+  echo FAIL > "$tdir/status"
+  note "$id: ${note_txt%.} — not reviewed (see $tdir/script.log)"
+  return 1
 }
 
 do_task_body() (
@@ -1741,10 +1981,23 @@ do_task_body() (
     return 1
   fi
 
+  local is_script=0
+  task_is_script "$PLAN" "$id" && is_script=1
   if [ -z "$resume" ]; then
     # Persist each source separately; QA receives complete context once.
     write_capsule "$PLAN" "$id" dwarf >/dev/null
     cp "$tdir/capsule.md" "$tdir/baseline.capsule"
+    # What this attempt's implementer is given, to tell later whether the planner edited it (#150).
+    record_dispatched_inputs "$tdir" || { rm -f "$tdir/prompt.dispatched"; note "$id: could not record the dispatched prompt; a later edit will not be detected"; }
+    if [ "$is_script" = 1 ]; then
+      # A scripted task (#142) runs its command here instead of the implementer below (memory,
+      # dispatch, gates). The snapshot and everything after it are the same.
+      forge_metric_phase dispatch
+      run_script_task "$PLAN" "$id" "$tdir" "$wt" "$base" || return 1
+    fi
+    # The implementer's part, from here to the snapshot, belongs to model tasks only (no reindent, to
+    # keep the diff of this section readable).
+    if [ "$is_script" != 1 ]; then
     # --task lets Jev narrow the injected slice to facts that bear on THIS task. Without
     # it, or with Jev off, the full role slice is injected exactly as before.
     /bin/bash "$MEMORY" inject "$REPO" dwarf --task "$tdir/prompt.md" \
@@ -1847,6 +2100,7 @@ do_task_body() (
     guard_after_dwarf "$wt" "$tdir" "$id"
     # Before the snapshot, so a dwarf that only asked a question (and changed nothing) still reaches it.
     forge_post_dwarf_gates "$PLAN" "$id" "$tdir" "$wt" "$attempt" || return 0
+    fi
     forge_metric_phase snapshot
     # Capture the real diff, including new files, then commit on the task branch.
     # Diffed against the task's pinned base rather than the branch head, so a retry
@@ -1870,6 +2124,10 @@ do_task_body() (
       fi
       echo FAIL > "$tdir/status"
       : > "$tdir/noretry"
+      if [ "$is_script" = 1 ]; then
+        echo "The script produced no changes." > "$tdir/qa.last"
+        note "$id: the script produced an empty diff"; return 1
+      fi
       echo "The dwarf produced no changes at all." > "$tdir/qa.last"
       note "$id: dwarf produced an empty diff"; return 1
     fi
@@ -1894,7 +2152,7 @@ do_task_body() (
     fi
 
     (cd "$wt" && git -c user.name=forge -c user.email=forge@local \
-        commit --allow-empty -q -m "forge($id) attempt $attempt: $(field "$T" "$id" title)") >/dev/null 2>&1 || {
+        commit --allow-empty -q -m "forge($id) attempt $attempt: $(field "$T" "$id" title)$([ "$is_script" != 1 ] || echo ' (script)')") >/dev/null 2>&1 || {
       echo ERROR > "$tdir/status"; return 1;
     }
     reviewed="$(git -C "$wt" rev-parse HEAD)" || return 1
@@ -1913,6 +2171,9 @@ do_task_body() (
   else
     reviewed="$(cat "$tdir/reviewed.commit")"
   fi
+  # A prompt or approach edited since the implementer was given it: judged against text it never saw.
+  # STALE, not reviewed, nothing spent; the committed work stays on the branch (#150).
+  if prompt_drifted "$PLAN" "$id" "$tdir" "$attempt"; then return 0; fi
   if [ -n "$grp_id" ]; then
     # The member's own pipeline ends here: no review snapshot, QA, shadow or fail-first. The tests of
     # --pre-review-tests still run, on a snapshot that lives only for them: a red attempt is FAIL and
@@ -1999,6 +2260,7 @@ do_task_body() (
   # A finding sweep's fix task gets the narrow review: one FIXED / NOT FIXED line per finding.
   local qa_kind=task
   [ ! -f "$tdir/sweep.json" ] || qa_kind=sweep
+  [ "$is_script" != 1 ] || qa_kind=script
   # QA uses the dispatch-time ownership and baseline, never later merge state.
   /bin/bash "$MEMORY" inject "$REPO" qa --task "$tdir/prompt.md" \
       --run-dir "$tdir" > "$tdir/qa.memory"
@@ -2015,6 +2277,13 @@ do_task_body() (
     python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --retry-source "$(cat "$tdir/retry_findings.source" 2>/dev/null || echo review)" ${prompt_extra[@]+"${prompt_extra[@]}"} --memory "$tdir/dwarf.memory" --memory "$tdir/qa.memory"
     python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind "$qa_kind"
     echo
+    if [ "$is_script" = 1 ]; then
+      local ran_dir="$tdir"
+      [ ! -s "$tdir/script.ran" ] || [ ! -f "$(cat "$tdir/script.ran")/run" ] || ran_dir="$(cat "$tdir/script.ran")"
+      echo "The command (tasks/$id/run, as it ran):"; script_fenced "$ran_dir/run"
+      echo; echo "Its output (last 3000 characters of script.log):"; script_fenced "$ran_dir/script.log" 3000
+      echo
+    fi
     [ ! -f "$PLAN/sweep_ahead" ] || python3 "$SKILL_DIR/scripts/forge-sweep.py" ahead "$PLAN" "$id" --role qa 2>/dev/null
     cat "$tdir/review.deps"
     [ -s "$tdir/failfirst.txt" ] || [ -s "$tdir/prereview.txt" ] || echo "Forge ran no tests of its own on this attempt, so nothing here stands in for yours."
@@ -2029,6 +2298,18 @@ do_task_body() (
       echo "Implementer guard notes (observed by forge, not claimed by the implementer):"
       sed 's/^/  - /' "$tdir/guard.txt"
       echo "A promise of later work means a check may never have run; judge the diff on its own merits."
+      echo
+    fi
+    local blocked_claims=""
+    [ ! -f "$tdir/dwarf.last" ] || blocked_claims="$(python3 "$SKILL_DIR/scripts/forge-contract.py" blocked --message "$tdir/dwarf.last" 2>/dev/null \
+      | python3 -c 'import json, sys
+for r in json.load(sys.stdin):
+    print("  - %s: %s" % (r["path"], r["why"]))' 2>/dev/null)" || blocked_claims=""
+    if [ -n "$blocked_claims" ]; then
+      # A claim, not a fact: only the reviewer's {outside=...} on a finding can stop the task (#149).
+      echo "The implementer says these fixes need files outside the task:"
+      printf '%s\n' "$blocked_claims"
+      echo "Confirm a real one with {outside=<path>} on the finding it blocks, or refute it."
       echo
     fi
     if [ -s "$tdir/drift.txt" ]; then
@@ -2989,6 +3270,71 @@ forge_brief_stale() { # forge_brief_stale <plan> <merged-task>
   return 0
 }
 
+# The values this run is using, after profile defaults. verify_cmd and timeout are paths:
+# python reads the files, so a quote or a trailing newline is not stripped on the way in.
+# A failure here is one note; the run goes on. run.flags.json describes this run of the plan,
+# not a choice a split or rerun copies, so it is not in the plan option lists.
+forge_run_flags_write() { # forge_run_flags_write <plan> <max-parallel> [argv...]
+  local plan="$1" maxp="$2" timeout_file="" verify_file="" fractal=0 ahead=0 sweep_max=""
+  shift 2
+  [ ! -s "$plan/timeout" ] || timeout_file="$plan/timeout"
+  [ ! -f "$plan/verify_cmd" ] || verify_file="$plan/verify_cmd"
+  forge_plan_is_fractal "$plan" && fractal=1
+  [ ! -f "$plan/sweep_ahead" ] || ahead=1
+  [ "$PP_SWEEP_MAX_SET" = 1 ] && sweep_max="$PP_SWEEP_MAX"
+  python3 - "$plan/run.flags.json" \
+    "$PP_RETRY_FAILED" "$PP_INFRA_RETRIES" "$PP_SWEEP" "$sweep_max" \
+    "$PP_SWEEP_PLAUSIBLE" "$ahead" "$maxp" "$timeout_file" "$verify_file" "$fractal" \
+    -- "$@" <<'PY' >/dev/null 2>&1 || note "could not write $plan/run.flags.json"
+import json, os, sys, tempfile, time
+
+def text(path):
+    if not path:
+        return None
+    with open(path, 'r', encoding='utf-8', newline='') as handle:
+        raw = handle.read()
+    return raw if raw != '' else None
+
+def whole(value):
+    return int(value) if value != '' else None
+
+args = sys.argv[1:]
+if len(args) < 12 or args[11] != '--':
+    sys.exit(1)
+dest = args[0]
+retry, infra, sweep, sweep_max, plausible, ahead, maxp, timeout_file, verify_file, fractal = args[1:11]
+timeout = text(timeout_file)
+data = {
+    'retry_failed': int(retry),
+    'infra_retries': int(infra),
+    'sweep': sweep or None,
+    'sweep_max': whole(sweep_max),
+    'sweep_plausible': plausible == '1',
+    'sweep_ahead': ahead == '1',
+    'max_parallel': int(maxp),
+    'timeout': int(timeout.strip()) if timeout is not None else None,
+    'verify': text(verify_file),
+    'fractal': fractal == '1',
+    'argv': args[12:],
+    'at': time.time(),
+}
+parent = os.path.dirname(dest) or '.'
+fd, tmp = tempfile.mkstemp(prefix='.run.flags.json.', dir=parent)
+try:
+    with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+        json.dump(data, handle, ensure_ascii=False, indent=2)
+        handle.write('\n')
+    os.replace(tmp, dest)
+except Exception:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    sys.exit(1)
+PY
+  return 0
+}
+
 do_run() {
   local run_child="" run_stop=0 run_phase=pre run_rc=0 interrupted=0 vstopped=0
   FORGE_RUN_STOPPABLE=1
@@ -3033,6 +3379,10 @@ do_run() {
   export FORGE_OUTPUT="$OUTPUT"
   case "$MAXP" in ''|*[!0-9]*) die "--max-parallel must be positive" ;; esac
   [ "$MAXP" -gt 0 ] || die "--max-parallel must be positive"
+  # Said once, before any dispatch. The run itself still follows retry_per_model.
+  if [ -f "$PLAN/retry_per_model" ] && [ -f "$PLAN/escalate_after" ]; then
+    note "retry-per-model $(tr -d '[:space:]' < "$PLAN/retry_per_model") replaces --escalate-after for this plan"
+  fi
   local T="$PLAN/tasks.tsv" W="$PLAN/waves.tsv"
   [ -s "$W" ] || die "no waves.tsv — run the plan subcommand first"
   grep -q 'UNASSIGNED' "$T" && die "some tasks are UNASSIGNED — assign a dwarf before running"
@@ -3049,6 +3399,8 @@ do_run() {
   compute_waves "$PLAN"
   local REPO run_id wt_root int_wt int_br
   REPO="$(cat "$PLAN/repo")"; run_id="$(cat "$PLAN/run_id")"
+  # A plan made with --after: the plan it follows must still end where this one starts (#143).
+  plans_chain_run_check "$PLAN" "$REPO"
   # Before any decision-model step: the privacy floor and the run budget read these.
   [ "$JEV_OPTS" = 1 ] && forge_decide_env "$REPO" "$PLAN"
   if [ "$DRY" != 1 ]; then
@@ -3098,6 +3450,9 @@ do_run() {
     return 0
   fi
 
+  # run.flags.json describes this run of the plan, not a choice a split or rerun copies.
+  forge_run_flags_write "$PLAN" "$MAXP" ${fractal_pipeline_args[@]+"${fractal_pipeline_args[@]}"}
+
   forge_metric_begin "$PLAN" parallel
   forge_metric_phase preflight
   [ "${FORGE_RIPWIRE:-}" != off ] || touch "$PLAN/no_ripwire"
@@ -3114,10 +3469,13 @@ do_run() {
     die "branch 'forge/$run_id' blocks task branches 'forge/$run_id/<task>' (git refs are files, so a ref cannot also be a directory). Delete or rename it: git branch -D forge/$run_id" 3
   fi
   if ! (cd "$REPO" && git rev-parse --verify "$int_br" >/dev/null 2>&1); then
-    (cd "$REPO" && git branch "$int_br" HEAD) || die "could not create $int_br" 3
+    # A chained plan starts where the plan it follows ended, not at HEAD, even when its branch is gone.
+    local int_start=HEAD
+    [ ! -s "$PLAN/after" ] || [ ! -s "$PLAN/integration.base" ] || int_start="$(head -1 "$PLAN/integration.base")"
+    (cd "$REPO" && git branch "$int_br" "$int_start") || die "could not create $int_br" 3
     # Where the integration branch started, so a whole-run review can diff exactly what
     # this run added. Plans created before this file existed fall back to a merge-base.
-    git -C "$REPO" rev-parse HEAD > "$PLAN/integration.base"
+    git -C "$REPO" rev-parse "$int_start" > "$PLAN/integration.base"
   fi
   if [ ! -d "$int_wt" ]; then
     (cd "$REPO" && git worktree add "$int_wt" "$int_br" >/dev/null 2>&1) \
@@ -3337,6 +3695,8 @@ do_integrate() {
   parent="$(git -C "$REPO" rev-parse HEAD)" || return 3
   target="$(git -C "$REPO" rev-parse "$int_br")" || return 3
   [ -s "$PLAN/accepted.integration" ] && [ "$target" = "$(cat "$PLAN/accepted.integration")" ] || die "integration revision does not match the accepted run" 3
+  # The branch holds the work of every plan it follows: one merge brings them all.
+  [ ! -s "$PLAN/after" ] || echo "this brings plans $(plans_chain_names "$PLAN")"
   out="$PLAN/integrate-$(date +%s)-$$"; mkdir -p "$out"
   candidate="$(cat "$PLAN/wt_root")/_candidate-$$"
   git -C "$REPO" worktree add --detach "$candidate" "$parent" > "$out/setup.log" 2>&1 || return 3

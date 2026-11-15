@@ -111,6 +111,15 @@ already started` when the task had already started. The marker's reason (`change
 A run with a retro report or notes shows a Retro section in its run details: the note counts on one line,
 then the report, collapsed.
 
+A task that stopped `NEEDS_INPUT` opens *Waiting for you*: the question from `tasks/<id>/needs_input.md`,
+and a `forge-parallel.sh retry … --answer` command to copy. On a plan, when the server can write, an
+answer field sits under that command. *Send answer* runs
+[`forge control retry PLAN ID --answer-file -`](commands.md#the-forge-command) (`--actor ui`) and does
+not ask first: it is not a destructive change. While a scheduler is live the page says the answer is
+queued and the scheduler resumes the task; with no live run it says the answer is prepared for the
+next `run`. A solo run shows the question and the command only. Under `--read-only` the field is
+absent and the copy button stays.
+
 Under each attempt's dwarf and reviewer are the checks they ran, read from their logs: each
 test, type check, lint or build with its exit, its time and the counts it printed, a failed
 one's last lines, and a link to that command in the conversation. Each attempt then says which
@@ -135,8 +144,12 @@ A review the reviewer passed but forge failed, because it listed a blocking CONF
 forge-ui reads everything, and it changes things only by calling forge's own commands: it
 never writes a run file, a repo or a config itself. That keeps one set of rules (validation,
 locks, the audit log) whichever way you change something, and a change from the page is
-indistinguishable from the same command typed in a terminal, except that `control.log` says
-`ui` instead of `cli`. Every change asks you to confirm and says when it takes effect, except a brief answer, a proposal, and approving or rejecting one. Those are sent when you press *Send*, *Propose a change*, *Approve* or *Reject*.
+indistinguishable from the same command typed in a terminal, except that the page passes
+`--actor ui` (`control.log` says `ui` instead of `cli` for a control change). A destructive change
+shows a dry run and then asks: removing worktrees, forgetting memories, compacting disk and deleting
+a run. A brief answer, a proposal, approving or rejecting one, and *Send answer* on a task that is
+waiting go out when you press the button, with no dry run. The HTTP shapes are in
+[the API](../ui/docs/api.md); this page describes what you do.
 
 - **Run controls** (a plan's inspector): the QA threshold (shown with its source, `P2 (default)`
   or `P1 (set)`); it accepts `P0`–`P3`, *Default* (drop the setting; P2) and *None* (P3, nothing
@@ -153,23 +166,51 @@ indistinguishable from the same command typed in a terminal, except that `contro
   queued; the panel says *queued*, then *applied* or *refused* with the scheduler's reason.
   Each is `forge control`; see [decomposed runs](decomposed-runs.md#changing-a-run-while-it-works).
   A control that cannot apply (a budget with no live scheduler, a merged task) is disabled and
-  says why.
+  says why. A task waiting `NEEDS_INPUT` is not *Retry now*: its answer field is described above
+  and runs `forge control retry --answer`.
 - **Projects (`#/projects`):** one page per repository with its runs, every finding forge's reviews
   wrote about it (each attempt, final reviews, shadow reviews behind a toggle), and every memory forge
   keeps for it, whichever run or checkout they came from. A finding a later review got past is
   `superseded`, never `fixed`; repeats across rounds are one row with a count. The Memories tab shows
   what `memory.md` gives each role and each learning's state, as `forge memory learnings` reports it.
-  Runs and checkouts that are gone are read from the dataset, and those rows say so. Reachable from the
-  header, a run's repository name and each map district.
+  Runs and checkouts that are gone are read from the dataset, and those rows say so. When the server
+  can write, each learning on the checkout you are looking at has a checkbox, the filtered list has
+  *Select all*, and *Forget selected* runs
+  [`forge memory forget`](commands.md#forge-memory-forget) on that checkout with `--actor ui`. It
+  dry-runs first. The confirm lists the learnings (`category:key` and the text) and the `memory.md`
+  lines that go, or says that no `memory.md` line goes. Cancelling sends nothing more. The result
+  then says how many ledger rows each key lost, or that the key was not found. A learning with no
+  category or key cannot be selected. Under `--read-only` the tab still shows the learnings and
+  hides the checkboxes and the button. Reachable from the header, a run's repository name and each
+  map district.
 - **Disk (`#/disk`):** what forge takes on disk in every repository it has runs for (each run dir's
   review snapshots, logs and anything forge does not create, each run's worktree folder, the data home),
-  what can go without losing a run, and the command that takes it back (`forge runs compact`), to copy.
-  The same report as `forge du --all`; measured in the background when the screen opens.
+  what can go without losing a run, and the command that takes it back (`forge runs compact --logs`),
+  to copy. The same report as `forge du --all`; measured in the background when the screen opens.
+  When the server can write, a reclaimable run gets *Compact* and the whole-disk command gets
+  *Compact all*. Each one dry-runs
+  [`forge runs compact`](commands.md#forge-runs-compact) `--logs` first and the confirm says how
+  much space would be freed and across how many runs. The real call is the same command without
+  `--dry-run`. An active run is refused and the page says to compact it after it ends. Copy stays
+  beside the button. Under `--read-only` the commands are only copied. This command records
+  `run_compacted` and takes no actor.
 - **Worktrees (`#/worktrees`):** every worktree forge created, in any repository it knows: its
   run, task, branch, last commit, size and status (in use, uncommitted changes, locked, needed by
   the run, failed task, finished, missing on disk, not forge's, unknown to git, removed), and the
-  command that removes it safely, to copy. The commands never use `--force` and the page runs
-  none of them. Removed worktrees are listed from the dataset (`worktree_created` and
+  command that removes it safely, to copy. Those copied commands never use `--force` (`git worktree
+  remove`, `git branch -d` for a finished merged branch, `rm -rf` for a leftover folder, `git status`
+  or `git worktree prune` when that is the safe next step). The per-run `forge runs rm … --dry-run`
+  line is still only copied: it would delete the run directory as well. When the server can write,
+  the filtered view adds a checkbox and *Remove* on each row that can go, *Select all* for those
+  rows, *Remove selected*, and *Delete merged branches too*. *Remove* and *Remove selected* both
+  run [`forge worktrees rm`](commands.md#forge-worktrees-rm) with `--actor ui` (and `--branches`
+  when that box is checked): one dry run, a summary of what would go and what is skipped and why,
+  then a confirm, then the real call and a line per row (removed, skipped, or failed, with the
+  reason). If the dry run would remove nothing, that summary is the end of it and nothing is
+  asked. A row that cannot be removed shows why beside a disabled checkbox (its run is active,
+  uncommitted changes, locked by git, the run still needs it, already gone, not forge's, already
+  removed, or not a leftover). Under `--read-only` there is no checkbox and no Remove, and every
+  copy button stays. Removed worktrees are listed from the dataset (`worktree_created` and
   `worktree_removed` events); worktrees from before forge recorded them are derived from run dirs,
   without dates. With `FORGE_DATASET=off` the screen lists only what git and the run dirs say.
 - **Open findings:** the review findings a run left open (tolerated by `--qa-threshold`,
@@ -205,7 +246,11 @@ runs. The server makes a random token each time it starts and puts it in the pag
 the page sends it with every change, and the server also checks the `Host` and `Origin`
 headers, so another website open in your browser cannot make your browser change a run. Reading
 needs no token. `--read-only` (or `FORGE_UI_READONLY=1`) turns writing off altogether: no
-token is issued and every change is refused. The summaries and the questions still show, without their switches, answer boxes, or Propose, Approve and Reject buttons. `FORGE_UI_READONLY=1 forge ui open` starts such a
+token is issued and every change is refused. No action button is shown: not the run controls,
+not Remove or Forget selected or Compact, and not *Send answer*. The summaries and the questions
+still show, without their switches, answer boxes, or Propose, Approve and Reject buttons, and
+every copy button stays (worktree commands, compact commands, and the `retry --answer` command
+on a waiting task). `FORGE_UI_READONLY=1 forge ui open` starts such a
 server, and the launcher never reuses a server running in the other mode; it replaces it.
 
 Also: replay, critical path, Fractal child-task trees, quick jump (Ctrl K, ⌘K on a Mac, or

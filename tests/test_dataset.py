@@ -1281,6 +1281,18 @@ class RiskReportTests(StoreCase):
                          [('low', 'high', 2, 1, 1, 2, 1, False), ('high', 'low', 1, 1, 0, 1, 1, False)])
 
 
+    def test_an_attempt_whose_prompt_changed_is_not_the_first_attempt(self):
+        # #150: a STALE execution spent nothing, and the re-dispatch keeps its attempt number.
+        from forge_dataset import export, risk
+        events = [dict(rid='plan', kind='plan', run='r', mode='parallel', ts=1.0,
+                       data=dict(tasks=dict(t=dict(difficulty='low', risk='high'))))]
+        for rid, ts, data in (('stale', 2.0, dict(status='STALE', prompt_changed=True)), ('pass', 3.0, dict(status='PASS'))):
+            events.append(dict(rid=rid, kind='attempt', run='r', mode='parallel', task='t', attempt=1, ts=ts, data=data))
+        store.record(events)
+        rep = risk.report(export.Runs(export.Store(store.connect())))
+        self.assertEqual([(c['attempted'], c['first_pass']) for c in rep['cells']], [(1, 1)])
+
+
 class TiersReportTests(StoreCase):
     """#123: plan-time facts inside a tier, held out by run and adjusted for the implementer; blind-rating agreement."""
 
@@ -2070,7 +2082,9 @@ class IndependenceTests(unittest.TestCase):
                    # forge control and forge runs rm: they write to the store, or only locate it
                    'forge-control.py', 'forge-runs-rm.py',
                    # forge du: only locates the data home, to size it
-                   'forge-du.py'}
+                   'forge-du.py',
+                   # forge handoff: resume records a reset task's INTERRUPTED through capture.point
+                   'forge-handoff.py'}
         for path in (ROOT / 'scripts').rglob('*'):
             if path.suffix not in ('.py', '.sh') or 'forge_dataset' in path.parts:
                 continue
@@ -2145,6 +2159,11 @@ class IndependenceTests(unittest.TestCase):
                 imports = [line.strip() for line in text.splitlines()
                            if 'forge_dataset' in line and 'import' in line]
                 self.assertEqual(imports, ['from forge_dataset.capture import point'])
+                continue
+            if path.name == 'forge-worktrees.py':
+                # forge worktrees rm only reads a run's id (harvest.run_uid, create=False) for the record.
+                imports = [line.strip() for line in text.splitlines() if 'forge_dataset' in line and 'import' in line]
+                self.assertEqual(imports, ['from forge_dataset import harvest  # noqa: E402'])
                 continue
             self.assertIn(path.name, allowed, path)
             for line in text.splitlines():

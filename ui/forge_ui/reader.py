@@ -319,6 +319,11 @@ def _nullable(value):
     return None if value in ('', '-', 'UNASSIGNED') else value
 
 
+def _model_name(spec):
+    """A dwarf or qa cell that names a model. `script` runs tasks/<id>/run, so it is not one."""
+    return None if not spec or spec == 'script' else spec
+
+
 def _tasks(reader):
     tasks = []
     for label, row in reader.rows('tasks.tsv', 7):
@@ -362,6 +367,75 @@ def _brief(title):
     return title if len(title) <= _TITLE_CAP else title[:_TITLE_CAP] + '…'
 
 
+def _real_path(value):
+    try:
+        return os.path.realpath(value)
+    except (OSError, ValueError):
+        return os.fspath(value)
+
+
+def _first_line(directory, name):
+    """The first line of `directory/name`, or None when the file cannot be read.
+
+    One open. A missing file, a missing directory and a directory in the way are all None:
+    a chain link is never worth an exception.
+    """
+    try:
+        with open(os.path.join(os.fspath(directory), name), encoding='utf-8', errors='replace') as stream:
+            line = stream.readline()
+    except OSError:
+        return None
+    return line.strip() or None
+
+
+def _predecessor(reader):
+    """`{key, run_id, path}` of the plan this run follows, from its `after` file, or None.
+
+    `reader.line` is the one read: a run with no `after` file costs that one failed stat and
+    nothing else. A named directory that is gone still yields a key and a path, with `run_id`
+    null, so the chain stays visible.
+    """
+    named = reader.line('after')
+    if not named:
+        return None
+    path = _real_path(named)
+    return dict(key=run_key(path), run_id=_first_line(path, 'run_id'), path=path)
+
+
+def _note_followers(runs):
+    """Set `followed_by` on each listed run: `{key, run_id}` of the runs whose `after` names it.
+
+    Paths are the resolved ones `_predecessor` stored, so a symlink in an `after` file still matches.
+    """
+    by_predecessor = {}
+    for run in runs:
+        after = run.get('after')
+        if not after or not after.get('path'):
+            continue
+        by_predecessor.setdefault(after['path'], []).append(dict(key=run['key'], run_id=run['run_id']))
+    for run in runs:
+        run['followed_by'] = by_predecessor.get(run['path'], [])
+
+
+def _followers(listed, target):
+    """`{key, run_id}` of the listed runs whose `after` names `target`, in list order.
+
+    Reads each other dir's `after` file and, on a hit, its `run_id`. Does not summarize them.
+    Skips `target` itself: its `after` was already read to fill the predecessor, and a dir with
+    no `after` file must not be read twice.
+    """
+    want = _real_path(target)
+    found = []
+    for path, _source, _entry in listed:
+        if _real_path(path) == want:
+            continue
+        named = _first_line(path, 'after')
+        if named is None or _real_path(named) != want:
+            continue
+        found.append(dict(key=run_key(path), run_id=_first_line(path, 'run_id')))
+    return found
+
+
 def _summary(reader, source):
     result = dict(key=run_key(reader.path), path=str(reader.path), source=source, kind='plan',
                   run_id=reader.line('run_id'), repo=reader.line('repo'),
@@ -372,17 +446,20 @@ def _summary(reader, source):
     for task in tasks:
         counts[task['status']] = counts.get(task['status'], 0) + 1
     final_review = reader.word('final-review.verdict')
-    dwarf_models = sorted({task['dwarf'] for task in tasks if task['dwarf']})
-    qa_models = sorted({task['qa'] for task in tasks if task['qa']})
+    dwarf_models = sorted({task['dwarf'] for task in tasks if _model_name(task['dwarf'])})
+    qa_models = sorted({task['qa'] for task in tasks if _model_name(task['qa'])})
+    scripted = sum(1 for task in tasks if task['dwarf'] == 'script')
     # Before snapshotting `updated`: these reads are files the summary read, so a newer
     # accepted.integration (or the published verdict / review.meta) moves the activity time.
     final_review_outdated = _published_outdated(reader, tasks)
+    after = _predecessor(reader)
     result.update(updated=reader.updated, created=_created(reader.path, _PLAN_START_FILES),
                   task_count=len(tasks), counts=counts,
                   task_statuses=[dict(id=task['id'], status=task['status'], difficulty=task['difficulty'] or None,
                                       title=_brief(task['title']), accepted=task['accepted']) for task in tasks],
                   models=sorted(set(dwarf_models) | set(qa_models)), dwarf_models=dwarf_models, qa_models=qa_models,
-                  final_review=final_review, final_review_outdated=final_review_outdated)
+                  scripted=scripted, final_review=final_review, final_review_outdated=final_review_outdated,
+                  after=after)
     return result, tasks
 
 
@@ -407,7 +484,11 @@ def _solo_summary(reader, source):
     reader.exists('dwarf.log')
     reader.exists('qa.log')
     dwarf, qa = _role_spec(reader, 'dwarf'), _role_spec(reader, 'qa')
+    # The task payload keeps a dwarf spec of `script`. The model lists do not: it is not a model.
+    model_dwarf, model_qa = _model_name(dwarf), _model_name(qa)
     goal = reader.line('goal.txt')
+    # Before `updated` is copied out: a present `after` file is part of what the summary read.
+    after = _predecessor(reader)
     return dict(key=run_key(reader.path), path=str(reader.path), source=source, kind='solo',
                 run_id=reader.path.name, repo=reader.line('repo'), goal=goal,
                 decompose_level=None, verification_status=None, updated=reader.updated,
@@ -415,8 +496,10 @@ def _solo_summary(reader, source):
                 task_count=1, counts={status: 1},
                 task_statuses=[dict(id='solo', status=status, difficulty=None, title=_brief(goal or 'Solo run'),
                                     accepted=False)],
-                models=sorted({dwarf, qa} - {None}), dwarf_models=[dwarf] if dwarf else [],
-                qa_models=[qa] if qa else [], final_review=None, final_review_outdated=None)
+                models=sorted({model_dwarf, model_qa} - {None}),
+                dwarf_models=[model_dwarf] if model_dwarf else [],
+                qa_models=[model_qa] if model_qa else [], scripted=1 if dwarf == 'script' else 0,
+                final_review=None, final_review_outdated=None, after=after)
 
 
 def summarize(path, source='plan') -> dict:
@@ -495,7 +578,8 @@ def _nonempty(reader, name):
 
 
 def _task_execs(reader, task):
-    execs = executions.scan(reader, f'tasks/{task["id"]}/attempts', task['status'] == 'RUNNING', ('task', 'dwarf', 'qa'))
+    execs = executions.scan(reader, f'tasks/{task["id"]}/attempts', task['status'] == 'RUNNING',
+                            ('task', 'dwarf', 'qa', 'script'))
     executions.nest(execs)
     return executions.assign_attempts(execs, task['attempts'], task['attempt'])
 
@@ -593,7 +677,7 @@ def _now(reader, owner_dir, execs):
     """Task.now: where a running task (or solo run) is. The dwarf or reviewer running in it, with the call it is
     making and when its log last moved; else the task execution's own phase."""
     running = [item for item in execs if item['state'] == 'running' and not item['shadow']]
-    agent = next((item for item in reversed(running) if item['role'] in ('dwarf', 'qa')), None)
+    agent = next((item for item in reversed(running) if item['role'] in ('dwarf', 'qa', 'script')), None)
     item = agent or next((item for item in reversed(running) if item['role'] in executions.CONTAINERS), None)
     if item is None:
         return None
@@ -2519,11 +2603,11 @@ def execution_detail(path, name, source='plan'):
 
 
 def execution_transcript(path, name, source='plan'):
-    """ExecutionTranscript of a dwarf or qa execution: its agent's conversation, read from its `.log`; None
-    when there is no such execution or it is of another role."""
+    """ExecutionTranscript of a dwarf, qa or script execution, read from its `.log` (`script.log` for the
+    command). None when there is no such execution or it is of another role."""
     reader = _Read(path)
     found = _execution(reader, name)
-    if found is None or found[0]['role'] not in ('dwarf', 'qa'):
+    if found is None or found[0]['role'] not in ('dwarf', 'qa', 'script'):
         return None
     item, owner, owner_dir = found
     role, running = item['role'], item['state'] == 'running'
@@ -2541,7 +2625,7 @@ def execution_transcript(path, name, source='plan'):
 
 
 def _agent_log(reader, item, owner_dir):
-    """The log of a dwarf or reviewer execution: its copy once it ended, the one being written while it runs."""
+    """The log of a dwarf, reviewer or script execution: its copy once it ended, the one being written while it runs."""
     role = item['role']
     if item['state'] == 'running':
         return _log_path(reader, posixpath.join(owner_dir, role + '.log'))
@@ -3325,7 +3409,9 @@ class Catalog:
     def runs(self):
         listed, identities = batch(discover(**self.options))
         runs = [_with_repo(summarize(path, source), identities[entry[0]]) for path, source, entry in listed]
-        return sorted(runs, key=lambda item: item['updated'] if item['updated'] is not None else float('-inf'), reverse=True)
+        runs = sorted(runs, key=lambda item: item['updated'] if item['updated'] is not None else float('-inf'), reverse=True)
+        _note_followers(runs)
+        return runs
 
     def keys(self):
         """The keys of every run the list shows, without summarizing any of them."""
@@ -3360,7 +3446,9 @@ class Catalog:
         listed, identities = batch(discover(**self.options))
         for path, source, entry in listed:
             if run_key(path) == key:
-                return _with_repo(detail(path, source=source), identities[entry[0]])
+                result = _with_repo(detail(path, source=source), identities[entry[0]])
+                result['followed_by'] = _followers(listed, result['path'])
+                return result
         return None
 
     def task(self, key, task_id):

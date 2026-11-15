@@ -22,7 +22,7 @@ import json
 import os
 
 from . import connect, dataset_dir
-from .export import SURVIVES_AT, Runs, Store
+from .export import SURVIVES_AT, Runs, Store, _attempts
 from .facts import _kappa
 
 LEVELS = ('low', 'medium', 'high')
@@ -54,9 +54,12 @@ def report(runs: Runs, repo: str = None) -> dict:
                                                              first_pass=0, serious=0, landed=0, did_not_hold=0))
             cell['tasks'] += 1
             attempts = runs.attempts.get((run, task)) or []
-            if attempts:
+            # Only attempts that spent one, as the export counts them: an execution whose prompt changed
+            # while it ran (STALE), an infrastructure stop or a refund is not a first attempt.
+            spent = _attempts(runs, run, task, attempts)
+            if spent:
                 cell['attempted'] += 1
-                cell['first_pass'] += attempts[0]['d'].get('status') == 'PASS'
+                cell['first_pass'] += spent[0]['events'][-1]['d'].get('status') == 'PASS'
             reviews = runs.dispatches.get((run, task, 'qa')) or []
             cell['serious'] += any(f.get('status') == 'CONFIRMED' and f.get('severity') in (0, 1)
                                    for e in reviews for f in e['d'].get('findings') or [] if isinstance(f, dict))

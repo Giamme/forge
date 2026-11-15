@@ -206,8 +206,12 @@ def load_registry() -> list:
 def spec_pair(registry: list, spec: str) -> tuple | None:
     """(harness, model) for a spec, resolved the way forge-dispatch.sh's lookup does: an
     alias's first row is its default harness, alias:effort:harness picks that row, and an
-    unknown alias with a harness is a literal model id. None when it cannot be resolved."""
-    if not spec or spec in ('-', 'UNASSIGNED') or ',' in spec:
+    unknown alias with a harness is a literal model id. None when it cannot be resolved.
+
+    `script` is a task kind (it runs tasks/<id>/run), not a model. It is none even when a
+    registry alias is named script, so a pause on that alias's harness cannot hold the task
+    through its implementer."""
+    if not spec or spec in ('-', 'UNASSIGNED', 'script') or ',' in spec:
         return None
     parts = spec.split(':')
     alias, harness = parts[0], ':'.join(parts[2:])
@@ -273,7 +277,7 @@ def _write_atomic(plan: object, text: str, *parts: str) -> bool:
     try:
         path = _resolve(plan, *parts)
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix='.' + parts[-1] + '.')
-        with os.fdopen(fd, 'w') as handle:
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
             os.fchmod(handle.fileno(), 0o644)
             handle.write(text)
         os.replace(tmp, path)
@@ -477,6 +481,7 @@ def stop_harnesses(plan: object, names: object, groups: object = ()) -> None:
 GROUP_KEY = 'group:'   # the `active` key of a running group review: a prefix no task id takes (#140)
 REQUESTS = 'control.requests'
 REQUEST_MAX = 64 * 1024
+ANSWER_MAX = 8000   # characters of a NEEDS_INPUT answer a request may carry (#147)
 # What `forge control retry --decide` may carry: retry=N (1 to 20) or threshold=Pn.
 DECISION = re.compile(r'retry=(?:[1-9]|1[0-9]|20)|threshold=P[0-3]')
 # NEEDS_INPUT is in neither: a task stopped for the user's answer resumes only through
@@ -484,7 +489,9 @@ DECISION = re.compile(r'retry=(?:[1-9]|1[0-9]|20)|threshold=P[0-3]')
 # a task whose reviews do not converge, or that the retry policy cannot move to a stronger model,
 # resumes only through a person's `retry --decide` (or `--dwarf`) with a reason and --approved.
 # No budget, pin or sweep reaches it, because every automatic path asks for a status in AUTO_RETRY.
-RETRYABLE = ('FAIL', 'UNKNOWN', 'TIMEOUT', 'ERROR', 'INTERRUPTED', 'BLOCKED', 'INVALIDATED')
+# STALE (the prompt changed while the attempt ran, #150) is retryable by hand, but it is not in AUTO_RETRY:
+# its path is prompt_requeue, which spends no retry.
+RETRYABLE = ('FAIL', 'UNKNOWN', 'TIMEOUT', 'ERROR', 'INTERRUPTED', 'BLOCKED', 'INVALIDATED', 'STALE')
 # What --retry-failed retries on its own. INVALIDATED only for a review voided while the committed
 # work stayed as it was (tasks/<id>/invalidated.reason is `review`): that retry is a fresh review.
 AUTO_RETRY = ('FAIL', 'UNKNOWN', 'INVALIDATED')
@@ -537,6 +544,9 @@ def read_request(plan: object, name: str) -> dict | None:
         return None
     if not isinstance(request.get('approved', False), bool):
         return None
+    answer = request.get('answer')
+    if answer is not None and (not isinstance(answer, str) or not 1 <= len(answer) <= ANSWER_MAX or '\0' in answer):
+        return None
     actor = request.get('actor')
     if actor is not None and actor not in ('ui', 'cli'):
         return None
@@ -548,7 +558,8 @@ def settle_request(plan: object, name: str, request: dict | None, outcome: str, 
     verb = request.get('verb') if request else None
     task = request.get('task') if request else None
     entry = {'at': time.time(), 'actor': 'scheduler', 'action': verb, 'task': task, 'key': None,
-             'value': request.get('dwarf') if request else None, 'previous': None, 'request': name,
+             'value': ('answer' if request.get('answer') is not None else request.get('dwarf')) if request else None,
+             'previous': None, 'request': name,
              'outcome': outcome, 'reason': reason}
     try:
         fd = os.open(_resolve(plan, 'control.log'), os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o644)
@@ -696,6 +707,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     group_again = set()   # groups to review once more whatever their status says (a resume, an UNKNOWN)
     group_used = {}       # gid -> re-reviews of an UNKNOWN verdict used this run
     retries = {}       # automatic reviewer-driven retries used per task, this run
+    per_model_seen = {}  # task -> the per-model answer that allowed its latest automatic retry
     refused = {}       # task -> budget at the time its retry could not be prepared
     retried = set()    # tasks whose next dispatch is a retry (FORGE_FRACTAL_RETRY=1)
     offsets = {}       # how much of each task.out was already echoed under --output full
@@ -811,15 +823,51 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         stop) hands them to the next one."""
         return _read_budget(plan, 'tasks', name, 'decided.left')
 
+    def per_model_limit() -> int | None:
+        """<plan>/retry_per_model as an integer from 1 to 99, else None (missing or not that)."""
+        try:
+            text = (plan / 'retry_per_model').read_text(encoding='utf-8').strip()
+        except OSError:
+            return None
+        if not re.fullmatch(r'[0-9]{1,9}', text):
+            return None
+        value = int(text)
+        return value if 1 <= value <= 99 else None
+
+    def per_model_allows(name: str) -> bool:
+        """Whether forge-route.py per-model says this task may be attempted again. A failing or
+        unparsable call is a no. The parsed answer is kept for the retry line."""
+        try:
+            result = subprocess.run(
+                [sys.executable, ROUTE, 'per-model', '--plan', str(plan), '--task', name],
+                capture_output=True, text=True)
+            data = json.loads(result.stdout) if result.stdout.strip() else None
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError):
+            per_model_seen[name] = None
+            return False
+        if result.returncode != 0 or not isinstance(data, dict):
+            per_model_seen[name] = None
+            return False
+        per_model_seen[name] = data
+        return data.get('retry') is True
+
+    def automatic_retry(name: str) -> bool:
+        """Without retry_per_model, the run's retry budget. With it, any budget above 0 and the
+        route's answer: N failures on the current rung, then a stronger one, until none is left."""
+        if per_model_limit() is not None:
+            return budget(name) > 0 and per_model_allows(name)
+        return retries.get(name, 0) < budget(name)
+
     def retryable(name: str) -> bool:
         root = plan / 'tasks' / name
         left = granted(name)
         return (
             status(name) in AUTO_RETRY
             and (status(name) != 'INVALIDATED' or review_voided(name))
-            # After a decision the person's count rules, over and under the budget: `retry=3`
-            # is three attempts even with a budget of 0, and `retry=1` is one even with 3.
-            and (left > 0 if left is not None else retries.get(name, 0) < budget(name))
+            # After a decision the person's count rules, over and under the budget and over a
+            # per-model answer of no: `retry=3` is three attempts even with a budget of 0, and
+            # `retry=1` is one even with 3.
+            and (left > 0 if left is not None else automatic_retry(name))
             # A task that produced no new work (empty diff, byte-identical retry) would
             # only repeat itself; its marker says so and it is left for a human.
             and not (root / 'noretry').exists()
@@ -850,8 +898,30 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             print('forge: retrying ' + name + ' (decided retry, ' + str(left) + ' more after this)',
                   file=sys.stderr, flush=True)
         else:
-            print('forge: retrying ' + name + ' (automatic retry ' + str(retries[name]) + '/'
-                  + str(budget(name)) + ')', file=sys.stderr, flush=True)
+            if per_model_limit() is not None:
+                info = per_model_seen.get(name) or {}
+                print('forge: retrying ' + name + ' (automatic retry ' + str(retries[name]) + ', '
+                      + str(info.get('failed_on_rung', '')) + ' of ' + str(info.get('per_model', ''))
+                      + ' failed on ' + str(info.get('rung', '')) + ')',
+                      file=sys.stderr, flush=True)
+            else:
+                print('forge: retrying ' + name + ' (automatic retry ' + str(retries[name]) + '/'
+                      + str(budget(name)) + ')', file=sys.stderr, flush=True)
+        return True
+
+    def prompt_requeue(name: str) -> bool:
+        """Re-dispatch a STALE task (its prompt changed while the attempt ran, #150) with the new text. The stale
+        attempt spent nothing, so no retry is counted: retries, retries.used and decided.left stay as they are."""
+        result = subprocess.run(['/bin/bash', script, '_prepare_retry', str(plan), name, '--prompt'])
+        if result.returncode:
+            print('forge: ' + name + ' is not re-dispatched: its changed prompt could not be prepared',
+                  file=sys.stderr, flush=True)
+            return False
+        pairs_cache.pop(name, None)
+        if name not in pending:
+            pending.insert(0, name)
+        print('forge: ' + name + ': re-dispatching with the changed prompt (no attempt spent)',
+              file=sys.stderr, flush=True)
         return True
 
     def at_cap(name: str) -> bool:
@@ -905,13 +975,17 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
 
     def next_pairs(name: str) -> list:
         """The pairs the task's next dispatch uses: QA only when its next entry is a QA-only
-        resume (decided by forge-parallel.sh's own check), the implementer and QA otherwise."""
+        resume (decided by forge-parallel.sh's own check), the implementer and QA otherwise.
+
+        A scripted task has no implementer model, so only its reviewer is in the list: a pause
+        holds it only through that reviewer, and a lateral move can only move the reviewer."""
         if name not in pairs_cache:
             row = row_now(name)
             qa_only = (plan / 'tasks' / name / 'resume').exists() and subprocess.run(
                 ['/bin/bash', script, '_qa_only', str(plan), name],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
-            pairs_cache[name] = [spec_pair(registry, spec) for spec in ([row[5]] if qa_only else [row[4], row[5]])]
+            specs = [row[5]] if qa_only or row[4] == 'script' else [row[4], row[5]]
+            pairs_cache[name] = [spec_pair(registry, spec) for spec in specs]
         return pairs_cache[name]
 
     def scope_held(name: str) -> bool:
@@ -1204,9 +1278,18 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             return 'refused', 'the task is merged'
         if state == 'INFRA':
             return 'refused', 'an infrastructure stop is resumed by the scheduler itself'
-        if state == 'NEEDS_INPUT':
+        answer = request.get('answer')
+        if answer is not None:
+            # A NEEDS_INPUT task's answer (#147), the text `forge-parallel.sh retry --answer` takes.
+            if state != 'NEEDS_INPUT':
+                return 'refused', (name + ' is ' + state + ', not waiting for an answer; an answer only resumes a '
+                                   + 'NEEDS_INPUT task')
+            if dwarf or request.get('decide'):
+                return 'refused', 'an answer is not combined with --dwarf or --decide'
+        elif state == 'NEEDS_INPUT':
             return 'refused', (name + ' is waiting for an answer: forge-parallel.sh retry ' + str(plan)
-                               + ' ' + name + ' --answer \u2026')
+                               + ' ' + name + ' --answer \u2026 (on a live run: forge control retry ' + str(plan)
+                               + ' ' + name + ' --answer \u2026)')
         decide, reason, approved = request.get('decide'), request.get('reason'), request.get('approved') is True
         if decide and state != 'NEEDS_DECISION':
             return 'refused', name + ' is ' + state + ', not waiting for a decision; --decide only decides a NEEDS_DECISION task'
@@ -1220,9 +1303,18 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             if not (reason or '').strip() or not approved:
                 return 'refused', name + ' is waiting for your decision: a decision needs --reason and --approved'
             decision = (['--decide', decide] if decide else []) + ['--reason', reason, '--approved']
-        elif state not in RETRYABLE:
+        elif state != 'NEEDS_INPUT' and state not in RETRYABLE:
             return 'refused', 'a ' + state + ' task is not retried'
-        command = ['/bin/bash', script, '_prepare_retry', str(plan), name] + (['--dwarf', dwarf] if dwarf else []) + decision
+        if state == 'STALE' and dwarf:
+            return 'refused', name + ' is STALE: it re-runs with the changed prompt on the same implementer; --dwarf does not apply'
+        if answer is not None:
+            # Atomic, and before the preparation: it takes the answer only when it is newer than the question,
+            # and keeps it when it then refuses, so the same answer can be retried.
+            if not _write_atomic(plan, answer + '\n', 'tasks', name, 'answer.md'):
+                return 'refused', 'the answer could not be written to tasks/' + name + '/answer.md'
+        # A STALE task spent no attempt: it is prepared with the new prompt, not as a failed one (#150).
+        command = ['/bin/bash', script, '_prepare_retry', str(plan), name] + (
+            ['--prompt'] if state == 'STALE' else (['--dwarf', dwarf] if dwarf else []) + decision)
         rc = subprocess.run(command).returncode
         if rc == 3:
             try:
@@ -1242,7 +1334,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         # A decision sets how many attempts follow it: retry=N is N in all (this one and N-1
         # automatic ones), any other choice is this one. A plain retry leaves the budget in charge.
         # (retry_decided wrote decided.left for a decision.) A plain retry ends what a decision allowed.
-        if state != 'NEEDS_DECISION':
+        if state not in ('NEEDS_DECISION', 'STALE'):
             _remove(plan, 'tasks', name, 'decided.left')
         retried.add(name)
         human.add(name)
@@ -1552,6 +1644,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 elif allow_requeue and not interrupted and not graceful \
                         and state in AUTO_RETRY and retryable(name):
                     requeue(name)
+                elif state == 'STALE' and allow_requeue and not interrupted and not graceful:
+                    prompt_requeue(name)
                 elif state == 'IMPLEMENTED' and allow_requeue and name in group_of:
                     start_ready_groups()   # the last member in: its group is reviewed now, with no wave barrier
             if not reaped:
@@ -1678,6 +1772,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 mark(name, 'INTERRUPTED')
             if state in AUTO_RETRY and not interrupted and retryable(name):
                 requeue(name)
+            if state == 'STALE' and not interrupted:
+                prompt_requeue(name)   # left by an interrupted run; the task is PENDING again, so it stays in pending
             if state == 'INFRA' and not interrupted and not resume(name):
                 pending.remove(name)
                 continue

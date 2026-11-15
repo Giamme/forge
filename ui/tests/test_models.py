@@ -152,6 +152,15 @@ class ModelsTests(unittest.TestCase):
                          [('luna', 'luna:low', 'plan'), (None, None, None)])
         self.assertEqual(rows['planned']['attempts'][0]['tokens'], None)
 
+    def test_a_scripted_task_has_no_implementer_attempts(self):
+        b = Builder(self.base)
+        b.task('gen', dwarf='script', status='PASS', rows=[('1', 'PASS', '', 'script')],
+               attempts=[dict(n=1, dwarf=False, review=PASS)])
+        b.task('model', status='PASS', rows=[('1', 'PASS', '', 'luna')], attempts=[dict(n=1, review=PASS)])
+        rows = self.tasks(self.facts(b.done()))
+        self.assertEqual(rows['gen']['attempts'], [])
+        self.assertEqual([item['alias'] for item in rows['model']['attempts']], ['luna'])
+
     def test_fixture_plan_reviews_and_solo(self):
         plan, solo = F.make_plan(self.base), F.make_solo(self.base)
         # A side summary of the same task, with its own verdict and tokens. It is not an attempt.

@@ -123,6 +123,79 @@ retried again, so a stuck task cannot burn its whole budget repeating itself.
 `tasks/<id>/attempts.tsv` records every entry (epoch, attempt number, resulting status, infra
 class).
 
+### A budget per model: `--retry-per-model N`
+
+`plan --retry-per-model N` (1 to 99) writes `retry_per_model`. `--no-retry-per-model` removes
+it; a re-plan that names neither keeps the file. A task may fail N times on the model it is
+running. After those failures the next attempt moves one rung up the pools given to `plan`,
+and the count starts again. With `--escalate-effort`, the same N applies to each effort of
+that model before the next effort. This replaces `--escalate-after` for the plan. When
+`escalate_after` is also present, `run` prints `retry-per-model N replaces --escalate-after
+for this plan` and the policy follows `retry_per_model`.
+
+Automatic retries still need `--retry-failed` above 0. Any positive budget turns the ladder on;
+that number is not the limit. A person's decision, `--max-attempts`, the converging stop, a
+`noretry` marker and `escalation.stop` still apply. `forge-route.py per-model` says whether one
+task may run again. `worst-case` is what the plan table prints: `retry per model: N`,
+`worst case with retry-per-model N: X dispatches` (implementer, reviewer, and shadow reviews
+when those are on), and, when the cap cuts a ladder short,
+`max-attempts … stops these tasks before the top of their ladder`.
+
+Pools `low`, `medium` and `high` with N=3 give a task that starts on `low` up to 9 implementer
+attempts, three on each rung. `--max-attempts` bounds that. The default cap is 8, so the table
+names the task unless `plan --max-attempts` raises it.
+
+### Failures that are the plan's
+
+Two outcomes are not a further try of the model.
+
+**Reason `plan`.** Task, solo and group reviews ask for this brace. Sweep, adopt and final
+reviews do not. A finding whose only fix is a file the task did not declare ends its first line
+with `{outside=<path>}`, several paths comma-separated, in its own braces immediately before
+the facts brace:
+
+```
+- [P1][CONFIRMED] path/file.py:123 — {outside=a.py,b.py} {reach=main origin=new evidence=ran}
+```
+
+The implementer does not edit that file. It finishes, then ends its message with one
+`FORGE_BLOCKED: <path>: <why>` line per path. `qa.input` shows those lines as a claim ("The
+implementer says these fixes need files outside the task") and tells the reviewer to confirm a
+real one with `{outside=<path>}` or refute it. Only the reviewer's brace stops the task. When
+the status is `FAIL`, the verdict in `qa.last` is `PASS` or `FAIL`, every blocking finding
+carries `{outside=…}`, and each path is outside the task's declared files, the decomposed task
+stops as `NEEDS_DECISION` with reason `plan` after that attempt, before any escalation. A group
+member's settled `FAIL` is checked the same way. A solo review is not.
+`tasks/<id>/outside.json` lists each path with the task that declares it, or none, and that
+task's status. `decision.md` prints `path — declared by <id> (<status>)` or
+`path — declared by no task`, then the plan choices: add the path to this task's `files`, make
+this task depend on the owner, or merge the two rows. Edit `tasks.tsv`, run `plan` again when
+no run is live, then `retry --decide retry=1` with `--reason` and `--approved`.
+
+That `FAIL` counts toward `--max-attempts`, because a review happened. It does not spend a
+further attempt on the model: escalation does not run, and `--retry-failed` does not re-queue a
+`NEEDS_DECISION` task. Another dispatch cannot change a file this task does not declare. A
+tolerated or `PLAUSIBLE` finding does not block, so it does not count toward the stop. A later
+decision restarts the escalation streak past this attempt.
+
+**`STALE`.** `prompt.dispatched` and `approach.dispatched` are the copies taken when the
+attempt is dispatched. A missing `approach.md` is an empty copy. If `prompt.md` or `approach.md`
+differs at review time, the attempt is not reviewed. The status is `STALE`, the diff is
+`stale.diff`, `control.log` records `prompt-changed` with actor `scheduler`, and the console
+says the attempt was not reviewed and no attempt was spent. This spends nothing against the
+model: the implementer was not judged on the text it was given, so the result says nothing
+about it. The attempt counter is refunded, the cap skips `STALE` the way it skips `INFRA`, the
+escalation streak treats `STALE` as neutral, and no decision is written. The scheduler
+re-dispatches at once, unless the run is stopping, with `retry_findings.source` `prompt`.
+`retry_findings.md` holds the new requirements and the diff, and the attempt number is reused.
+A `STALE` task still waiting at the next `run` is prepared the same way. That re-dispatch does
+not need `--retry-failed`. `forge control retry` accepts `STALE`; `--dwarf` is refused, because
+the same implementer gets the new text. A plain `forge-parallel.sh retry` does not take this
+path. The stale attempt's `changes.diff` is removed, so a
+re-dispatch that keeps the committed work is reviewed rather than refused as identical. The
+dataset attempt event has `prompt_changed`. `forge dataset routing`, tiers and the forecast
+leave those attempts out. The `prompt` blob is the text the implementer was given.
+
 ## Infrastructure failures are not task failures
 
 A quota or usage limit, an auth problem, a rate limit, a network error, or a harness that

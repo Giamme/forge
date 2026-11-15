@@ -14,6 +14,10 @@
   pin   <plan> <task> <spec>                     the model the task's next FULL implementer retry uses
   unpin <plan> <task>
   retry <plan> <task> [--dwarf SPEC]             queue a retry of a stopped or failed task into the live run
+  retry <plan> <task> --answer TEXT              answer a NEEDS_INPUT task's question (or --answer-file F, - for stdin):
+                                                 queued into the live run, which writes tasks/<id>/answer.md and
+                                                 requeues the task; with no run live, `forge-parallel.sh retry
+                                                 --answer-file --no-dispatch` prepares it for the next `run`
                                                  a NEEDS_DECISION task (reviews that do not converge, or a stop with no
                                                  stronger model) is resumed only by a decision: --decide retry=N or
                                                  threshold=P0..P3, or --dwarf SPEC, each with --reason TEXT --approved
@@ -50,6 +54,9 @@ A pin, a retry's --dwarf and an added row's specs are checked with `forge-dispat
 FORGE_CONTROL_DOCTOR replaces `bash forge-dispatch.sh doctor` with another command line, which
 then gets `--spec <spec> --role <role>`; tests use it.
 
+An answer is 1 to 8000 characters (after stripping), with no NUL byte, and its request must fit the
+scheduler's 64 KiB limit. control.log records the retry with the value `answer` and `answer_chars`, never the text.
+
 Exit codes: 0 ok, 2 usage or invalid input (including an unsafe path), 3 refused (not live, MERGED,
 Fractal, a spec that fails doctor, the control lock busy for over 5 s).
 """
@@ -66,6 +73,7 @@ import shlex
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -838,10 +846,11 @@ def check_row(plan, rows, task):
     return dwarf, qa
 
 
-def queue(args, plan, verb, task, dwarf, decision=None, accept_reason=None):
+def queue(args, plan, verb, task, dwarf, decision=None, accept_reason=None, answer=None):
     """Write the request under the control lock, live only; log it with its id.
     decision: a retry's (--decide choice or None, reason, approved) for a NEEDS_DECISION task.
-    accept_reason: an accept's reason; it is given with --approved (#138)."""
+    accept_reason: an accept's reason; it is given with --approved (#138).
+    answer: a NEEDS_INPUT task's answer (#147); the log records that there was one, never the text."""
     with control_lock(plan):
         probe(plan, 'control.log')
         if not is_live(plan):
@@ -859,13 +868,22 @@ def queue(args, plan, verb, task, dwarf, decision=None, accept_reason=None):
         if accept_reason is not None:
             request.update(reason=accept_reason, approved=True)
             extra['reason'] = accept_reason
-        write_atomic(plan, f'{REQUESTS}/{name}', json.dumps(request) + '\n')
-        audit(plan, args.actor, verb, task, None, dwarf or (decision[0] if decision else None), None, request=name, **extra)
+        if answer is not None:
+            request['answer'] = answer
+            extra['answer_chars'] = len(answer)
+        body = json.dumps(request) + '\n'
+        if len(body.encode('utf-8')) > REQUEST_MAX:
+            raise Refused(f'the answer does not fit in a request ({len(body.encode("utf-8"))} bytes, the scheduler reads '
+                          f'at most {REQUEST_MAX}): shorten it')
+        write_atomic(plan, f'{REQUESTS}/{name}', body)
+        audit(plan, args.actor, verb, task, None,
+              'answer' if answer is not None else dwarf or (decision[0] if decision else None), None, request=name, **extra)
     if args.json:
         json.dump(dict(queued=True, request=name), sys.stdout)
         sys.stdout.write('\n')
     else:
-        print(f'queued {verb} of task {task}' + (f' on {dwarf}' if dwarf else '') + f' (request {name}); '
+        print(f'queued {verb} of task {task}' + (f' on {dwarf}' if dwarf else '') + (' with an answer' if answer is not None else '')
+              + f' (request {name}); '
               'the scheduler applies or refuses it at its next pass and logs the outcome in control.log')
     return 0
 
@@ -897,9 +915,101 @@ def decision_of(plan, args, dwarf):
     return args.decide, reason, True
 
 
+ANSWER_MAX = 8000          # characters; the scheduler reads the same limit
+REQUEST_MAX = 64 * 1024    # bytes of one request file; the scheduler ignores a larger one
+ANSWER_READ = ANSWER_MAX * 4 + 1024  # bytes; one more means the file continues past the read
+
+
+def read_capped(handle):
+    """Up to ANSWER_READ bytes, and whether at least one byte follows."""
+    data = handle.read(ANSWER_READ)
+    extra = handle.read(1) if len(data) == ANSWER_READ else b''
+    return data, extra
+
+
+def answer_file_text(path):
+    """The answer file's text. A file that continues past the read is over the character limit:
+    a prefix of only whitespace is not an empty answer, and a character split by the read is not bad UTF-8."""
+    try:
+        if path == '-':
+            data, extra = read_capped(sys.stdin.buffer)
+        else:
+            with open(path, 'rb') as handle:
+                data, extra = read_capped(handle)
+    except OSError as error:
+        raise Invalid(f'--answer-file {path}: {error.strerror or error}')
+    try:
+        text = data.decode('utf-8')
+    except UnicodeDecodeError as error:
+        if extra and error.reason == 'unexpected end of data':
+            raise Invalid(f'the answer is limited to {ANSWER_MAX} characters')
+        raise Invalid('the answer is not valid UTF-8 text')
+    if extra and not text.strip():
+        raise Invalid(f'the answer is limited to {ANSWER_MAX} characters')
+    return text
+
+
+def answer_of(args):
+    """The answer --answer or --answer-file gives (stripped), None when neither is given."""
+    if args.answer is None and args.answer_file is None:
+        return None
+    if args.answer is not None and args.answer_file is not None:
+        raise Invalid('give --answer or --answer-file, not both')
+    if args.dwarf is not None or args.decide is not None:
+        raise Invalid('--answer answers a NEEDS_INPUT task and is not combined with --dwarf or --decide')
+    if args.reason is not None or args.approved:
+        raise Invalid('--answer answers a NEEDS_INPUT task and is not combined with --reason or --approved')
+    text = args.answer
+    if args.answer_file is not None:
+        text = answer_file_text(args.answer_file)
+    text = text.strip()
+    if not text:
+        raise Invalid('the answer is empty')
+    if '\0' in text:
+        raise Invalid('the answer contains a NUL byte')
+    if len(text) > ANSWER_MAX:
+        raise Invalid(f'the answer is limited to {ANSWER_MAX} characters')
+    return text
+
+
+def retry_prepared(args, plan, answer):
+    """No scheduler is live: prepare the answered task for the next `run`, as `forge-parallel.sh retry
+    --answer-file --no-dispatch` does, and pass its exit code through."""
+    fd, tmp = tempfile.mkstemp(dir=plan, prefix='.answer-', suffix='.txt')   # 0600
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            handle.write(answer + '\n')
+        command = ['bash', os.path.join(SKILL, 'scripts', 'forge-parallel.sh'), 'retry', plan, args.task,
+                   '--answer-file', tmp, '--no-dispatch']
+        if args.json:   # stdout is the JSON: the command's own words go to stderr
+            done = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+            sys.stderr.write(done.stdout + done.stderr)
+        else:
+            done = subprocess.run(command, stdin=subprocess.DEVNULL)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+    if done.returncode == 0 and args.json:
+        json.dump(dict(queued=False, prepared=True), sys.stdout)
+        sys.stdout.write('\n')
+    elif done.returncode == 0:
+        print(f'no run is live: task {args.task} is prepared with your answer; the next `forge-parallel.sh run {plan}` '
+              'dispatches it')
+    return done.returncode
+
+
 def cmd_retry(args):
     plan, rows = load(args.plan)
     require_task(rows, args.task)
+    answer = answer_of(args)
+    if answer is not None:
+        refuse_task(plan, args.task, pin=True)
+        status = task_status(plan, args.task, strict=True)
+        if status != 'NEEDS_INPUT':
+            raise Refused(f'task {args.task} is {status}, not waiting for an answer: --answer only answers a NEEDS_INPUT task')
+        if not is_live(plan):
+            return retry_prepared(args, plan, answer)
+        return queue(args, plan, 'retry', args.task, None, answer=answer)
     dwarf = None
     if args.dwarf is not None:
         dwarf = clean_spec(args.dwarf, '--dwarf')
@@ -1040,6 +1150,8 @@ def parser():
     p.add_argument('task')
     p.add_argument('--dwarf', metavar='SPEC', help='the implementer for this retry (an explicit escalation)')
     p.add_argument('--decide', metavar='CHOICE', help='decide a NEEDS_DECISION task: retry=N (1 to 20) or threshold=P0..P3')
+    p.add_argument('--answer', metavar='TEXT', help="answer a NEEDS_INPUT task's question (1 to 8000 characters)")
+    p.add_argument('--answer-file', metavar='FILE', help='the answer, read from FILE (- for stdin)')
     p.add_argument('--reason', metavar='TEXT', help='why (a decision needs it)')
     p.add_argument('--approved', action='store_true', help='the decision is the user\'s (a decision needs it)')
     p.set_defaults(func=cmd_retry)

@@ -92,7 +92,14 @@ For explanation requests, explain the workflow without spending model quota.
   (a threshold, a budget, a model pin, a drain, stop or queued retry; `forge control show <plan>`
   lists them). Never set a control, pin, `drain|stop|retry`, delete a run or compact one with
   `forge control` / `forge runs rm` / `forge runs compact` unless the user asks; `forge du` only reads. Exit `130` / `INTERRUPTED`: the run was signalled or
-  stopped; relay the `retry` lines it printed.
+  stopped; `forge handoff resume <plan>` carries it on, and relay the `retry` lines it printed to finish by hand.
+- When a session starts on a repo with an active or unfinished run, or the user names one, run
+  `forge handoff` first and work from its output. Never start `run` for a run whose scheduler is
+  live; continue with `forge handoff resume <plan> --harness <this harness>`, which follows a live
+  run and restarts a stopped one with its recorded flags. A Fractal plan is left to `forge fractal
+  resume`. Claim the run with the session's harness. Take over another driver only on the user's
+  word (`--take-over`). Record what is not on disk (a decision the user made, a hand fix under way)
+  with `forge handoff note`.
 - A `waiting for your answer:` block is status `NEEDS_INPUT`: relay each question verbatim and
   pass it with `retry <plan> <id> --answer "<reply>"`. Never answer for the user; nothing else
   resumes it.

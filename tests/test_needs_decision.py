@@ -109,6 +109,7 @@ class StopTests(DecisionCase):
         self.assertRegex(text, r'attempt\s+verdict\s+confirmed\s+new\s+worst')
         self.assertRegex(text, r'\n  1\s+FAIL\s+1\s+1\s+P1\n  2\s+FAIL\s+1\s+1\s+P1\n')
         self.assertIn('Attempts used so far: 2', text)
+        self.assertRegex(text, r'Attempts used so far: .*\n\nChoices \(each needs your reason')
         for command in (f'forge-parallel.sh retry {p} a --decide retry=N --reason "..." --approved',
                         f'forge-parallel.sh retry {p} a --decide threshold=P1 --reason "..." --approved',
                         f'forge-parallel.sh retry {p} a --dwarf <spec> --reason "..." --approved',

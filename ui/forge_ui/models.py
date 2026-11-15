@@ -316,10 +316,14 @@ def _facts(path, summary, root):
             execs = reader._task_execs(rd, task)
             shadows = reader._shadows(rd, task['id'], execs)
             explored, propensity = _route(rd, base)
+            # A scripted task (#142) ran a command, not a model: its attempts are no implementer's result.
+            # Its reviews still count for the reviewer.
+            scripted = task['dwarf'] == 'script'
             tasks.append(dict(base_row, task=task['id'], kind='plan', difficulty=task['difficulty'] or None,
                               explored=explored, propensity=propensity, final_status=task['status'],
                               accepted=reader._nonempty(rd, base + '/accepted.by'),
-                              attempts=_attempts(_attempt_rows(rd, base + '/attempts.tsv'), execs, task['dwarf']),
+                              attempts=[] if scripted else _attempts(_attempt_rows(rd, base + '/attempts.tsv'), execs,
+                                                                     task['dwarf']),
                               escalations=[{'n': item['attempt'], 'from': item['from'], 'to': item['to']}
                                            for item in reader._history(rd, base + '/escalations.tsv', True)]))
             reviews += _reviews(key, task['id'], execs, shadows)

@@ -28,13 +28,15 @@ from . import SCRIPTS, put_blob, put_file, sha256
 DISPATCH_ROLES = ('dwarf', 'qa', 'planner', 'side')
 # The file role stays `side`. Harvest records side_<kind> (see dispatch_event);
 # attempt statistics tell those apart with forge_dataset.is_side_role.
-PIPELINE_ROLES = ('task', 'solo', 'verification', 'parallel')
+# `script` is tasks/<id>/run, not a model dispatch. Import and live capture treat
+# attempts/script-* as a pipeline execution, so events_for records no dispatch for it.
+PIPELINE_ROLES = ('task', 'solo', 'verification', 'parallel', 'script')
 TASKS_COLS = ('id', 'deps', 'difficulty', 'files', 'dwarf', 'qa', 'title')
 STRUCTURED = ('codex', 'claude', 'openclaude', 'grok', 'opencode')   # as forge-runtime.py's: .last is the message, not the log
 # Plan files that change what a plan decides, added to its rid only when present (see plan_event).
 PLAN_RID_LATER = ('decompose_level', 'shadow_qa', 'shadow_rate', 'explore', 'reviewer_session', 'reviewer_session_rate',
                   'implementer_session', 'pre_review_tests', 'retro_mode', 'brief', 'brief_scope', 'brief_model',
-                  'summaries', 'summaries_model')
+                  'summaries', 'summaries_model', 'retry_per_model')
 
 # Files a task or solo execution may write. begin() snapshots their signatures so
 # finish() can tell this execution's outputs from what an earlier one left behind.
@@ -50,6 +52,7 @@ WATCHED = (
     'verification.lanes.json', 'results.tsv',
     'prereview.failed', 'bounced', 'message.failed', 'needs_input.md', 'lateral.tsv',
     'decision.md', 'decisions.tsv', 'ledger.tsv',
+    'prompt.md', 'approach.md', 'prompt.dispatched', 'approach.dispatched', 'stale.diff',
 )
 
 # The markers of an attempt forge sent back without a review, and the kind each one records.
@@ -700,6 +703,30 @@ def children(root: Path, parent: str) -> list:
     return found
 
 
+def attempt_prompt_changed(status) -> bool:
+    """Whether this attempt stopped unreviewed because its prompt or approach changed (#150).
+
+    A store row from before the field exists reads as false: `.get` of a missing key, and
+    this function is what writes the key. No re-import is required.
+    """
+    return status == 'STALE'
+
+
+def requirement_blob(tdir: Path, stem: str):
+    """The prompt or approach the implementer was dispatched with.
+
+    `<stem>.dispatched` is that text when the attempt recorded it. An attempt from before
+    the record falls back to `<stem>.md`. An empty `approach.dispatched` means there was
+    no approach, stored the same way as a missing approach.md: no blob.
+    """
+    dispatched = tdir / (stem + '.dispatched')
+    if dispatched.is_file():
+        if stem == 'approach' and text(dispatched) == '':
+            return None
+        return put_file(dispatched, 'prompt')
+    return put_file(tdir / (stem + '.md'), 'prompt')
+
+
 def task_event(attempt: Path, tdir: Path, rc, prov: dict, src: str = 'live') -> dict:
     before = prov.get('files')
     made = lambda name: produced(tdir, before, name)
@@ -724,6 +751,7 @@ def task_event(attempt: Path, tdir: Path, rc, prov: dict, src: str = 'live') -> 
         sent_back=next((kind for marker, kind in SENT_BACK if made(marker)), None),
         retry_source=first_line(tdir / 'retry_findings.source'),
         identical_retry=bool(diff) and made('changes.prev.diff') and diff == text(tdir / 'changes.prev.diff'),
+        prompt_changed=attempt_prompt_changed(status),
         produced=sorted(n for n in WATCHED if made(n)),
         carried=sorted(n for n in WATCHED if (tdir / n).exists() and not made(n)),
         children=children(tdir, attempt.name),
@@ -742,7 +770,7 @@ def task_event(attempt: Path, tdir: Path, rc, prov: dict, src: str = 'live') -> 
         qa_effort_jev=put_file(tdir / 'qa.effort.jev') if made('qa.effort.jev') else None,
         review_triage_jev=put_file(tdir / 'qa.jev.json') if made('qa.jev.json') else None,
         routing_jev=put_file(tdir / 'jev.json'),
-        prompt=put_file(tdir / 'prompt.md', 'prompt'), approach=put_file(tdir / 'approach.md', 'prompt'),
+        prompt=requirement_blob(tdir, 'prompt'), approach=requirement_blob(tdir, 'approach'),
     )
     data['blobs'] = refs
     return dict(rid=attempt.name, kind='attempt', ts=prov.get('wall_ended') or time.time(), src=src,
@@ -975,7 +1003,7 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
         options=dict({name: first_line(plan / name) for name in ('verify_retries', 'timeout', 'final_qa',
                                                             'shadow_qa', 'shadow_rate', 'explore', 'reviewer_session', 'reviewer_session_rate',
                                                             'implementer_session', 'retro_mode', 'brief', 'brief_scope',
-                                                            'brief_model', 'summaries', 'summaries_model')
+                                                            'brief_model', 'summaries', 'summaries_model', 'retry_per_model')
                  if (plan / name).exists()}, qa_threshold=threshold, qa_threshold_source=threshold_source),
         flags=sorted(name for name in ('no_memory', 'no_ripwire', 'yolo_dwarf', 'yolo_qa', 'pre_review_tests')
                      if (plan / name).exists()),

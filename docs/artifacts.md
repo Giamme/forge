@@ -58,6 +58,9 @@ A decomposed run adds:
   tasks.tsv
   waves.tsv, deferrals.txt
   tasks/<id>/{capsule.md,prompt.md,dwarf.*,qa.*,changes.diff,status}
+  tasks/<id>/run                       executable a dwarf cell of `script` runs
+  tasks/<id>/script.log                stdout and stderr of that command
+  tasks/<id>/attempts/script-<hex>/    one script run (16 hex digits): script.log, the run file, metrics.json
   tasks/<id>/attempt, attempts.tsv     attempts spent; one audit row per entry (incl. refunded stops)
   groups.tsv                           id, review, qa, members, title, goal; absent unless groups are on
   groups.frozen                        sha256 of the six columns, then each member's deps and files
@@ -115,6 +118,7 @@ A decomposed run adds:
   infra.paused                         only while something is paused on infrastructure: {"scopes": [...]}
   control.lock                         the lock that serialises changes to the plan's control files, created by whichever takes it first (forge control, the scheduler or an escalation record) and left in place
   retry_budget, infra_budget           only while a scheduler runs: its live budgets (a number each)
+  after                                absolute path of the plan this one follows (`plan --after`)
   integration.base                     commit the integration branch started from
   verification.{status,exit,log,command,fingerprint}   the combined verification; status PASS, FAIL or INTERRUPTED (a signal stopped it)
   verification.{flaky,retry.log}       only when a failing command passed on rerun (lanes: flaky alone, per lane)

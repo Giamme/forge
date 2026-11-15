@@ -37,10 +37,24 @@ record_judged_attempt() { # record_judged_attempt <plan> <id> <status>
 
 # What follows every attempt that was judged: the escalation check, then the decision a FAIL may stop
 # for. do_task runs it after its own attempt, and a group verdict runs it after judging a member's.
-# An IMPLEMENTED attempt was not judged, so neither step runs for it.
+# An IMPLEMENTED or STALE attempt was not judged, so neither step runs for it.
 post_attempt() { # post_attempt <plan> <id>
   local crc=0 stop_before
   [ "$(task_status "$1" "$2")" = IMPLEMENTED ] && return 0
+  # A STALE attempt (its prompt changed while it ran, #150) was not judged and spends nothing.
+  [ "$(task_status "$1" "$2")" = STALE ] && return 0
+  # A FAIL whose every blocking finding needs a file this task does not declare is the plan's fault (#149):
+  # stop for a decision now, before the escalation check can write a marker for a model that cannot help.
+  if outside_stop_check "$1" "$2"; then
+    python3 "$SKILL_DIR/scripts/forge-ledger.py" append "$1" "$2" >/dev/null 2>&1 \
+      || note "$2: could not add this review to the findings ledger"
+    # A write that fails leaves the task FAIL. Continuing would append this review to the
+    # ledger again and let the escalation check mark a model that cannot fix the plan.
+    stop_for_decision "$1" "$2" plan || return 1
+    return 0
+  else
+    rm -f "$1/tasks/$2/outside.json"
+  fi
   # The retry policy's state (escalation.next or escalation.stop), decided now rather than
   # at the next retry so a spent retry budget still reports it and the scheduler sees it.
   stop_before="$(cat "$1/tasks/$2/escalation.stop" 2>/dev/null)"
@@ -49,6 +63,58 @@ post_attempt() { # post_attempt <plan> <id>
   # A FAIL that does not converge, or that the policy could not move to a stronger model, waits
   # for a person (NEEDS_DECISION). attempts.tsv was written above and keeps FAIL.
   decision_after_attempt "$1" "$2" "$stop_before" "$crc"
+}
+
+# Whether the last review's every blocking finding needs a file outside the task (#149). 0 only when the
+# task is FAIL on a real review, at least one finding blocks at the task's threshold, each of those carries
+# {outside=...}, and no path it names is declared by the task itself. Writes tasks/<id>/outside.json:
+# [{path, owner, owners, owner_status}], owner_status being the owner's task_status (null for no owner).
+# Any tool error returns non-zero and writes nothing.
+outside_stop_check() { # outside_stop_check <plan> <id>
+  local PLAN="$1" id="$2" tdir="$1/tasks/$2" thr rep paths owned tmp="$1/tasks/$2/.outside.json.tmp" p
+  local -a plist=()
+  [ "$(task_status "$PLAN" "$id")" = FAIL ] || return 1
+  [ -s "$tdir/qa.last" ] || return 1
+  case "$(forge_verdict "$tdir/qa.last" 2>/dev/null)" in PASS|FAIL) ;; *) return 1 ;; esac
+  thr="$(qa_threshold_for "$PLAN" "$id")" || return 1
+  rep="$(python3 "$SKILL_DIR/scripts/forge-contract.py" outside --qa-last "$tdir/qa.last" --threshold "$thr" 2>/dev/null)" || return 1
+  paths="$(printf '%s' "$rep" | python3 -c '
+import json, sys
+rows = json.load(sys.stdin)
+blocking = [r for r in rows if r.get("blocking")]
+if not blocking or any(not r.get("outside") for r in blocking):
+    sys.exit(1)
+seen = []
+for r in blocking:
+    for p in r["outside"]:
+        if p not in seen:
+            seen.append(p)
+print("\n".join(seen))
+' 2>/dev/null)" || return 1
+  [ -n "$paths" ] || return 1
+  while IFS= read -r p; do plist+=("$p"); done <<< "$paths"
+  owned="$(python3 "$SKILL_DIR/scripts/forge_owner.py" "$PLAN" "${plist[@]}" --task "$id" 2>/dev/null)" || return 1
+  printf '%s' "$owned" | python3 -c '
+import json, os, sys
+plan = sys.argv[1]
+items = json.load(sys.stdin)["paths"]
+if not items or any(i["outside"] is not True for i in items):
+    sys.exit(1)
+def status(task):
+    base = os.path.join(plan, "tasks", task)
+    if os.path.exists(os.path.join(base, "merged")):
+        return "MERGED"
+    try:
+        with open(os.path.join(base, "status"), encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return "PENDING"
+out = [{"path": i["path"], "owner": i["owner"], "owners": i["owners"],
+        "owner_status": status(i["owner"]) if i["owner"] else None} for i in items]
+json.dump(out, sys.stdout, indent=1)
+sys.stdout.write("\n")
+' "$PLAN" > "$tmp" 2>/dev/null && mv "$tmp" "$tdir/outside.json" || { rm -f "${tmp:?}"; return 1; }
+  return 0
 }
 
 # --- infrastructure stops -------------------------------------------------------
@@ -552,6 +618,7 @@ decision_reason_text() { # decision_reason_text <reason>: what a reason in decis
   case "$1" in
     converging) echo "the last reviews failed one after another, most of their findings were new, and the worst severity did not improve: more attempts keep finding new problems instead of closing the old ones" ;;
     split) echo "the retry policy found no stronger model to escalate to after repeated failures on one: another attempt on the same model rarely passes" ;;
+    plan) echo "every blocking finding of the last review needs a change in a file this task does not declare: the plan, not the implementer, has to change" ;;
     cap) echo "the attempts spent across runs reach the task's cap (max_attempts, plus each retry=N a person granted): another attempt needs a person's retry=N" ;;
     *) echo "$1" ;;
   esac
@@ -646,6 +713,27 @@ stop_for_decision() { # stop_for_decision <plan> <id> <reason>...
     read -r used cap <<< "$(attempt_cap_of "$PLAN" "$id")"
     if [ "$cap" = - ]; then echo "Attempts used so far: $used (no cap)"; else echo "Attempts used so far: $used (attempts $used of $cap)"; fi
     echo
+    case ",${reasons// /}," in *,plan,*)
+      if [ -s "$tdir/outside.json" ]; then
+        echo "Files outside this task:"
+        python3 - "$tdir/outside.json" <<'PYEOF' 2>/dev/null
+import json, sys
+for item in json.load(open(sys.argv[1], encoding="utf-8")):
+    if item.get("owner"):
+        print("  %s \u2014 declared by %s (%s)" % (item["path"], item["owner"], item.get("owner_status") or "PENDING"))
+    else:
+        print("  %s \u2014 declared by no task" % item["path"])
+PYEOF
+        echo
+        echo "Plan choices (this is a change of the plan, edit $PLAN/tasks.tsv):"
+        echo "  1. add the path to this task's files"
+        echo "  2. make this task depend on the owner (edit its deps)"
+        echo "  3. merge the two rows into one task"
+        echo "  After editing tasks.tsv: forge-parallel.sh plan $PLAN again when no run is live, then"
+        echo "  forge-parallel.sh retry $PLAN $id --decide retry=1 --reason \"...\" --approved"
+        echo
+      fi ;;
+    esac
     echo "Choices (each needs your reason; --approved says the decision is yours):"
     echo "  N more attempts:        forge-parallel.sh retry $PLAN $id --decide retry=N --reason \"...\" --approved"
     case ",${reasons// /}," in
@@ -678,7 +766,10 @@ decision_after_attempt() { # decision_after_attempt <plan> <id> <stop-before> <c
   python3 "$SKILL_DIR/scripts/forge-ledger.py" append "$PLAN" "$id" >/dev/null 2>&1 \
     || note "$id: could not add this review to the findings ledger"
   [ "$(task_status "$PLAN" "$id")" = FAIL ] || return 0
-  if python3 "$SKILL_DIR/scripts/forge-ledger.py" signal "$tdir" >/dev/null 2>&1; then reasons="converging"; fi
+  # A scripted task's reviews judge the same command again, not findings a person closes one by one:
+  # no convergence count (#142).
+  if [ "$(field "$PLAN/tasks.tsv" "$id" dwarf)" != script ] \
+      && python3 "$SKILL_DIR/scripts/forge-ledger.py" signal "$tdir" >/dev/null 2>&1; then reasons="converging"; fi
   stop="$(cat "$tdir/escalation.stop" 2>/dev/null)"
   if [ -n "$stop" ] && { [ "$crc" = 3 ] || [ "$stop" != "$before" ]; }; then reasons="${reasons:+$reasons }split"; fi
   read -r used cap <<< "$(attempt_cap_of "$PLAN" "$id")"
@@ -876,7 +967,7 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf [decided]]
   # (default 3) the next attempt goes a tier up in the user's own pools instead of repeating
   # the dispatch whose fourth try passes least often, or the task stops with a split
   # suggestion.
-  local cur next rc esc_source="" pinned="" has_pin=0
+  local cur next rc esc_source="" pinned="" has_pin=0 per_model=""
   cur="$(field "$T" "$id" dwarf)"
   [ -f "$tdir/escalation.pin" ] && [ ! -L "$tdir/escalation.pin" ] && has_pin=1
   if [ -n "$newdwarf" ]; then
@@ -903,7 +994,18 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf [decided]]
       return 3
     fi
     if [ -n "$next" ]; then
-      note "$id: escalating from $cur to $next after $(cat "$PLAN/escalate_after" 2>/dev/null || echo 3) failed attempts on one model (--escalate-after 0 turns this off)"
+      # retry_per_model replaces escalate_after (forge-route.py escalation). The note names the
+      # count that moved the task, and does not point at a flag that no longer governs the plan.
+      per_model="$(tr -d '[:space:]' < "$PLAN/retry_per_model" 2>/dev/null || true)"
+      case "$per_model" in
+        [1-9]|[1-9][0-9]) ;;
+        *) per_model="" ;;
+      esac
+      if [ -n "$per_model" ]; then
+        note "$id: escalating from $cur to $next after $per_model failed attempts on one model"
+      else
+        note "$id: escalating from $cur to $next after $(cat "$PLAN/escalate_after" 2>/dev/null || echo 3) failed attempts on one model (--escalate-after 0 turns this off)"
+      fi
       newdwarf="$next"
       esc_source=policy
     fi
@@ -1052,12 +1154,53 @@ prepare_fallback() { # prepare_fallback <plan> <id> <excluded harness/model,...>
   fi
 }
 
+# The next entry of a STALE task (#150): its prompt or approach changed while the attempt ran, so the
+# attempt was not reviewed and spent nothing. The attempt number is given back (as a dwarf-stage infra
+# stop does), the implementer is told what changed, and no escalation, decision or attempt-cap gate runs:
+# nothing was spent. The status is cleared by the caller.
+prepare_prompt_retry() { # prepare_prompt_retry <plan> <id>
+  local PLAN="$1" id="$2" tdir="$1/tasks/$2" st attempt n
+  st="$(task_status "$PLAN" "$id")"
+  if [ "$st" != STALE ]; then
+    note "$id: is $st, not STALE; --prompt only prepares a task whose prompt changed during its attempt"
+    return 2
+  fi
+  attempt="$(cat "$tdir/attempt" 2>/dev/null)"
+  case "$attempt" in ''|*[!0-9]*) attempt=0 ;; esac
+  [ "$attempt" -gt 0 ] && echo $((attempt - 1)) > "$tdir/attempt"
+  {
+    printf 'The requirements changed while you worked on this task. The full new requirements are above; what changed follows.\n\n'
+    printf 'Bring your committed work in line with the new text, keep what still holds, and explain anything you change.\n\n'
+    printf '```diff\n'
+    cat "$tdir/stale.diff" 2>/dev/null
+    printf '```\n'
+  } > "$tdir/.retry_findings.md.tmp" && mv "$tdir/.retry_findings.md.tmp" "$tdir/retry_findings.md" || return 1
+  printf 'prompt\n' > "$tdir/.retry_findings.source.tmp" && mv "$tdir/.retry_findings.source.tmp" "$tdir/retry_findings.source" || return 1
+  rm -f "$tdir/retry_findings.commit" "$tdir/resume" "$tdir/retry_findings.session" "$tdir/retry_findings.resolved"
+  if [ -f "$PLAN/implementer_session" ]; then
+    carry_implementer_session "$tdir"
+  else
+    for n in session resolved; do rm -f "$tdir/retry_findings.dwarf.$n"; done
+  fi
+  # The stale attempt was never reviewed, and the requirements it worked from are gone. A re-dispatch
+  # that keeps its committed work (a wording fix needs no code change) must be reviewed, not refused as
+  # "identical to the previous attempt": forge-parallel.sh compares the new diff with changes.prev.diff,
+  # which a dwarf stage fills from changes.diff, so neither is left for it to compare. The stale diff of
+  # the prompt (stale.diff) and committed.diff stay as the record.
+  rm -f "$tdir/changes.diff" "$tdir/changes.prev.diff"
+  rm -f "$tdir/status" "$tdir/noretry"
+}
+
 # The scheduler's `_prepare_retry` target: prepare, then clear the status so the task
 # reads as PENDING again. `retry` clears it itself, after its own preflight. With --resume it
 # prepares an infrastructure stop's resume instead (prepare_resume), and the status stays;
 # with --dwarf <spec> the spec is the explicit new implementer; --fallback <pairs> [--cause <cause> [--role qa]]
 # is prepare_fallback.
-retry_for_scheduler() { # retry_for_scheduler <plan> <id> [--resume | --dwarf <spec> | --fallback <pairs> [--cause <cause> [--role qa]]]
+retry_for_scheduler() { # retry_for_scheduler <plan> <id> [--resume | --prompt | --dwarf <spec> | --fallback <pairs> [--cause <cause> [--role qa]]]
+  if [ "${3:-}" = --prompt ]; then
+    prepare_prompt_retry "$1" "$2"
+    return $?
+  fi
   if [ "${3:-}" = --resume ]; then
     # An infrastructure stop spends no attempt, but the resume starts one: at the cap it is stopped for a decision.
     attempt_cap_gate "$1" "$2" INFRA "" || return 4

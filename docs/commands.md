@@ -15,17 +15,19 @@ harness (`/forge`); this command installs forge and drives its optional tools.
 | `forge update` | fast-forward a git checkout and refresh every harness installation; on an npm install it names the npm command instead. See [updating](install.md#updating-all-harness-installations) |
 | `forge version [--check]` | the installed version, and whether a newer release is out |
 | `forge fractal …` | opt-in Fractal execution; see [the command group](fractal.md#forge-fractal-command-group) |
-| `forge runs [--repo DIR \| --all] [--limit N] [--json]` | this repo's recent runs, newest first: run id, kind, age, task states, verification and final review, goal, and the run dir. Read-only; the same summaries forge-ui shows |
-| `forge control show\|set\|pin\|unpin\|drain\|resume\|stop\|retry\|add PLAN_DIR …` | change a live plan: `set` takes `qa-threshold` (`P0`..`P3`, `none` or `default` for the plan, `inherit` per task), `timeout`, `escalate-after`, `escalate-effort` (`on`/`off`), `verify-retries`, `infra-backoff` (a backoff shape; `none` drops it), `infra-fallback` (`on`/`off`), `max-attempts` (a non-negative integer, `0` = no cap, and only with `--confirm`), `converge-window` (a non-negative integer), `pre-review-tests` (`on`/`off`), `pre-review-parallel` (1-64), `summaries` (`on`/`off`; on a finished run it also starts `forge summarize`), `retry-budget`, `infra-retries` or `max-parallel` (1-64) (the last three only while a scheduler runs; `--task ID` for `qa-threshold`, `retry-budget` and `summaries`, value `inherit` drops the override); `pin PLAN_DIR TASK SPEC` sets the model the task's next full retry uses once, `unpin` drops it. While a scheduler runs: `drain` starts nothing new until `resume` (a run with nothing left to start ends as usual); `stop [--now]` ends the run once the running tasks finish (`--now` interrupts them; `run` exits 130 without verifying, unless every task had merged by then: it then verifies and exits 0 as usual); `retry PLAN_DIR TASK [--dwarf SPEC]` queues a retry, and a `NEEDS_DECISION` task instead needs `--decide retry=N` or `--decide threshold=Pn`, or `--dwarf SPEC`, each with `--reason TEXT --approved`; `add PLAN_DIR TASK` (a row appended to `tasks.tsv`) queues a request the scheduler applies or refuses. `show` (`--json` for JSON) also says whether the run is drained or stopping, prints an `INFRA` task's cause, and, while a scheduler is live, lists each infrastructure pause with its reset and "needs you". The text table lists each task's attempts against its cap (`9/8`, or `9/-` when there is no cap). Every change and every request's outcome is logged in `control.log`. Exit 2 invalid input, 3 refused. See [live controls](decomposed-runs.md#changing-a-run-while-it-works) |
+| `forge runs [--repo DIR \| --all] [--limit N] [--json]` | this repo's recent runs, newest first: run id, kind, age, task states, verification and final review, goal, `after <run>` when the plan was chained, and the run dir. Read-only; the same summaries forge-ui shows |
+| `forge handoff [show] [RUN_DIR \| --repo DIR] [--json]` / `note RUN_DIR TEXT [--actor A] [--json]` / `claim RUN_DIR --harness H [--session S] [--take-over] [--json]` / `resume RUN_DIR [--take-over] [--harness H] [--session S] [--json]` | the run for the next session. `show` is the default (`forge handoff` and `forge handoff RUN_DIR`); it writes nothing. `--repo DIR`, or no argument inside a checkout, reports that repo's newest registered plan that is live or still has a task not `MERGED`. The report has the run, its option files and `run.flags.json`, scheduler liveness, task states, what needs a person, the last `control.log` changes, tasks left `RUNNING`, notes newest first, the driver and the next commands. `note` appends one line to `handoff.notes.jsonl` (`--actor` defaults to `cli`; whitespace collapses; empty text, text over 2000 characters and text that is not UTF-8 are refused). `claim` requires `--harness H` (`[a-z0-9._-]{1,40}`) and writes `handoff.driver.json` (`harness`, `session`, `since`, `last_seen`); `--session S` is an id with no whitespace, at most 200 characters. A different driver last seen under 12 hours ago is refused unless `--take-over` (one `control.log` line, action `take-over`, actor `cli`, and a dataset `control` event). `resume` claims (`--harness` defaults to `unknown`), follows a live scheduler and starts nothing, names `forge fractal resume` for a Fractal plan, and otherwise saves each stale `RUNNING` task's diff, resets that worktree, marks it `INTERRUPTED` without counting the attempt twice, prepares every `INTERRUPTED` task and restarts `run` detached from `run.flags.json`. Exit 0 ok, 2 usage or not a run dir, 3 no run to report or another driver holds the run; a restart that cannot be launched exits 1. See [from another session](decomposed-runs.md#from-another-session-or-harness) |
+| `forge control show\|set\|pin\|unpin\|drain\|resume\|stop\|retry\|add PLAN_DIR …` | change a live plan: `set` takes `qa-threshold` (`P0`..`P3`, `none` or `default` for the plan, `inherit` per task), `timeout`, `escalate-after`, `escalate-effort` (`on`/`off`), `verify-retries`, `infra-backoff` (a backoff shape; `none` drops it), `infra-fallback` (`on`/`off`), `max-attempts` (a non-negative integer, `0` = no cap, and only with `--confirm`), `converge-window` (a non-negative integer), `pre-review-tests` (`on`/`off`), `pre-review-parallel` (1-64), `summaries` (`on`/`off`; on a finished run it also starts `forge summarize`), `retry-budget`, `infra-retries` or `max-parallel` (1-64) (the last three only while a scheduler runs; `--task ID` for `qa-threshold`, `retry-budget` and `summaries`, value `inherit` drops the override); `pin PLAN_DIR TASK SPEC` sets the model the task's next full retry uses once, `unpin` drops it. While a scheduler runs: `drain` starts nothing new until `resume` (a run with nothing left to start ends as usual); `stop [--now]` ends the run once the running tasks finish (`--now` interrupts them; `run` exits 130 without verifying, unless every task had merged by then: it then verifies and exits 0 as usual); `retry PLAN_DIR TASK [--dwarf SPEC]` queues a retry, including a `STALE` task (its `prompt.md` or `approach.md` changed during the attempt: it is re-dispatched with the new text on the same implementer, and `--dwarf` is refused). `retry PLAN_DIR TASK --answer TEXT` (or `--answer-file F`, `-` for stdin) answers a `NEEDS_INPUT` task: 1 to 8000 characters after stripping, no NUL, and not combined with `--dwarf` or `--decide`. On a live run it is queued and the scheduler writes `tasks/<id>/answer.md` and resumes the task; with no live run it prepares the task through `forge-parallel.sh retry --answer-file --no-dispatch` for the next `run` (`forge-parallel.sh retry --answer` itself is unchanged). `--json` prints `{"queued": true, "request"}` when queued and `{"queued": false, "prepared": true}` when prepared. `control.log` records the value `answer` and `answer_chars`, never the text (`--actor` `ui` or `cli`, default `cli`). A `NEEDS_DECISION` task instead needs `--decide retry=N` or `--decide threshold=Pn`, or `--dwarf SPEC`, each with `--reason TEXT --approved`; `add PLAN_DIR TASK` (a row appended to `tasks.tsv`) queues a request the scheduler applies or refuses. `show` (`--json` for JSON) also says whether the run is drained or stopping, prints an `INFRA` task's cause, and, while a scheduler is live, lists each infrastructure pause with its reset and "needs you". The text table lists each task's attempts against its cap (`9/8`, or `9/-` when there is no cap). Every change and every request's outcome is logged in `control.log`. Exit 2 invalid input, 3 refused. See [live controls](decomposed-runs.md#changing-a-run-while-it-works) |
 | `forge config show [--repo DIR] [--json]` / `forge config set <key> <value> [--repo DIR] [--json]` / `forge config unset <key> [--repo DIR] [--json]` | one view of every config source (registry, the legacy Jev file, decide, the user `features`, the repo's `.forge/verify`, `setup` and `verify-subset`, dataset, `FORGE_*` variables with secrets hidden); `set` / `unset` edit `repo.verify`, `repo.setup`, `repo.verify-subset` (must contain `{files}` or `{changed}`; `--repo` required) and `decide.gate.<gate>`, `decide.gate.<gate>.provider`, `decide.gate.<gate>.model` (`off`, `shadow` or `on`; those write the user level and do not need `--repo`). They also set the user feature keys: `retro` (`off` or `on`), `brief` (`off`, `advisory`, `gated` or `strict`), `brief.scope` (`task`, `wave` or `plan`), `brief.model` (a spec), `summaries` (`off` or `on`), `summaries.model` (a spec), `storage.compact` (`auto`, the default, or `off`) and `storage.warn-gb` (gigabytes, `20` by default, or `off`; see [forge du](#forge-du)). Those write the user file and ignore `--repo`; `unset` removes one key. A bad value exits 2 and writes nothing. A model spec is checked for its form when it is set; whether it resolves is checked when `plan` uses it. Unset of a `decide.gate.*` key is refused: set the mode to `off`. `-` as a value reads stdin for the per-repo files. Exit 2 on invalid input |
 | `forge config profile list\|show\|create\|edit\|set\|unset\|rm\|use` | named bundles of routing, policy, gates and budget in `decide.json`; see [below](#forge-config-profile) |
 | `forge watch [RUN_DIR \| --repo DIR \| --all] [--interval S] [--settle S] [--until-done] [--no-notify] [--exec CMD]` | follow runs live: a line for every task status change, and a desktop notification, `--exec CMD` and the repo's `.forge/on-finish` when a run finishes or fails, a task fails or a final review gives its verdict; see [below](#forge-watch). Read-only |
 | `forge runs rm RUN_DIR [--dry-run] [--yes] [--no-archive] [--worktrees] [--branches] [--json]` | delete a run directory but keep what it taught the dataset; see [below](#forge-runs-rm) |
 | `forge runs compact [RUN_DIR … \| --repo DIR \| --all] [--logs] [--older-than DAYS] [--dry-run] [--json]` | keep every run and take back what it holds for nothing: leftover review snapshots and, with `--logs`, gzipped log copies; see [below](#forge-runs-compact) |
 | `forge du [--repo DIR \| --all] [--top N] [--json]` | what forge takes on disk (run dirs, worktree folders, its data home) and the command that takes each part back; see [below](#forge-du). Read-only |
+| `forge worktrees rm PATH… [--branches] [--dry-run] [--json] [--actor {cli,ui}]` | remove `failed` and `finished` worktrees, and leftover folders, by forge-ui's rules (never `--force`; `--branches` is `git branch -d` on a finished worktree's merged branch). Exit 0 when no row failed, 4 when one did, 2 usage. See [below](#forge-worktrees-rm) |
 | `forge runs rerun RUN_DIR --dwarf SPEC [--qa SPEC] [--to DIR] [--max-parallel N] [--dry-run] [--run --yes]` | set up the same plan again with another implementer, from the same starting commit; spends nothing unless `--run --yes`; never merges. See [below](#forge-runs-rerun-and-compare) |
 | `forge runs compare RUN_A RUN_B [--json] [--no-record]` | two runs of one plan, side by side, per task; records the pair in the dataset |
-| `forge memory show\|learnings\|prune\|spend REPO …` | a repository's project memory; `learnings REPO --json` lists every learning in its ledger with what forge does with it (`in_memory`, `waiting` for a second run, `stale`, `capped`, `muted`), from forge-memory.sh's own rebuild, without changing the repository. See [project memory](memory.md) |
+| `forge memory show\|learnings\|prune\|spend\|forget REPO …` | a repository's project memory; `learnings REPO --json` lists every learning in its ledger with what forge does with it (`in_memory`, `waiting` for a second run, `stale`, `capped`, `muted`), from forge-memory.sh's own rebuild, without changing the repository. `forget REPO KEY…` (`KEY` is `category:key`; `--dry-run`, `--json`, `--actor ui\|cli`) drops those ledger rows and rebuilds `memory.md`. A missing key is not an error. `--json` prints `{ok, dry_run, keys: [{key, rows, found}], memory_lines_removed}`. Exit 0 ok, 2 usage. See [below](#forge-memory-forget) and [project memory](memory.md) |
 | `forge issues RUN [--apply] …` | file the review findings a run left open as GitHub issues; see [below](#forge-issues) |
 | `forge pr [RUN_DIR \| --repo DIR] [--texts] [--paths] [--out FILE] [--create [--base B] [--head B]]` | a draft pull-request description for a finished run, on stdout; `--create` opens it as a draft PR with `gh`; see [below](#forge-pr) |
 | `forge retro note\|report\|issues PLAN …` | retro notes on what got in a run's way (`plan --retro`): `note` records one by hand (`--type`, `--fixable-by`, `--summary`, and `--command`, `--exit`, `--error`, `--blocking`, `--tried` as needed), `report` writes `retro.md`, and `issues` drafts GitHub issues for forge's own repository and posts only with `--apply --approve HASH`. `record` is forge's own call after a dispatch. Exit 2 usage, 3 refused. See [retro notes](../references/decompose.md#retro-notes-opt-in) |
@@ -144,7 +146,56 @@ forge does not create, and what `forge runs compact --logs` would take back), ea
 folder, and forge's data home (the dataset and its blobs, which are kept, archives, exports, legacy
 files). It ends with the commands that take each part back. Sizes are disk usage, as `du` counts it;
 every file is visited, so a large tree takes a while. It reads only, apart from keeping the totals for
-the `storage.warn-gb` check. forge-ui's **Disk** screen shows the same report.
+the `storage.warn-gb` check. forge-ui's **Disk** screen shows the same report and, when the server can write, compacts from it after a dry run ([Controls](forge-ui.md#controls)).
+
+### `forge worktrees rm`
+
+```
+forge worktrees rm PATH… [--branches] [--dry-run] [--json] [--actor {cli,ui}]
+```
+
+Removes worktrees by the rules of forge-ui's Worktrees screen (`ui/forge_ui/worktrees.py` `compute`), the one rule set. It never passes `--force`.
+
+- A `failed` or `finished` worktree whose repository is known is `git worktree remove`. `--branches` also runs `git branch -d` (never `-D`) on a `finished` worktree whose branch is merged. A `failed` worktree's branch stays, and so does an unmerged one: `-d` refuses it.
+- An `unknown` row that is a leftover folder (git no longer lists it as a worktree) is deleted as a folder, after checking again that git does not list it and that it still sits under `.forge-worktrees`.
+- Every other status is skipped with its reason: its run is active, it has uncommitted changes, it is locked by git, it is the integration worktree of a run not integrated yet, its folder is gone (`git worktree prune`), it is not forge's worktree, it is already removed, it is not a leftover, the path is not a worktree forge knows, or its repository is not known.
+
+The same path given twice is one row. `--dry-run` computes the same actions and changes nothing. `--actor` is who asked, `cli` (the default) or `ui`, recorded with a real removal: a `worktree_removed` dataset event (the actor on the event) and a gone entry in the location list, `forge worktrees rm (<actor>)`. A skip and a dry run record nothing.
+
+`--json` prints one object on stdout, on failure too:
+
+```json
+{"ok": true, "dry_run": false,
+ "rows": [{"path": "…", "action": "remove", "status": "removed", "reason": null}]}
+```
+
+`action` is `remove`, `remove+branch`, `delete-folder` or `none`. `status` is `removed`, `skipped`, `failed` or `would-remove` (the dry run). `reason` is a string, or null when there is nothing to say. `ok` is false when any row is `failed`. A worktree that was removed and whose branch then refused `-d` is `failed`, with the reason that the worktree is gone and the branch stays.
+
+Exit 0 when no row failed (a skip is not a failure), 4 when a row failed, 2 usage. forge-ui's Remove runs this with `--actor ui`. See [Controls](forge-ui.md#controls).
+
+### `forge memory forget`
+
+```
+forge memory forget REPO KEY… [--dry-run] [--json] [--actor {ui,cli}]
+```
+
+`KEY` is `category:key`, the identity the rebuild and `learnings` already use. Each part is normalised (lowercase, every run of non-alphanumerics collapsed to one space) and neither part may be empty. A repeated key, or two spellings that normalise to one, is a single entry.
+
+It removes those learnings' rows from `.forge/ledger.tsv` and rebuilds `.forge/memory.md` from the ledger that remains. `--dry-run` touches neither file. A key that is not in the ledger is not an error. The command runs when `FORGE_MEMORY=off` too: it is an edit you asked for, not an automatic write.
+
+`--json` prints one object:
+
+```json
+{"ok": true, "dry_run": false,
+ "keys": [{"key": "trap:alpha thing", "rows": 2, "found": true}],
+ "memory_lines_removed": ["- alpha thing [a.py]"]}
+```
+
+`rows` is how many ledger rows matched that key. `found` is false when none did. `memory_lines_removed` is the `- ` fact lines a rebuild of `memory.md` loses, in their old order, not a count and not the section headings. `ok` is true on that object. A usage error prints to stderr and exits before any JSON.
+
+A real forget that drops at least one row records a `memory_forget` dataset event (`keys`, `rows`, `actor`). A dry run, and a forget that matches nothing, record nothing. `--actor` is `cli` (the default) or `ui`.
+
+Exit 0 ok, 2 usage (a bad key, an unknown option, a missing repo, or no key). See [project memory](memory.md#scriptsforge-memorysh).
 
 ### `forge runs rerun` and `forge runs compare`
 
@@ -654,7 +705,7 @@ Decomposed runs: many dwarves in isolated worktrees, per-task QA, only passing w
 Bash 3.2 entrypoints use a Python standard-library coordinator to schedule eligible tasks.
 
 ```
-forge-parallel.sh plan      <plan-dir> --repo <dir> [routing flags] [--planner <spec>] [--no-memory]
+forge-parallel.sh plan      <plan-dir> --repo <dir> [--after <plan-dir>] [routing flags] [--planner <spec>] [--no-memory]
                                      [--gate NAME=MODE[,...]] [--no-gates] [--decide-budget tokens=N[,usd=X]]
                                      [--decompose-level L] [--shadow-qa <spec>[,..]|none] [--shadow-rate R]
                                      [--reviewer-session | --reviewer-session-rate R | --no-reviewer-session]
@@ -665,7 +716,8 @@ forge-parallel.sh plan      <plan-dir> --repo <dir> [routing flags] [--planner <
                                      [--profile NAME | --no-profile] [--fast ROLES] [--collapse-chains]
                                      [--groups waves|FILE] [--group-review]
                                      [--group-max-tasks N] [--group-max-diff-kb N]
-                                     [--max-attempts N] [--converge-window N] [--no-infra-fallback]
+                                     [--max-attempts N] [--retry-per-model N | --no-retry-per-model]
+                                     [--converge-window N] [--no-infra-fallback]
                                      [--retro | --no-retro] [--brief advisory|gated|strict|off] [--brief-scope task|wave|plan]
                                      [--brief-model SPEC] [--summaries on|off] [--summaries-model SPEC]
 forge-parallel.sh auto      <plan-dir> --repo <dir> --goal-file <file> [--planner <spec>]
@@ -700,7 +752,7 @@ forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <c
 
 | Subcommand | Does |
 |---|---|
-| `plan` | validate `tasks.tsv`, resolve difficulty → concrete dwarf/qa specs, compute waves, and with `groups.tsv` or `--groups` validate, resolve and freeze the groups; render the approval table |
+| `plan` | validate `tasks.tsv`, resolve difficulty → concrete dwarf/qa specs, compute waves, and with `groups.tsv` or `--groups` validate, resolve and freeze the groups; render the approval table. A `dwarf` cell of `script` is kept: that task runs the executable `tasks/<id>/run` |
 | `auto` | from a goal file to that table in one blocking command; with `--approved`, also `run`. The orchestrator's job is mechanical, so a small model can drive it. See [below](#forge-parallelsh-auto) |
 | `run` | schedule ready tasks; per task: worktree → dwarf → diff → QA → status; merge passing tasks onto the integration branch |
 | `retry` | re-run **one** failed task in the worktree it already has, with its reviewer's findings in the prompt; with `--answer` or `--answer-file`, answer a `NEEDS_INPUT` task and run it; with `--decide` or `--dwarf` plus `--reason` and `--approved`, decide a `NEEDS_DECISION` task and run it |
@@ -709,6 +761,8 @@ forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <c
 | `accept` | **only on your explicit instruction** — merge a `FAIL`/`UNKNOWN` task's reviewed work anyway, recording why |
 | `review` | **opt-in, spends QA quota** — one reviewer reads the whole combined result; read-only |
 | `split` / `combine` | move tasks into a plan of their own / join fully merged plans into one |
+
+A `tasks.tsv` row whose `dwarf` column is `script` runs the executable `tasks/<id>/run`. `plan` exits 2 when that file is missing or not executable, does not route the row, skips its implementer doctor, shows it in the table and counts no implementer dispatch. The `qa` column is still a model. See [Scripted tasks](../references/decompose.md#scripted-tasks).
 
 | Flag | Subcommands | Remembered in the plan | Means |
 |---|---|---|---|
@@ -724,12 +778,13 @@ forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <c
 | `--no-infra-fallback` | plan, run | `infra_fallback` | turn lateral recovery off. A plan with no file stays off, and a re-plan keeps the setting it has |
 | `--converge-window N` | plan | `converge_window` | reviews the non-converging signal looks at (default `4` when the file is absent; below `2` it never fires). Changing it later is `forge control set converge-window N` |
 | `--max-attempts N` | plan | `max_attempts` | attempts a task may spend across runs before it stops for a decision (default `8` when the file is absent; `0` means no cap). Changing it later is `forge control set max-attempts N --confirm` |
+| `--retry-per-model N` / `--no-retry-per-model` | plan | `retry_per_model` | a task may fail `N` times (1 to 99) on each model the retry policy gives it, then it moves one rung up and the count starts again. With `escalate_effort` on, the same `N` applies to each effort of that model. Replaces `--escalate-after` for this plan: when `escalate_after` is also present, `run` says so and follows `retry_per_model`. `--no-retry-per-model` removes the file; a re-plan with neither keeps it. Automatic retries still need `--retry-failed` above 0. See [a budget per model](reviews.md#a-budget-per-model---retry-per-model-n) |
 | `--decide retry=N` / `--decide threshold=Pn` | retry | no — this retry only | resume a `NEEDS_DECISION` task: `N` more attempts (`N` from 1 to 20) or this task's blocking threshold (`P0`..`P3`) and then one retry. Needs `--reason` and `--approved`. Refused on any other status |
 | `--qa-threshold P0\|P1\|P2\|P3\|none\|default` | plan, run, retry, review | `qa_threshold` | the least severe CONFIRMED finding that still blocks (default `P2`); milder ones become known issues; `none` means P3, `default` removes the setting. Solo takes `P0`..`P3` or `none`. See [the verdict rule](reviews.md#verdicts-and-failure) |
 | `--verify-retries N` | run, retry, integrate | `verify_retries` | reruns of a failed verify command, or of each failed lane (default `1`, `0` = strict single run); with `.forge/verify-subset`, a failed command's failing test files run alone first and confirm a regression without a full rerun |
 | `--verify-lane 'name[opts]=cmd'` | run, retry | `verify.d/<name>` | one verification lane; repeatable. Options as in a lane file, comma-separated (`group=g`, `first`, `retries=n`, `reports=dir`, `baseline=file`). The first one of an invocation replaces the plan's earlier lanes and `--verify`; see [verification lanes](../references/decompose.md#execution-checks-and-integration-verification) |
 | `--verify-parallel N` | run, retry, integrate | `verify_parallel` | lanes run at once, 1 to 32 (default `3`) |
-| `--escalate-after N` | run, retry | `escalate_after` | failed attempts on one model before the next goes a tier up (default `3`, `0` = off) |
+| `--escalate-after N` | run, retry | `escalate_after` | failed attempts on one model before the next goes a tier up (default `3`, `0` = off). When `retry_per_model` is set, that count is the trigger instead |
 | `--pre-review-tests` | plan | `pre_review_tests` | before each review, run only the tests the attempt affects; a red attempt goes back to its implementer unreviewed (off by default; `--no-pre-review-tests` turns it off). See [pre-review tests](../references/decompose.md#pre-review-tests-opt-in) |
 | `--pre-review-parallel N` | plan | `pre_review_parallel` | how many of those checks run at once across tasks, 1 to 64 (default `2`) |
 | `--sweep Pn` | run | no — this run only | once every task has merged, fix the open findings at `Pn` or worse in a few extra tasks, one per file, each with a narrow review; the plan goes to `sweep/plan.md`. Once per plan; what it does not fix stays for `forge issues`. See [the finding sweep](reviews.md#fixing-them-in-the-run-the-finding-sweep-opt-in) |
@@ -742,6 +797,7 @@ forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <c
 | `--no-profile` | plan | removes `profile.json` | no profile. `routed.json` stays |
 | `--fast ROLES` | plan | `fast` | which of `dwarf`, `qa`, `planner`, `review` ask for the fast tier (`all` or `none`). Omitted on a re-plan, the file stays; `none` removes it. See [below](#the-fast-tier) |
 | `--collapse-chains` | plan | no — this call only | merge a chain into one task named `combined`, after validation and before routing. A one-task or branching plan is unchanged. An already collapsed plan is not an error. See [below](#collapse-chains) |
+| `--after DIR` | plan | `after`, `integration.base` | start from plan DIR's integration branch. DIR is a plan of the same repo whose tasks are all `MERGED`, whose integration tip equals `accepted.integration`, and whose scheduler is not live. Otherwise exit 2, and the plan directory and branches stay as they were. Creates `forge/<run>-integration` at that tip. A later `plan` without the flag keeps it. `run` exits 3 if DIR moved before this plan has merged a task. See [Chained plans](../references/decompose.md#chained-plans) |
 | `--groups waves\|FILE` | plan | `groups.tsv`, `groups.frozen` | opt-in. `waves` writes one group per computed wave of at least two tasks; `FILE` copies that `groups.tsv`. An existing `groups.tsv` and no flag is kept. Then validated, its group QA resolved, and frozen. `run` refuses when the file or a member's deps or files changed. See [Groups and group review](../references/decompose.md#groups-and-group-review-opt-in) |
 | `--group-review` | plan | the `review` column | with `--groups waves` only: those groups are `review=group` (one QA review for the group). High-difficulty tasks stay out. Without `waves`, `plan` exits 2 |
 | `--group-max-tasks N` | plan | `group_max_tasks`, only when given | most members of a review group (default 6). A positive integer. Deriving waves needs at least 2 |
@@ -989,8 +1045,11 @@ Exit `0` when the search finished, culprit or not, `1` when a step could not run
 only the user can answer, kept in `tasks/<id>/needs_input.md`. The run summary lists it under
 `waiting for your answer:` with the first line of the question and the command to answer it, and
 the retry hint does not count it as failed. Its dependents end `BLOCKED`, and neither a later
-`run`, `--retry-failed` nor `forge control retry` resumes it. Only
-`retry <plan> <id> --answer "<text>"` (or `--answer-file F`) does: the question and the answer
+`run`, `--retry-failed` nor a plain `forge control retry` resumes it. Only an answer does:
+`retry <plan> <id> --answer "<text>"` (or `--answer-file F`), and on a live run
+`forge control retry <plan> <id> --answer TEXT` (or `--answer-file F`, `-` for stdin), which queues
+that answer for the scheduler. With no live run, `forge control retry --answer` prepares the task
+the way `retry … --answer-file --no-dispatch` does. The question and the answer
 join the findings of the next attempt, a normal new attempt. Without an answer, or with one older
 than the question, `retry` exits `2` and changes nothing; if escalation refuses the retry, the
 question and the answer stay for the same `--answer` to be tried again. A run that ends with such a
@@ -999,7 +1058,8 @@ sets this status.
 
 **`NEEDS_DECISION`** is the same kind of stop for a choice rather than a question. The reviews in
 the last window all failed and kept finding new problems, or the retry policy has no stronger
-model, or the task has spent its attempt cap (`plan --max-attempts N`, default 8 across runs;
+model, or every blocking finding needs a file the task does not declare (reason `plan`), or the
+task has spent its attempt cap (`plan --max-attempts N`, default 8 across runs;
 `forge control set max-attempts N --confirm` changes it, and `0` means no cap). The reasons and
 the `retry` and `accept` commands are in `tasks/<id>/decision.md`. The run summary lists them under
 `waiting for your decision:`. Neither a later `run`, `--retry-failed`, a retry budget nor a pin

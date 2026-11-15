@@ -3,7 +3,7 @@
 
 Subcommands, stdlib only, no network:
 
-  qa --part head|tail [--kind task|final|solo|sweep|adopt|group] [--threshold P0|P1|P2|P3|none]
+  qa --part head|tail [--kind task|final|solo|sweep|adopt|group|script] [--threshold P0|P1|P2|P3|none]
       Prints one piece of the QA prompt. The caller prints everything between and
       after the pieces itself (scope notes, the diff fence, the memory note and the
       "Place any learning notes before the final FORGE_VERDICT ..." sentence).
@@ -17,6 +17,13 @@ Subcommands, stdlib only, no network:
       Prints ONE tab-separated line
           decision <TAB> worst_confirmed <TAB> n_confirmed <TAB> n_unlabelled <TAB> n_below
       and, when findings were tolerated, writes them to OUT.
+  outside --qa-last FILE [--threshold Pn|none]
+      Prints a JSON list, one object per parsed finding: n (1-based), severity (P0-P3
+      or null), status, blocking (the gate's per-finding rule at the threshold) and
+      outside (the paths of that finding's last {outside=…} brace).
+  blocked --message FILE
+      Prints a JSON list of {"path", "why"} from every FORGE_BLOCKED line. The why may
+      be empty. A repeated path keeps the first line.
 
 Severity. Reviewers label every finding P0 (data loss, security hole, crash or wrong
 result on the main path), P1 (wrong behaviour on realistic input, breaks an existing
@@ -62,11 +69,12 @@ Facts (#119). A finding may end its first line (or, wrapped, its last) with
 recorded in shadow and decide nothing: the gate never reads them, and `split_facts` cuts the
 suffix for readers that show the line. A missing or malformed suffix changes nothing. A group
 review may put `{tasks=…}` on that same line; the facts are still read when that brace follows
-them, and still when the facts brace is what closes the line.
+them, and still when the facts brace is what closes the line. `{outside=…}` is cut the same
+way, on its own or beside `{tasks=…}`, in either order.
 
 Phantom findings. A reviewer may echo the contract it was given. Three layers keep that
-from creating findings or blocking: (1) FORGE_VERDICT, FORGE_LEARNING, FORGE_TESTS and FORGE_RETRO text is removed
-before parsing (the verdict line itself says "CONFIRMED"); (2) any line that is a
+from creating findings or blocking: (1) FORGE_VERDICT, FORGE_LEARNING, FORGE_TESTS, FORGE_RETRO and
+FORGE_BLOCKED text is removed before parsing (the verdict line itself says "CONFIRMED"); (2) any line that is a
 contiguous fragment of this module's own contract text (all parts, kinds and thresholds,
 whitespace-collapsed, at least 25 characters, list marker ignored) is removed, which
 covers the example bullet, the severity definitions and the instructions even when
@@ -74,7 +82,7 @@ re-wrapped; (3) a block whose first line holds the literal placeholder
 `path/file.py:123` is ignored. A leftover false match can only add a finding or a
 blocker, and an added CONFIRMED finding without a label blocks.
 
-Exit codes: 0 ok (even for `keep`), 2 usage, 3 unreadable QA file or unwritable OUT
+Exit codes: 0 ok (even for `keep`), 2 usage, 3 unreadable input file or unwritable OUT
 file. On any nonzero exit callers must treat the decision as `keep`.
 """
 from __future__ import annotations
@@ -82,13 +90,14 @@ from __future__ import annotations
 import argparse
 import collections
 import functools
+import json
 import os
 import re
 import sys
 
 SEVERITIES = ('P0', 'P1', 'P2', 'P3')
 PLACEHOLDER = 'path/file.py:123'
-KINDS = ('task', 'final', 'solo', 'sweep', 'adopt', 'group')
+KINDS = ('task', 'final', 'solo', 'sweep', 'adopt', 'group', 'script')
 DEFAULT_THRESHOLD = 'P2'
 QA_TEST_MINUTES = 5        # the reviewer's own test time, beyond which it says the check is too broad (#89)
 
@@ -159,6 +168,15 @@ _HEAD = {
         'diff itself.',
     ],
 }
+
+# A scripted task (#142): its diff is what tasks/<id>/run produced; the reviewer judges the command
+# and its result. Same tail as `task`.
+_HEAD['script'] = _HEAD['task'] + [
+    'This diff was produced by the command below, not written by hand. Check the command and its',
+    'result: is the result complete and correct for the requirements, and did the command do only',
+    'what it should? When the change is mechanical you need not read every changed file; sample it,',
+    'and say what you sampled.',
+]
 # Group review (#140) is the task contract plus one review over several tasks. The shared
 # preamble stays the task one, so a change to it reaches group; these lines are the addition.
 _HEAD['group'] = _HEAD['task'] + [
@@ -235,6 +253,20 @@ _GROUP_ATTRIB = [
     '  - [P1][CONFIRMED] path/file.py:123 — {tasks=a,b} {reach=realistic origin=new evidence=traced}',
 ]
 
+# #149. The only fix is a file this task did not declare. The brace is its own, immediately
+# before the facts, like `{tasks=…}`. Final, sweep and adopt do not say it: those reviews
+# are not sending one task back to edit its own files. outside-stop reads the brace.
+# The example is one line: tail lines other than the two verdict lines are at most 95
+# characters, and it keeps path/file.py:123 so an echoed bullet is not a finding.
+_OUTSIDE = [
+    'When the only fix for a finding is a change in a file outside the files this task',
+    'declared, end the finding\'s first line with {outside=<repo-relative path>},',
+    'several paths comma-separated. Write {outside=…} in its own braces,',
+    'immediately before the facts brace, like the tasks tag. Use it only when the fix',
+    'cannot be made inside the task\'s files:',
+    '  - [P1][CONFIRMED] path/file.py:123 — {outside=a.py,b.py} {reach=main origin=new evidence=ran}',
+]
+
 _SWEEP_FINDINGS = [
     'Report findings only — do not edit any file. A finding here is a regression the change',
     'introduced: give its file and line, what breaks, and a concrete input that triggers it. Mark it',
@@ -283,10 +315,12 @@ def qa_text(part: str, kind: str = 'task', threshold=None) -> str:
     if part != 'tail':
         raise ValueError('part must be head or tail')
     lines = list(_SWEEP_FINDINGS if kind == 'sweep' else _FINDINGS)
-    if kind in ('task', 'solo', 'adopt', 'group'):
+    if kind in ('task', 'solo', 'adopt', 'group', 'script'):
         lines += _ALL_CONFIRMED + _SOLO_EXTRA
     lines += [''] + _VERIFY
     lines += [''] + _SEVERITY
+    if kind in ('task', 'solo', 'group', 'script'):
+        lines += [''] + _OUTSIDE
     if kind == 'group':
         lines += [''] + _GROUP_ATTRIB
     lines += [''] + _threshold_clause(rank, kind) + _CHECKED
@@ -327,6 +361,10 @@ _DWARF = [
     '- Finish every measurement and test run BEFORE your last message and report its actual',
     '  result. If you could not run something, say so explicitly instead of claiming it passed.',
     '- State precisely which verification commands you ran and what each one returned.',
+    # #149. Do not edit a file the task does not own. outside-stop reads these lines.
+    '- When a fix you need is in a file outside your task\'s files, do not edit that file;',
+    '  finish your work, then end your final message with one line per path,',
+    '  FORGE_BLOCKED: <path>: <why>',
 ]
 
 
@@ -381,7 +419,7 @@ def dwarf_text(pre_review: bool = False, verify_after_merge: bool = False) -> st
 
 # --- parsing ---------------------------------------------------------------------
 
-_PROTOCOL = re.compile(r'FORGE_(?:VERDICT|LEARNING|TESTS|RETRO):.*$')
+_PROTOCOL = re.compile(r'FORGE_(?:VERDICT|LEARNING|TESTS|RETRO|BLOCKED):.*$')
 _QUOTE = re.compile(r'^\s*(?:>[ \t]?)+')
 _MARKER = re.compile(r'^(?:[-*+•–]|\d{1,3}[.)]|#{1,6})\s+')
 _HEADING = re.compile(r'^ {0,3}#{1,6}[ \t]+\S')
@@ -495,11 +533,14 @@ def _finding(number: int, lines: list):
 # when it names at least one of the three facts: a finding's own text may end in braces (`{}`, `{a=1}`).
 _FACTS_SUFFIX = re.compile(r'[ \t]*[`*_]*\{([^{}\n]*)\}[`*_.]*[ \t]*$')
 _FACT = re.compile(r'([A-Za-z]+)[ \t]*[=:][ \t]*([A-Za-z]+)')
-# Group review's `{tasks=…}` is its own brace. When a reviewer puts it after the facts, the facts
-# group no longer closes the line; if the closing brace is not facts, this tail is cut and the
-# facts suffix is tried on what remains.
-_TASKS_TAIL = re.compile(
-    r'[ \t]*[`*_]*\{[ \t]*tasks[ \t]*=[ \t]*[^{}\n]*\}[`*_.]*[ \t]*$', re.IGNORECASE)
+# `{tasks=…}` and `{outside=…}` are their own braces. When either (or both, in either order)
+# follows the facts, the facts group no longer closes the line. Cut every such trailing brace
+# and try the facts suffix on what remains. A brace of either kind before the facts stays.
+_ATTR_TAIL = re.compile(
+    r'(?:[ \t]*[`*_]*\{[ \t]*(?:tasks|outside)[ \t]*=[ \t]*[^{}\n]*\}[`*_.]*)+[ \t]*$',
+    re.IGNORECASE)
+_OUTSIDE_TAG = re.compile(r'\{[ \t]*outside[ \t]*=[ \t]*([^{}]*)\}', re.IGNORECASE)
+_PATH_SPLIT = re.compile(r'[\s,]+')
 
 
 def split_facts(line: str):
@@ -507,13 +548,14 @@ def split_facts(line: str):
 
     A fact whose value is not one of its words reads None, and keys other than the three are ignored:
     a malformed suffix is still cut from the line, so it never reaches a location or a title.
-    `{tasks=…}` after the facts is not a facts suffix: both braces are cut, and the facts are kept.
-    `{tasks=…}` before the facts stays on the returned line, as it does when it is the only brace."""
+    `{tasks=…}` or `{outside=…}` after the facts is not a facts suffix: those braces are cut, in
+    either order, and the facts are kept. Either brace before the facts stays on the returned line,
+    as it does when it is the only brace."""
     original = line or ''
     bodies = [original]
-    tasks = _TASKS_TAIL.search(original)
-    if tasks:
-        bodies.append(original[:tasks.start()])
+    tail = _ATTR_TAIL.search(original)
+    if tail:
+        bodies.append(original[:tail.start()])
     for body in bodies:
         match = _FACTS_SUFFIX.search(body)
         if not match:
@@ -529,13 +571,29 @@ def split_facts(line: str):
 def facts(text: str):
     """The facts of one finding block: its first line's suffix, else its last line's (a wrapped bullet).
 
-    A `{tasks=…}` brace after the facts does not hide them."""
+    A `{tasks=…}` or `{outside=…}` brace after the facts does not hide them."""
     lines = [line for line in (text or '').split('\n') if line.strip()]
     for line in lines[:1] + lines[-1:]:
         found = split_facts(line)[1]
         if found is not None:
             return found
     return None
+
+
+def outside_paths(finding_text: str) -> list:
+    """Paths of the last `{outside=…}` brace in a finding block, in the order written.
+
+    Paths are comma or space separated. Backticks and quotes are removed, and a repeated
+    path is dropped. No brace, or a brace that names no path, is an empty list."""
+    matches = list(_OUTSIDE_TAG.finditer(finding_text or ''))
+    if not matches:
+        return []
+    seen = []
+    for part in _PATH_SPLIT.split(matches[-1].group(1).strip()):
+        path = part.strip('`"\'')
+        if path and path not in seen:
+            seen.append(path)
+    return seen
 
 
 def parse_findings(text: str) -> list:
@@ -593,6 +651,32 @@ def _tests_reason(text: str) -> str | None:
     return ''.join(ch for ch in text.strip(_TESTS_TRIM) if ch.isprintable())[:_TESTS_REASON_MAX] or None
 
 
+# An implementer's report that a fix lives outside the task's files (#149). Same leading
+# markdown as a FORGE_TESTS line. The why may be empty; a repeated path keeps the first.
+_BLOCKED_LINE = re.compile(r'^[ \t>*_`+-]*FORGE_BLOCKED:[ \t*_`]*(.*?)[ \t*_`]*$', re.M)
+
+
+def blocked_lines(message: str) -> list:
+    """`(path, why)` for every `FORGE_BLOCKED: <path>: <why>` line, in order.
+
+    Leading markdown (`-`, `*`, `>`, backticks) is ignored. The why may be empty.
+    A repeated path keeps the first line."""
+    found = []
+    seen = set()
+    text = (message or '').replace('\r\n', '\n').replace('\r', '\n')
+    for raw in _BLOCKED_LINE.findall(text):
+        if ':' not in raw:
+            continue
+        path, why = raw.split(':', 1)
+        path = path.strip().strip('`"\'')
+        why = why.strip()
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        found.append((path, why))
+    return found
+
+
 def tests_report(text) -> dict | None:
     """{status: ran|not_needed|could_not_run|unclear, reason} from a QA reply, or None when it does not say."""
     report = None
@@ -605,6 +689,20 @@ def tests_report(text) -> dict | None:
         if (reason or '').lower() != 'why':
             report = dict(status=_TESTS_STATUS[match.group(1).upper().replace('_', ' ')], reason=reason)
     return report
+
+
+def outside_report(text: str, threshold=None) -> list:
+    """One object per parsed finding: n, severity, status, blocking, outside paths."""
+    rows = []
+    for number, finding in enumerate(parse_findings(text or ''), 1):
+        rows.append({
+            'n': number,
+            'severity': None if finding.severity is None else 'P%d' % finding.severity,
+            'status': finding.status,
+            'blocking': finding_blocks(finding, threshold),
+            'outside': outside_paths(finding.text),
+        })
+    return rows
 
 
 def known_issues_text(threshold, tolerated) -> str:
@@ -632,6 +730,20 @@ def _emit(text: str) -> None:
     sys.stdout.flush()
     sys.stdout.buffer.write(text.encode('utf-8'))
     sys.stdout.buffer.flush()
+
+
+def _emit_json(data) -> None:
+    _emit(json.dumps(data, indent=2, ensure_ascii=False) + '\n')
+
+
+def _read_text(path: str):
+    """The file's text, or None when it cannot be read (the caller exits 3)."""
+    try:
+        with open(path, 'rb') as handle:
+            return handle.read().decode('utf-8', 'replace')
+    except OSError as error:
+        sys.stderr.write('forge-contract: cannot read %s: %s\n' % (path, error))
+        return None
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -671,6 +783,13 @@ def _parser() -> argparse.ArgumentParser:
                              help='write tolerated findings here when there are any')
     tests = sub.add_parser('tests', help='print what the reply says about its tests: status, a tab, the reason')
     tests.add_argument('--qa-last', required=True, metavar='FILE', help='the QA reply')
+    outside = sub.add_parser('outside', help='print each finding\'s outside paths as JSON')
+    outside.add_argument('--qa-last', required=True, metavar='FILE', help='the QA reply')
+    outside.add_argument('--threshold', type=_threshold_arg, default=None, metavar='P0..P3|none',
+                         help='least severe level that still blocks; none = P3 (default: %s)'
+                              % DEFAULT_THRESHOLD)
+    blocked = sub.add_parser('blocked', help='print FORGE_BLOCKED lines from an implementer message')
+    blocked.add_argument('--message', required=True, metavar='FILE', help='the implementer message')
     return parser
 
 
@@ -685,16 +804,19 @@ def main(argv=None) -> int:
     if args.command == 'retro':
         _emit(retro_text(args.role))
         return 0
-    try:
-        with open(args.qa_last, 'rb') as handle:
-            text = handle.read().decode('utf-8', 'replace')
-    except OSError as error:
-        sys.stderr.write('forge-contract: cannot read %s: %s\n' % (args.qa_last, error))
+    text = _read_text(args.message if args.command == 'blocked' else args.qa_last)
+    if text is None:
         return 3
     if args.command == 'tests':
         report = tests_report(text)
         if report:
             _emit('%s\t%s\n' % (report['status'], report['reason'] or ''))
+        return 0
+    if args.command == 'outside':
+        _emit_json(outside_report(text, args.threshold))
+        return 0
+    if args.command == 'blocked':
+        _emit_json([{'path': path, 'why': why} for path, why in blocked_lines(text)])
         return 0
     result = gate(args.verdict, text, args.threshold)
     if args.known_issues and result.n_below >= 1:

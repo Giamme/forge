@@ -89,8 +89,9 @@ window.ForgePanel = (() => {
     const s = section(host, 'Controls');
     muted(s, 'Read-only: this page cannot change the run.');
   }
-  // A task that stopped NEEDS_INPUT: the question it asked, and the command that answers it. forge-ui shows the
-  // command and never runs it; only the user's answer, passed to retry, resumes the task.
+  // A task that stopped NEEDS_INPUT: the question it asked, and the command that answers it. The copy stays in
+  // every mode. When controls are on, a plan (not a solo run) can send the answer from here: that post is not
+  // destructive, so it needs no confirm. A solo run still shows only the question.
   const shellWord = s => /^[\w@%+=:,./-]+$/.test(s) ? s : "'" + String(s).replace(/'/g, "'\\''") + "'";
   // An INFRA task: why its dispatch stopped (the cause, the stage, the model it ran on), when its limit resets, and
   // whether the user must act: the reader's answer from forge's cause table (after the run too), else a live
@@ -118,6 +119,94 @@ window.ForgePanel = (() => {
     const line = el('div', undefined, 'waiting-cmd');
     line.append(el('pre', text, 'cmd'), copy);
     s.append(line);
+    const U = window.ForgeUI;
+    if (!U || !U.controlsEnabled) return;
+    // In the tree before controlsEnabled answers, with data-hold. A poll rebuilds this inspector
+    // through controls.js hold(), which only puts back a [data-hold][data-editing] node that the
+    // new tree already contains. Appending the box from the promise leaves the draft behind.
+    const box = answerField(ctx, task, U);
+    s.append(box);
+    U.controlsEnabled().then(on => {
+      if (!s.isConnected || on) return;
+      dropHold(s, 'answer:');
+    });
+  }
+  // The draft of one waiting task. data-editing is set while the field is in use, so hold() keeps
+  // this node (its text and its focus) instead of the empty one the next draw builds.
+  function answerField(ctx, task, U) {
+    const run = ctx.run || {};
+    const box = el('div', undefined, 'waiting-cmd');
+    box.dataset.hold = 'answer:' + run.key + ':' + task.id;
+    const field = el('textarea');
+    field.setAttribute('aria-label', 'Answer');
+    field.rows = 3;
+    field.maxLength = 8000;
+    field.autocomplete = 'off';
+    const send = el('button', 'Send answer'); send.type = 'button';
+    const msgs = el('div');
+    const mark = () => { box.dataset.editing = '1'; };
+    field.addEventListener('focus', mark);
+    field.addEventListener('input', mark);
+    field.addEventListener('blur', () => {
+      if (box.dataset.busy) return;
+      if (!String(field.value || '').trim()) delete box.dataset.editing;
+    });
+    send.addEventListener('click', () => { sendWaitingAnswer(box, field, send, msgs, ctx, task, U); });
+    box.append(field, send, msgs);
+    return box;
+  }
+  function dropHold(root, prefix) {
+    const pending = [root];
+    while (pending.length) {
+      const node = pending.pop();
+      for (const child of [...(node.children || [])]) {
+        if (child.dataset && String(child.dataset.hold || '').startsWith(prefix)) child.remove();
+        else pending.push(child);
+      }
+    }
+  }
+  // What the answer endpoint means for the page. `live` is the scheduler's word; anything else is the error
+  // sentence outcomeText already uses for every other write.
+  function answerLive(answer) {
+    if (!answer || typeof answer !== 'object' || answer.ok === false) return null;
+    const data = answer.data && typeof answer.data === 'object' ? answer.data : answer;
+    if (data.live === true) return true;
+    if (data.live === false) return false;
+    return null;
+  }
+  function answerOutcome(answer) {
+    const live = answerLive(answer);
+    if (live === true) return 'Queued: the running scheduler resumes the task';
+    if (live === false) return 'Prepared: the next run dispatches the task';
+    const say = window.ForgeUI && window.ForgeUI.outcomeText;
+    if (typeof say === 'function') return say(answer).text;
+    const r = answer || {};
+    return r.detail || r.error || 'failed';
+  }
+  async function sendWaitingAnswer(box, field, send, msgs, ctx, task, U) {
+    if (box.dataset.busy) return;
+    const text = String(field.value || '').trim();
+    if (!text) {
+      if (U && U.outcome) U.outcome(msgs, { ok: false, status: 400, error: 'invalid', detail: 'the answer is empty' });
+      return;
+    }
+    box.dataset.editing = '1';
+    box.dataset.busy = '1';
+    send.disabled = true;
+    const run = ctx.run || {};
+    const path = '/api/runs/' + encodeURIComponent(run.key) + '/tasks/' + encodeURIComponent(task.id) + '/answer';
+    let res = { ok: false, error: 'unavailable', detail: 'this page cannot send' };
+    try {
+      if (U && U.post) res = await U.post(path, { text });
+    } catch (_) {
+      res = { ok: false, error: 'failed', detail: 'could not send' };
+    }
+    if (!box.isConnected) return;
+    delete box.dataset.busy;
+    send.disabled = false;
+    if (!U || !U.outcome) return;
+    if (res && res.ok) U.outcome(msgs, res, answerOutcome(res));
+    else U.outcome(msgs, res);
   }
   // A task that stopped NEEDS_DECISION: why the retry policy stopped it, its attempts against the cap, the ledger of its
   // reviews, and the decision text, which holds the commands to run. forge-ui shows the commands and never runs them.
@@ -364,6 +453,26 @@ window.ForgePanel = (() => {
     if (!solo) details(host, 'Waves', list(run.waves).map((ids, i) => `${i + 1}: ${list(ids).join(', ')}`).join('\n') || '—', 'waves');
     if (run.verification && run.verification.log_tail != null) details(host, 'Verification output', run.verification.log_tail, 'verification-output');
   }
+  // `after` is the predecessor; `followed_by` the plans that name this run. Run ids read as the
+  // other ids on the page (mono). The hash is the other run's page, the same shape app.js uses.
+  function chainRows(run) {
+    const rows = [];
+    const prev = run.after;
+    if (prev && typeof prev === 'object') {
+      const label = prev.run_id || prev.key;
+      if (label) rows.push(['After', link(label, '#/runs/' + encodeURIComponent(prev.key)), true]);
+    }
+    const next = list(run.followed_by).filter(item => item && (item.run_id || item.key));
+    if (next.length) {
+      const span = el('span');
+      next.forEach((item, i) => {
+        if (i) span.append(document.createTextNode(', '));
+        span.append(link(item.run_id || item.key, '#/runs/' + encodeURIComponent(item.key)));
+      });
+      rows.push(['Followed by', span, true]);
+    }
+    return rows;
+  }
   function runView(host, ctx) {
     const run = ctx.run, now = ctx.now;
     const tr = RM.timeRange(run, now);
@@ -385,10 +494,13 @@ window.ForgePanel = (() => {
     }
     const f = section(host, 'Finish');
     const F = RM.finishState(run);
+    // A chained plan: the one it starts from, and the ones that start from it. Each links to that
+    // run's page. A run in neither chain keeps this block as it was.
+    const chain = chainRows(run);
     if (run.kind === 'solo') {
       const soloTask = list(run.tasks)[0];
       const verdict = soloTask ? RM.taskVerdict(soloTask) : { text: null, status: 'unknown' };
-      fields(f, [['Verdict', chip(verdict.text, verdict.status)]]);
+      fields(f, [['Verdict', chip(verdict.text, verdict.status)], ...chain]);
     }
     else {
       const finalSel = { kind: 'final' }, openFinal = () => ctx.onSelect(finalSel);
@@ -400,7 +512,7 @@ window.ForgePanel = (() => {
       } else finalValue = link(F.final.status === 'NONE' ? 'not requested' : F.final.status, ctx.hash(finalSel), openFinal);
       fields(f, [['Integration', link(`${F.integration.merged}/${F.integration.total} merged`, ctx.hash({ kind: 'integration' }), () => ctx.onSelect({ kind: 'integration' }))],
         ['Verification', link(F.verification.status, ctx.hash({ kind: 'verification' }), () => ctx.onSelect({ kind: 'verification' }))],
-        ['Final review', finalValue]]);
+        ['Final review', finalValue], ...chain]);
       const attribution = RM.attributionLine(run.attribution);
       if (attribution) f.append(el('p', attribution, 'warn'));
       if (F.final.status === 'OUTDATED') muted(f, RM.reviewSinceLine(F.final));
@@ -1131,6 +1243,6 @@ window.ForgePanel = (() => {
     if (sel.kind === 'fractal') return fractalNodeView(host, ctx, sel);
     return runView(host, ctx);
   }
-  return { render, cache, trailLine, reasonText, linkModel, headerActions, summaryBank, changeSummaries };
+  return { render, cache, trailLine, reasonText, linkModel, headerActions, summaryBank, changeSummaries, answerOutcome };
 })();
 if (typeof module === 'object' && module.exports) module.exports = window.ForgePanel;

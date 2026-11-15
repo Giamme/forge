@@ -26,6 +26,9 @@ MAX_FIELD = 256
 ISSUES_LIST_TIMEOUT_S = 120   # a listing asks gh for the filed state
 ISSUES_FILE_TIMEOUT_S = 300   # filing up to 25 issues
 DELETE_TIMEOUT_S = 900        # removing worktrees, branches and the archive can be slow
+COMPACT_TIMEOUT_S = 900       # `forge runs compact` can take minutes on a large store
+MAX_PATHS = 200               # worktrees to remove, and memory keys to forget, in one request
+MAX_TASK_ANSWER = 8000        # the answer to a task that waits for input, in characters, after stripping
 # One brief model call, end to end. proposals.propose and forge_brief.write pass 900s to
 # forge_side.run, which waits that plus _DISPATCH_GRACE_S (30) before it returns its own
 # timeout. The extra minute is the CLI storing the result and exiting, so a call that uses
@@ -1049,6 +1052,239 @@ def _worktrees(ctx):
     return 200, worktrees.screen(ctx.server).answer(ctx.server.catalog, history, refresh=refresh)
 
 
+# ----------------------------------------------------------------- remove, forget, compact, answer (#147)
+
+def _body_object(ctx, allowed):
+    if not isinstance(ctx.body, dict):
+        raise BadBody('body must be a JSON object')
+    _check_fields(ctx.body, allowed)
+    return ctx.body
+
+
+def _string_list(value, name, check):
+    if not isinstance(value, list) or not 1 <= len(value) <= MAX_PATHS:
+        raise BadBody(f'{name} must be a list of 1 to {MAX_PATHS} strings')
+    for item in value:
+        if not isinstance(item, str) or not item or len(item) > 4096 or not _no_control_chars(item) or not check(item):
+            raise BadBody(f'{name} holds a value that is not acceptable')
+    return list(dict.fromkeys(value))
+
+
+def invalidate_worktrees(server):
+    """The next GET /api/worktrees reads git and the run dirs again."""
+    from forge_ui import worktrees
+    screen = worktrees.screen(server)
+    with screen.lock:
+        screen.result = None
+
+
+def invalidate_storage(server):
+    """The next GET /api/storage measures again; the answer it has stays on show until then."""
+    from forge_ui import storage
+    screen = storage.screen(server)
+    with screen.lock:
+        if screen.result is not None:
+            screen.result = dict(screen.result, computed=0)
+
+
+def invalidate_memories(server):
+    """The next GET of a project's memories reads the CLI again (the project screen's `memory` answers)."""
+    from forge_ui import projects
+    screen = projects.screen(server)
+    with screen.lock:
+        for key in [k for k in screen.cli if isinstance(k, tuple) and k and k[0] == 'memory']:
+            del screen.cli[key]
+
+
+def _worktrees_remove(ctx):
+    """POST `{paths, branches?, dry_run?}`: `forge worktrees rm <paths> [--branches] [--dry-run] --json --actor ui`.
+
+    Each path must be one of the rows of the Worktrees screen. Exit 4 (a row failed) is a 200 with
+    `ok: false`: the page needs the rows to say which one failed.
+    """
+    from forge_ui import worktrees
+    ctx.route = 'worktrees remove'
+    try:
+        body = _body_object(ctx, ('paths', 'branches', 'dry_run'))
+        paths = _string_list(body.get('paths'), 'paths', os.path.isabs)
+        branches = _flag(body, 'branches')
+        dry = _flag(body, 'dry_run')
+    except BadBody as exc:
+        return _invalid(str(exc))
+
+    def history():
+        status, found = ctx.call('dataset', 'worktrees', '--json')
+        return found if status == 200 else None
+
+    def listed(refresh):
+        answer = worktrees.screen(ctx.server).answer(ctx.server.catalog, history, refresh=refresh)
+        return {row.get('path') for row in answer.get('rows') or []}
+    known = listed(False)
+    if not all(path in known for path in paths):
+        known = listed(True)
+    missing = [path for path in paths if path not in known]
+    if missing:
+        return _invalid(f'{missing[0]!r} is not a worktree the Worktrees screen lists')
+    lock = _server_lock(ctx.server, 'worktrees_lock')
+    if not lock.acquire(blocking=False):
+        return 409, {'error': 'busy'}
+    try:
+        argv = ['worktrees', 'rm', *paths]
+        if branches:
+            argv.append('--branches')
+        if dry:
+            argv.append('--dry-run')
+        status, answer = ctx.call(*argv, '--json', '--actor', 'ui', limit=DELETE_TIMEOUT_S)
+        if status == 500 and isinstance(answer.get('result'), dict) and isinstance(answer['result'].get('rows'), list):
+            status, answer = 200, dict(answer['result'], ok=False)
+        if not dry:
+            invalidate_worktrees(ctx.server)
+            invalidate_storage(ctx.server)
+        return status, answer
+    finally:
+        lock.release()
+
+
+_MEMORY_KEY = re.compile(r'^[^:\s-][^:]*:.+$')
+
+
+def _forget_keys(value):
+    return _string_list(value, 'keys', lambda key: len(key) <= MAX_FIELD and bool(_MEMORY_KEY.match(key)))
+
+
+def _memories_forget(ctx):
+    """POST `{keys, dry_run?, path?}`: `forge memory forget <checkout> <keys> [--dry-run] --json --actor ui`,
+    once per existing checkout of the project (or only the one `path` names)."""
+    from forge_ui import projects
+    ctx.route = 'memories forget'
+    try:
+        body = _body_object(ctx, ('keys', 'dry_run', 'path'))
+        keys = _forget_keys(body.get('keys'))
+        dry = _flag(body, 'dry_run')
+        path = body.get('path')
+        if path is not None and (not isinstance(path, str) or not path):
+            raise BadBody('path must be a checkout path')
+    except BadBody as exc:
+        return _invalid(str(exc))
+    project = projects.screen(ctx.server).projects(ctx.server.catalog).get(ctx.key)
+    if project is None:
+        return 404, {'error': 'not found'}
+    existing = [c['path'] for c in projects.checkouts(project) if c['exists']]
+    if path is not None:
+        if path not in existing:
+            return _invalid('path is not a checkout of this project')
+        existing = [path]
+    if not existing:
+        return 409, {'error': 'refused', 'detail': 'no checkout of this project exists'}
+    lock = _server_lock(ctx.server, 'memory_lock')
+    if not lock.acquire(blocking=False):
+        return 409, {'error': 'busy'}
+    try:
+        argv_tail = [*keys, *(['--dry-run'] if dry else []), '--json', '--actor', 'ui']
+        results, failed = [], []
+        for checkout in existing:
+            status, answer = ctx.call('memory', 'forget', checkout, *argv_tail)
+            if status == 200:
+                results.append({'path': checkout, 'result': answer})
+            else:
+                failed.append((status, answer))
+                results.append({'path': checkout, 'result': None, 'status': status, 'error': answer})
+        if not dry:
+            invalidate_memories(ctx.server)
+        if failed and len(failed) == len(results):
+            return failed[0]
+        return 200, {'ok': not failed, 'dry_run': dry, 'checkouts': results}
+    finally:
+        lock.release()
+
+
+def _storage_compact(ctx):
+    """POST `{run | all, dry_run?}`: `forge runs compact <run dir>|--all --logs --json [--dry-run]`."""
+    ctx.route = 'compact'
+    try:
+        body = _body_object(ctx, ('run', 'all', 'dry_run'))
+        dry = _flag(body, 'dry_run')
+        run = body.get('run')
+        if ('run' in body) == ('all' in body):
+            raise BadBody('give exactly one of run and all')
+        if 'all' in body and body['all'] is not True:
+            raise BadBody('all must be true')
+        if 'run' in body and (not isinstance(run, str) or not re.fullmatch(r'[0-9a-f]{12}', run)):
+            raise BadBody('run must be a 12-hex run key')
+    except BadBody as exc:
+        return _invalid(str(exc))
+    target = ['--all']
+    if run is not None:
+        ctx.key = run
+        found = ctx.server.catalog.locate(run)
+        if not found:
+            return 404, {'error': 'not found'}
+        target = [str(found[0])]
+    lock = _server_lock(ctx.server, 'compact_lock')
+    if not lock.acquire(blocking=False):
+        return 409, {'error': 'busy'}
+    try:
+        status, answer = ctx.call('runs', 'compact', *target, '--logs', '--json', *(['--dry-run'] if dry else []),
+                                  limit=COMPACT_TIMEOUT_S)
+        if not dry:
+            invalidate_storage(ctx.server)
+        return status, answer
+    finally:
+        lock.release()
+
+
+def _scheduler_live(path):
+    """Whether the plan's scheduler.live names a process that is alive (as reader._scheduler judges it)."""
+    try:
+        with open(os.path.join(path, 'scheduler.live'), encoding='utf-8') as handle:
+            pid = json.load(handle).get('pid')
+    except (OSError, ValueError, AttributeError, RecursionError):
+        return False
+    if type(pid) is not int or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except (OSError, OverflowError):
+        return False
+    return True
+
+
+def _task_answer(ctx):
+    """POST `{text}`: `forge control retry <plan> <id> --answer-file - --actor ui --json`, the text on stdin.
+
+    forge control queues the answer for a live scheduler and prepares the retry itself when there is none."""
+    ctx.route = 'answer'
+    task = ctx.parts[0]
+    try:
+        body = _body_object(ctx, ('text',))
+        text = body.get('text')
+        if not isinstance(text, str):
+            raise BadBody('text must be a string')
+        text = text.strip()
+        if '\x00' in text:
+            raise BadBody('text must not contain a NUL')
+        if not 1 <= len(text) <= MAX_TASK_ANSWER:
+            raise BadBody(f'text must be 1 to {MAX_TASK_ANSWER} characters')
+        try:
+            stdin = text.encode('utf-8')
+        except UnicodeEncodeError:
+            raise BadBody('text must be valid text')
+    except BadBody as exc:
+        return _invalid(str(exc))
+    path = ctx.locate(('plan',))
+    if path is None:
+        return 404, {'error': 'not found'}
+
+    def work():
+        live = _scheduler_live(path)
+        status, answer = ctx.call('control', 'retry', path, task, '--answer-file', '-', '--actor', 'ui', '--json',
+                                  stdin=stdin)
+        return (200, {'live': live, 'result': answer}) if status == 200 else (status, answer)
+    return ctx.locked(work)
+
+
 ROUTES = [
     ('GET', re.compile(r'/api/runs/([0-9a-f]{12})/controls'), _show),
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/controls'), _change),
@@ -1061,6 +1297,10 @@ ROUTES = [
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/issues'), _issues_file),
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/issues/dismiss'), _issues_dismiss),
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/delete'), _delete),
+    ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/tasks/([A-Za-z0-9][A-Za-z0-9._-]{0,127})/answer'), _task_answer),
+    ('POST', re.compile(r'/api/worktrees/remove()'), _worktrees_remove),
+    ('POST', re.compile(r'/api/storage/compact()'), _storage_compact),
+    ('POST', re.compile(r'/api/projects/([0-9a-f]{8})/memories/forget'), _memories_forget),
     ('GET', re.compile(r'/api/config/profiles()'), _config_profiles_get),
     ('POST', re.compile(r'/api/config/profiles()'), _config_profiles_set),
     ('GET', re.compile(r'/api/config()'), _config_get),

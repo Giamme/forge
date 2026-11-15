@@ -23,7 +23,7 @@ usage() {
     '  jev       the old decision-model commands, replaced by decide (kept for one release)' \
     '  dataset   every run'"'"'s inputs and outcomes: status, dump, import, export, outcomes, ...' \
     '  issues    file the review findings a run left open as GitHub issues (plain gh)' \
-    '  memory    a repository'"'"'s project memory: show, learnings --json (each learning and its state), prune' \
+    '  memory    a repository'"'"'s project memory: show, learnings --json (each learning and its state), prune, forget' \
     '  pr        a draft pull-request description for a finished run (--create opens it with gh)' \
     '  ui        forge-ui, the run viewer: open [DIR], status, stop' \
     '  runs      this repo'"'"'s recent runs in the terminal: state, verdicts and run dirs; compact, rm, rerun with another model, compare' \
@@ -32,6 +32,8 @@ usage() {
     '  summarize a task'"'"'s generated summary, rewritten only when its inputs change' \
     '  brief     each task'"'"'s open questions, asked before it starts: write, show' \
     '  group     a plan'"'"'s task groups: show, retry a review=group group, set a title or goal' \
+    '  handoff   a run'"'"'s state for the next session, with the commands to carry on: show (the default)' \
+    '  worktrees the worktrees forge created: rm removes the safe ones by forge-ui'"'"'s rules' \
     '  watch     follow runs live and get a desktop notification when one finishes or fails' \
     '  control   a plan'"'"'s live controls: show, set (QA threshold, retries, timeouts), pin, unpin' \
     '  config    every config source: show, and set/unset the per-repo .forge files and Jev on/off' \
@@ -108,9 +110,9 @@ case "${1:-}" in
     shift
     # only the commands its help lists: note and record are what a run writes into the ledger, not a person
     case "${1:-}" in
-      show|learnings|prune|spend|inject|-h|--help|help) ;;
+      show|learnings|prune|spend|inject|forget|-h|--help|help) ;;
       '') /bin/bash "$ROOT/scripts/forge-memory.sh" --help >&2; exit 2 ;;
-      *) printf 'forge memory: unknown command: %s (show, learnings, prune, spend or inject)\n' "$1" >&2; exit 2 ;;
+      *) printf 'forge memory: unknown command: %s (show, learnings, prune, spend, inject or forget)\n' "$1" >&2; exit 2 ;;
     esac
     exec /bin/bash "$ROOT/scripts/forge-memory.sh" "$@"
     ;;
@@ -150,6 +152,15 @@ case "${1:-}" in
     shift
     help_if_bare $# python3 "$ROOT/scripts/forge-group.py"
     exec python3 "$ROOT/scripts/forge-group.py" "$@"
+    ;;
+  handoff)
+    shift
+    exec python3 "$ROOT/scripts/forge-handoff.py" "$@"
+    ;;
+  worktrees)
+    shift
+    help_if_bare $# python3 "$ROOT/scripts/forge-worktrees.py"
+    exec python3 "$ROOT/scripts/forge-worktrees.py" "$@"
     ;;
   watch)
     shift

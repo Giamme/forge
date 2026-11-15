@@ -12,6 +12,7 @@ run leaves branches behind.
 - [tasks.tsv](#taskstsv)
 - [Routing](#routing)
 - [Profiles](#profiles)
+- [Scripted tasks](#scripted-tasks)
 - [Fractal within decomposed tasks](#fractal-within-decomposed-tasks)
 - [Waves and disjointness](#waves-and-disjointness)
 - [Groups and group review (opt-in)](#groups-and-group-review-opt-in)
@@ -29,6 +30,7 @@ run leaves branches behind.
 - [Infrastructure failures](#infrastructure-failures)
 - [Implementer guards](#implementer-guards)
 - [Accepting, splitting, combining and the whole-run review](#accepting-splitting-combining-and-the-whole-run-review)
+- [Chained plans](#chained-plans)
 - [Branches, worktrees, cleanup](#branches-worktrees-cleanup)
 - [Failure modes](#failure-modes)
 
@@ -102,7 +104,7 @@ tests	mul	medium	tests/test_calc.py	-	-	Tests for multiply()
 | `deps` | comma-list of task ids that must land first, or `-` |
 | `difficulty` | `low` \| `medium` \| `high` |
 | `files` | expected touch set, comma-separated. Drives disjointness — see below |
-| `dwarf` / `qa` | `-` to resolve from the routing rules; an explicit spec always wins |
+| `dwarf` / `qa` | `-` to resolve from the routing rules; an explicit spec always wins. `script` in `dwarf` runs the executable `tasks/<id>/run` ([Scripted tasks](#scripted-tasks)) |
 | `title` | one line, shown in the approval table and the capsule |
 
 Each task also needs `tasks/<id>/prompt.md` — the implementation instruction, written the
@@ -128,7 +130,8 @@ already named, instead of leaving someone to diff two branches to find out.
 `plan` resolves difficulty into concrete specs and writes them back into the `dwarf`/`qa`
 columns, so `run` never consults the routing rules. This is also what makes a gate override
 durable: an explicit value is preserved across a re-plan, while `UNASSIGNED` is treated as a
-leftover marker and re-resolved.
+leftover marker and re-resolved. A `script` cell is one of those explicit values: `plan` leaves
+it, and requires `tasks/<id>/run` to be executable.
 
 ## Routing
 
@@ -148,7 +151,8 @@ carry, since distinct harnesses have independent quotas.
 Resolution order per task: explicit column value → the tier's rule → plain `--dwarf` → and if
 none of those exist, `UNASSIGNED`. An `UNASSIGNED` task makes `plan` exit 2 and `run` refuse
 outright. Forge does not invent a model when the user has not said which one should spend
-their quota.
+their quota. The explicit value `script` is reserved for a command, and it is not drawn from a
+pool. See [Scripted tasks](#scripted-tasks).
 
 QA has no tier rules by default and falls back to `opus` at `high`, matching single-task forge.
 When the user names no reviewers, offer reviewers sized to the task's difficulty, which is what
@@ -219,6 +223,58 @@ in the frozen body. With neither `--profile` nor `--no-profile`, a plan keeps th
 froze and does not apply it again; a plan with no copy gets the default profile, if one is
 set. The runner does not select `balanced` on its own. `--no-profile` removes the frozen
 copy. See [commands](../docs/commands.md#forge-config-profile).
+
+### Scripted tasks
+
+A dwarf cell of `script` runs the executable `tasks/<id>/run` in the task's worktree. Use it
+when the change is already a command: a codemod, a move by a map, a generator. The command
+should be atomic, and it should produce the same tree each time it runs from the same base.
+
+`plan` leaves the cell as `script`. It does not draw a pool, does not explore the row, and
+does not record `tasks/<id>/running.tier`. The `qa` cell is resolved as usual, and doctor
+still checks that reviewer. Doctor is skipped for the implementer. The approval table shows
+`script`. The dispatch estimate counts no implementer for the row, and prints
+`scripted tasks: N (ids) run tasks/<id>/run; no implementer model`. The review is still
+counted. If `tasks/<id>/run` is missing or not executable, `plan` exits 2
+(`task '<id>' is a script task but tasks/<id>/run is missing or not executable`) and stops
+before writing the resolved `tasks.tsv`. A `--dwarf` pool, a tier pool, or a profile pool that names `script` is
+refused with exit 2: the word is reserved for a task that runs `tasks/<id>/run`.
+
+Each attempt resets the worktree to the task's pinned base (the tracked tree, and untracked
+files other than `.forge`), then runs the command in its own process group. The working
+directory is the worktree. Standard input is empty. The environment is `FORGE_TASK_ID`,
+`FORGE_PLAN`, `FORGE_WORKTREE` and `FORGE_BASE_REF`. A file that does not start with `#!`
+runs under `/bin/bash`. The limit is the plan's `timeout` in seconds, `0` for none as for a
+dispatch, and 2700 seconds when the plan has none. A timeout stops the process
+group. Both streams go to `tasks/<id>/script.log`. The run is also recorded at
+`tasks/<id>/attempts/script-<hex>/`, where `<hex>` is 16 hex digits: a copy of `script.log`,
+the `run` file as it ran (the copy the review shows, even after `run` is edited), and `metrics.json` (`role` and `harness` are `script`; `exit_code` is null
+when the run timed out).
+
+Exit 0 with a new diff commits `forge(<id>) attempt N: <title> (script)` and reviews with
+`forge-contract.py qa --kind script`. The head is the task head, plus an instruction to judge
+the command and its result: whether the result is complete and correct for the requirements,
+and whether the command did only what it should. A mechanical change can be sampled, and the
+review says what it sampled. The prompt includes the command and the last 3000 characters of
+`script.log`. The tail matches a task review. A member of a `review=group` group still waits
+for that group's review.
+
+A non-zero exit is `FAIL`. `tasks/<id>/qa.last` starts `The script exited N.` A timeout is
+`FAIL`, and `qa.last` says `The script timed out after Ns.` Both quote the last 3000
+characters of `script.log`. There is no review and no `noretry`, so a later retry can run.
+The worktree is left as the command left it. Exit 0 that changes nothing is `FAIL` as well,
+with `The script produced no changes.` and `noretry`, so it is not retried. A reset that
+cannot reach the base is `ERROR` and is not reviewed (`tasks/<id>/script.reset.out`).
+
+The task is never escalated, and its failed reviews are not counted as converging. The
+scheduler, `forge-route.py`, dataset routing and forge-ui treat `script` as no model. The
+plan forecast does not price the row. The reviewer is still a model, and a pause on that
+reviewer holds the task.
+
+A retry runs the same command again from the base. Editing `tasks/<id>/run` is how the diff
+changes. An unchanged command repeats the previous diff, and that retry stops: `FAIL`,
+`noretry`, and `The retry changed nothing: the diff is byte-identical to the previous
+attempt.` It is not reviewed again.
 
 ## Fractal within decomposed tasks
 
@@ -529,7 +585,9 @@ Only a judged attempt writes an `attempts.tsv` row, and the cap counts those row
 A re-review after `UNKNOWN`, `INFRA`, `TIMEOUT`, `INTERRUPTED` or `ERROR` spends no member
 attempt. On `PASS`, every member gets one judged `PASS` row, including members the findings
 did not name. A later `FAIL` of only some members records one `FAIL` row for each of those,
-at the attempt number they are on.
+at the attempt number they are on. Separately, a task attempt left `STALE` (`prompt.md` or
+`approach.md` changed while it ran) is not judged. `attempts.tsv` records `STALE`, and the cap
+skips that row, as it skips `INFRA`.
 
 ### Resume
 
@@ -1255,10 +1313,33 @@ tasks keep running; dependents wait for the task to merge. It applies per invoca
 remembered), never to `TIMEOUT`/`ERROR`/`CONFLICT` or an `INVALIDATED` merge, and never after a retry that
 changed nothing (`tasks/<id>/noretry`). Every entry is logged in `tasks/<id>/attempts.tsv`.
 An attempt that carries retry findings also gets one row in `tasks/<id>/retry_sources.tsv`:
-the attempt number, the source of those findings (`review`, `prereview`, `bounce`, `message` or
-`answer`) and the epoch time. A row for the same attempt replaces the earlier one, because an
+the attempt number, the source of those findings (`review`, `prereview`, `bounce`, `message`,
+`answer` or `prompt`) and the epoch time. A row for the same attempt replaces the earlier one, because an
 infrastructure stop refunds the attempt and its restart runs the same number again. forge-ui's
 attempt trail reads this file.
+
+**A prompt edited during the attempt.** When `dwarf.input` is built, `prompt.md` and
+`approach.md` are copied to `prompt.dispatched` and `approach.dispatched`. A missing
+`approach.md` is an empty copy, and `prompt.dispatched` is written last: its presence is what
+says the pair is complete. If the copy fails, `prompt.dispatched` is removed and a later edit
+is not detected. An attempt from before those copies is not checked. Before review,
+if either file differs, the attempt is `STALE` and no review runs. `stale.diff` is the unified
+diff, `control.log` gets action `prompt-changed` with actor `scheduler`, and the console names
+the file and says no attempt was spent. The attempt counter is given back, as a dwarf-stage
+infrastructure stop is. The cap skips the `STALE` row, the escalation streak treats `STALE` as
+neutral, and no decision is written. Unless the run is stopping, the scheduler re-dispatches at
+once with `retry_findings.source` `prompt`. `retry_findings.md` is the new requirements plus
+that diff, and the next entry reuses the attempt number. `changes.diff` and
+`changes.prev.diff` are removed, so a re-dispatch that keeps the committed work is reviewed
+rather than refused as identical (`stale.diff` and `committed.diff` stay). A `STALE` task still
+waiting at the next `run` is prepared the same way, with no `--retry-failed` required and no
+retry counted. `forge control retry` accepts `STALE`; `--dwarf` is refused, because the same
+implementer gets the new text. A plain `forge-parallel.sh retry` does not take this path. The
+dataset attempt event has `prompt_changed` (true when the status is `STALE`). `forge dataset
+routing`, tiers and the forecast leave those attempts out,
+the same way they leave out a refunded or infrastructure stop. The `prompt` blob is
+`prompt.dispatched`, the text the implementer was given; an attempt from before the copy falls
+back to `prompt.md`. An empty `approach.dispatched` stores no approach blob.
 
 **Escalation after repeated failures.** In forge's history the first three attempts at a task
 pass review at about the same rate (43%, 42%, 47%), and the fourth and later at 29%, whether
@@ -1268,7 +1349,7 @@ turns it off):
 
 - **Counting:** the count is the task's failed attempts (FAIL, or an implementer TIMEOUT) on its current model,
   from the fifth column of `attempts.tsv`, after the latest row of `tasks/<id>/decisions.tsv`.
-  Infrastructure stops, missing verdicts and forge's own errors judge nothing and are skipped; a pass
+  Infrastructure stops, missing verdicts, `STALE` attempts and forge's own errors judge nothing and are skipped; a pass
   or a change of model resets it. A lateral move does not: the streak carries across `tasks/<id>/lateral.tsv`.
 - **Escalation:** at the threshold, the next attempt goes to a different model in the next tier
   up of the pools given to `plan` (same position in the pool, as with exploration),
@@ -1298,6 +1379,28 @@ turns it off):
   `resume` marker, or an unreviewed verdict, still matches the worktree). A marker the
   next retry will discard is not that wait.
 
+**A budget per model.** `plan --retry-per-model N` writes `retry_per_model` (`N` from 1 to 99).
+`--no-retry-per-model` removes it; a re-plan with neither keeps the file. A task may fail N
+times on the model it is on, then the next attempt moves one rung up the pools and the count
+starts again. With `escalate_effort` on, the same N applies to each effort of that model before
+the next effort. `forge-route.py escalation` uses `retry_per_model` as the trigger when the
+file is a number from 1 to 99, instead of `escalate_after`. When both files exist, `run` notes
+that retry-per-model replaces `--escalate-after` for this plan; the `escalate_after` file stays.
+Automatic retries still need `--retry-failed` above 0 (or a live `retry_budget` above 0): any
+positive budget turns the ladder on, and that number is not the limit. A person's
+`decided.left` replaces the ladder: a positive count retries even when `forge-route.py per-model`
+says no, and 0 does not. `retry=N` with `--dwarf` keeps the task on that model until the larger of N
+and the per-model count. `max_attempts`, the converging stop, `noretry`
+and `escalation.stop` still apply. `forge-route.py per-model` prints whether one task may be
+attempted again (`retry`, `rung`, `failed_on_rung`, `rungs_left`, `per_model`; exit 2 when the
+plan has no valid file). `worst-case` is the unmerged tasks' dispatches (implementer, reviewer,
+and shadow reviews when those are on) and the tasks whose `N` times rungs exceed
+`max_attempts`. The plan table prints `retry per model: N`, `worst case with retry-per-model N:
+X dispatches`, and `max-attempts … stops these tasks before the top of their ladder` for that
+last list. Pools `low`, `medium` and `high` with N=3 give a task that starts on `low` up to 9
+implementer attempts, bounded by `--max-attempts` (default 8). A `script` implementer has no
+rungs above it; its worst-case implementer count is 0.
+
 History cannot yet say whether escalating rescues a task (31% of the 29 later attempts on a
 changed spec passed, mostly effort bumps); the attempts this policy makes are what will.
 
@@ -1322,12 +1425,38 @@ Task and solo reviews are asked to list every CONFIRMED finding, and to say so p
 diff is correct, so a round is the whole list and not only the worst few.
 
 The task then stops with status **`NEEDS_DECISION`**. So does a task the retry policy cannot
-escalate further (reason `split`; `split.suggested` still names the suggestion), and a task at its
-attempt cap (reason `cap`). The cap is `plan --max-attempts N`, default **8** when `max_attempts`
-is absent, counted across runs: an infrastructure stop spends nothing, and each `retry=N` a person
-grants adds N to the cap. `0` is no cap, and a grant does not create one. `forge control set max-attempts N --confirm`
+escalate further (reason `split`; `split.suggested` still names the suggestion), a task at its
+attempt cap (reason `cap`), and a `FAIL` whose every blocking finding needs a file the task does
+not declare (reason `plan`). The cap is `plan --max-attempts N`, default **8** when `max_attempts`
+is absent, counted across runs: an infrastructure stop spends nothing, a `STALE` attempt spends
+nothing, and each `retry=N` a person grants adds N to the cap. `0` is no cap, and a grant does not create one. `forge control set max-attempts N --confirm`
 changes it; `--confirm` applies only to that key. A `NEEDS_INPUT` task at the cap keeps its question:
 raise the plan's cap before the answer can start an attempt.
+
+**Reason `plan`.** After a judged `FAIL`, and before the escalation check, the task stops when
+`qa.last` holds a real `PASS` or `FAIL` verdict, at least one finding blocks at the task's
+threshold, every blocking finding carries `{outside=…}`, and `forge_owner.py` says none of
+those paths is covered by this task's declared files (a declaration of `.` covers every path;
+`files` of `-`, or an unknown task, leaves every path outside). A `PLAUSIBLE` finding never
+blocks, and a finding milder than the threshold does not. The check writes
+`tasks/<id>/outside.json`: a JSON list of `{path, owner, owners, owner_status}`. `owner` is the
+task that declares the path, or null when none does; `owners` is every such task; `owner_status`
+is `MERGED` when that task has `merged`, otherwise the text of its `status`, or `PENDING` when
+it has none, and null when there is no owner. If that does not hold, `outside.json` is removed
+and escalation runs as usual. `decision.md` lists each path as `path — declared by <id> (<status>)`
+or `path — declared by no task`, then the plan choices, which edit `tasks.tsv`: add the path to
+this task's `files`, make this task depend on the owner (edit its `deps`), or merge the two
+rows into one task. Then `forge-parallel.sh plan <plan>` again when no run is live, and
+`forge-parallel.sh retry <plan> <id> --decide retry=1 --reason "…" --approved`. The usual
+choices (more attempts, a threshold, a named model, accept, split) stay listed. This `FAIL`
+counts toward the cap. It does not escalate, and `--retry-failed` does not re-queue
+`NEEDS_DECISION`, so it spends no further attempt on the model. The reviewer's `{outside=…}`
+is what stops the task. The implementer is told not to edit a file outside its `files`, and to
+end with `FORGE_BLOCKED: <path>: <why>`, one line per path. Those lines are copied into
+`qa.input` as a claim ("The implementer says these fixes need files outside the task"), for the
+reviewer to confirm with `{outside=<path>}` or refute. Task, solo and group reviews are taught
+the brace; sweep, adopt and final reviews are not. The brace is its own, immediately before the
+facts brace: `- [P1][CONFIRMED] path/file.py:123 — {outside=a.py,b.py} {reach=main origin=new evidence=ran}`.
 
 `tasks/<id>/decision.md` gives the reasons and the choices. Nothing else resumes the task: not a
 re-run, not `--retry-failed`, not a retry budget and not a pin. A plain `retry` exits 2.
@@ -1426,21 +1555,26 @@ Five more commands steer a live scheduler (exit 3 when none is live):
   file in `control.requests/`. At its next pass the scheduler applies or refuses it and appends
   an outcome line to `control.log` with the same `request` id (`actor` `scheduler`, `outcome`
   `applied|refused`, `reason`). `retry` takes a `FAIL`, `UNKNOWN`, `TIMEOUT`, `ERROR`,
-  `BLOCKED` or `INTERRUPTED` task that is neither running nor waiting, prepares it exactly as
-  `forge-parallel.sh retry` does. A `NEEDS_DECISION` task is resumed only by `--decide` or
-  `--dwarf`, each with `--reason` and `--approved`. It spends no automatic retry budget; an
-  `INFRA` task is the scheduler's own to resume. `add` takes a row the human appended to `tasks.tsv` (with its
+  `BLOCKED`, `INTERRUPTED` or `STALE` task that is neither running nor waiting. A `STALE`
+  task is re-dispatched with the changed prompt on the same implementer, and `--dwarf` is
+  refused. The others are prepared exactly as `forge-parallel.sh retry` does. A
+  `NEEDS_DECISION` task is resumed only by `--decide` or `--dwarf`, each with `--reason` and
+  `--approved`. It spends no automatic retry budget; an `INFRA` task is the scheduler's own
+  to resume. `add` takes a row the human appended to `tasks.tsv` (with its
   `tasks/<id>/prompt.md`) whose dependencies this run already knows, and refreshes `waves.tsv`.
   A request never outlives the scheduler that was live when it was queued; one left behind is
   refused, and every request is refused once the run is stopping.
 
 **Ordinary execution resume:** run `run` again. Tasks already `MERGED` are skipped. A saved PASS is fingerprint-checked and merged without
 redispatch. PENDING, `INFRA` (paused by an infrastructure failure) and newly unblocked tasks run
-when eligible. A `NEEDS_DECISION` task is not among them: only a decision resumes it. Failed or interrupted tasks
+when eligible. A `STALE` task still waiting is prepared with the new prompt and spends nothing.
+A `NEEDS_DECISION` task is not among them: only a decision resumes it. Failed or interrupted tasks
 require an explicit `retry` (or `--retry-failed N`); `run` never silently pays for them again. Worktrees and pinned
 baselines are retained. A per-plan advisory lock excludes concurrent run/retry/integrate
 operations. A `review=group` member left `IMPLEMENTED` is not implemented again; its group's
 review resumes as in [Groups and group review](#groups-and-group-review-opt-in).
+
+From another session or harness, `forge handoff resume <plan>` follows a live scheduler and restarts a stopped run with its recorded flags; see [From another session or harness](../docs/decomposed-runs.md#from-another-session-or-harness). The `run` and per-task `retry` above remain the way to finish by hand.
 
 **Interrupts.** A SIGINT or SIGTERM to `run` (or to its scheduler), and `forge control stop
 --now`, first reap the tasks that already ended (a PASS still merges), then send TERM to each
@@ -1626,10 +1760,63 @@ Four subcommands act on plans after tasks have run. Full usage and refusal condi
 `split`/`combine` hold the plans' advisory locks for their whole duration, and every failure path
 removes what it created.
 
+## Chained plans
+
+`plan <dir> --after <prev>` starts `<dir>` from an earlier plan's integration branch. `<prev>`
+is that plan's directory. See the [plan flags](../docs/commands.md#scriptsforge-parallelsh).
+
+`plan` writes `<prev>`'s absolute path to `after` and the starting commit to
+`integration.base`, and creates `forge/<run>-integration` at `<prev>`'s
+`accepted.integration`. A branch that already points at that commit is kept. The approval
+table prints `after: <run> (<base>)`, with the first 12 characters of that commit. A later `plan` of the same directory without `--after` keeps the
+files and the branch. A chained plan skips the warning about uncommitted changes in the
+repository: its worktrees start from the previous plan's accepted tip.
+
+`<prev>` has to be a plan of the same repository. Every refusal below is exit 2, and it leaves
+the plan directory and the branches as they were:
+
+- `<prev>` is not a directory, `--after` was given no directory, or the directory has no
+  `tasks.tsv`, `run_id` and `repo`
+- the plan would come after itself
+- the two plans belong to different repositories
+- a task of `<prev>` is not `MERGED`
+- `forge/<prev-run>-integration` is missing, `<prev>` has no `accepted.integration`, or the
+  branch tip is not that accepted commit. Extra commits on the branch are adopted into
+  `<prev>` first (`forge-parallel.sh adopt <prev> --head --reason "…"`)
+- `<prev>`'s scheduler is live (`scheduler.live` names a pid that is still running)
+- this plan's own `forge/<run>-integration` is at another commit: it is checked out, it is
+  not still at the recorded `integration.base`, or this plan already has merged work
+
+Before any merge, a different `--after` moves the branch when it is still at its old
+`integration.base` and is not checked out. After a task has merged, a different `--after`
+is the same exit 2, and the recorded base stays.
+
+`run` checks again while no task of this plan has merged. If `<prev>` has no
+`accepted.integration`, `run` notes that and goes on. Otherwise that commit must be an
+ancestor of this plan's `integration.base`. If `<prev>` moved, `run` exits 3, dispatches
+nothing, and tells you to run `plan <dir> --after <prev>` again. Planning again with the
+same `--after` records the new tip. A plan split from a chained plan starts later than
+`<prev>` ended; the old tip is still an ancestor, so the check passes. Once a task of this
+plan has merged, `run` does not check again.
+
+`integrate` merges this plan's integration branch, which already holds every plan it follows,
+and prints `this brings plans A → B → C` with the run ids, oldest first. A predecessor
+that cannot be read, or a chain longer than 64, makes that line start with `…`. A plan
+with no `after` file prints no such line.
+
+`forge runs` puts `after <run>` on the plan's summary line. `<run>` is the predecessor's run
+id, or its key when that directory is gone. forge-ui shows After, a link to the plan this run
+follows, and Followed by, the plans whose `after` names this run.
+
 ## Branches, worktrees, cleanup
 
 ```
 <plan-dir>/tasks/<id>/approach.md               intended approach, if planned
+<plan-dir>/retry_per_model                      failures on each model before the next rung (1-99); absent leaves escalate_after
+<plan-dir>/tasks/<id>/prompt.dispatched         prompt.md as given to the implementer; written last at dispatch
+<plan-dir>/tasks/<id>/approach.dispatched       approach.md as given; empty when there was none
+<plan-dir>/tasks/<id>/stale.diff                unified diff when prompt.md or approach.md changed during the attempt
+<plan-dir>/tasks/<id>/outside.json              paths a plan stop named, with owner, owners and owner_status
 <plan-dir>/tasks/<id>/risk                      low|medium|high, recorded only (#122), if rated
 <plan-dir>/groups.tsv                           id, review, qa, members, title, goal; absent unless groups are on
 <plan-dir>/groups.frozen                        sha256 of the six columns, then each member's deps and files
@@ -1639,6 +1826,11 @@ removes what it created.
 <plan-dir>/tasks/<id>/source.fingerprint        worktree fingerprint beside that commit
 <plan-dir>/tasks/<id>/settled.group             gid and round, once a group FAIL judged this member
 <plan-dir>/tasks/<id>/retry_sources.tsv         attempt, source, epoch: why each retried attempt ran (#133)
+<plan-dir>/run.flags.json                       flags of this run of the plan, rewritten at each real start; not copied by split or rerun
+<plan-dir>/handoff.notes.jsonl                  session notes of what is not on disk: at, actor, text; newest first in forge handoff
+<plan-dir>/handoff.driver.json                  harness, session, since, last_seen of the session driving the run
+<plan-dir>/tasks/<id>/interrupted-<epoch>.diff  uncommitted work saved before forge handoff resume resets a stale RUNNING worktree
+<plan-dir>/resume-<epoch>.{log,done}            log of the run forge handoff resume started, and its exit code once that run ends
 <repo>/.forge/                                  project memory (survives the run)
 <repo>/../.forge-worktrees/<run-id>/<task-id>   task worktree
 <repo>/../.forge-worktrees/<run-id>/_integration integration worktree
@@ -1736,7 +1928,8 @@ The user's own branch and working tree are untouched for the whole run.
 | task status `FAIL` with "produced no changes" | the dwarf ended without editing anything — usually an ambiguous prompt it could not resolve headlessly |
 | task status `UNKNOWN` | QA never emitted a verdict line; read `tasks/<id>/qa.last`. `retry` re-runs QA only, on the unchanged work |
 | task status `INFRA`, `run` exits `8` | an infrastructure stop; the cause is in the summary and `tasks/<id>/infra.txt`. No attempt spent. Fix a "needs you" line before re-running; otherwise re-run, or wait with `--infra-retries M`. See [Infrastructure failures](#infrastructure-failures) |
-| task status `NEEDS_DECISION` | reviews are not converging, the retry policy has no stronger model, or the attempt cap is spent. Read `tasks/<id>/decision.md`. Only a decision resumes it |
+| task status `NEEDS_DECISION` | reviews are not converging, the retry policy has no stronger model, every blocking finding needs a file the task does not declare (reason `plan`), or the attempt cap is spent. Read `tasks/<id>/decision.md`. Only a decision resumes it |
+| task status `STALE` | `prompt.md` or `approach.md` changed during the attempt. Not reviewed, and no attempt spent. The scheduler re-dispatches it with the new text; so does `forge control retry`. See [Retrying, and resuming an interrupted run](#retrying-and-resuming-an-interrupted-run) |
 | task status `IMPLEMENTED` | a `review=group` member finished implementing and waits for its group's review. `retry` and `accept` exit 3. See [Groups and group review](#groups-and-group-review-opt-in) |
 | group status `NEEDS_DECISION` | the combined diff is over `group_max_diff_kb`, or a blocking finding names no member. Read `groups/<gid>/decision.md`. `forge group show` prints it; `forge group retry --tasks` only on the user's word, and only for an ambiguous decision |
 | a group left `INFRA`, `TIMEOUT` or `INTERRUPTED` | the review did not finish. The next `run` reviews it again. `forge group retry` rearms it to `INTERRUPTED`. No member attempt was spent |
