@@ -48,7 +48,10 @@ post_attempt() { # post_attempt <plan> <id>
   if outside_stop_check "$1" "$2"; then
     python3 "$SKILL_DIR/scripts/forge-ledger.py" append "$1" "$2" >/dev/null 2>&1 \
       || note "$2: could not add this review to the findings ledger"
-    if stop_for_decision "$1" "$2" plan; then return 0; fi
+    # A write that fails leaves the task FAIL. Continuing would append this review to the
+    # ledger again and let the escalation check mark a model that cannot fix the plan.
+    stop_for_decision "$1" "$2" plan || return 1
+    return 0
   else
     rm -f "$1/tasks/$2/outside.json"
   fi
@@ -709,6 +712,7 @@ stop_for_decision() { # stop_for_decision <plan> <id> <reason>...
     echo
     read -r used cap <<< "$(attempt_cap_of "$PLAN" "$id")"
     if [ "$cap" = - ]; then echo "Attempts used so far: $used (no cap)"; else echo "Attempts used so far: $used (attempts $used of $cap)"; fi
+    echo
     case ",${reasons// /}," in *,plan,*)
       if [ -s "$tdir/outside.json" ]; then
         echo "Files outside this task:"
@@ -990,7 +994,18 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf [decided]]
       return 3
     fi
     if [ -n "$next" ]; then
-      note "$id: escalating from $cur to $next after $(cat "$PLAN/escalate_after" 2>/dev/null || echo 3) failed attempts on one model (--escalate-after 0 turns this off)"
+      # retry_per_model replaces escalate_after (forge-route.py escalation). The note names the
+      # count that moved the task, and does not point at a flag that no longer governs the plan.
+      per_model="$(tr -d '[:space:]' < "$PLAN/retry_per_model" 2>/dev/null || true)"
+      case "$per_model" in
+        [1-9]|[1-9][0-9]) ;;
+        *) per_model="" ;;
+      esac
+      if [ -n "$per_model" ]; then
+        note "$id: escalating from $cur to $next after $per_model failed attempts on one model"
+      else
+        note "$id: escalating from $cur to $next after $(cat "$PLAN/escalate_after" 2>/dev/null || echo 3) failed attempts on one model (--escalate-after 0 turns this off)"
+      fi
       newdwarf="$next"
       esc_source=policy
     fi
