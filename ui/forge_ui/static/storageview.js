@@ -1,8 +1,9 @@
 /* forge-ui Disk screen (#139): what forge takes on disk in every repository it has runs for (run dirs, worktrees,
    its data home) and the command that takes each part back (window.ForgeStorage, and a CommonJS module under
    node:test). Route #/disk. The same report as `forge du --all`, from the same rules (scripts/forge_storage.py).
-   The commands come from the server and are only ever copied: the page runs nothing, so it works with
-   --read-only too. Measuring visits every file, so it runs once in the background when the screen opens and
+   The commands come from the server. Under --read-only they are only ever copied. When controls are on, a
+   reclaimable run (and every reclaimable run at once) can be compacted from here, after a dry run and a
+   confirmation. Measuring visits every file, so it runs once in the background when the screen opens and
    again on "Measure again"; the page polls only while a measurement runs.
    The pure helpers are tested in ui/tests/js/storageview.test.js.
    ctx = { runHref(key) -> href (a run row's key is null when the run list does not show it), tablePrefs?(id), saveTablePrefs?(id, prefs) }. */
@@ -25,6 +26,35 @@
     while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
     return (i === 0 ? String(v) : v.toFixed(v < 10 ? 1 : 0)) + ' ' + units[i];
   }
+  // A copied command is a compact only when it is `forge runs compact`. `--all` is the whole disk; anything
+  // else names one run. `forge du --all` and `forge runs rm` are not compacts.
+  function compactKind(command) {
+    if (typeof command !== 'string' || !command.includes('forge runs compact')) return null;
+    return /(?:^|\s)--all(?:\s|$)/.test(command) ? 'all' : 'run';
+  }
+  // The compact POST body, without dry_run (the caller adds it). `all` compacts every reclaimable run;
+  // a string or {run}|{key} compacts that run.
+  function compactBody(target) {
+    if (target === 'all' || (target && typeof target === 'object' && target.all === true)) return { all: true };
+    if (typeof target === 'string') return { run: target };
+    const raw = target && typeof target === 'object' ? (target.run != null ? target.run : target.key) : null;
+    return { run: raw == null ? '' : String(raw) };
+  }
+  function compactPayload(answer) {
+    const data = answer && answer.data;
+    if (data && typeof data === 'object' && !Array.isArray(data)
+      && ('bytes_freed' in data || 'runs' in data || 'dry_run' in data)) return data;
+    return answer && typeof answer === 'object' ? answer : {};
+  }
+  // What the confirm and the result say: the bytes `forge runs compact --json` would free, and how many runs.
+  function compactSummary(answer) {
+    const body = compactPayload(answer);
+    const bytes = typeof body.bytes_freed === 'number' && Number.isFinite(body.bytes_freed) ? body.bytes_freed : 0;
+    const n = Array.isArray(body.runs) ? body.runs.length : 0;
+    const runs = n === 1 ? '1 run' : n + ' runs';
+    return (body.dry_run ? 'Would free ' : 'Freed ') + humanBytes(bytes) + ' across ' + runs;
+  }
+  const ACTIVE_RUN = 'this run is active: compact it after it ends';
   // One line on the whole: what forge takes and what can go without losing a run.
   function summary(data) {
     const t = (data && data.totals) || {};
@@ -83,7 +113,7 @@
   function render(host, ctx) {
     const UI = root.ForgeUI;
     const el = (tag, text, cls) => UI.el(tag, text, cls);
-    const s = { answer: null, error: null, timer: null, seq: 0 };
+    const s = { answer: null, error: null, timer: null, seq: 0, writes: false, compacting: false };
 
     const head = el('div', undefined, 'wt-head');
     const again = el('button', 'Measure again'); again.type = 'button';
@@ -91,15 +121,18 @@
     again.addEventListener('click', () => load(true));
     const stamp = el('span', '', 'muted wt-stamp');
     head.append(el('h1', 'Disk', 'module-title'), again, stamp);
-    const lede = el('p', 'What forge takes on disk in every repository it has runs for, and the command that takes each part back. Review snapshots and log copies can go without losing a run: every run stays viewable here and in the dataset. Commands are only copied: this page runs nothing.', 'muted wt-lede');
+    const LEDE_OFF = 'What forge takes on disk in every repository it has runs for, and the command that takes each part back. Review snapshots and log copies can go without losing a run: every run stays viewable here and in the dataset. Commands are only copied: this page runs nothing.';
+    const LEDE_ON = 'What forge takes on disk in every repository it has runs for, and the command that takes each part back. Review snapshots and log copies can go without losing a run: every run stays viewable here and in the dataset. Copy a command, or compact from here after a dry run and a confirmation.';
+    const lede = el('p', LEDE_OFF, 'muted wt-lede');
     const status = el('p', undefined, 'wt-totals'); status.setAttribute('role', 'status');
     const cmds = el('div', undefined, 'disk-commands');
+    const action = el('div');
     const chart = el('section', undefined, 'disk-chart');
     chart.setAttribute('aria-label', 'Where the space goes');
     const tip = el('div', undefined, 'disk-tip'); tip.hidden = true; tip.setAttribute('role', 'tooltip');
     const tableHost = el('div', undefined, 'wt-table');
     const extra = el('section', undefined, 'disk-extra');
-    host.replaceChildren(head, lede, status, chart, cmds, tableHost, extra, tip);
+    host.replaceChildren(head, lede, status, chart, cmds, action, tableHost, extra, tip);
 
     // one tooltip for every segment: what it is, its size and its share, beside the pointer or the focused segment
     function showTip(seg, x, y) {
@@ -164,11 +197,52 @@
       });
       return b;
     }
-    function commandBox(c) {
+    function commandBox(c, key) {
       const box = el('div', undefined, 'wt-cmd');
       const code = el('code', c.command, 'mono'); code.tabIndex = 0; code.title = c.label;
       box.append(code, copyButton(c.command));
+      const kind = compactKind(c && c.command);
+      if (s.writes && kind === 'all') box.append(compactButton('Compact all', { all: true }));
+      else if (s.writes && kind === 'run' && key) box.append(compactButton('Compact', { run: key }));
       return box;
+    }
+    function compactButton(text, target) {
+      const b = el('button', text, 'wt-copy ui-danger'); b.type = 'button';
+      b.addEventListener('click', () => { runCompact(target); });
+      return b;
+    }
+    function refusedActive(res) { return !!(res && res.status === 409 && res.error !== 'busy'); }
+    async function runCompact(target) {
+      if (s.compacting) return;
+      s.compacting = true;
+      for (const child of [...action.children]) child.remove();
+      const path = '/api/storage/compact';
+      const base = compactBody(target);
+      try {
+        const preview = await UI.post(path, { ...base, dry_run: true });
+        if (!action.isConnected) return;
+        if (refusedActive(preview)) {
+          UI.outcome(action, { ok: false, status: 409, error: preview.error || 'refused', detail: ACTIVE_RUN });
+          return;
+        }
+        if (!preview || !preview.ok || (preview.data && preview.data.ok === false)) {
+          UI.outcome(action, preview && preview.ok ? { ok: false, status: preview.status || 500, error: 'failed', detail: 'Could not preview what compact would free' } : preview);
+          return;
+        }
+        const yes = await UI.confirmInline(action, compactSummary(preview), { danger: true });
+        if (!action.isConnected || !yes) return;
+        const res = await UI.post(path, { ...base, dry_run: false });
+        if (!action.isConnected) return;
+        if (refusedActive(res)) {
+          UI.outcome(action, { ok: false, status: 409, error: res.error || 'refused', detail: ACTIVE_RUN });
+          return;
+        }
+        if (!res || !res.ok) { UI.outcome(action, res); return; }
+        UI.outcome(action, res, compactSummary(res));
+        await load(true);
+      } finally {
+        s.compacting = false;
+      }
     }
     const when = t => Number.isFinite(t) ? new Date(t * 1000).toLocaleString() : '—';
     const bytesCell = n => Number.isFinite(n) && n > 0 ? humanBytes(n) : '—';
@@ -182,7 +256,7 @@
       { id: 'logs', label: 'Logs', value: r => r.logs + r.gz, cell: r => bytesCell(r.logs + r.gz) },
       { id: 'strays', label: "Not forge's", title: 'a dependency install or a .git found inside the run dir: forge never removes these', value: r => r.strays, cell: r => bytesCell(r.strays) },
       { id: 'reclaimable', label: 'Can go', title: 'what forge runs compact --logs would take back (logs estimated)', value: r => r.reclaimable, cell: r => bytesCell(r.reclaimable) },
-      { id: 'command', label: 'Command', sortable: false, cls: 'wt-command-col', cell: r => { const box = el('div', undefined, 'wt-cmds'); for (const c of list(r.commands)) box.append(commandBox(c)); return box; } },
+      { id: 'command', label: 'Command', sortable: false, cls: 'wt-command-col', cell: r => { const box = el('div', undefined, 'wt-cmds'); for (const c of list(r.commands)) box.append(commandBox(c, r.key)); return box; } },
       { id: 'updated', label: 'Changed', value: r => r.updated, cell: r => when(r.updated) },
       { id: 'path', label: 'Path', value: r => r.path, cell: r => el('span', r.path, 'mono'), hidden: true },
     ];
@@ -219,6 +293,7 @@
       extra.replaceChildren(...out);
     }
     function drawNow() {
+      lede.textContent = s.writes ? LEDE_ON : LEDE_OFF;
       const a = s.answer, d = a && a.data;
       if (s.error) status.replaceChildren(el('span', `Could not read the disk report (${s.error}).`, 'warn'));
       else if (!a) status.replaceChildren(el('span', 'Asking…', 'muted'));
@@ -249,6 +324,12 @@
     }
     // A redraw never pulls a command out from under someone selecting or copying it (#115).
     const draw = () => { if (UI.guard) UI.guard(host, drawNow); else drawNow(); };
+    UI.controlsEnabled().then(on => {
+      const next = !!on;
+      if (s.writes === next) return;
+      s.writes = next;
+      draw();
+    });
 
     async function load(refresh) {
       const mine = ++s.seq;
@@ -267,5 +348,5 @@
     return { reload: () => load(true) };
   }
 
-  return { render, humanBytes, summary, homeParts, repoName, HOME_LABEL, PARTS, breakdown, byRepo, pct };
+  return { render, humanBytes, summary, homeParts, repoName, HOME_LABEL, PARTS, breakdown, byRepo, pct, compactBody, compactSummary };
 });
