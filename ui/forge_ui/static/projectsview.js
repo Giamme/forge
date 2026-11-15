@@ -47,6 +47,66 @@
     return list(rows).filter(r => (cat === 'all' || r.category === cat) && (st === 'all' || stateFor(r, source).state === st)
       && (!text || String(r.text || '').toLowerCase().includes(text)));
   }
+  // The forget wire key is the learning's own category and key, joined once. A row missing either is not selectable.
+  function learningKey(row) {
+    if (!row || row.category == null || row.key == null) return '';
+    const category = String(row.category), key = String(row.key);
+    return category && key ? category + ':' + key : '';
+  }
+  // Keys to forget, in learning order. `selected` is a Set or array of learning rows or of "category:key" strings.
+  function forgetKeys(learnings, selected) {
+    const want = selected instanceof Set ? selected : new Set(list(selected));
+    const out = [], seen = new Set();
+    for (const row of list(learnings)) {
+      const key = learningKey(row);
+      if (!key || seen.has(key) || (!want.has(row) && !want.has(key))) continue;
+      seen.add(key);
+      out.push(key);
+    }
+    return out;
+  }
+  function forgetData(res) {
+    const body = res && res.data && res.data.checkouts ? res.data : res;
+    return body && body.checkouts ? body : null;
+  }
+  // The confirm sentence: the chosen learnings, then the memory.md lines the dry run says go. All of it is text.
+  function forgetConfirmText(learnings, keys, res) {
+    const byKey = new Map();
+    for (const row of list(learnings)) { const key = learningKey(row); if (key && !byKey.has(key)) byKey.set(key, row); }
+    const lines = ['Forget these learnings?'];
+    for (const key of keys) {
+      const row = byKey.get(key), text = row && row.text != null ? String(row.text) : '';
+      lines.push(text ? key + ' — ' + text : key);
+    }
+    const removed = [];
+    for (const checkout of list(forgetData(res) && forgetData(res).checkouts)) {
+      for (const line of list(checkout && checkout.result && checkout.result.memory_lines_removed)) {
+        if (line != null && String(line) !== '') removed.push(String(line));
+      }
+    }
+    lines.push(removed.length ? 'memory.md lines that go:' : 'No memory.md line goes.');
+    return lines.concat(removed).join('\n');
+  }
+  // One line per key after the real call: how many ledger rows went, or that the key was not found.
+  function forgetResultLines(res) {
+    const lines = [];
+    for (const checkout of list(forgetData(res) && forgetData(res).checkouts)) {
+      const result = checkout && checkout.result;
+      if (!result) {
+        const err = checkout && checkout.error;
+        const why = typeof err === 'string' ? err : err && (err.detail || err.error);
+        lines.push(why || 'Could not forget in this checkout');
+        continue;
+      }
+      for (const item of list(result.keys)) {
+        if (!item || item.key == null) continue;
+        if (!item.found) { lines.push(String(item.key) + ': not found'); continue; }
+        const rows = typeof item.rows === 'number' && Number.isFinite(item.rows) ? item.rows : 0;
+        lines.push(String(item.key) + ': ' + rows + (rows === 1 ? ' row' : ' rows') + ' removed');
+      }
+    }
+    return lines;
+  }
   // what the Memories tab says when there is nothing to show
   function memoryEmpty(data) {
     if (!data) return null;
@@ -74,7 +134,8 @@
     const guard = (region, draw) => { if (UI.guard) UI.guard(region, draw); else draw(); };
     const s = { id: ctx.id || null, tab: TABS.includes(ctx.tab) ? ctx.tab : 'runs', list: null, detail: null, findings: null, memories: null,
       ffilter: { severity: 'all', status: 'open', run: '', reviewer: '', path: '', since: 0, shadow: false },
-      mfilter: { category: 'all', state: 'all', text: '' }, source: null, checkout: '', error: null, seq: 0, timer: null };
+      mfilter: { category: 'all', state: 'all', text: '' }, source: null, checkout: '', error: null, seq: 0, timer: null,
+      writes: false, picked: new Set(), forgetNote: null, forgetting: false };
     const tablePrefs = id => ctx.tablePrefs ? ctx.tablePrefs(id) : null, savePrefs = id => p => ctx.saveTablePrefs && ctx.saveTablePrefs(id, p);
 
     function table(parent, id, label, columns, rows, extra) {
@@ -266,7 +327,7 @@
       if (sources.length > 1) {
         const l = el('label', undefined, 'fnd-field'), sel = el('select'); sel.dataset.filter = 'source';
         for (const x of sources) { const o = el('option', basename(x.path) + (x.root ? ' (root)' : x.branch ? ` (${x.branch})` : '')); o.value = x.path; sel.append(o); }
-        sel.value = s.source || ''; sel.addEventListener('change', () => { s.source = sel.value; drawMemories(body, note); });
+        sel.value = s.source || ''; sel.addEventListener('change', () => { s.source = sel.value; s.picked = new Set(); s.forgetNote = null; drawMemories(body, note); });
         l.append(el('span', 'Checkout', 'plate'), sel); bar.append(l);
       }
       bar.append(readAgain(() => loadTab(true)));
@@ -295,15 +356,80 @@
       lsel('state', 'State', [['all', 'all']].concat(Object.entries(STATES).map(([k, v]) => [k, v])));
       const tl = el('label', undefined, 'fnd-field'), tx = el('input'); tx.type = 'search'; tx.placeholder = 'text contains…'; tx.value = s.mfilter.text; tx.dataset.filter = 'm-text';
       tx.addEventListener('input', () => { s.mfilter.text = tx.value; drawLearnings(); }); tl.append(el('span', 'Text', 'plate'), tx); lbar.append(tl);
+      let allBox = null, forget = null;
+      const faction = el('div'), noteHost = el('div'); faction.append(noteHost);
+      if (s.writes) {
+        const lab = el('label', undefined, 'fnd-toggle');
+        allBox = el('input'); allBox.type = 'checkbox'; allBox.setAttribute('aria-label', 'Select all shown learnings');
+        lab.append(allBox, el('span', 'Select all'));
+        forget = el('button', 'Forget selected (0)', 'ui-danger'); forget.type = 'button';
+        forget.addEventListener('click', () => { forgetSelected(); });
+        allBox.addEventListener('change', () => {
+          const shown = filterLearnings(learnings, s.mfilter, s.source);
+          for (const row of shown) {
+            const key = learningKey(row);
+            if (!key) continue;
+            if (allBox.checked) s.picked.add(key); else s.picked.delete(key);
+          }
+          drawLearnings();
+        });
+        lbar.append(lab, forget);
+      }
       const lcount = el('p', '', 'muted prj-count'), lhost = el('div', undefined, 'prj-table');
-      all.append(lbar, lcount, lhost); parts.push(all);
+      all.append(lbar, faction, lcount, lhost); parts.push(all);
       body.replaceChildren(...parts);
       const learnings = list(d.learnings);
+      const shownNow = () => filterLearnings(learnings, s.mfilter, s.source);
+      function syncForget() {
+        if (!forget) return;
+        const keys = forgetKeys(shownNow(), s.picked);
+        forget.textContent = `Forget selected (${keys.length})`;
+        forget.disabled = s.forgetting || keys.length === 0;
+        if (allBox) {
+          const selectable = shownNow().map(learningKey).filter(Boolean);
+          allBox.checked = selectable.length > 0 && selectable.every(key => s.picked.has(key));
+          allBox.disabled = s.forgetting || selectable.length === 0;
+        }
+      }
+      function paintNote() {
+        noteHost.replaceChildren(...list(s.forgetNote).map(line => el('p', line, 'muted')));
+      }
+      async function forgetSelected() {
+        if (s.forgetting) return;
+        const keys = forgetKeys(shownNow(), s.picked);
+        if (!keys.length) return;
+        s.forgetting = true; s.forgetNote = null; syncForget(); paintNote();
+        for (const child of [...faction.children]) if (child !== noteHost) child.remove();
+        const path = '/api/projects/' + encodeURIComponent(s.id) + '/memories/forget';
+        const base = { keys }; if (s.source) base.path = s.source;
+        try {
+          // Dry run first. Nothing is forgotten until the confirm, and a cancel sends nothing more.
+          const preview = await UI.post(path, { ...base, dry_run: true });
+          if (!faction.isConnected) return;
+          if (!preview || !preview.ok || (preview.data && preview.data.ok === false)) {
+            UI.outcome(faction, preview && preview.ok ? { ok: false, status: preview.status || 500, error: 'failed', detail: 'Could not preview what would be forgotten' } : preview);
+            return;
+          }
+          const yes = await UI.confirmInline(faction, forgetConfirmText(learnings, keys, preview), { danger: true });
+          if (!faction.isConnected || !yes) return;
+          const res = await UI.post(path, { ...base, dry_run: false });
+          if (!faction.isConnected) return;
+          if (!res || !res.ok) { UI.outcome(faction, res); return; }
+          s.forgetNote = forgetResultLines(res);
+          for (const key of keys) s.picked.delete(key);
+          s.forgetting = false;
+          await loadTab(true);
+        } finally {
+          s.forgetting = false;
+          if (faction.isConnected) syncForget();
+        }
+      }
       function drawLearnings() {
-        const shown = filterLearnings(learnings, s.mfilter, s.source);
+        const shown = shownNow();
         lcount.textContent = `${shown.length} of ${learnings.length} learnings`;
+        paintNote(); syncForget();
         if (!shown.length) { lhost.replaceChildren(el('p', 'No learnings match these filters.', 'muted')); return; }
-        table(lhost, 'project-learnings', 'Learnings', [
+        const columns = [
           { id: 'category', label: 'Category', value: r => r.category, cell: r => r.category },
           { id: 'text', label: 'Learning', value: r => r.text, cell: r => el('span', r.text, 'prj-learning') },
           { id: 'state', label: 'State', value: r => stateFor(r, s.source).state, cell: r => { const st = stateFor(r, s.source), b = el('span', STATES[st.state] || st.state); if (st.from && st.from !== 'dataset') b.title = 'from ' + st.from + ', not this checkout\'s ledger'; return b; } },
@@ -314,7 +440,14 @@
           { id: 'model', label: 'Model', value: r => (list(r.rows).slice(-1)[0] || {}).model, cell: r => (list(r.rows).slice(-1)[0] || {}).model || '—' },
           { id: 'from', label: 'From', value: r => r.dataset_only ? 'dataset' : '', cell: r => r.dataset_only ? 'dataset' : Array.from(new Set(list(r.rows).flatMap(x => list(x.from)))).map(basename).join(', ') },
           { id: 'last', label: 'Last seen', value: r => r.last, cell: r => r.last || '—' },
-        ], shown);
+        ];
+        if (s.writes) columns.unshift({ id: 'pick', label: '', title: 'Select', sortable: false, hideable: false, cell: r => {
+          const key = learningKey(r), box = el('input'); box.type = 'checkbox'; box.checked = !!(key && s.picked.has(key));
+          box.disabled = s.forgetting || !key; box.setAttribute('aria-label', 'Select ' + (key || 'learning'));
+          box.addEventListener('change', () => { if (!key) return; if (box.checked) s.picked.add(key); else s.picked.delete(key); syncForget(); });
+          return box;
+        } });
+        table(lhost, 'project-learnings', 'Learnings', columns, shown);
       }
       drawLearnings();
     }
@@ -346,7 +479,12 @@
       if (s.id) { redraw = drawProject(); redraw(); loadDetail().then(() => { if (s.tab !== 'runs') loadTab(false); }); }
       else { redraw = drawList(); redraw(); loadList(); }
     }
-    UI.controlsEnabled().then(on => { s.writes = !!on; if (s.tab === 'findings' && s.findings) redraw(); });
+    UI.controlsEnabled().then(on => {
+      const next = !!on;
+      if (s.writes === next) return;
+      s.writes = next;
+      if ((s.tab === 'findings' && s.findings) || (s.tab === 'memories' && s.memories)) redraw();
+    });
     open();
     return {
       go(id, tab) {
@@ -354,7 +492,7 @@
         if (id === s.id && t === s.tab) return;             // the page's own refresh: nothing changed here
         const same = id === s.id;
         s.id = id || null; s.tab = t;
-        if (!same) { s.detail = s.findings = s.memories = null; s.source = null; s.checkout = ''; }
+        if (!same) { s.detail = s.findings = s.memories = null; s.source = null; s.checkout = ''; s.picked = new Set(); s.forgetNote = null; }
         if (same && s.id) { redraw = drawProject(); redraw(); if (t === 'runs') loadDetail(); else if (!(t === 'findings' ? s.findings : s.memories)) loadTab(false); }
         else open();
       },
@@ -368,5 +506,5 @@
     };
   }
 
-  return { render, cleanSummary, filterFindings, filterLearnings, stateFor, memoryEmpty, routeOf, STATUSES, STATES };
+  return { render, cleanSummary, filterFindings, filterLearnings, stateFor, memoryEmpty, routeOf, forgetKeys, STATUSES, STATES };
 });
