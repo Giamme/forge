@@ -148,10 +148,11 @@ columns, plus an optional fifth:
 # alias	harness	model	effort	[timeout]
 sol	codex	gpt-6.1-sol	<=ultra
 sol	openclaude	gpt-6.1-sol	<=max
-gemini-pro	antigravity	gemini-3.1-pro	low,high
-opus	antigravity	claude-opus-4-6-thinking	none
+gemini-pro	antigravity	gemini-4-argon	low,medium,high
+gemini-3.1	antigravity	gemini-3.1-pro	low,high
+opus	antigravity	claude-opus-5-5-thinking	none
 grok	grok	grok-4.7	<=xhigh
-grok	opencode	github-copilot/grok-4.6	-
+grok	opencode	github-copilot/grok-4.7	-
 ```
 
 | `effort` form | Means |

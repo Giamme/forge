@@ -45,19 +45,19 @@ sol	opencode	github-copilot/gpt-6.1-sol	-
 astra	codex	gpt-6-astra	<=ultra
 astra	openclaude	gpt-6-astra	<=max
 astra	opencode	github-copilot/gpt-6-astra	-
-terra	codex	gpt-5.6-terra	<=ultra
-terra	openclaude	gpt-5.6-terra	<=max
-terra	opencode	github-copilot/gpt-5.6-terra	-
+terra	codex	gpt-6.1-terra	<=ultra
+terra	openclaude	gpt-6.1-terra	<=max
+terra	opencode	github-copilot/gpt-6.1-terra	-
 luna	codex	gpt-6-luna	<=max
 luna	openclaude	gpt-6-luna	<=max
 luna	opencode	opencode-go/gpt-6-luna	-
 opus	claude	opus	<=max
 opus	openclaude	opus	<=ultracode
-opus	antigravity	claude-opus-4-6-thinking	none
+opus	antigravity	claude-opus-5-5-thinking	none
 opus	opencode	github-copilot/claude-opus-5.5	-
 sonnet	claude	sonnet	<=max
 sonnet	openclaude	sonnet	<=ultracode
-sonnet	antigravity	claude-sonnet-4-6	none
+sonnet	antigravity	claude-sonnet-5-5-thinking	none
 sonnet	opencode	github-copilot/claude-sonnet-5.5	-
 fable	claude	fable	<=max
 fable	openclaude	fable	<=ultracode
@@ -66,16 +66,24 @@ haiku	claude	haiku	<=max
 haiku	openclaude	haiku	<=ultracode
 haiku	opencode	github-copilot/claude-haiku-5.5	-
 # Antigravity (agy). Gemini models take effort as a flag on the UNSUFFIXED id;
-# the suffixed ids agy lists (gemini-3.7-flash-low) conflict with --effort.
-gemini	antigravity	gemini-3.7-flash	low,medium,high
-gemini	opencode	github-copilot/gemini-3.1-pro-preview	-
-gemini-flash	antigravity	gemini-3.7-flash	low,medium,high
-gemini-pro	antigravity	gemini-3.1-pro	low,high
+# the suffixed ids agy lists (gemini-3.8-flash-low) conflict with --effort.
+gemini	antigravity	gemini-3.8-flash	low,medium,high
+gemini	opencode	github-copilot/gemini-4-argon	-
+gemini-flash	antigravity	gemini-3.8-flash	low,medium,high
+gemini-pro	antigravity	gemini-4-argon	low,medium,high
+argon	antigravity	gemini-4-argon	low,medium,high
+carbon	antigravity	gemini-4-carbon	low,medium,high
+gemini-3.8	antigravity	gemini-3.8-flash	low,medium,high
+gemini-3.7	antigravity	gemini-3.7-flash	low,medium,high
 gemini-3.6	antigravity	gemini-3.6-flash	low,medium,high
 gemini-3.5	antigravity	gemini-3.5-flash	low,medium,high
-gpt-oss	antigravity	gpt-oss-120b	medium
+gemini-3.1	antigravity	gemini-3.1-pro	low,high
 grok	grok	grok-4.7	<=xhigh
-grok	opencode	github-copilot/grok-4.6	-
+grok	opencode	github-copilot/grok-4.7	-
 kimi	opencode	github-copilot/kimi-k3	-
-glm	opencode	opencode-go/glm-5.2	-
+kimi-k3.1	opencode	opencode-go/kimi-k3.1-pro	-
+glm	opencode	opencode-go/glm-5.3	-
+glm-flash	opencode	opencode-go/glm-5.3-flash	-
+glm-5.2	opencode	opencode-go/glm-5.2	-
 qwen	opencode	opencode-go/qwen3.8-max	-
+qwen-flash	opencode	opencode-go/qwen3.8-flash	-

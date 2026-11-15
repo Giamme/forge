@@ -562,9 +562,9 @@ grok). It never changes a dispatch's outcome; `FORGE_LOG_CLOCK=off` turns it off
 bash scripts/forge-dispatch.sh dwarf sol:ultra --prompt-file /tmp/p --dry-run
 
 # check a clamp before committing to a long run
-bash scripts/forge-dispatch.sh qa gemini-pro:medium --prompt-file /tmp/p --dry-run
+bash scripts/forge-dispatch.sh qa gemini-3.1:medium --prompt-file /tmp/p --dry-run
 # effort=low
-# clamped=medium -> low        (gemini-pro offers low and high, but no medium)
+# clamped=medium -> low        (gemini-3.1 offers low and high, but no medium)
 ```
 
 ## `scripts/forge-solo.sh`

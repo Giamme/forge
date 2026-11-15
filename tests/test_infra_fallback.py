@@ -250,7 +250,7 @@ class QaPickTests(unittest.TestCase):
 
     def test_another_model_listed_under_the_implementers_alias_is_a_peer(self):
         # the bundled gemini alias is Flash on antigravity and Pro on opencode: two models, one alias
-        pro = 'github-copilot/gemini-3.1-pro-preview::opencode'
+        pro = 'github-copilot/gemini-4-argon::opencode'
         self.assertEqual(self.pick('opus', 'gemini-flash', ['opus', pro]), pro)
         self.assertIsNone(self.pick('opus', 'gemini-pro', ['opus', 'gemini-pro:high']))
 

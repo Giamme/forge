@@ -250,13 +250,12 @@ yolo. This is the one harness where the non-yolo dwarf genuinely cannot verify i
 
 | Model | Accepts |
 |-------|---------|
-| `gemini-3.7-flash`, `-3.6-flash`, `-3.5-flash` | `low`, `medium`, `high` |
+| `gemini-4-argon`, `gemini-4-carbon`, `gemini-3.8-flash`, `-3.7-flash`, `-3.6-flash`, `-3.5-flash` | `low`, `medium`, `high` |
 | `gemini-3.1-pro` | `low`, `high` — **no medium** |
-| `gpt-oss-120b` | `medium` only |
-| `claude-sonnet-4-6`, `claude-opus-4-6-thinking` | none; passing `--effort` errors |
+| `claude-sonnet-5-5-thinking`, `claude-opus-5-5-thinking` | none; passing `--effort` errors |
 
-Two traps here. `agy models` lists effort-suffixed ids (`gemini-3.7-flash-low`), but a
-suffixed id **conflicts** with `--effort`: *"--model gemini-3.7-flash-low conflicts with
+Two traps here. `agy models` lists effort-suffixed ids (`gemini-3.8-flash-low`), but a
+suffixed id **conflicts** with `--effort`: *"--model gemini-3.8-flash-low conflicts with
 --effort=high"*. Forge therefore registers the unsuffixed ids and sets effort via the flag,
 which is what makes `gemini:high` mean the same thing here as on every other harness. And
 `gemini-3.1-pro` has a hole in the middle rather than a low ceiling, which is why the
@@ -291,7 +290,7 @@ grok --model <model> --prompt-file <prompt> --output-format streaming-messages-j
 
 The xAI Grok Build CLI, signed in with `grok login` (or `XAI_API_KEY`); `grok models` lists
 what the account can use and each model's efforts live in `~/.grok/models_cache.json`. The
-`grok` alias runs `grok-4.7` here and keeps its opencode route (`grok:high:opencode`, 4.6 via
+`grok` alias runs `grok-4.7` here and keeps its opencode route (`grok:high:opencode`, 4.7 via
 GitHub Copilot) as a second row.
 
 - **A headless run cannot ask, so it refuses and exits 0.** In the default mode an edit that

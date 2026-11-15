@@ -59,8 +59,8 @@ class EffortsTests(unittest.TestCase):
         self.assertEqual(self.efforts('astra:high:codex').stdout, result.stdout)
 
     def test_a_list_prints_exactly_those_efforts_weakest_first(self):
-        # gemini-pro on antigravity accepts low and high, and not the medium between them.
-        result = self.efforts('gemini-pro')
+        # gemini-3.1 on antigravity accepts low and high, and not the medium between them.
+        result = self.efforts('gemini-3.1')
         self.assertEqual((result.returncode, result.stdout), (0, 'low\nhigh\n'), result.stderr)
 
     def test_none_and_a_missing_ladder_print_nothing(self):
@@ -149,10 +149,10 @@ class RouteTests(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout), (0, 'astra:high:codex\n'), result.stderr)
 
     def test_a_gap_steps_to_the_next_accepted_effort_above_the_current_one(self):
-        # gemini-pro accepts low and high. A bare spec runs at medium, which is not in the list.
-        self.task('gemini-pro', {'high': ['gemini-pro']}, self.rows('gemini-pro', 3), effort=True)
+        # gemini-3.1 accepts low and high. A bare spec runs at medium, which is not in the list.
+        self.task('gemini-3.1', {'high': ['gemini-3.1']}, self.rows('gemini-3.1', 3), effort=True)
         result = self.route('--check')
-        self.assertEqual((result.returncode, result.stdout), (0, 'gemini-pro:high\n'), result.stderr)
+        self.assertEqual((result.returncode, result.stdout), (0, 'gemini-3.1:high\n'), result.stderr)
 
     def test_the_step_starts_above_the_effort_a_dispatch_actually_ran(self):
         # deep accepts only high and xhigh: a bare spec asks for medium, and dispatch runs high.
