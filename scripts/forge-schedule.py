@@ -698,6 +698,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     group_again = set()   # groups to review once more whatever their status says (a resume, an UNKNOWN)
     group_used = {}       # gid -> re-reviews of an UNKNOWN verdict used this run
     retries = {}       # automatic reviewer-driven retries used per task, this run
+    per_model_seen = {}  # task -> the per-model answer that allowed its latest automatic retry
     refused = {}       # task -> budget at the time its retry could not be prepared
     retried = set()    # tasks whose next dispatch is a retry (FORGE_FRACTAL_RETRY=1)
     offsets = {}       # how much of each task.out was already echoed under --output full
@@ -813,15 +814,51 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         stop) hands them to the next one."""
         return _read_budget(plan, 'tasks', name, 'decided.left')
 
+    def per_model_limit() -> int | None:
+        """<plan>/retry_per_model as an integer from 1 to 99, else None (missing or not that)."""
+        try:
+            text = (plan / 'retry_per_model').read_text(encoding='utf-8').strip()
+        except OSError:
+            return None
+        if not re.fullmatch(r'[0-9]{1,9}', text):
+            return None
+        value = int(text)
+        return value if 1 <= value <= 99 else None
+
+    def per_model_allows(name: str) -> bool:
+        """Whether forge-route.py per-model says this task may be attempted again. A failing or
+        unparsable call is a no. The parsed answer is kept for the retry line."""
+        try:
+            result = subprocess.run(
+                [sys.executable, ROUTE, 'per-model', '--plan', str(plan), '--task', name],
+                capture_output=True, text=True)
+            data = json.loads(result.stdout) if result.stdout.strip() else None
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError):
+            per_model_seen[name] = None
+            return False
+        if result.returncode != 0 or not isinstance(data, dict):
+            per_model_seen[name] = None
+            return False
+        per_model_seen[name] = data
+        return data.get('retry') is True
+
+    def automatic_retry(name: str) -> bool:
+        """Without retry_per_model, the run's retry budget. With it, any budget above 0 and the
+        route's answer: N failures on the current rung, then a stronger one, until none is left."""
+        if per_model_limit() is not None:
+            return budget(name) > 0 and per_model_allows(name)
+        return retries.get(name, 0) < budget(name)
+
     def retryable(name: str) -> bool:
         root = plan / 'tasks' / name
         left = granted(name)
         return (
             status(name) in AUTO_RETRY
             and (status(name) != 'INVALIDATED' or review_voided(name))
-            # After a decision the person's count rules, over and under the budget: `retry=3`
-            # is three attempts even with a budget of 0, and `retry=1` is one even with 3.
-            and (left > 0 if left is not None else retries.get(name, 0) < budget(name))
+            # After a decision the person's count rules, over and under the budget and over a
+            # per-model answer of no: `retry=3` is three attempts even with a budget of 0, and
+            # `retry=1` is one even with 3.
+            and (left > 0 if left is not None else automatic_retry(name))
             # A task that produced no new work (empty diff, byte-identical retry) would
             # only repeat itself; its marker says so and it is left for a human.
             and not (root / 'noretry').exists()
@@ -852,8 +889,15 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             print('forge: retrying ' + name + ' (decided retry, ' + str(left) + ' more after this)',
                   file=sys.stderr, flush=True)
         else:
-            print('forge: retrying ' + name + ' (automatic retry ' + str(retries[name]) + '/'
-                  + str(budget(name)) + ')', file=sys.stderr, flush=True)
+            if per_model_limit() is not None:
+                info = per_model_seen.get(name) or {}
+                print('forge: retrying ' + name + ' (automatic retry ' + str(retries[name]) + ', '
+                      + str(info.get('failed_on_rung', '')) + ' of ' + str(info.get('per_model', ''))
+                      + ' failed on ' + str(info.get('rung', '')) + ')',
+                      file=sys.stderr, flush=True)
+            else:
+                print('forge: retrying ' + name + ' (automatic retry ' + str(retries[name]) + '/'
+                      + str(budget(name)) + ')', file=sys.stderr, flush=True)
         return True
 
     def prompt_requeue(name: str) -> bool:
