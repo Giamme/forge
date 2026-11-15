@@ -7,3 +7,4 @@ ace5503	fix(brief): missing-groups note on the console; unreadable groups.tsv ne
 79b5134	test(dataset): allow forge_brief/proposals.py its brief_diff point capture
 157dcfe	fix: run K's leftover review findings
 6a1b055	fix: a retry cancelled before changing anything is paused, not refused as identical
+b0f678a	fix(route): retry_per_model escalates even with escalate_after at 0
