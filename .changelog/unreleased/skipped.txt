@@ -8,3 +8,4 @@ ace5503	fix(brief): missing-groups note on the console; unreadable groups.tsv ne
 157dcfe	fix: run K's leftover review findings
 6a1b055	fix: a retry cancelled before changing anything is paused, not refused as identical
 b0f678a	fix(route): retry_per_model escalates even with escalate_after at 0
+85d172d	ci: publish to npm when a GitHub Release is published
