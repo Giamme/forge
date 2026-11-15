@@ -1027,16 +1027,22 @@ def _qa_next(tdir: Path) -> bool:
         return False
 
 
+def _patience(plan: Path) -> int:
+    """Failures on one model before the next tier: retry_per_model when set (#141, it replaces
+    escalate_after for its plan), else escalate_after. 0 is off."""
+    return per_model_setting(plan) or _setting(plan)
+
+
 def _apply(plan: Path, tdir: Path, clear=(), writes=(), policy=True, pin=None):
     """Clear and write markers under the control lock. Returns (policy stood, pin reported).
 
-    The policy re-reads escalate_after inside the lock (a human may have switched it off since
+    The policy re-reads its patience inside the lock (a human may have switched it off since
     the decision was made): it then writes nothing and its markers go, as `--escalate-after 0`
-    clears them. A pin is reported as escalation.next only while it is still pending; the stop
+    clears them. retry_per_model, when set, is that patience, as in escalation(). A pin is reported as escalation.next only while it is still pending; the stop
     and split markers beneath it stay the policy's, because the pin has not been applied.
     """
     with _control_lock(plan):
-        stood = policy and _setting(plan) > 0
+        stood = policy and _patience(plan) > 0
         if policy and not stood:
             clear, writes = MARKERS, ()
         reported = pin is not None and _pin(tdir) == pin
@@ -1091,7 +1097,7 @@ def escalation(args) -> int:
     if _is_script(plan, args.task):
         _clear(tdir, *MARKERS)
         return 0
-    after = per_model_setting(plan) or _setting(plan)     # N failures on each rung (#141), else the plan's patience
+    after = _patience(plan)
     fractal = _fractal(plan)
     # Fractal plans freeze their eligible set at selection; a QA-only resume spends no dwarf
     # attempt, so neither is a moment to change the implementer.

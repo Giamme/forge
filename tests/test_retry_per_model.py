@@ -85,6 +85,16 @@ class EscalationTriggerTests(PlanCase):
         done = self.check()
         self.assertEqual((done.returncode, done.stdout), (0, 'sonnet\n'), done.stderr)
 
+    def test_retry_per_model_escalates_even_with_escalate_after_off(self):
+        # It replaces escalate_after for its plan: a 0 there must not throw the move away.
+        self.tasks(('a', 'luna'))
+        self.setting('escalate_after', '0\n')
+        self.setting('retry_per_model', '2\n')
+        self.attempts('a', (1, 'FAIL', 'luna'), (2, 'FAIL', 'luna'))
+        done = self.check()
+        self.assertEqual((done.returncode, done.stdout), (0, 'sonnet\n'), done.stderr)
+        self.assertTrue((self.plan / 'tasks' / 'a' / 'escalation.next').exists())
+
     def test_one_failure_below_n_does_not_escalate(self):
         self.tasks(('a', 'luna'))
         self.setting('retry_per_model', '2\n')
