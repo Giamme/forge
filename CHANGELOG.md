@@ -5,6 +5,39 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow the format `{major}.{minor}[.{patch}]` ([...] parts appear only when non-zero).
 
+## [0.19] - 2026-11-15
+
+Group review and wider brief answers; a retry budget per model, scripted tasks, chained plans and forge handoff; early stops for a fix outside the task and for a prompt edited mid-attempt; forge-ui runs its own commands; and forge's website.
+
+### Highlights
+
+- forge has a website: https://giamme.github.io/forge/, with plain-language docs from install to steering a live run, a route map of a run, and the full reference one link away. It is built from `site/` with no dependencies and published by GitHub Pages; the npm package links to it.
+
+### Added
+
+- `plan --reviewer-session-rate R` turns the reviewer-session experiment on for a sampled share of the tasks, balanced by difficulty and fixed at plan time, so one run can compare continued and fresh review rounds. The other tasks log `not-sampled` in `review_sessions.tsv`.
+- Brief mode part 2: a task's questions name its group, `--brief-scope wave|plan` lets you answer wider questions, and the answer becomes a proposal (`forge brief propose`). Nothing in the plan changes until you approve its exact diff with `forge brief apply PLAN PID --approve HASH`, or reject it. A wave proposal changes only that group's unstarted tasks; a plan proposal can also add, remove or split tasks. Affected tasks get their questions asked again. Proposals can be approved or rejected in forge-ui too.
+- Opt-in group review (`plan --groups waves --group-review`): related tasks share one QA dispatch over their combined diff. Each finding goes back only to the member whose files it names (or the members a `{tasks=…}` tag names), the group merges in one step once it passes, and a finding that names no member stops the group for your decision (`forge group show|retry`). Groups and their review show in forge-ui. Group dispatches are recorded as `scope=group` and kept out of reviewer statistics. Fewer dispatches are not yet a measured saving.
+- Groups derived with `plan --groups waves` get a title (`Wave N`). The approval table shows each group's title and goal, says which groups have no goal, and `forge group set PLAN GID --goal "…"` (or `--title`) sets one and freezes the groups again, logged in `control.log`.
+- Chained plans (`plan <dir> --after <prev>`): a plan can start from an earlier plan's integration branch, so a second milestone builds on the first before either is integrated. `run` refuses when the earlier plan moved, and `integrate` names the whole chain it brings in.
+- `forge handoff`: another session or another harness can pick up a run. `show` reports what the run is doing and what needs a person, `note` leaves a line for the next session, `claim` records who drives it (a 12-hour lease, `--take-over` to override), and `resume` follows a live scheduler or restarts a stopped run detached with its recorded flags, after saving and resetting tasks left `RUNNING`.
+- A task whose every blocking finding needs a file it does not declare now stops early as `NEEDS_DECISION` (reason `plan`) instead of spending more attempts. The reviewer marks such a finding `{outside=path}`; the implementer can claim one with a `FORGE_BLOCKED: <path>: <why>` line for the reviewer to confirm or refute. `decision.md` names the task that owns each path and the plan edits that fix it (add the file, depend on the owner, or merge the rows).
+- Editing a task's `prompt.md` or `approach.md` while its attempt runs no longer gets the old work reviewed against the new text: the attempt becomes `STALE`, spends nothing, and the implementer is re-dispatched with the new requirements and a diff of what changed. `control.log` records it as `prompt-changed`, and the dataset keeps such attempts out of pass rates.
+- Retry budget per model (`plan --retry-per-model N`): a task may fail N times on each model the retry policy gives it before it moves a tier up, replacing `--escalate-after`. The approval table prints the worst case: the most implementer, reviewer and shadow dispatches the plan can spend if every rung fails.
+- Scripted tasks: a `tasks.tsv` row whose dwarf column is `script` runs the executable `tasks/<id>/run` in its worktree instead of a model, from the task's base on every attempt, under the plan's timeout. A non-zero exit fails the task with no review; otherwise the result is reviewed as a script's output. Codemods and generated files no longer need a model to type them.
+- forge-ui runs its own commands when controls are on: remove finished or failed worktrees in bulk (`forge worktrees rm`), forget memory learnings (`forge memory forget REPO category:key`), compact one run or all runs from the Disk screen, and answer a waiting task's question from the task panel (`forge control retry --answer`, which also prepares the retry itself when no run is live). Read-only mode shows each command to copy instead.
+
+### Changed
+
+- `terra` now resolves to gpt-6.1-terra. The previous model is still available as `terra-5.6`, and dispatches recorded on it are counted under `terra-5.6` in `forge dataset reviewers`, review history and forge-ui's model leaderboard, never mixed into the new `terra`.
+
+### Fixed
+
+- forge-ui: each run on the Disk screen links to its run page again. The screen matched runs by path, and its real path often differed from the one the run list uses; it now gets each run's key from the server, and a run dir the run list does not show stays plain text.
+- Reviewers can run tests that need a temporary directory: every read-only dispatch gets a writable temp dir of its own outside the repository (`TMPDIR`, `TMP`, `TEMP`), removed when it ends. On codex the read-only sandbox now allows writes to that directory alone, so test runners such as Vitest no longer stop with `EPERM`.
+- A task whose diff is over 400 KB is reviewed: the reviewer gets the diff's stat and reads the diff in its snapshot, as the whole-run review already does, instead of a prompt its harness refuses. If a harness still refuses a prompt as too large, the task's note says so and points to `adopt` or a split, since a retry would send the same prompt.
+- An implementer whose CLI cancelled its session before it changed anything (grok does this when a tool call needs an approval a headless run cannot give) is now an infrastructure stop: the task waits as `INFRA` with no attempt spent. It used to fail as an empty diff marked never to retry, which also blocked every task that depended on it.
+
 ## [0.18] - 2026-11-13
 
 Around each task and on disk: retro notes, brief mode, task summaries and the task inspector; review snapshots removed after each review, forge runs compact, forge du and the Disk screen, and a list of everything forge puts on disk.
