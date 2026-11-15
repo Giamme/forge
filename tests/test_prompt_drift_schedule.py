@@ -94,6 +94,21 @@ class PromptDriftScheduleCase(unittest.TestCase):
         self.assertEqual(r.stdout.count(CONSOLE), 1, r.stdout)
         self.assertNotIn('automatic retry', r.stdout)
 
+    def test_a_re_dispatch_that_keeps_its_committed_work_is_reviewed_not_refused_as_identical(self):
+        # A wording fix to prompt.md needs no code change: the stale attempt was never reviewed, so the
+        # second attempt's diff, byte-identical to the first, is reviewed like any other.
+        p = self.plan_of()
+        self.scenario({'a.dwarf.1': {'files': {str(p / 'tasks' / 'a' / 'prompt.md'): NEW}}})
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 1)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.read(p, 'status').strip(), 'PASS', r.stdout)
+        self.assertIn('a              MERGED', r.stdout)
+        self.assertEqual(self.calls().count('dwarf'), 2)
+        self.assertIn('qa', self.calls())
+        self.assertFalse((p / 'tasks' / 'a' / 'noretry').exists())
+        self.assertNotIn('retry changed nothing', r.stdout)
+        self.assertEqual(self.attempts(p), [('1', 'STALE'), ('1', 'PASS')])
+
     def test_the_next_attempt_is_recorded_as_a_prompt_retry(self):
         p = self.plan_of()
         self.edit_on_first_dwarf_call(p)

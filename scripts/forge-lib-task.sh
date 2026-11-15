@@ -1164,6 +1164,12 @@ prepare_prompt_retry() { # prepare_prompt_retry <plan> <id>
   else
     for n in session resolved; do rm -f "$tdir/retry_findings.dwarf.$n"; done
   fi
+  # The stale attempt was never reviewed, and the requirements it worked from are gone. A re-dispatch
+  # that keeps its committed work (a wording fix needs no code change) must be reviewed, not refused as
+  # "identical to the previous attempt": forge-parallel.sh compares the new diff with changes.prev.diff,
+  # which a dwarf stage fills from changes.diff, so neither is left for it to compare. The stale diff of
+  # the prompt (stale.diff) and committed.diff stay as the record.
+  rm -f "$tdir/changes.diff" "$tdir/changes.prev.diff"
   rm -f "$tdir/status" "$tdir/noretry"
 }
 
