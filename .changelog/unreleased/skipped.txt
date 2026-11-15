@@ -5,3 +5,4 @@ ace5503	fix(brief): missing-groups note on the console; unreadable groups.tsv ne
 54fe483	fix(groups): groups.tsv and groups.frozen get a plain file's mode
 41f9cdf	fix(groups): each group QA dispatch records its round for the dataset import
 79b5134	test(dataset): allow forge_brief/proposals.py its brief_diff point capture
+157dcfe	fix: run K's leftover review findings
