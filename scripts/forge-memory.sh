@@ -589,8 +589,9 @@ do_spend() {
 # --- forget -------------------------------------------------------------------
 # Drop every ledger row of the given category:key learnings and rebuild memory.md.
 # A learning is the (category, key) group `rebuild` and `learnings` use. Rows have no id.
-# FORGE_MEMORY=off stops record, note and inject from writing. show and learnings still
-# read the ledger, and forget is an explicit edit of it, so it runs when memory is off too.
+# FORGE_MEMORY=off stops record, note and inject from writing: those run unasked. show and
+# learnings still read the ledger (learnings only reports memory_off). forget is an explicit
+# edit of that same ledger, so it runs when memory is off too. There is no early return.
 #
 # Sets FORGET_CANON to the ledger's "category:key" form (norm_key on each part), or exits 2.
 parse_forget_key() {
@@ -645,8 +646,9 @@ sys.stdout.write('%d\n' % sum(seen.values()))
 PY
 }
 
-# Non-empty lines present in <before> and absent from <after>, in the before file's order.
-# A missing file counts as empty. Blank lines are formatting, not facts.
+# Fact lines (`- ...`) present in <before> and absent from <after>, in the before file's
+# order. A section heading disappears with its last fact; it is formatting, and so are the
+# header and blank lines. Callers match on the `- ` lines. A missing file counts as empty.
 forget_removed() { # forget_removed <before> <after> <out>
   python3 - "$@" <<'PY'
 import sys
@@ -663,7 +665,7 @@ def lines(path):
 have = Counter(lines(after_path))
 removed = []
 for line in lines(before_path):
-    if line == '':
+    if not line.startswith('- '):
         continue
     if have[line]:
         have[line] -= 1
@@ -718,7 +720,7 @@ forget_fail() { # forget_fail <scratch> <message>
 }
 
 do_forget() { # do_forget <repo> <category:key>... [--dry-run] [--json] [--actor ui|cli]
-  local repo="" dry=0 as_json=0 actor="cli" raw c keylist="" total=0 status=0 tmp="" scratch=""
+  local repo="" dry=0 as_json=0 actor="cli" raw c keylist="" total=0 status=0 tmp="" scratch="" already=0
   local -a rawkeys=() canon=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -746,9 +748,18 @@ do_forget() { # do_forget <repo> <category:key>... [--dry-run] [--json] [--actor
   [ -n "$repo" ] || die "forget: usage: forget <repo> <category:key>... [--dry-run] [--json] [--actor ui|cli]"
   [ "${#rawkeys[@]}" -ge 1 ] || die "forget: usage: forget <repo> <category:key>... [--dry-run] [--json] [--actor ui|cli]"
   [ -d "$repo" ] || die "forget: '$repo' is not a directory"
+  # One learning once. A repeated KEY, or two spellings that norm_key collapses together,
+  # is a single entry in the report and in the dataset event's keys list. rows counts
+  # ledger rows, so listing the key twice must not count them twice either.
   for raw in "${rawkeys[@]}"; do
     parse_forget_key "$raw"
-    canon+=("$FORGET_CANON")
+    already=0
+    if [ "${#canon[@]}" -gt 0 ]; then
+      for c in "${canon[@]}"; do
+        [ "$c" = "$FORGET_CANON" ] && already=1 && break
+      done
+    fi
+    [ "$already" = 1 ] || canon+=("$FORGET_CANON")
   done
   keylist="${canon[0]}"
   if [ "${#canon[@]}" -gt 1 ]; then
@@ -760,7 +771,6 @@ do_forget() { # do_forget <repo> <category:key>... [--dry-run] [--json] [--actor
   local led mem
   led="$(ledger_for "$repo")"
   mem="$(memory_for "$repo")"
-  [ -f "$mem" ] && cp "$mem" "$scratch/before.md"
   if [ -f "$led" ]; then
     total="$(forget_filter "$led" "$scratch/keys" "$scratch/ledger.new" "$scratch/counts")" \
       || forget_fail "$scratch" "forget: could not read '$led'"
@@ -775,6 +785,12 @@ do_forget() { # do_forget <repo> <category:key>... [--dry-run] [--json] [--actor
 
   : > "$scratch/removed"
   if [ "$total" -gt 0 ]; then
+    # Lines that leave are the difference between two rebuilds of the ledger, not between
+    # whatever memory.md happens to be on disk. A missing file would otherwise report
+    # nothing, and a stale or hand-edited one would report edits this forget did not make.
+    # The before rebuild reads the full ledger and writes only the scratch <out>.
+    rebuild "$repo" "$scratch/before.md" "$led" >/dev/null \
+      || forget_fail "$scratch" "forget: could not preview memory"
     if [ "$dry" = 1 ]; then
       # Same rebuild `record` runs, against the reduced ledger, written outside the repo.
       rebuild "$repo" "$scratch/after.md" "$scratch/ledger.new" >/dev/null \
@@ -795,10 +811,9 @@ do_forget() { # do_forget <repo> <category:key>... [--dry-run] [--json] [--actor
       rebuild "$repo" >/dev/null || forget_fail "$scratch" "forget: could not rebuild memory"
       forget_removed "$scratch/before.md" "$mem" "$scratch/removed" \
         || forget_fail "$scratch" "forget: could not compare memory"
+      # Only after a rewrite and a rebuild. A miss (rows 0) changes nothing, so it records nothing.
       memory_dataset_event memory_forget "$repo" "" --set "keys=$keylist" --set "rows=$total" --set "actor=$actor"
     fi
-  elif [ "$dry" = 0 ]; then
-    memory_dataset_event memory_forget "$repo" "" --set "keys=$keylist" --set "rows=0" --set "actor=$actor"
   fi
 
   forget_report "$as_json" "$dry" "$scratch/counts" "$scratch/removed" || status=$?
