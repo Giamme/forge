@@ -25,6 +25,19 @@
       one control.log take-over line through forge-control's audit. A control.log that is
       not a regular file refuses that replacement before the driver file changes.
 
+  resume RUN_DIR [--take-over] [--harness H] [--session S] [--json]
+      Carry a decomposed run on from any harness. It claims the run first (like claim; a refused
+      claim exits 3 and does nothing else), then: with a live scheduler it only says so and points
+      at `forge control show` (nothing is started); a Fractal plan points at `forge fractal resume`;
+      otherwise each task left RUNNING by a dead scheduler has its worktree diff saved to
+      tasks/<id>/interrupted-<epoch>.diff, the worktree reset and cleaned (only after it passes a
+      guard: exactly <wt_root>/<id>, a git worktree on forge/<run_id>/<id>), the status set to
+      INTERRUPTED and the attempt counter rewound when attempts.tsv has no row for it. Every
+      INTERRUPTED task is prepared with `forge-parallel.sh retry --no-dispatch`, and the run is
+      started again, detached, from run.flags.json (log: resume-<epoch>.log; the exit code goes to
+      resume-<epoch>.done). Without run.flags.json it prints the run command to finish by hand.
+      FORGE_HANDOFF_NO_START=1 prints the command and starts nothing.
+
 Exit codes: 0 ok, 2 usage or a path that is not a run dir, 3 no run to report, or another
 driver still holds the run (claim without --take-over).
 """
@@ -36,9 +49,11 @@ import json
 import os
 import re
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -48,6 +63,7 @@ import forge_infra  # noqa: E402
 import forge_registry  # noqa: E402
 
 PARALLEL = str(SCRIPTS / 'forge-parallel.sh')
+SWEEP_OK = re.compile(r'P[0-3]')
 READ_CAP = 1 << 20          # bytes read from any one file
 LOG_TAIL = 1 << 18          # bytes read from the end of control.log
 GOAL_LINES = 5
@@ -73,7 +89,7 @@ SESSION_MAX = 200
 DRIVER_STALE_S = 12 * 3600
 HARNESS_RE = re.compile(r'[a-z0-9._-]{1,40}')
 # Subcommands. Any other first word is a RUN_DIR for the default, show.
-COMMANDS = ('show', 'note', 'claim', '-h', '--help')
+COMMANDS = ('show', 'note', 'claim', 'resume', '-h', '--help')
 
 _control = None
 
@@ -716,24 +732,22 @@ def cmd_note(args):
     return 0
 
 
-def cmd_claim(args):
-    check_harness(args.harness)
-    session = check_session(args.session)
-    plan = require_run(args.run_dir)
+def claim_run(plan, harness, session, take_over):
+    """Record harness/session as the run's driver. (record, took_over, previous); Held when refused."""
 
     def decide(ctrl):
         now = time.time()
         previous = read_driver(ctrl, plan)
         if previous is None:
-            record = {'harness': args.harness, 'session': session, 'since': now, 'last_seen': now}
+            record = {'harness': harness, 'session': session, 'since': now, 'last_seen': now}
             took_over = False
-        elif previous['harness'] == args.harness and previous['session'] == session:
-            record = {'harness': args.harness, 'session': session, 'since': previous['since'], 'last_seen': now}
+        elif previous['harness'] == harness and previous['session'] == session:
+            record = {'harness': harness, 'session': session, 'since': previous['since'], 'last_seen': now}
             took_over = False
-        elif now - previous['last_seen'] < DRIVER_STALE_S and not args.take_over:
+        elif now - previous['last_seen'] < DRIVER_STALE_S and not take_over:
             raise Held(previous)
         else:
-            record = {'harness': args.harness, 'session': session, 'since': now, 'last_seen': now}
+            record = {'harness': harness, 'session': session, 'since': now, 'last_seen': now}
             took_over = True
         if took_over:
             # Same order as forge-control change: an unsafe log refuses the take-over
@@ -744,7 +758,14 @@ def cmd_claim(args):
             ctrl.audit(plan, 'cli', 'take-over', None, 'driver', driver_ref(record), driver_ref(previous))
         return record, took_over, previous
 
-    record, took_over, previous = under_lock(control(), plan, decide)
+    return under_lock(control(), plan, decide)
+
+
+def cmd_claim(args):
+    check_harness(args.harness)
+    session = check_session(args.session)
+    plan = require_run(args.run_dir)
+    record, took_over, previous = claim_run(plan, args.harness, session, args.take_over)
     if args.json:
         print(json.dumps({'driver': record, 'took_over': took_over, 'previous': previous}, ensure_ascii=False))
     else:
@@ -752,9 +773,257 @@ def cmd_claim(args):
     return 0
 
 
+# ------------------------------------------------------------------------------------ resume
+
+def parallel_script():
+    """forge-parallel.sh, or FORGE_HANDOFF_PARALLEL (tests point it at a fake)."""
+    return os.environ.get('FORGE_HANDOFF_PARALLEL') or PARALLEL
+
+
+def run_command(plan, flags):
+    """The `forge-parallel.sh run` argv that repeats a run from its run.flags.json (a dict or None)."""
+    flags = flags if isinstance(flags, dict) else {}
+
+    def whole(key, least):
+        value = flags.get(key)
+        return value if type(value) is int and value >= least else None
+
+    command = ['/bin/bash', parallel_script(), 'run', str(plan)]
+    for key, option, least in (('retry_failed', '--retry-failed', 0), ('infra_retries', '--infra-retries', 0)):
+        if whole(key, least) is not None:
+            command += [option, str(flags[key])]
+    sweep = flags.get('sweep')
+    if isinstance(sweep, str) and SWEEP_OK.fullmatch(sweep):
+        command += ['--sweep', sweep]
+        if whole('sweep_max', 1) is not None:
+            command += ['--sweep-max', str(flags['sweep_max'])]
+        if flags.get('sweep_plausible') is True:
+            command.append('--sweep-plausible')
+    if flags.get('sweep_ahead') is True:
+        command.append('--sweep-ahead')
+    if whole('max_parallel', 1) is not None:
+        command += ['--max-parallel', str(flags['max_parallel'])]
+    if whole('timeout', 1) is not None:
+        command += ['--timeout', str(flags['timeout'])]
+    if isinstance(flags.get('verify'), str) and flags['verify']:
+        command += ['--verify', flags['verify']]
+    if flags.get('fractal') is True:
+        command.append('--fractal')
+    elif flags.get('fractal') is False:
+        command.append('--no-fractal')
+    return command
+
+
+def git_env():
+    env = dict(os.environ)
+    for key in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX'):
+        env.pop(key, None)
+    return env
+
+
+def git(wt, *args, env=None, check=False):
+    result = subprocess.run(['git', '-C', str(wt), *args], capture_output=True, env=env or git_env(), timeout=600)
+    if check and result.returncode != 0:
+        raise OSError(f'git {args[0]} failed: {result.stderr.decode("utf-8", "replace").strip()[:200]}')
+    return result
+
+
+def worktree_guard(wt_root, run_id, task):
+    """(worktree path, None) when it is safe to reset, else (None, why not).
+
+    The path must be exactly realpath(<wt_root>/<id>): not a symlink, not reached through one. It must be a
+    directory, the top of a linked git worktree, with forge/<run_id>/<id> checked out.
+    """
+    if not wt_root or not run_id:
+        return None, 'the plan has no wt_root or run_id'
+    lexical = os.path.join(wt_root, task)
+    try:
+        real = os.path.realpath(lexical)
+        if os.path.islink(lexical) or real != os.path.join(os.path.realpath(wt_root), task):
+            return None, f'{lexical} is not exactly <wt_root>/{task} (a symlink)'
+        if not os.path.isdir(real):
+            return None, f'{real} is not a directory'
+        top = git(real, 'rev-parse', '--show-toplevel')
+        if top.returncode != 0 or os.path.realpath(top.stdout.decode('utf-8', 'replace').strip()) != real:
+            return None, f'{real} is not the top of a git worktree'
+        gdir = git(real, 'rev-parse', '--absolute-git-dir')
+        common = git(real, 'rev-parse', '--git-common-dir')
+        if gdir.returncode != 0 or common.returncode != 0:
+            return None, f'{real} is not a git worktree'
+        common_dir = os.path.realpath(os.path.join(real, common.stdout.decode('utf-8', 'replace').strip()))
+        if os.path.realpath(gdir.stdout.decode('utf-8', 'replace').strip()) == common_dir:
+            return None, f'{real} is a main checkout, not a linked worktree'
+        branch = git(real, 'symbolic-ref', '-q', '--short', 'HEAD')
+        wanted = f'forge/{run_id}/{task}'
+        if branch.stdout.decode('utf-8', 'replace').strip() != wanted:
+            return None, f'{real} is not on branch {wanted}'
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        return None, f'{lexical}: {error}'
+    return real, None
+
+
+def save_diff(wt, dest):
+    """Everything uncommitted in wt, untracked files included, written to dest. The real index is not touched:
+    the changes are staged in a scratch index (GIT_INDEX_FILE) and read from there."""
+    scratch = tempfile.mkdtemp(prefix='forge-handoff-index.')
+    try:
+        env = dict(git_env(), GIT_INDEX_FILE=os.path.join(scratch, 'index'))
+        git(wt, 'read-tree', 'HEAD', env=env, check=True)
+        git(wt, 'add', '-A', env=env, check=True)
+        diff = git(wt, 'diff', '--cached', '--binary', 'HEAD', env=env, check=True).stdout
+        tmp = f'{dest}.{os.getpid()}.tmp'
+        try:
+            with open(tmp, 'wb') as handle:
+                handle.write(diff)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, dest)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def attempt_rewound(ctrl, plan, task):
+    """Write the attempt counter back by one when attempts.tsv has no row for it. Whether it did."""
+    text = ctrl.read_file(plan, f'tasks/{task}/attempt')
+    word = (text or '').split()
+    if not word or not word[0].isdigit() or int(word[0]) < 1:
+        return False
+    number = int(word[0])
+    rows = (ctrl.read_file(plan, f'tasks/{task}/attempts.tsv') or '').splitlines()
+    for row in rows:
+        cols = row.split('\t')
+        if len(cols) > 1 and cols[1].strip() == str(number):
+            return False
+    ctrl.write_atomic(plan, f'tasks/{task}/attempt', f'{number - 1}\n')
+    return True
+
+
+def recover_task(ctrl, plan, wt_root, run_id, task, warn):
+    """Save, reset and mark one stale RUNNING task. The result row, or None when it was skipped."""
+    wt, why = worktree_guard(wt_root, run_id, task)
+    if wt is None:
+        warn(f'{task}: skipped, {why}')
+        return None
+    dest = os.path.join(str(plan), 'tasks', task, f'interrupted-{int(time.time())}.diff')
+    try:
+        save_diff(wt, dest)
+    except (OSError, subprocess.SubprocessError) as error:
+        warn(f'{task}: skipped, the diff could not be saved ({error}); the worktree is untouched')
+        return None
+    row = {'task': task, 'diff': dest, 'reset': False, 'attempt_rewound': False}
+    try:
+        git(wt, 'reset', '--hard', 'HEAD', check=True)
+        git(wt, 'clean', '-fd', check=True)
+        row['reset'] = True
+    except (OSError, subprocess.SubprocessError) as error:
+        warn(f'{task}: the worktree reset failed ({error}); the diff is saved in {dest}')
+        return row
+    try:
+        ctrl.write_atomic(str(plan), f'tasks/{task}/status', 'INTERRUPTED\n')
+        row['attempt_rewound'] = attempt_rewound(ctrl, str(plan), task)
+    except (OSError, ctrl.Invalid) as error:
+        warn(f'{task}: could not update its status or attempt counter ({error})')
+    return row
+
+
+def prepare_task(plan, task):
+    """forge-parallel.sh retry PLAN TASK --no-dispatch. {task, ok, message}."""
+    command = ['/bin/bash', parallel_script(), 'retry', str(plan), task, '--no-dispatch']
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=600)
+    except (OSError, subprocess.SubprocessError) as error:
+        return {'task': task, 'ok': False, 'message': str(error)}
+    message = (result.stderr.strip() or result.stdout.strip()).splitlines()
+    return {'task': task, 'ok': result.returncode == 0, 'message': message[-1] if message else ''}
+
+
+def start_run(plan, command):
+    """Start the run detached. {pid, log, done}. The wrapper writes the exit code to <done> when the run ends."""
+    stamp = int(time.time())
+    log, done = os.path.join(plan, f'resume-{stamp}.log'), os.path.join(plan, f'resume-{stamp}.done')
+    wrapper = '"${@:2}"; rc=$?; printf "%s\\n" "$rc" > "$1.tmp" && mv -f "$1.tmp" "$1"; exit "$rc"'
+    with open(log, 'ab') as out:
+        process = subprocess.Popen(['/bin/bash', '-c', wrapper, 'forge-resume', done, *command], stdin=subprocess.DEVNULL,
+                                   stdout=out, stderr=subprocess.STDOUT, start_new_session=True, cwd=plan)
+    return {'pid': process.pid, 'log': log, 'done': done}
+
+
+def cmd_resume(args):
+    check_harness(args.harness)
+    session = check_session(args.session)
+    plan = require_run(args.run_dir)
+    warnings = []
+
+    def warn(text):
+        warnings.append(text)
+        print(f'forge handoff: warning: {text}', file=sys.stderr)
+
+    claim_run(plan, args.harness, session, args.take_over)   # Held (a refused claim) exits 3 before anything else
+    out = dict(live=False, recovered=[], prepared=[], started=None, command=[])
+    view = Plan(plan)
+    scheduler = scheduler_section(view)
+    quote = shlex.quote
+
+    def finish(*lines):
+        if args.json:
+            print(json.dumps(out, indent=2, ensure_ascii=False))
+        else:
+            for line in lines:
+                print(line)
+        return 0
+
+    if scheduler['live']:
+        out['live'] = True
+        return finish(f'the run is live (scheduler pid {scheduler["pid"]}) and is being followed; nothing was started',
+                      f'forge control show {quote(plan)}')
+    if is_fractal(view):
+        run_id = view.line('run_id')
+        return finish('a Fractal plan is not restarted here; recover its recorded executions:',
+                      f'forge fractal resume {quote(run_id or plan)}')
+    if not (Path(plan) / 'tasks.tsv').is_file():
+        raise Usage(f'{plan}: resume needs a decomposed run (tasks.tsv)')
+
+    ctrl, wt_root, run_id = control(), view.line('wt_root'), view.line('run_id')
+    for task in tasks_section(view):
+        if task['status'] == 'RUNNING':
+            row = recover_task(ctrl, plan, wt_root, run_id, task['id'], warn)
+            if row is not None:
+                out['recovered'].append(row)
+    for task in tasks_section(Plan(plan)):
+        if task['status'] == 'INTERRUPTED':
+            result = prepare_task(plan, task['id'])
+            out['prepared'].append(result)
+            if not result['ok']:
+                warn(f'{task["id"]}: could not be prepared for a retry: {result["message"]}')
+
+    flags = Plan(plan).json('run.flags.json')
+    out['command'] = run_command(plan, flags)
+    lines = [f'recovered {len(out["recovered"])} task(s), prepared {sum(1 for p in out["prepared"] if p["ok"])}']
+    if flags is None:
+        lines += ['this run predates 0.19 (no run.flags.json), so it is not restarted. Complete it by hand:',
+                  '  ' + shlex.join(out['command'])]
+        return finish(*lines)
+    if os.environ.get('FORGE_HANDOFF_NO_START') == '1':
+        lines += ['FORGE_HANDOFF_NO_START=1: not started. The command:', '  ' + shlex.join(out['command'])]
+        return finish(*lines)
+    try:
+        out['started'] = start_run(plan, out['command'])
+    except OSError as error:
+        print(f'forge handoff: the run could not be started: {error}', file=sys.stderr)
+        return 1
+    started = out['started']
+    lines += [f'started the run, pid {started["pid"]}', f'  log   {started["log"]}',
+              f'  done  {started["done"]}  (written with the exit code when the run ends)',
+              f'forge control show {quote(plan)}']
+    return finish(*lines)
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog='forge handoff', description=__doc__.split('\n\n')[0])
-    sub = parser.add_subparsers(dest='command', metavar='{show,note,claim}')
+    sub = parser.add_subparsers(dest='command', metavar='{show,note,claim,resume}')
     show = sub.add_parser('show', help='report a run (the default)')
     show.add_argument('run_dir', nargs='?', metavar='RUN_DIR')
     show.add_argument('--repo', metavar='DIR', help="report DIR's newest active or unfinished run")
@@ -773,6 +1042,13 @@ def build_parser():
     claim.add_argument('--take-over', action='store_true', help='replace a different driver that was seen recently')
     claim.add_argument('--json', action='store_true', help='print the driver, whether it took over, and the previous one')
     claim.set_defaults(func=cmd_claim)
+    resume = sub.add_parser('resume', help='follow a live run, or restart it safely')
+    resume.add_argument('run_dir', metavar='RUN_DIR')
+    resume.add_argument('--take-over', action='store_true', help='replace a different driver that was seen recently')
+    resume.add_argument('--harness', default='unknown', metavar='H', help='a short word: [a-z0-9._-]{1,40} (default unknown)')
+    resume.add_argument('--session', metavar='S', help='an opaque id, no whitespace, at most 200 characters')
+    resume.add_argument('--json', action='store_true', help='print what was recovered, prepared and started')
+    resume.set_defaults(func=cmd_resume)
     return parser
 
 
