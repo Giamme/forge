@@ -80,6 +80,10 @@
 #                           gives it, then it moves a rung up. Replaces --escalate-after for
 #                           this plan. Kept in retry_per_model. `--no-retry-per-model` removes
 #                           it; a re-plan with neither keeps the file
+#   --after PREV            start this plan from plan PREV's integration branch (#143): PREV must be
+#                           fully merged, on its accepted tip, not running, and in the same repo.
+#                           Kept in `after` (PREV's path) and `integration.base`; plan creates
+#                           forge/<run>-integration there. A re-plan without the flag keeps it
 #   --retro | --no-retro   agents record what got in their way (retro, #132); plan file `retro_mode`
 #                           (on or off; not `retro`, the notes directory). Without a flag the plan
 #                           keeps its earlier choice, else (first plan only) takes the user
@@ -708,7 +712,7 @@ forge_groups_flags_early() {
         printf '%s' "${2:-}" | grep -Eq '^[0-9]{1,9}$' && [ "$((10#$2))" -ge 1 ] \
           || die "--group-max-diff-kb needs a positive integer"
         shift 2 ;;
-      --repo|--planner|--decompose-level|--profile|--shadow-qa|--shadow-rate|--explore|--dwarf|--dwarf-high|--dwarf-medium|--dwarf-low|--qa|--qa-high|--qa-medium|--qa-low|--pre-review-parallel|--reviewer-session-rate|--fast|--brief|--brief-scope|--brief-model|--summaries|--summaries-model|--qa-threshold|--max-attempts|--converge-window|--gate|--decide-budget)
+      --repo|--after|--planner|--decompose-level|--profile|--shadow-qa|--shadow-rate|--explore|--dwarf|--dwarf-high|--dwarf-medium|--dwarf-low|--qa|--qa-high|--qa-medium|--qa-low|--pre-review-parallel|--reviewer-session-rate|--fast|--brief|--brief-scope|--brief-model|--summaries|--summaries-model|--qa-threshold|--max-attempts|--converge-window|--gate|--decide-budget)
         if [ $# -ge 2 ]; then shift 2; else shift; fi ;;
       *) shift ;;
     esac
@@ -759,17 +763,22 @@ do_plan() {
   local RETRO_FLAG="" BRIEF_FLAG="" BRIEF_SCOPE_FLAG="" BRIEF_MODEL_FLAG="" SUMM_FLAG="" SUMM_MODEL_FLAG=""
   local RETRY_PER_MODEL=""
   local COLLAPSE=0 COLLAPSED_NOW=0 FEAT_ERR="" GRP_SRC="" GRP_REVIEW=0 GRP_MAX="" GRP_DIFF=""
+  local CHAIN_PREV="" CHAIN_BASE="" CHAIN_MOVE=0
   # The retro, brief and summaries choices, settled before anything is written: a refusal
   # (a bad value, no model, a spec that does not resolve) leaves the plan dir as it was.
   forge_features_scan "$@"
   [ -d "$PLAN" ] || die "plan dir '$PLAN' does not exist"
   forge_features_resolve "$PLAN" || die "$FEAT_ERR" 2
+  # --after (#143), settled before anything is written: every refusal leaves the plan dir and the
+  # branches as they were. Its files and the integration branch are written below, once the repo is known.
+  plans_chain_early "$PLAN" "$@"
   # Before the loop: --qa-threshold and --max-attempts write their files while parsing,
   # so a group flag refused later on the same command would leave those files behind.
   forge_groups_flags_early "$@"
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)         REPO="${2:?}"; shift 2 ;;
+      --after)        [ -n "${2:-}" ] || die "--after needs a plan directory" 2; shift 2 ;;
       --planner)      PLANNER="${2:?}"; shift 2 ;;
       --decompose-level)
         case "${2:-}" in low|medium|high) DLEVEL="$2"; shift 2 ;;
@@ -953,6 +962,7 @@ do_plan() {
   # Before any decision-model step: the privacy floor and the run budget read these.
   [ "$JEV_OPTS" = 1 ] && forge_decide_env "$REPO" "$PLAN"
   [ -s "$PLAN/run_id" ] || basename "$PLAN" | sed 's/^forge-//' > "$PLAN/run_id"
+  plans_chain_store "$PLAN" "$REPO" "$(cat "$PLAN/run_id")"
   # Every plan, --ui or not: forge-ui's view of this repo's runs reads the registry.
   forge_ui_register "$PLAN"
   [ "${FORGE_RIPWIRE:-}" != off ] || touch "$PLAN/no_ripwire"
@@ -981,7 +991,7 @@ PY
   # Uncommitted work is invisible to every dwarf, because worktrees branch from a
   # commit. That is the likeliest way to get a confusingly wrong result, so it is
   # stated loudly rather than left for the user to deduce from an odd diff.
-  if [ -n "$(cd "$REPO" && git status --porcelain 2>/dev/null)" ]; then
+  if [ ! -s "$PLAN/after" ] && [ -n "$(cd "$REPO" && git status --porcelain 2>/dev/null)" ]; then
     note "WARNING: '$REPO' has uncommitted changes. Task worktrees branch from HEAD,"
     note "         so those edits will NOT be visible to any dwarf. Commit or stash first"
     note "         if the tasks depend on them."
@@ -1326,6 +1336,7 @@ render_table() {
   local n; n="$(all_ids "$T" | wc -l | tr -d ' ')"
   local waves; waves="$(awk -F'\t' '{print $1}' "$W" | sort -u | wc -l | tr -d ' ')"
   echo "run forge/$run_id   repo $(cat "$PLAN/repo")"
+  plans_chain_line "$PLAN"
   [ -s "$PLAN/goal.txt" ] && echo "goal: $(head -1 "$PLAN/goal.txt")"
   # A scripted task runs tasks/<id>/run: no implementer dispatch. Its review still counts.
   local dwarfs scripted=0 script_ids="" sid
@@ -3276,6 +3287,8 @@ do_run() {
   compute_waves "$PLAN"
   local REPO run_id wt_root int_wt int_br
   REPO="$(cat "$PLAN/repo")"; run_id="$(cat "$PLAN/run_id")"
+  # A plan made with --after: the plan it follows must still end where this one starts (#143).
+  plans_chain_run_check "$PLAN" "$REPO"
   # Before any decision-model step: the privacy floor and the run budget read these.
   [ "$JEV_OPTS" = 1 ] && forge_decide_env "$REPO" "$PLAN"
   if [ "$DRY" != 1 ]; then
@@ -3341,10 +3354,13 @@ do_run() {
     die "branch 'forge/$run_id' blocks task branches 'forge/$run_id/<task>' (git refs are files, so a ref cannot also be a directory). Delete or rename it: git branch -D forge/$run_id" 3
   fi
   if ! (cd "$REPO" && git rev-parse --verify "$int_br" >/dev/null 2>&1); then
-    (cd "$REPO" && git branch "$int_br" HEAD) || die "could not create $int_br" 3
+    # A chained plan starts where the plan it follows ended, not at HEAD, even when its branch is gone.
+    local int_start=HEAD
+    [ ! -s "$PLAN/after" ] || [ ! -s "$PLAN/integration.base" ] || int_start="$(head -1 "$PLAN/integration.base")"
+    (cd "$REPO" && git branch "$int_br" "$int_start") || die "could not create $int_br" 3
     # Where the integration branch started, so a whole-run review can diff exactly what
     # this run added. Plans created before this file existed fall back to a merge-base.
-    git -C "$REPO" rev-parse HEAD > "$PLAN/integration.base"
+    git -C "$REPO" rev-parse "$int_start" > "$PLAN/integration.base"
   fi
   if [ ! -d "$int_wt" ]; then
     (cd "$REPO" && git worktree add "$int_wt" "$int_br" >/dev/null 2>&1) \
@@ -3564,6 +3580,8 @@ do_integrate() {
   parent="$(git -C "$REPO" rev-parse HEAD)" || return 3
   target="$(git -C "$REPO" rev-parse "$int_br")" || return 3
   [ -s "$PLAN/accepted.integration" ] && [ "$target" = "$(cat "$PLAN/accepted.integration")" ] || die "integration revision does not match the accepted run" 3
+  # The branch holds the work of every plan it follows: one merge brings them all.
+  [ ! -s "$PLAN/after" ] || echo "this brings plans $(plans_chain_names "$PLAN")"
   out="$PLAN/integrate-$(date +%s)-$$"; mkdir -p "$out"
   candidate="$(cat "$PLAN/wt_root")/_candidate-$$"
   git -C "$REPO" worktree add --detach "$candidate" "$parent" > "$out/setup.log" 2>&1 || return 3
