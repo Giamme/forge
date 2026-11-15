@@ -46,6 +46,16 @@ bias (inverse-propensity weighting needs the probability each choice had).
       re-read escalate_after inside it: a policy decision made before a human switched the
       policy off writes nothing.
 
+  forge-route.py per-model --plan P --task ID
+  forge-route.py worst-case --plan P
+      `plan --retry-per-model N` (<plan>/retry_per_model, 1-99): a task may fail N times on each
+      rung the retry policy gives it (the stronger tiers of the pools, then the efforts when
+      escalate_effort is on), and the count starts again after each escalation. It replaces
+      escalate_after as the trigger. `per-model` prints {retry, rung, failed_on_rung, rungs_left,
+      per_model} as JSON (exit 2 when the plan has no valid file); `worst-case` prints the dispatches
+      the unmerged tasks can spend, per task and in total, and the tasks N*rungs takes past
+      max_attempts. Without the file nothing else here changes.
+
   forge-route.py fallback --plan P --task ID [--exclude harness/model,...]
       The lateral move of an infrastructure stop: prints the next free model of the pool of the
       tier the task runs in (the newest record of it: see running_tier), or exits 1 when there is none.
@@ -92,6 +102,7 @@ import errno
 import fcntl
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -693,6 +704,121 @@ def _setting(plan: Path) -> int:
         return DEFAULT_ESCALATE_AFTER
 
 
+# --- per-model retries (#141) ------------------------------------------------------
+# `plan --retry-per-model N`: a task may fail N times on each rung the retry policy gives it, and the
+# count starts again after each escalation. The trigger lives in escalation(); the questions the
+# scheduler and the plan table ask (may it retry, what is the worst case) are answered here.
+
+MAX_RUNGS = 12
+NON_MODEL_DWARFS = ('', '-', 'UNASSIGNED', 'script')
+
+
+def per_model_setting(plan: Path):
+    """<plan>/retry_per_model as an integer from 1 to 99, else None (missing, empty or malformed)."""
+    try:
+        value = (plan / 'retry_per_model').read_text().strip()
+    except OSError:
+        return None
+    if not re.fullmatch(r'[0-9]{1,9}', value):
+        return None
+    return int(value) if 1 <= int(value) <= 99 else None
+
+
+def rungs_above(spec: str, plan: Path) -> list:
+    """The specs the policy would move through from `spec`, in order: repeated stronger() until it
+    returns None, then, with the effort step on, repeated _next_effort_spec on the last one. A spec
+    in none of the pools has none. Stops on a repeat, and at MAX_RUNGS."""
+    if spec in NON_MODEL_DWARFS:
+        return []
+    registry = registry_models()
+    pools = load_pools(plan / 'fractal-routing.json')
+    if rank_of(spec, pools, registry) is None:
+        return []
+    out, seen = [], {spec}
+    current = spec
+    while len(out) < MAX_RUNGS:
+        target, _why = stronger(current, pools, registry)
+        if not target or target in seen:
+            break
+        out.append(target)
+        seen.add(target)
+        current = target
+    if _effort_step(plan):
+        while len(out) < MAX_RUNGS:
+            target = _next_effort_spec(current)
+            if not target or target in seen:
+                break
+            out.append(target)
+            seen.add(target)
+            current = target
+    return out
+
+
+def _task_listed(plan: Path, task: str) -> bool:
+    try:
+        lines = (plan / 'tasks.tsv').read_text().splitlines()
+    except OSError:
+        return False
+    return any(not line.startswith('#') and line.split('\t')[0] == task for line in lines)
+
+
+def per_model(plan: Path, task: str) -> dict:
+    """{"retry", "rung", "failed_on_rung", "rungs_left", "per_model"}: whether the task may be attempted
+    again under the per-model budget. Pins and held decisions are the scheduler's other checks."""
+    limit = per_model_setting(plan)
+    out = {'retry': False, 'rung': '', 'failed_on_rung': 0, 'rungs_left': 0, 'per_model': limit}
+    if limit is None or not task or not _task_listed(plan, task):
+        return out
+    current = _dwarf_of(plan, task)
+    tdir = plan / 'tasks' / task
+    decided = decided_attempt(tdir)
+    rows = [row for row in attempt_rows(tdir) if row[0] > decided]
+    failed = failed_streak(rows, current, registry_models(), by_effort=_effort_step(plan),
+                           laterals=lateral_rows(tdir))
+    left = len(rungs_above(current, plan))
+    out.update(rung=current, failed_on_rung=failed, rungs_left=left, retry=failed < limit or left > 0)
+    return out
+
+
+def _shadow_rate(plan: Path) -> float:
+    try:
+        rate = float((plan / 'shadow_rate').read_text().strip())
+    except (OSError, ValueError):
+        return 0.1
+    return rate if rate == rate and 0 <= rate else 0.1
+
+
+def worst_case(plan: Path) -> dict:
+    """The most dispatches the unmerged tasks can spend if every rung fails N times: the implementer's
+    (`dwarf`), the reviewer's (`qa`) and the shadow reviews (`shadow`). N is 1 without retry_per_model."""
+    limit = per_model_setting(plan)
+    n = limit or 1
+    cap = max_attempts_setting(plan)
+    shadow_on = (plan / 'shadow_qa').exists()
+    rate = _shadow_rate(plan)
+    tasks, capped = [], []
+    try:
+        lines = (plan / 'tasks.tsv').read_text().splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        cells = line.split('\t')
+        if line.startswith('#') or not cells or not cells[0]:
+            continue
+        task = cells[0]
+        if (plan / 'tasks' / task / 'merged').exists():
+            continue
+        dwarf = cells[4] if len(cells) > 4 else ''
+        rungs = 1 if dwarf in NON_MODEL_DWARFS else 1 + len(rungs_above(dwarf, plan))
+        qa = n * rungs
+        tasks.append({'id': task, 'rungs': rungs, 'dwarf': 0 if dwarf == 'script' else n * rungs,
+                      'qa': qa, 'shadow': math.ceil(qa * rate) if shadow_on else 0})
+        if cap > 0 and n * rungs > cap:
+            capped.append(task)
+    total = sum(t['dwarf'] + t['qa'] + t['shadow'] for t in tasks)
+    return {'per_model': limit, 'tasks': tasks, 'total': total, 'capped': capped}
+
+
 def _fractal(plan: Path) -> bool:
     try:
         return bool(json.loads((plan / 'fractal-selection.json').read_text()).get('enabled'))
@@ -932,7 +1058,7 @@ def escalation(args) -> int:
     tdir = _task_dir(plan, args.task)
     if tdir is None:
         return 0
-    after = _setting(plan)
+    after = per_model_setting(plan) or _setting(plan)     # N failures on each rung (#141), else the plan's patience
     fractal = _fractal(plan)
     # Fractal plans freeze their eligible set at selection; a QA-only resume spends no dwarf
     # attempt, so neither is a moment to change the implementer.
@@ -1055,6 +1181,11 @@ def main(argv=None) -> int:
     p.add_argument('--plan', required=True)
     p.add_argument('--task', required=True)
     p.add_argument('--exclude', default='', help='harness/model pairs to skip, comma-separated (harness/* for all)')
+    p = sub.add_parser('per-model', help='whether a task may retry under plan --retry-per-model (exit 2 without it)')
+    p.add_argument('--plan', required=True)
+    p.add_argument('--task', required=True)
+    p = sub.add_parser('worst-case', help='the most dispatches the unmerged tasks can spend under --retry-per-model')
+    p.add_argument('--plan', required=True)
     for name in ('record', 'lateral'):
         p = sub.add_parser(name, help=argparse.SUPPRESS)
         p.add_argument('--plan', required=True)
@@ -1078,6 +1209,13 @@ def main(argv=None) -> int:
         return record_lateral(args)
     if args.command == 'attempt-cap':
         return attempt_cap_cmd(args)
+    if args.command == 'per-model':
+        result = per_model(Path(os.path.realpath(args.plan)), args.task)
+        print(json.dumps(result))
+        return 0 if result['per_model'] is not None else 2
+    if args.command == 'worst-case':
+        print(json.dumps(worst_case(Path(os.path.realpath(args.plan)))))
+        return 0
     if args.command in ('fallback', 'qa-fallback'):
         try:
             return (fallback if args.command == 'fallback' else qa_fallback)(args)
