@@ -158,6 +158,31 @@ plans_live_pid() { # plans_live_pid <plan dir>
   return 0
 }
 
+# The plan's own _integration worktree, when it is the only checkout of forge/<rid>-integration,
+# clean, and still at <commit>. `run` leaves the branch there. Empty when another checkout holds
+# it, or this one has uncommitted changes: those are not moved.
+plans_chain_own_wt() { # plans_chain_own_wt <repo> <plan> <run id> <commit>
+  local repo="$1" plan="$2" rid="$3" commit="$4" want="" wt="" line="" n=0 found=""
+  local found_phys="" want_phys=""
+  [ -s "$plan/wt_root" ] || return 0
+  want="$(head -1 "$plan/wt_root")/_integration"
+  [ -d "$want" ] || return 0
+  [ "$(git -C "$want" rev-parse --abbrev-ref HEAD 2>/dev/null)" = "forge/$rid-integration" ] || return 0
+  [ "$(git -C "$want" rev-parse HEAD 2>/dev/null)" = "$commit" ] || return 0
+  git -C "$want" diff --quiet && git -C "$want" diff --cached --quiet || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      worktree\ *) wt="${line#worktree }" ;;
+      "branch refs/heads/forge/$rid-integration") n=$((n + 1)); found="$wt" ;;
+    esac
+  done < <(git -C "$repo" worktree list --porcelain 2>/dev/null)
+  [ "$n" = 1 ] || return 0
+  found_phys="$(cd "$found" 2>/dev/null && pwd -P)" || return 0
+  want_phys="$(cd "$want" 2>/dev/null && pwd -P)" || return 0
+  [ "$found_phys" = "$want_phys" ] || return 0
+  printf '%s\n' "$want"
+}
+
 # plans_chain_early <plan> <plan's arguments...>: settles --after before plan writes anything.
 # Refuses (exit 2) with nothing written; otherwise sets CHAIN_PREV (the previous plan's absolute
 # path) and CHAIN_BASE (the commit to start from), both empty when plan has no new --after to
@@ -165,7 +190,7 @@ plans_live_pid() { # plans_live_pid <plan dir>
 plans_chain_early() {
   local plan="$1" given="" repo_flag="" want="" arg have_after=0
   shift
-  CHAIN_PREV=""; CHAIN_BASE=""; CHAIN_MOVE=0
+  CHAIN_PREV=""; CHAIN_BASE=""; CHAIN_MOVE=0; CHAIN_WT=""
   for arg in "$@"; do
     case "$want" in
       --after) given="$arg"; have_after=1; want=""; continue ;;
@@ -227,12 +252,20 @@ plans_chain_early() {
     if [ "$mine" != "$acc" ]; then
       # Its own branch, still where this plan started and holding nothing of its work (a re-plan after the
       # plan it follows moved, or after another --after), is moved to the new base. Any other branch of
-      # that name is somebody's work: it is never reset.
-      local oldbase=""
+      # that name is somebody's work: it is never reset. `run` leaves that branch checked out in this
+      # plan's _integration worktree, and then tells you to re-plan the same predecessor once it moves:
+      # that checkout is moved with the branch. A different --after, or any other checkout, is refused.
+      local oldbase="" own=""
       [ ! -s "$plan/integration.base" ] || oldbase="$(head -1 "$plan/integration.base")"
       if [ "$merged" = 0 ] && [ -n "$oldbase" ] && [ "$mine" = "$oldbase" ]; then
         if git -C "$repo" worktree list --porcelain 2>/dev/null | grep -qx "branch refs/heads/forge/$rid-integration"; then
-          die "forge/$rid-integration is checked out in a worktree: remove that worktree (git worktree remove) before planning from another base" 2
+          if [ -n "$old" ] && { [ "$old" = "$prev" ] || { [ -d "$old" ] && [ "$(cd "$old" && pwd -P)" = "$prev_phys" ]; }; }; then
+            own="$(plans_chain_own_wt "$repo" "$plan" "$rid" "$oldbase")"
+          fi
+          if [ -z "$own" ]; then
+            die "forge/$rid-integration is checked out in a worktree: remove that worktree (git worktree remove) before planning from another base" 2
+          fi
+          CHAIN_WT="$own"
         fi
         CHAIN_MOVE=1
       else
@@ -250,8 +283,15 @@ plans_chain_store() { # plans_chain_store <plan> <repo> <run id>
   local oldbase=""
   [ ! -s "$plan/integration.base" ] || oldbase="$(head -1 "$plan/integration.base")"
   if [ "${CHAIN_MOVE:-0}" = 1 ]; then
-    git -C "$repo" branch -f "forge/$rid-integration" "$CHAIN_BASE" >/dev/null 2>&1 \
-      || die "could not move forge/$rid-integration to $(plans_short "$CHAIN_BASE")" 3
+    if [ -n "${CHAIN_WT:-}" ]; then
+      # The branch is checked out there, so `branch -f` cannot move it. The worktree is this plan's,
+      # clean, and still at the old base: reset follows the new tip and keeps untracked setup files.
+      git -C "$CHAIN_WT" reset --hard "$CHAIN_BASE" >/dev/null 2>&1 \
+        || die "could not move forge/$rid-integration to $(plans_short "$CHAIN_BASE")" 3
+    else
+      git -C "$repo" branch -f "forge/$rid-integration" "$CHAIN_BASE" >/dev/null 2>&1 \
+        || die "could not move forge/$rid-integration to $(plans_short "$CHAIN_BASE")" 3
+    fi
     # What an earlier run accepted was that branch at the old base: it is not a tip to hold the branch to.
     if [ -n "$oldbase" ] && [ "$(head -1 "$plan/accepted.integration" 2>/dev/null)" = "$oldbase" ]; then
       rm -f "$plan/accepted.integration"
@@ -302,7 +342,10 @@ plans_chain_names() { # plans_chain_names <plan>
   while :; do
     rid="$(head -1 "$cur/run_id" 2>/dev/null)"; [ -n "$rid" ] || rid="$(plans_run_id "$cur")"
     ids="$rid${ids:+ → $ids}"
-    [ -s "$cur/after" ] || { printf '%s\n' "$ids"; return 0; }
+    # A missing after file is the start of the chain. A zero-byte after cannot name its
+    # predecessor, so the list stops the same way a missing plan directory does.
+    [ -e "$cur/after" ] || { printf '%s\n' "$ids"; return 0; }
+    [ -s "$cur/after" ] || { printf '… → %s\n' "$ids"; return 0; }
     next="$(head -1 "$cur/after")"
     n=$((n + 1))
     if [ "$n" -gt 64 ] || [ ! -r "$next/run_id" ]; then printf '… → %s\n' "$ids"; return 0; fi
