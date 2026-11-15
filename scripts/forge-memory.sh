@@ -26,6 +26,7 @@
 #   forge-memory.sh prune  <repo>
 #   forge-memory.sh spend  <repo> [--run <run-id>]
 #   forge-memory.sh learnings <repo> [--json]   every ledger learning and its state, as JSON
+#   forge-memory.sh forget <repo> <category:key>... [--dry-run] [--json] [--actor ui|cli]
 #
 # Exit codes: 0 ok | 2 usage error
 set -uo pipefail
@@ -122,12 +123,14 @@ section_title() {
 # cannot leave memory half-updated — it can only leave the ledger short a row.
 # With <out>, the memory is written there instead of the repo's .forge/memory.md, and the repo is
 # only read: `learnings` uses that to say what a rebuild keeps without changing anything.
-rebuild() { # rebuild <repo> [<out>] -> prints "kept<TAB>pruned_stale<TAB>pruned_cap"
+# With <ledger>, that file is read instead of the repo's ledger. `forget --dry-run` passes a
+# scratch copy that already has the rows removed, and a scratch <out>, so the repo is not touched.
+rebuild() { # rebuild <repo> [<out> [<ledger>]] -> prints "kept<TAB>pruned_stale<TAB>pruned_cap"
   local repo="$1" led mem tmp cand jev_loaded=0
   if [ "${FORGE_MEMORY_DEEP_PRUNE:-0}" = 1 ] && [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
     source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded=1
   fi
-  led="$(ledger_for "$repo")"; mem="${2:-$(memory_for "$repo")}"
+  led="${3:-$(ledger_for "$repo")}"; mem="${2:-$(memory_for "$repo")}"
   [ -f "$led" ] || return 0
   tmp="$mem.tmp.$$"; cand="$mem.cand.$$"
 
@@ -583,6 +586,241 @@ do_spend() {
   ' "$led"
 }
 
+# --- forget -------------------------------------------------------------------
+# Drop every ledger row of the given category:key learnings and rebuild memory.md.
+# A learning is the (category, key) group `rebuild` and `learnings` use. Rows have no id.
+# FORGE_MEMORY=off stops record, note and inject from writing: those run unasked. show and
+# learnings still read the ledger (learnings only reports memory_off). forget is an explicit
+# edit of that same ledger, so it runs when memory is off too. There is no early return.
+#
+# Sets FORGET_CANON to the ledger's "category:key" form (norm_key on each part), or exits 2.
+parse_forget_key() {
+  local raw="$1" cat key
+  case "$raw" in
+    *:*) ;;
+    *) die "forget: KEY must be category:key, got '$raw'" ;;
+  esac
+  cat="$(norm_key "${raw%%:*}")"
+  key="$(norm_key "${raw#*:}")"
+  [ -n "$cat" ] && [ -n "$key" ] || die "forget: KEY must be category:key with neither part empty, got '$raw'"
+  FORGET_CANON="$cat:$key"
+}
+
+# Rewrite the ledger without the requested keys. Kept lines stay byte-identical, including
+# a missing final newline. Prints how many rows matched. Counts are "<key>\t<rows>\t<1|0>".
+forget_filter() { # forget_filter <ledger> <keys-file> <out-ledger> <counts-file>
+  python3 - "$@" <<'PY'
+import sys
+ledger_path, keys_path, out_path, counts_path = sys.argv[1:5]
+keys = [line.rstrip('\n') for line in open(keys_path, encoding='utf-8') if line.rstrip('\n')]
+seen = {}
+for key in keys:
+    cat, sep, rest = key.partition(':')
+    if sep:
+        seen.setdefault((cat, rest), 0)
+with open(ledger_path, 'rb') as handle:
+    data = handle.read()
+kept = []
+for line in data.splitlines(keepends=True):
+    raw = line.rstrip(b'\n').rstrip(b'\r')
+    if raw.startswith(b'#') or raw.count(b'\t') < 8:
+        kept.append(line)
+        continue
+    cols = raw.split(b'\t')
+    if len(cols) < 9:
+        kept.append(line)
+        continue
+    pair = (cols[6].decode('utf-8', 'surrogateescape'), cols[7].decode('utf-8', 'surrogateescape'))
+    if pair in seen:
+        seen[pair] += 1
+        continue
+    kept.append(line)
+with open(out_path, 'wb') as handle:
+    handle.write(b''.join(kept))
+with open(counts_path, 'w', encoding='utf-8') as handle:
+    for key in keys:
+        cat, _, rest = key.partition(':')
+        n = seen.get((cat, rest), 0)
+        handle.write('%s\t%d\t%s\n' % (key, n, '1' if n else '0'))
+sys.stdout.write('%d\n' % sum(seen.values()))
+PY
+}
+
+# Fact lines (`- ...`) present in <before> and absent from <after>, in the before file's
+# order. A section heading disappears with its last fact; it is formatting, and so are the
+# header and blank lines. Callers match on the `- ` lines. A missing file counts as empty.
+forget_removed() { # forget_removed <before> <after> <out>
+  python3 - "$@" <<'PY'
+import sys
+from collections import Counter
+before_path, after_path, out_path = sys.argv[1:4]
+
+def lines(path):
+    try:
+        with open(path, encoding='utf-8') as handle:
+            return handle.read().splitlines()
+    except FileNotFoundError:
+        return []
+
+have = Counter(lines(after_path))
+removed = []
+for line in lines(before_path):
+    if not line.startswith('- '):
+        continue
+    if have[line]:
+        have[line] -= 1
+    else:
+        removed.append(line)
+with open(out_path, 'w', encoding='utf-8') as handle:
+    for line in removed:
+        handle.write(line + '\n')
+PY
+}
+
+forget_report() { # forget_report <json 0|1> <dry 0|1> <counts> <removed>
+  if [ "$1" = 1 ]; then
+    python3 - "$2" "$3" "$4" <<'PY'
+import json, sys
+dry, counts_path, removed_path = sys.argv[1:4]
+keys = []
+for line in open(counts_path, encoding='utf-8'):
+    line = line.rstrip('\n')
+    if not line:
+        continue
+    key, rows, found = line.split('\t')
+    keys.append({"key": key, "rows": int(rows), "found": found == "1"})
+removed = []
+try:
+    for line in open(removed_path, encoding='utf-8'):
+        line = line.rstrip('\n')
+        if line:
+            removed.append(line)
+except FileNotFoundError:
+    pass
+json.dump({"ok": True, "dry_run": dry == "1", "keys": keys, "memory_lines_removed": removed},
+          sys.stdout)
+sys.stdout.write('\n')
+PY
+  else
+    local key rows found
+    while IFS=$'\t' read -r key rows found; do
+      [ -n "$key" ] || continue
+      if [ "$found" = 1 ]; then
+        printf '%s\t%s\n' "$key" "$rows"
+      else
+        printf '%s\tnot found\n' "$key"
+      fi
+    done < "$3"
+  fi
+}
+
+forget_fail() { # forget_fail <scratch> <message>
+  [ -n "$1" ] && rm -rf "$1"
+  die "$2"
+}
+
+do_forget() { # do_forget <repo> <category:key>... [--dry-run] [--json] [--actor ui|cli]
+  local repo="" dry=0 as_json=0 actor="cli" raw c keylist="" total=0 status=0 tmp="" scratch="" already=0
+  local -a rawkeys=() canon=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -h|--help) memory_usage; exit 0 ;;
+      --dry-run) dry=1; shift ;;
+      --json) as_json=1; shift ;;
+      --actor)
+        [ $# -ge 2 ] || die "forget: --actor needs ui or cli"
+        actor="$2"; shift 2
+        case "$actor" in
+          ui|cli) ;;
+          *) die "forget: --actor must be ui or cli" ;;
+        esac
+        ;;
+      --) shift
+        while [ $# -gt 0 ]; do rawkeys+=("$1"); shift; done
+        ;;
+      -*) die "forget: unknown option '$1'" ;;
+      *)
+        if [ -z "$repo" ]; then repo="$1"; else rawkeys+=("$1"); fi
+        shift
+        ;;
+    esac
+  done
+  [ -n "$repo" ] || die "forget: usage: forget <repo> <category:key>... [--dry-run] [--json] [--actor ui|cli]"
+  [ "${#rawkeys[@]}" -ge 1 ] || die "forget: usage: forget <repo> <category:key>... [--dry-run] [--json] [--actor ui|cli]"
+  [ -d "$repo" ] || die "forget: '$repo' is not a directory"
+  # One learning once. A repeated KEY, or two spellings that norm_key collapses together,
+  # is a single entry in the report and in the dataset event's keys list. rows counts
+  # ledger rows, so listing the key twice must not count them twice either.
+  for raw in "${rawkeys[@]}"; do
+    parse_forget_key "$raw"
+    already=0
+    if [ "${#canon[@]}" -gt 0 ]; then
+      for c in "${canon[@]}"; do
+        [ "$c" = "$FORGET_CANON" ] && already=1 && break
+      done
+    fi
+    [ "$already" = 1 ] || canon+=("$FORGET_CANON")
+  done
+  keylist="${canon[0]}"
+  if [ "${#canon[@]}" -gt 1 ]; then
+    for c in "${canon[@]:1}"; do keylist="$keylist,$c"; done
+  fi
+
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/forge-memory-forget.XXXXXX")" || die "forget: no scratch dir"
+  printf '%s\n' "${canon[@]}" > "$scratch/keys"
+  local led mem
+  led="$(ledger_for "$repo")"
+  mem="$(memory_for "$repo")"
+  if [ -f "$led" ]; then
+    total="$(forget_filter "$led" "$scratch/keys" "$scratch/ledger.new" "$scratch/counts")" \
+      || forget_fail "$scratch" "forget: could not read '$led'"
+  else
+    total=0
+    : > "$scratch/counts"
+    for c in "${canon[@]}"; do printf '%s\t0\t0\n' "$c" >> "$scratch/counts"; done
+  fi
+  case "$total" in
+    ''|*[!0-9]*) forget_fail "$scratch" "forget: could not read '$led'" ;;
+  esac
+
+  : > "$scratch/removed"
+  if [ "$total" -gt 0 ]; then
+    # Lines that leave are the difference between two rebuilds of the ledger, not between
+    # whatever memory.md happens to be on disk. A missing file would otherwise report
+    # nothing, and a stale or hand-edited one would report edits this forget did not make.
+    # The before rebuild reads the full ledger and writes only the scratch <out>.
+    rebuild "$repo" "$scratch/before.md" "$led" >/dev/null \
+      || forget_fail "$scratch" "forget: could not preview memory"
+    if [ "$dry" = 1 ]; then
+      # Same rebuild `record` runs, against the reduced ledger, written outside the repo.
+      rebuild "$repo" "$scratch/after.md" "$scratch/ledger.new" >/dev/null \
+        || forget_fail "$scratch" "forget: could not preview memory"
+      forget_removed "$scratch/before.md" "$scratch/after.md" "$scratch/removed" \
+        || forget_fail "$scratch" "forget: could not compare memory"
+    else
+      # do_record appends with >> and takes no lock, so there is none to share. The new
+      # ledger is written beside the old one and renamed over it, which is atomic on one
+      # filesystem. A concurrent append that lands between this read and that rename is
+      # the remaining race: that row is lost.
+      tmp="$(mktemp "$(dir_for "$repo")/ledger.tsv.tmp.XXXXXX")" \
+        || forget_fail "$scratch" "forget: could not write the ledger"
+      cp "$scratch/ledger.new" "$tmp" \
+        || { rm -f "$tmp"; forget_fail "$scratch" "forget: could not write the ledger"; }
+      mv -f "$tmp" "$led" \
+        || { rm -f "$tmp"; forget_fail "$scratch" "forget: could not replace the ledger"; }
+      rebuild "$repo" >/dev/null || forget_fail "$scratch" "forget: could not rebuild memory"
+      forget_removed "$scratch/before.md" "$mem" "$scratch/removed" \
+        || forget_fail "$scratch" "forget: could not compare memory"
+      # Only after a rewrite and a rebuild. A miss (rows 0) changes nothing, so it records nothing.
+      memory_dataset_event memory_forget "$repo" "" --set "keys=$keylist" --set "rows=$total" --set "actor=$actor"
+    fi
+  fi
+
+  forget_report "$as_json" "$dry" "$scratch/counts" "$scratch/removed" || status=$?
+  rm -rf "$scratch"
+  return "$status"
+}
+
 # --- main ---------------------------------------------------------------------
 memory_usage() {
   cat <<'USAGE'
@@ -594,9 +832,11 @@ usage: forge memory <command> <repo> [...]   (scripts/forge-memory.sh)
   prune <repo>                re-apply staleness and the cap now, then print what a dwarf is told
   spend <repo> [--run ID]     what forge has cost this repository, from the ledger
   inject <repo> <role>        the block forge prepends to a planner, dwarf or qa prompt
+  forget <repo> <cat:key>...  remove those learnings from the ledger and rebuild memory.md
+                              (--dry-run, --json, --actor ui|cli); a missing key is not an error
 USAGE
 }
-[ $# -ge 1 ] || die "usage: forge-memory.sh <inject|note|record|show|prune|spend|learnings> [repo] [...]"
+[ $# -ge 1 ] || die "usage: forge-memory.sh <inject|note|record|show|prune|spend|learnings|forget> [repo] [...]"
 CMD="$1"; shift
 case "$CMD" in
   -h|--help|help) memory_usage; exit 0 ;;
@@ -608,5 +848,6 @@ case "$CMD" in
   learnings) [ "${2:-}" = --json ] || [ $# -eq 1 ] || die "learnings: usage: learnings <repo> [--json]"; do_learnings "$1" ;;
   prune)  do_prune "${1:?prune needs a repo}" >/dev/null
           do_inject "${1}" dwarf ;;
+  forget) do_forget "$@" ;;
   *) die "unknown subcommand '$CMD'" ;;
 esac
