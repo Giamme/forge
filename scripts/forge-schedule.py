@@ -484,7 +484,9 @@ DECISION = re.compile(r'retry=(?:[1-9]|1[0-9]|20)|threshold=P[0-3]')
 # a task whose reviews do not converge, or that the retry policy cannot move to a stronger model,
 # resumes only through a person's `retry --decide` (or `--dwarf`) with a reason and --approved.
 # No budget, pin or sweep reaches it, because every automatic path asks for a status in AUTO_RETRY.
-RETRYABLE = ('FAIL', 'UNKNOWN', 'TIMEOUT', 'ERROR', 'INTERRUPTED', 'BLOCKED', 'INVALIDATED')
+# STALE (the prompt changed while the attempt ran, #150) is retryable by hand, but it is not in AUTO_RETRY:
+# its path is prompt_requeue, which spends no retry.
+RETRYABLE = ('FAIL', 'UNKNOWN', 'TIMEOUT', 'ERROR', 'INTERRUPTED', 'BLOCKED', 'INVALIDATED', 'STALE')
 # What --retry-failed retries on its own. INVALIDATED only for a review voided while the committed
 # work stayed as it was (tasks/<id>/invalidated.reason is `review`): that retry is a fresh review.
 AUTO_RETRY = ('FAIL', 'UNKNOWN', 'INVALIDATED')
@@ -852,6 +854,21 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         else:
             print('forge: retrying ' + name + ' (automatic retry ' + str(retries[name]) + '/'
                   + str(budget(name)) + ')', file=sys.stderr, flush=True)
+        return True
+
+    def prompt_requeue(name: str) -> bool:
+        """Re-dispatch a STALE task (its prompt changed while the attempt ran, #150) with the new text. The stale
+        attempt spent nothing, so no retry is counted: retries, retries.used and decided.left stay as they are."""
+        result = subprocess.run(['/bin/bash', script, '_prepare_retry', str(plan), name, '--prompt'])
+        if result.returncode:
+            print('forge: ' + name + ' is not re-dispatched: its changed prompt could not be prepared',
+                  file=sys.stderr, flush=True)
+            return False
+        pairs_cache.pop(name, None)
+        if name not in pending:
+            pending.insert(0, name)
+        print('forge: ' + name + ': re-dispatching with the changed prompt (no attempt spent)',
+              file=sys.stderr, flush=True)
         return True
 
     def at_cap(name: str) -> bool:
@@ -1222,7 +1239,11 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             decision = (['--decide', decide] if decide else []) + ['--reason', reason, '--approved']
         elif state not in RETRYABLE:
             return 'refused', 'a ' + state + ' task is not retried'
-        command = ['/bin/bash', script, '_prepare_retry', str(plan), name] + (['--dwarf', dwarf] if dwarf else []) + decision
+        if state == 'STALE' and dwarf:
+            return 'refused', name + ' is STALE: it re-runs with the changed prompt on the same implementer; --dwarf does not apply'
+        # A STALE task spent no attempt: it is prepared with the new prompt, not as a failed one (#150).
+        command = ['/bin/bash', script, '_prepare_retry', str(plan), name] + (
+            ['--prompt'] if state == 'STALE' else (['--dwarf', dwarf] if dwarf else []) + decision)
         rc = subprocess.run(command).returncode
         if rc == 3:
             try:
@@ -1242,7 +1263,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         # A decision sets how many attempts follow it: retry=N is N in all (this one and N-1
         # automatic ones), any other choice is this one. A plain retry leaves the budget in charge.
         # (retry_decided wrote decided.left for a decision.) A plain retry ends what a decision allowed.
-        if state != 'NEEDS_DECISION':
+        if state not in ('NEEDS_DECISION', 'STALE'):
             _remove(plan, 'tasks', name, 'decided.left')
         retried.add(name)
         human.add(name)
@@ -1552,6 +1573,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 elif allow_requeue and not interrupted and not graceful \
                         and state in AUTO_RETRY and retryable(name):
                     requeue(name)
+                elif state == 'STALE' and allow_requeue and not interrupted and not graceful:
+                    prompt_requeue(name)
                 elif state == 'IMPLEMENTED' and allow_requeue and name in group_of:
                     start_ready_groups()   # the last member in: its group is reviewed now, with no wave barrier
             if not reaped:
@@ -1678,6 +1701,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 mark(name, 'INTERRUPTED')
             if state in AUTO_RETRY and not interrupted and retryable(name):
                 requeue(name)
+            if state == 'STALE' and not interrupted:
+                prompt_requeue(name)   # left by an interrupted run; the task is PENDING again, so it stays in pending
             if state == 'INFRA' and not interrupted and not resume(name):
                 pending.remove(name)
                 continue

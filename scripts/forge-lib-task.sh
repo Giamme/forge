@@ -1136,12 +1136,53 @@ prepare_fallback() { # prepare_fallback <plan> <id> <excluded harness/model,...>
   fi
 }
 
+# The next entry of a STALE task (#150): its prompt or approach changed while the attempt ran, so the
+# attempt was not reviewed and spent nothing. The attempt number is given back (as a dwarf-stage infra
+# stop does), the implementer is told what changed, and no escalation, decision or attempt-cap gate runs:
+# nothing was spent. The status is cleared by the caller.
+prepare_prompt_retry() { # prepare_prompt_retry <plan> <id>
+  local PLAN="$1" id="$2" tdir="$1/tasks/$2" st attempt n
+  st="$(task_status "$PLAN" "$id")"
+  if [ "$st" != STALE ]; then
+    note "$id: is $st, not STALE; --prompt only prepares a task whose prompt changed during its attempt"
+    return 2
+  fi
+  attempt="$(cat "$tdir/attempt" 2>/dev/null)"
+  case "$attempt" in ''|*[!0-9]*) attempt=0 ;; esac
+  [ "$attempt" -gt 0 ] && echo $((attempt - 1)) > "$tdir/attempt"
+  {
+    printf 'The requirements changed while you worked on this task. The full new requirements are above; what changed follows.\n\n'
+    printf 'Bring your committed work in line with the new text, keep what still holds, and explain anything you change.\n\n'
+    printf '```diff\n'
+    cat "$tdir/stale.diff" 2>/dev/null
+    printf '```\n'
+  } > "$tdir/.retry_findings.md.tmp" && mv "$tdir/.retry_findings.md.tmp" "$tdir/retry_findings.md" || return 1
+  printf 'prompt\n' > "$tdir/.retry_findings.source.tmp" && mv "$tdir/.retry_findings.source.tmp" "$tdir/retry_findings.source" || return 1
+  rm -f "$tdir/retry_findings.commit" "$tdir/resume" "$tdir/retry_findings.session" "$tdir/retry_findings.resolved"
+  if [ -f "$PLAN/implementer_session" ]; then
+    carry_implementer_session "$tdir"
+  else
+    for n in session resolved; do rm -f "$tdir/retry_findings.dwarf.$n"; done
+  fi
+  # The stale attempt was never reviewed, and the requirements it worked from are gone. A re-dispatch
+  # that keeps its committed work (a wording fix needs no code change) must be reviewed, not refused as
+  # "identical to the previous attempt": forge-parallel.sh compares the new diff with changes.prev.diff,
+  # which a dwarf stage fills from changes.diff, so neither is left for it to compare. The stale diff of
+  # the prompt (stale.diff) and committed.diff stay as the record.
+  rm -f "$tdir/changes.diff" "$tdir/changes.prev.diff"
+  rm -f "$tdir/status" "$tdir/noretry"
+}
+
 # The scheduler's `_prepare_retry` target: prepare, then clear the status so the task
 # reads as PENDING again. `retry` clears it itself, after its own preflight. With --resume it
 # prepares an infrastructure stop's resume instead (prepare_resume), and the status stays;
 # with --dwarf <spec> the spec is the explicit new implementer; --fallback <pairs> [--cause <cause> [--role qa]]
 # is prepare_fallback.
-retry_for_scheduler() { # retry_for_scheduler <plan> <id> [--resume | --dwarf <spec> | --fallback <pairs> [--cause <cause> [--role qa]]]
+retry_for_scheduler() { # retry_for_scheduler <plan> <id> [--resume | --prompt | --dwarf <spec> | --fallback <pairs> [--cause <cause> [--role qa]]]
+  if [ "${3:-}" = --prompt ]; then
+    prepare_prompt_retry "$1" "$2"
+    return $?
+  fi
   if [ "${3:-}" = --resume ]; then
     # An infrastructure stop spends no attempt, but the resume starts one: at the cap it is stopped for a decision.
     attempt_cap_gate "$1" "$2" INFRA "" || return 4
