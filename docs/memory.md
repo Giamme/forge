@@ -116,12 +116,28 @@ forge-memory.sh show <repo>
 forge-memory.sh prune <repo>                       # re-apply staleness and the cap now
 forge-memory.sh spend <repo> [--run <run-id>]      # what forge has cost this repo
 forge-memory.sh learnings <repo> [--json]          # every ledger learning and its state, as JSON (forge memory learnings)
+forge-memory.sh forget <repo> <category:key>...    # drop those ledger rows and rebuild memory.md
+                              [--dry-run] [--json] [--actor ui|cli]
 ```
 
 `record` appends to the ledger and then rebuilds `memory.md` from the whole ledger — the
 rebuild is idempotent, so a crashed run can leave the ledger a row short but can never leave
-memory half-written. Editing `memory.md` by hand therefore does not stick; remove the ledger
-rows instead.
+memory half-written. Editing `memory.md` by hand therefore does not stick: the next rebuild
+overwrites it.
+
+`forget` is how a learning is removed. Its identity is `category:key`, the same pair the rebuild
+groups on (category, and the text normalised to lowercase with runs of non-alphanumerics collapsed
+to one space). `forge memory forget REPO KEY…` drops every ledger row of those keys and rebuilds
+`memory.md` from what remains. `--dry-run` writes nothing and still lists the `- ` lines that
+would leave. A key that is not in the ledger is not an error. A real forget that drops at least
+one row records a `memory_forget` dataset event, including the actor (`--actor ui` or `cli`,
+default `cli`). `--json` prints
+`{ok, dry_run, keys: [{key, rows, found}], memory_lines_removed}`. Exit 0 ok, 2 usage. See
+[the command](commands.md#forge-memory-forget).
+
+forge-ui's Memories tab does this for the learnings you select: *Forget selected* dry-runs,
+confirms with the learnings and the `memory.md` lines that go, then runs `forget` as actor `ui`
+on the checkout the tab is showing. See [Controls](forge-ui.md#controls).
 
 ```bash
 # what would a dwarf actually be told about this repo?
@@ -146,11 +162,16 @@ its rows, and what forge does with it now:
 | `muted` | every row of it was marked not injectable (Jev's curation) |
 
 The states come from forge-memory.sh's own rebuild, run into a scratch directory, so they cannot differ
-from what `record` writes; the repository is only read. The answer also has the current `memory.md` by
+from what `record` writes; `learnings` itself only reads the repository. The answer also has the current `memory.md` by
 section, with the roles each section reaches, and `rebuilt_differs` when that file is not what a rebuild
 makes now (an older forge wrote it, or a `prune` asked Jev to drop facts). forge-ui's Projects screen
 shows it on each repository's *Memories* tab, merged across the checkouts its runs started in and, from
-the dataset, the learnings of checkouts that are gone.
+the dataset, the learnings of checkouts that are gone. With write controls the tab adds a checkbox per
+learning, *Select all* for the ones the filters show, and *Forget selected*. That dry-runs
+`forge memory forget` on the checkout you are looking at, then asks, listing each `category:key` and
+the `memory.md` lines that go. Under `--read-only` the list stays and those controls do not. A learning
+is removed by `forget`, which edits the ledger and rebuilds `memory.md`; editing `memory.md` by hand
+does not stick.
 
 ## Spend
 
