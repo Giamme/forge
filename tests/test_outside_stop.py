@@ -73,14 +73,7 @@ class OutsideStopCase(unittest.TestCase):
         p = self.plan_of()
         (p / 'tasks' / 'b' / '.decision.md.tmp').mkdir()
         self.scenario({'b.qa.1': {'verdict': 'FAIL', 'findings': finding('a.txt:1', '{outside=a.txt}')}})
-        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 0, '--escalate-after', 1)
-        b = p / 'tasks' / 'b'
-        names = sorted(x.name for x in b.iterdir())
-        qa = (b / 'qa.last').read_text()[:500] if (b / 'qa.last').exists() else 'NONE'
-        self.fail('status=%r files=%s outside=%s ledger=%s qa=%r stdout_has_write=%s' % (
-            (b / 'status').read_text().strip() if (b / 'status').exists() else None,
-            names, (b / 'outside.json').exists(), (b / 'ledger.tsv').exists(), qa,
-            'could not write decision.md' in r.stdout))
+        self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 0, '--escalate-after', 1)
         self.assertEqual(self.read(p, 'status').strip(), 'FAIL')
         self.assertFalse((p / 'tasks' / 'b' / 'decision.md').exists())
         self.assertFalse((p / 'tasks' / 'b' / 'escalation.next').exists())
