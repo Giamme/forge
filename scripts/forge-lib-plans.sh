@@ -342,7 +342,10 @@ plans_chain_names() { # plans_chain_names <plan>
   while :; do
     rid="$(head -1 "$cur/run_id" 2>/dev/null)"; [ -n "$rid" ] || rid="$(plans_run_id "$cur")"
     ids="$rid${ids:+ → $ids}"
-    [ -s "$cur/after" ] || { printf '%s\n' "$ids"; return 0; }
+    # A missing after file is the start of the chain. A zero-byte after cannot name its
+    # predecessor, so the list stops the same way a missing plan directory does.
+    [ -e "$cur/after" ] || { printf '%s\n' "$ids"; return 0; }
+    [ -s "$cur/after" ] || { printf '… → %s\n' "$ids"; return 0; }
     next="$(head -1 "$cur/after")"
     n=$((n + 1))
     if [ "$n" -gt 64 ] || [ ! -r "$next/run_id" ]; then printf '… → %s\n' "$ids"; return 0; fi
