@@ -224,6 +224,13 @@ class WorstCaseTests(PlanCase):
         self.setting('shadow_qa', 'sol\n')
         self.assertEqual(route.worst_case(self.plan)['tasks'][0]['shadow'], 1)    # ceil(5 * 0.1)
 
+    def test_a_shadow_rate_past_one_counts_one_shadow_per_review(self):
+        self.tasks(('a', 'opus'))
+        self.setting('retry_per_model', '3\n')
+        self.setting('shadow_qa', 'sol\n')
+        self.setting('shadow_rate', '5\n')
+        self.assertEqual(route.worst_case(self.plan)['tasks'][0]['shadow'], 3)    # not ceil(3 * 5)
+
     def test_a_task_past_max_attempts_is_capped(self):
         self.tasks(('a', 'luna'), ('b', 'opus'))
         self.setting('retry_per_model', '3\n')

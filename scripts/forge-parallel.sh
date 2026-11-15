@@ -962,7 +962,6 @@ do_plan() {
   # Before any decision-model step: the privacy floor and the run budget read these.
   [ "$JEV_OPTS" = 1 ] && forge_decide_env "$REPO" "$PLAN"
   [ -s "$PLAN/run_id" ] || basename "$PLAN" | sed 's/^forge-//' > "$PLAN/run_id"
-  plans_chain_store "$PLAN" "$REPO" "$(cat "$PLAN/run_id")"
   # Every plan, --ui or not: forge-ui's view of this repo's runs reads the registry.
   forge_ui_register "$PLAN"
   [ "${FORGE_RIPWIRE:-}" != off ] || touch "$PLAN/no_ripwire"
@@ -991,7 +990,7 @@ PY
   # Uncommitted work is invisible to every dwarf, because worktrees branch from a
   # commit. That is the likeliest way to get a confusingly wrong result, so it is
   # stated loudly rather than left for the user to deduce from an odd diff.
-  if [ ! -s "$PLAN/after" ] && [ -n "$(cd "$REPO" && git status --porcelain 2>/dev/null)" ]; then
+  if [ ! -s "$PLAN/after" ] && [ -z "${CHAIN_PREV:-}" ] && [ -n "$(cd "$REPO" && git status --porcelain 2>/dev/null)" ]; then
     note "WARNING: '$REPO' has uncommitted changes. Task worktrees branch from HEAD,"
     note "         so those edits will NOT be visible to any dwarf. Commit or stash first"
     note "         if the tasks depend on them."
@@ -1176,6 +1175,8 @@ EOF
   fi
 
   compute_waves "$PLAN"
+  # Only once tasks.tsv has passed its checks: a refused plan leaves no after, integration.base or branch.
+  plans_chain_store "$PLAN" "$REPO" "$(cat "$PLAN/run_id")"
 
   # --- jev: forward dependency ----------------------------------------------------
   # Wave order is structural, but it cannot see an earlier-wave task written against
@@ -1826,7 +1827,9 @@ PY
 run_script_task() { # run_script_task <plan> <id> <tdir> <wt> <base>
   local PLAN="$1" id="$2" tdir="$3" wt="$4" base="$5" run="$3/run"
   local limit="${FORGE_TIMEOUT:-2700}" pid rc=0 timed_out=0 started deadline waited=0 hex rec exit_json note_txt
-  case "$limit" in ''|*[!0-9]*|0) limit=2700 ;; esac
+  # As for a dispatch: 0 is no limit, and a leading zero is decimal (bash would read 08 as octal).
+  case "$limit" in ''|*[!0-9]*) limit=2700 ;; esac
+  limit=$(( 10#$limit ))
   local cmd=("$run")
   if [ ! -f "$run" ] || [ ! -x "$run" ]; then
     echo FAIL > "$tdir/status"
@@ -1848,7 +1851,7 @@ run_script_task() { # run_script_task <plan> <id> <tdir> <wt> <base>
   pid=$!
   deadline=$(( SECONDS + limit ))
   while kill -0 "$pid" 2>/dev/null; do
-    if [ "$SECONDS" -ge "$deadline" ]; then timed_out=1; break; fi
+    if [ "$limit" -gt 0 ] && [ "$SECONDS" -ge "$deadline" ]; then timed_out=1; break; fi
     sleep 0.2
   done
   if [ "$timed_out" = 1 ]; then
@@ -1865,7 +1868,10 @@ run_script_task() { # run_script_task <plan> <id> <tdir> <wt> <base>
   exit_json="$rc"; [ "$timed_out" = 0 ] || exit_json=""
   hex="$(python3 -c 'import uuid; print(uuid.uuid4().hex[:16])')"
   rec="$tdir/attempts/script-$hex"
+  rm -f "$tdir/script.ran"
   if mkdir -p "$rec" && cp "$tdir/script.log" "$rec/script.log" && cp "$run" "$rec/run"; then
+    # The review shows this copy: run may be edited before a QA-only resume reviews this attempt.
+    printf '%s\n' "$rec" > "$tdir/script.ran"
     python3 - "$rec/metrics.json" "$started" "$exit_json" <<'PY' || note "$id: the script run was not recorded in attempts/"
 import json, os, sys, time
 path, started, code = sys.argv[1:4]
@@ -2248,8 +2254,10 @@ do_task_body() (
     python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind "$qa_kind"
     echo
     if [ "$is_script" = 1 ]; then
-      echo "The command (tasks/$id/run):"; script_fenced "$tdir/run"
-      echo; echo "Its output (last 3000 characters of script.log):"; script_fenced "$tdir/script.log" 3000
+      local ran_dir="$tdir"
+      [ ! -s "$tdir/script.ran" ] || [ ! -f "$(cat "$tdir/script.ran")/run" ] || ran_dir="$(cat "$tdir/script.ran")"
+      echo "The command (tasks/$id/run, as it ran):"; script_fenced "$ran_dir/run"
+      echo; echo "Its output (last 3000 characters of script.log):"; script_fenced "$ran_dir/script.log" 3000
       echo
     fi
     [ ! -f "$PLAN/sweep_ahead" ] || python3 "$SKILL_DIR/scripts/forge-sweep.py" ahead "$PLAN" "$id" --role qa 2>/dev/null

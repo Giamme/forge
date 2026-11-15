@@ -804,7 +804,8 @@ do_forget() { # do_forget <repo> <category:key>... [--dry-run] [--json] [--actor
       # the remaining race: that row is lost.
       tmp="$(mktemp "$(dir_for "$repo")/ledger.tsv.tmp.XXXXXX")" \
         || forget_fail "$scratch" "forget: could not write the ledger"
-      cp "$scratch/ledger.new" "$tmp" \
+      # mktemp makes it 0600: cp -p first gives it the ledger's own mode, which the write keeps.
+      { cp -p "$led" "$tmp" && cat "$scratch/ledger.new" > "$tmp"; } \
         || { rm -f "$tmp"; forget_fail "$scratch" "forget: could not write the ledger"; }
       mv -f "$tmp" "$led" \
         || { rm -f "$tmp"; forget_fail "$scratch" "forget: could not replace the ledger"; }

@@ -132,6 +132,18 @@ class PlanAfterTests(ChainCase):
         self.assertEqual(chained.returncode, 0, chained.stdout)
         self.assertNotIn('uncommitted changes', chained.stdout)
 
+    def test_a_tasks_table_refused_after_the_chain_checks_leaves_no_chain_behind(self):
+        a = self.finished('first', 'a')
+        b = self.raw_plan('second', 'b')
+        (b / 'tasks.tsv').write_text('b\t-\thuge\tb.txt\tsol\topus\tB\n')
+        branches = self.branches()
+        r = self.forge('plan', b, '--repo', self.repo, '--no-memory', '--after', str(a))
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("difficulty 'huge'", r.stdout)
+        self.assertFalse((b / 'after').exists())
+        self.assertFalse((b / 'integration.base').exists())
+        self.assertEqual(self.branches(), branches)
+
     def test_refuses_a_plan_with_a_task_that_is_not_merged(self):
         self.scenario({'a.qa.*': {'verdict': 'FAIL', 'findings': P1}})
         p, r = self.make('first', 'ab')

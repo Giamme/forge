@@ -244,11 +244,11 @@ Each attempt resets the worktree to the task's pinned base (the tracked tree, an
 files other than `.forge`), then runs the command in its own process group. The working
 directory is the worktree. Standard input is empty. The environment is `FORGE_TASK_ID`,
 `FORGE_PLAN`, `FORGE_WORKTREE` and `FORGE_BASE_REF`. A file that does not start with `#!`
-runs under `/bin/bash`. The limit is the plan's `timeout` when that file holds a positive
-number of seconds, and 2700 seconds otherwise, including `0`. A timeout stops the process
+runs under `/bin/bash`. The limit is the plan's `timeout` in seconds, `0` for none as for a
+dispatch, and 2700 seconds when the plan has none. A timeout stops the process
 group. Both streams go to `tasks/<id>/script.log`. The run is also recorded at
 `tasks/<id>/attempts/script-<hex>/`, where `<hex>` is 16 hex digits: a copy of `script.log`,
-the `run` file, and `metrics.json` (`role` and `harness` are `script`; `exit_code` is null
+the `run` file as it ran (the copy the review shows, even after `run` is edited), and `metrics.json` (`role` and `harness` are `script`; `exit_code` is null
 when the run timed out).
 
 Exit 0 with a new diff commits `forge(<id>) attempt N: <title> (script)` and reviews with

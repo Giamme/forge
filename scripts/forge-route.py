@@ -808,7 +808,8 @@ def _shadow_rate(plan: Path) -> float:
         rate = float((plan / 'shadow_rate').read_text().strip())
     except (OSError, ValueError):
         return 0.1
-    return rate if rate == rate and 0 <= rate else 0.1
+    # As forge-shadow.py's rate_of reads it: a share past 1 samples every review, never more.
+    return min(max(rate, 0.0), 1.0) if rate == rate else 0.1
 
 
 def worst_case(plan: Path) -> dict:

@@ -564,6 +564,30 @@ test.describe('forget, compact and answer on the page', { concurrency: 1 }, () =
     assert.equal(labelled(h, 'Select trap:alpha').disabled, false);
   });
 
+  test('a redraw while the confirmed forget is in flight keeps its result line', async () => {
+    state.controls = true;
+    state.getReply = projectGet;
+    let land;
+    const inFlight = new Promise(r => { land = r; });
+    const replies = [forgetPreview, inFlight];
+    state.postReply = () => replies.shift();
+    const h = mount();
+    Projects.render(h, { id: 'proj1', tab: 'memories', runHref: k => '#/runs/' + k });
+    await until(() => button(h, 'Forget selected (0)'));
+    click(labelled(h, 'Select trap:alpha'));
+    click(button(h, 'Forget selected (1)'));
+    await until(() => confirmText(h).includes('trap:alpha — Alpha landmine'));
+    click(button(h, 'Confirm'));
+    await until(() => state.posts.length === 2);
+    click(button(h, 'Read again'));
+    for (let i = 0; i < 8; i++) await new Promise(r => setTimeout(r, 0));
+    state.gets = [];
+    land(forgetDone);
+    await until(() => h.textContent.includes('trap:alpha: 2 rows removed'));
+    assert.ok(state.gets.includes('/api/projects/proj1/memories?refresh=1'));
+    assert.equal(button(h, 'Forget selected (0)').disabled, true);    // the forgotten key is no longer picked
+  });
+
   test('changing checkout while forget is confirming does not stick the controls', async () => {
     state.controls = true;
     state.getReply = p => {

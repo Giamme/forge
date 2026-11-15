@@ -143,6 +143,14 @@ class ForgetTests(unittest.TestCase):
         self.assertEqual((self.repo / '.forge' / 'memory.md').read_text(), MEMORY_BETA)
         self.assertNotIn('alpha thing', (self.repo / '.forge' / 'memory.md').read_text())
 
+    def test_the_rewritten_ledger_keeps_its_file_mode(self):
+        led = self.repo / '.forge' / 'ledger.tsv'
+        led.chmod(0o644)
+        done = self.forget('Trap:Alpha_Thing')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.ledger(), KEPT)
+        self.assertEqual(led.stat().st_mode & 0o777, 0o644)             # not mktemp's 0600
+
     def test_json_shape_lists_the_fact_lines_that_left_with_no_memory_file_present(self):
         # No memory.md on disk: the lines still come from a rebuild of the full ledger.
         done = self.forget('Trap:Alpha_Thing', '--json')

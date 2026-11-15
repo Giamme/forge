@@ -77,9 +77,9 @@ class RunTests(ScriptRunCase):
         self.assertEqual(self.calls(), ['qa', 'dwarf', 'qa'])
         qa = self.read(p, 'qa.input')
         self.assertIn(SCRIPT_INSTRUCTION, qa)
-        self.assertIn('The command (tasks/a/run):\n```\n' + WRITES_A + '```\n', qa)
+        self.assertIn('The command (tasks/a/run, as it ran):\n```\n' + WRITES_A + '```\n', qa)
         self.assertIn('Its output (last 3000 characters of script.log):\n```\nscript says hello\n```\n', qa)
-        self.assertLess(qa.index(SCRIPT_INSTRUCTION), qa.index('The command (tasks/a/run):'))
+        self.assertLess(qa.index(SCRIPT_INSTRUCTION), qa.index('The command (tasks/a/run, as it ran):'))
         self.assertLess(qa.index('Its output'), qa.index('```diff'))
         self.assertIn('{outside=', qa)
         self.assertNotIn(SCRIPT_INSTRUCTION, self.read(p, 'qa.input', 'b'))
@@ -170,6 +170,28 @@ class RunTests(ScriptRunCase):
             time.sleep(0.1)
         with self.assertRaises(ProcessLookupError):
             os.kill(child, 0)
+
+    def test_a_timeout_with_a_leading_zero_is_read_as_decimal(self):
+        # bash reads 08 as octal and fails: the deadline was lost and the script never timed out.
+        p = self.plan_of('#!/bin/sh\necho started\nsleep 300\n', timeout='08')
+        began = time.time()
+        r = self.only_a(p)
+        self.assertLess(time.time() - began, 60)
+        self.assertEqual(r.returncode, 5, r.stdout)
+        self.assertIn('timed out after 8s', self.read(p, 'qa.last'))
+
+    def test_a_resumed_review_shows_the_command_as_it_ran_not_as_edited_since(self):
+        p = self.plan_of(WRITES_A)
+        self.scenario({'a.qa.1': {'is_error': True, 'verdict': 'none', 'findings': "You've hit your limit · resets 3pm"}})
+        self.assertEqual(self.only_a(p).returncode, 8)
+        self.assertEqual(self.status(p), 'INFRA')
+        (p / 'tasks/a/run').write_text('#!/bin/sh\necho "edited afterwards" > a.txt\n')
+        r = self.only_a(p)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.calls(), ['qa', 'qa'])                    # the command did not run again
+        qa = self.read(p, 'qa.input')
+        self.assertIn('```\n' + WRITES_A + '```\n', qa)
+        self.assertNotIn('edited afterwards', qa)
 
     def test_an_empty_result_stays_a_failure_that_is_not_retried(self):
         p = self.plan_of('#!/bin/sh\nexit 0\n')

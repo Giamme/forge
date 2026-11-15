@@ -445,7 +445,15 @@
           const yes = await UI.confirmInline(host, forgetConfirmText(learnings, keys, preview), { danger: true });
           if (!current() || !yes) return;
           const res = await UI.post(path, { ...base, dry_run: false });
-          if (!current()) return;
+          // Once sent, the forget happened whatever the screen did meanwhile (Read again, another checkout,
+          // another tab): its result line is kept for the next draw rather than dropped with this strip.
+          if (!current()) {
+            s.forgetNote = res && res.ok ? forgetResultLines(res)
+              : ['Could not forget: ' + ((res && (res.detail || res.error)) || 'no answer')];
+            if (res && res.ok) for (const key of keys) s.picked.delete(key);
+            if (s.tab === 'memories') await loadTab(true);
+            return;
+          }
           if (!res || !res.ok) { UI.outcome(host, res); return; }
           s.forgetNote = forgetResultLines(res);
           for (const key of keys) s.picked.delete(key);
