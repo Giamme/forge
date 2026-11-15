@@ -87,6 +87,8 @@ NOTE_MAX = 2000
 SESSION_MAX = 200
 # A different driver last seen longer ago than this is replaced without --take-over. Tests patch it.
 DRIVER_STALE_S = 12 * 3600
+HARNESS_ROLES = ('dwarf', 'qa')   # the tasks/<id>/<role>.harness records, as forge-schedule.py stops them
+GUARD_STOP_WAIT = 15.0            # seconds one forge-guard.py stop may take
 HARNESS_RE = re.compile(r'[a-z0-9._-]{1,40}')
 # Subcommands. Any other first word is a RUN_DIR for the default, show.
 COMMANDS = ('show', 'note', 'claim', 'resume', '-h', '--help')
@@ -901,11 +903,54 @@ def attempt_rewound(ctrl, plan, task):
     return True
 
 
+def stop_task_harnesses(plan, task):
+    """Stop what a dead scheduler left running for this task: forge-guard.py stop on each tasks/<id>/<role>.harness.
+
+    The next scheduler start does this for RUNNING tasks, but resume turns them INTERRUPTED first, and a
+    new attempt deletes the record without stopping its process. (ok, why not): not ok means a record could
+    not be stopped, and the worktree must not be reset under a worker that may still be writing to it.
+    """
+    guard = str(SCRIPTS / 'forge-guard.py')
+    tdir = os.path.join(str(plan), 'tasks', task)
+    for role in HARNESS_ROLES:
+        record = os.path.join(tdir, f'{role}.harness')
+        if not os.path.lexists(record):
+            continue
+        if os.path.islink(record) or not os.path.isfile(record):
+            return False, f'{role}.harness is not a regular file'
+        try:
+            result = subprocess.run([sys.executable, guard, 'stop', record], capture_output=True, text=True,
+                                    stdin=subprocess.DEVNULL, timeout=GUARD_STOP_WAIT)
+        except (OSError, subprocess.SubprocessError) as error:
+            return False, f'the {role} harness could not be stopped ({error.__class__.__name__})'
+        if result.returncode != 0 or os.path.lexists(record):
+            return False, f'the {role} harness could not be stopped'
+    return True, None
+
+
+def interrupted_event(plan, task):
+    """The run dataset's record of a task the scheduler would have marked INTERRUPTED. Fail-open."""
+    try:
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from forge_dataset.capture import point
+        point('sched_terminal', str(plan), task, dict(status='INTERRUPTED'))
+    except Exception:
+        pass
+
+
 def recover_task(ctrl, plan, wt_root, run_id, task, warn):
     """Save, reset and mark one stale RUNNING task. The result row, or None when it was skipped."""
     wt, why = worktree_guard(wt_root, run_id, task)
     if wt is None:
         warn(f'{task}: skipped, {why}')
+        return None
+    if scheduler_section(Plan(plan))['live']:
+        warn(f'{task}: skipped, a scheduler started while resume was running')
+        return None
+    stopped, why = stop_task_harnesses(plan, task)
+    if not stopped:
+        warn(f'{task}: skipped, {why}; the worktree is untouched')
         return None
     dest = os.path.join(str(plan), 'tasks', task, f'interrupted-{int(time.time())}.diff')
     try:
@@ -923,6 +968,7 @@ def recover_task(ctrl, plan, wt_root, run_id, task, warn):
         return row
     try:
         ctrl.write_atomic(str(plan), f'tasks/{task}/status', 'INTERRUPTED\n')
+        interrupted_event(plan, task)
         row['attempt_rewound'] = attempt_rewound(ctrl, str(plan), task)
     except (OSError, ctrl.Invalid) as error:
         warn(f'{task}: could not update its status or attempt counter ({error})')
@@ -961,6 +1007,8 @@ def cmd_resume(args):
         warnings.append(text)
         print(f'forge handoff: warning: {text}', file=sys.stderr)
 
+    if not (Path(plan) / 'tasks.tsv').is_file():
+        raise Usage(f'{plan}: resume needs a decomposed run (tasks.tsv)')   # before the claim: a solo run is not marked
     claim_run(plan, args.harness, session, args.take_over)   # Held (a refused claim) exits 3 before anything else
     out = dict(live=False, recovered=[], prepared=[], started=None, command=[])
     view = Plan(plan)
@@ -983,8 +1031,6 @@ def cmd_resume(args):
         run_id = view.line('run_id')
         return finish('a Fractal plan is not restarted here; recover its recorded executions:',
                       f'forge fractal resume {quote(run_id or plan)}')
-    if not (Path(plan) / 'tasks.tsv').is_file():
-        raise Usage(f'{plan}: resume needs a decomposed run (tasks.tsv)')
 
     ctrl, wt_root, run_id = control(), view.line('wt_root'), view.line('run_id')
     for task in tasks_section(view):
@@ -999,9 +1045,15 @@ def cmd_resume(args):
             if not result['ok']:
                 warn(f'{task["id"]}: could not be prepared for a retry: {result["message"]}')
 
-    flags = Plan(plan).json('run.flags.json')
+    flags_view = Plan(plan)
+    flags = flags_view.json('run.flags.json')
+    flags_unreadable = flags is None and flags_view.exists('run.flags.json')
     out['command'] = run_command(plan, flags)
     lines = [f'recovered {len(out["recovered"])} task(s), prepared {sum(1 for p in out["prepared"] if p["ok"])}']
+    if flags_unreadable:
+        lines += ['run.flags.json is not readable, so the run is not restarted. Complete it by hand:',
+                  '  ' + shlex.join(out['command'])]
+        return finish(*lines)
     if flags is None:
         lines += ['this run predates 0.19 (no run.flags.json), so it is not restarted. Complete it by hand:',
                   '  ' + shlex.join(out['command'])]

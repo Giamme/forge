@@ -407,6 +407,68 @@ class ResumeTests(unittest.TestCase):
         self.assertIn('fake run output', Path(started['log']).read_text())
         self.assertTrue(any(c.startswith(f'run {self.plan}') for c in self.calls()))
 
+    def leftover_worker(self, task, role='dwarf'):
+        """A process a dead scheduler left behind, and the harness record that names it (pid TAB identity)."""
+        process = subprocess.Popen(['sleep', '60'], start_new_session=True)
+        self.addCleanup(lambda: (process.kill(), process.wait()))
+        guard = str(ROOT / 'scripts' / 'forge-guard.py')
+        identity = subprocess.run([sys.executable, guard, 'identity', str(process.pid)], capture_output=True,
+                                  text=True).stdout.strip()
+        record = self.plan / 'tasks' / task / f'{role}.harness'
+        record.write_text(f'{process.pid}\t{identity}\n')
+        return process, record
+
+    def test_leftover_worker_is_stopped_before_the_reset(self):
+        wt = self.worktree('a')
+        self.dirty(wt)
+        self.task_files('a', attempt=1)
+        process, record = self.leftover_worker('a')
+        _, qa_record = self.leftover_worker('a', 'qa')
+        (self.plan / 'scheduler.live').write_text(json.dumps({'pid': 2 ** 22 + 12345, 'started': 1}))
+        result = self.resume('--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for _ in range(50):
+            if process.poll() is not None:
+                break
+            time.sleep(0.1)
+        self.assertIsNotNone(process.poll(), 'the leftover worker is still running')
+        self.assertFalse(record.exists())
+        self.assertFalse(qa_record.exists())
+        self.assertTrue(json.loads(result.stdout)['recovered'][0]['reset'])
+        self.assertFalse((wt / 'new.txt').exists())
+
+    def test_a_harness_that_cannot_be_stopped_leaves_the_worktree_alone(self):
+        wt = self.worktree('a')
+        self.dirty(wt)
+        tdir = self.task_files('a', attempt=1)
+        (tdir / 'dwarf.harness').mkdir()   # not a regular file: the guard cannot be asked to stop it
+        result = self.resume('--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['recovered'], [])
+        self.assertIn('harness', result.stderr)
+        self.assertEqual(self.status('a'), 'RUNNING')
+        self.assertEqual((wt / 'a.txt').read_text(), 'changed\n')
+        self.assertTrue((wt / 'new.txt').exists())
+
+    def test_a_solo_run_is_refused_before_it_is_claimed(self):
+        solo = self.root / 'solo'
+        solo.mkdir()
+        (solo / 'prompt.md').write_text('p\n')
+        (solo / 'repo').write_text(str(self.repo) + '\n')
+        result = subprocess.run([sys.executable, str(SCRIPT), 'resume', str(solo)], capture_output=True, text=True,
+                                env=self.env)
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse((solo / 'handoff.driver.json').exists())
+
+    def test_an_unreadable_flags_file_is_not_called_pre_019(self):
+        self.worktree('a')
+        self.task_files('a', attempt=1)
+        (self.plan / 'run.flags.json').write_text('{not json')
+        result = self.resume()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('not readable', result.stdout)
+        self.assertNotIn('predates', result.stdout)
+
     def test_usage_errors(self):
         self.assertEqual(self.resume('--harness', 'BAD HARNESS').returncode, 2)
         missing = subprocess.run([sys.executable, str(SCRIPT), 'resume', str(self.root / 'nope')], capture_output=True,
