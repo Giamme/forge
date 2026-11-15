@@ -364,6 +364,26 @@ window.ForgePanel = (() => {
     if (!solo) details(host, 'Waves', list(run.waves).map((ids, i) => `${i + 1}: ${list(ids).join(', ')}`).join('\n') || '—', 'waves');
     if (run.verification && run.verification.log_tail != null) details(host, 'Verification output', run.verification.log_tail, 'verification-output');
   }
+  // `after` is the predecessor; `followed_by` the plans that name this run. Run ids read as the
+  // other ids on the page (mono). The hash is the other run's page, the same shape app.js uses.
+  function chainRows(run) {
+    const rows = [];
+    const prev = run.after;
+    if (prev && typeof prev === 'object') {
+      const label = prev.run_id || prev.key;
+      if (label) rows.push(['After', link(label, '#/runs/' + encodeURIComponent(prev.key)), true]);
+    }
+    const next = list(run.followed_by).filter(item => item && (item.run_id || item.key));
+    if (next.length) {
+      const span = el('span');
+      next.forEach((item, i) => {
+        if (i) span.append(document.createTextNode(', '));
+        span.append(link(item.run_id || item.key, '#/runs/' + encodeURIComponent(item.key)));
+      });
+      rows.push(['Followed by', span, true]);
+    }
+    return rows;
+  }
   function runView(host, ctx) {
     const run = ctx.run, now = ctx.now;
     const tr = RM.timeRange(run, now);
@@ -385,10 +405,13 @@ window.ForgePanel = (() => {
     }
     const f = section(host, 'Finish');
     const F = RM.finishState(run);
+    // A chained plan: the one it starts from, and the ones that start from it. Each links to that
+    // run's page. A run in neither chain keeps this block as it was.
+    const chain = chainRows(run);
     if (run.kind === 'solo') {
       const soloTask = list(run.tasks)[0];
       const verdict = soloTask ? RM.taskVerdict(soloTask) : { text: null, status: 'unknown' };
-      fields(f, [['Verdict', chip(verdict.text, verdict.status)]]);
+      fields(f, [['Verdict', chip(verdict.text, verdict.status)], ...chain]);
     }
     else {
       const finalSel = { kind: 'final' }, openFinal = () => ctx.onSelect(finalSel);
@@ -400,7 +423,7 @@ window.ForgePanel = (() => {
       } else finalValue = link(F.final.status === 'NONE' ? 'not requested' : F.final.status, ctx.hash(finalSel), openFinal);
       fields(f, [['Integration', link(`${F.integration.merged}/${F.integration.total} merged`, ctx.hash({ kind: 'integration' }), () => ctx.onSelect({ kind: 'integration' }))],
         ['Verification', link(F.verification.status, ctx.hash({ kind: 'verification' }), () => ctx.onSelect({ kind: 'verification' }))],
-        ['Final review', finalValue]]);
+        ['Final review', finalValue], ...chain]);
       const attribution = RM.attributionLine(run.attribution);
       if (attribution) f.append(el('p', attribution, 'warn'));
       if (F.final.status === 'OUTDATED') muted(f, RM.reviewSinceLine(F.final));

@@ -367,6 +367,75 @@ def _brief(title):
     return title if len(title) <= _TITLE_CAP else title[:_TITLE_CAP] + '…'
 
 
+def _real_path(value):
+    try:
+        return os.path.realpath(value)
+    except (OSError, ValueError):
+        return os.fspath(value)
+
+
+def _first_line(directory, name):
+    """The first line of `directory/name`, or None when the file cannot be read.
+
+    One open. A missing file, a missing directory and a directory in the way are all None:
+    a chain link is never worth an exception.
+    """
+    try:
+        with open(os.path.join(os.fspath(directory), name), encoding='utf-8', errors='replace') as stream:
+            line = stream.readline()
+    except OSError:
+        return None
+    return line.strip() or None
+
+
+def _predecessor(reader):
+    """`{key, run_id, path}` of the plan this run follows, from its `after` file, or None.
+
+    `reader.line` is the one read: a run with no `after` file costs that one failed stat and
+    nothing else. A named directory that is gone still yields a key and a path, with `run_id`
+    null, so the chain stays visible.
+    """
+    named = reader.line('after')
+    if not named:
+        return None
+    path = _real_path(named)
+    return dict(key=run_key(path), run_id=_first_line(path, 'run_id'), path=path)
+
+
+def _note_followers(runs):
+    """Set `followed_by` on each listed run: `{key, run_id}` of the runs whose `after` names it.
+
+    Paths are the resolved ones `_predecessor` stored, so a symlink in an `after` file still matches.
+    """
+    by_predecessor = {}
+    for run in runs:
+        after = run.get('after')
+        if not after or not after.get('path'):
+            continue
+        by_predecessor.setdefault(after['path'], []).append(dict(key=run['key'], run_id=run['run_id']))
+    for run in runs:
+        run['followed_by'] = by_predecessor.get(run['path'], [])
+
+
+def _followers(listed, target):
+    """`{key, run_id}` of the listed runs whose `after` names `target`, in list order.
+
+    Reads each other dir's `after` file and, on a hit, its `run_id`. Does not summarize them.
+    Skips `target` itself: its `after` was already read to fill the predecessor, and a dir with
+    no `after` file must not be read twice.
+    """
+    want = _real_path(target)
+    found = []
+    for path, _source, _entry in listed:
+        if _real_path(path) == want:
+            continue
+        named = _first_line(path, 'after')
+        if named is None or _real_path(named) != want:
+            continue
+        found.append(dict(key=run_key(path), run_id=_first_line(path, 'run_id')))
+    return found
+
+
 def _summary(reader, source):
     result = dict(key=run_key(reader.path), path=str(reader.path), source=source, kind='plan',
                   run_id=reader.line('run_id'), repo=reader.line('repo'),
@@ -383,12 +452,14 @@ def _summary(reader, source):
     # Before snapshotting `updated`: these reads are files the summary read, so a newer
     # accepted.integration (or the published verdict / review.meta) moves the activity time.
     final_review_outdated = _published_outdated(reader, tasks)
+    after = _predecessor(reader)
     result.update(updated=reader.updated, created=_created(reader.path, _PLAN_START_FILES),
                   task_count=len(tasks), counts=counts,
                   task_statuses=[dict(id=task['id'], status=task['status'], difficulty=task['difficulty'] or None,
                                       title=_brief(task['title']), accepted=task['accepted']) for task in tasks],
                   models=sorted(set(dwarf_models) | set(qa_models)), dwarf_models=dwarf_models, qa_models=qa_models,
-                  scripted=scripted, final_review=final_review, final_review_outdated=final_review_outdated)
+                  scripted=scripted, final_review=final_review, final_review_outdated=final_review_outdated,
+                  after=after)
     return result, tasks
 
 
@@ -416,6 +487,8 @@ def _solo_summary(reader, source):
     # The task payload keeps a dwarf spec of `script`. The model lists do not: it is not a model.
     model_dwarf, model_qa = _model_name(dwarf), _model_name(qa)
     goal = reader.line('goal.txt')
+    # Before `updated` is copied out: a present `after` file is part of what the summary read.
+    after = _predecessor(reader)
     return dict(key=run_key(reader.path), path=str(reader.path), source=source, kind='solo',
                 run_id=reader.path.name, repo=reader.line('repo'), goal=goal,
                 decompose_level=None, verification_status=None, updated=reader.updated,
@@ -426,7 +499,7 @@ def _solo_summary(reader, source):
                 models=sorted({model_dwarf, model_qa} - {None}),
                 dwarf_models=[model_dwarf] if model_dwarf else [],
                 qa_models=[model_qa] if model_qa else [], scripted=1 if dwarf == 'script' else 0,
-                final_review=None, final_review_outdated=None)
+                final_review=None, final_review_outdated=None, after=after)
 
 
 def summarize(path, source='plan') -> dict:
@@ -3336,7 +3409,9 @@ class Catalog:
     def runs(self):
         listed, identities = batch(discover(**self.options))
         runs = [_with_repo(summarize(path, source), identities[entry[0]]) for path, source, entry in listed]
-        return sorted(runs, key=lambda item: item['updated'] if item['updated'] is not None else float('-inf'), reverse=True)
+        runs = sorted(runs, key=lambda item: item['updated'] if item['updated'] is not None else float('-inf'), reverse=True)
+        _note_followers(runs)
+        return runs
 
     def keys(self):
         """The keys of every run the list shows, without summarizing any of them."""
@@ -3371,7 +3446,9 @@ class Catalog:
         listed, identities = batch(discover(**self.options))
         for path, source, entry in listed:
             if run_key(path) == key:
-                return _with_repo(detail(path, source=source), identities[entry[0]])
+                result = _with_repo(detail(path, source=source), identities[entry[0]])
+                result['followed_by'] = _followers(listed, result['path'])
+                return result
         return None
 
     def task(self, key, task_id):
