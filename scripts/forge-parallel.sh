@@ -2136,6 +2136,10 @@ do_task_body() (
     # already judged.
     if [ -s "$tdir/changes.prev.diff" ] && cmp -s "$tdir/changes.diff" "$tdir/changes.prev.diff" \
         && [ "$(cat "$tdir/retry_findings.source" 2>/dev/null)" != bounce ]; then
+      # A retry its CLI cancelled before it changed anything did not keep the code on purpose.
+      if grep -qx 'class=cancelled' "$tdir/dwarf.infra" 2>/dev/null; then
+        infra_stop "$tdir" "$id" dwarf "$attempt"; return 8
+      fi
       echo FAIL > "$tdir/status"
       : > "$tdir/noretry"
       echo "The retry changed nothing: the diff is byte-identical to the previous attempt." \

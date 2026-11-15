@@ -158,6 +158,18 @@ class InfraTests(unittest.TestCase):
         self.assertFalse((p / 'tasks/a/noretry').exists())
         self.assertIn('class=cancelled', (p / 'tasks/a/infra.txt').read_text())
 
+    def test_a_retry_its_cli_cancelled_before_changing_anything_is_paused_not_refused_as_identical(self):
+        cli = self.bin / 'grok'; cli.write_text(fixtures.FAKE); cli.chmod(0o755)
+        p = self.plan_of([('a', '-', 'a.txt')], dwarf='grok:high')
+        self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — wrong.'},
+                       'a.dwarf.2': {'stdout': GROK_CANCELLED, 'no_edit': True},
+                       'a.dwarf.3': {'stdout': GROK_CANCELLED, 'no_edit': True}})   # the at-once retry
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 1)
+        self.assertEqual(r.returncode, 8, r.stdout)
+        self.assertEqual(self.text(p, 'tasks/a/status'), 'INFRA')
+        self.assertFalse((p / 'tasks/a/noretry').exists())
+        self.assertNotIn('byte-identical', (p / 'tasks/a/qa.last').read_text())
+
     def test_a_solo_dwarf_its_cli_cancelled_before_changing_anything_is_an_infrastructure_stop(self):
         cli = self.bin / 'grok'; cli.write_text(fixtures.FAKE); cli.chmod(0o755)
         self.scenario({'change.dwarf.*': {'stdout': GROK_CANCELLED, 'no_edit': True}})
