@@ -122,6 +122,8 @@
     const start = ctx.filter || {};
     const s = { data: null, error: null, filter: { repo: start.repo || '', run: start.run || '', status: 'disk', kind: 'all' }, timer: null, seq: 0, loading: false,
       controls: false, selected: new Set(), branches: false, busy: false };
+    // Table roots whose replaceWith remounts the select-all. ForgeTable keeps the root private and swaps it on redraw.
+    const armedTables = new WeakSet();
     const LEDE_COPY = 'Every worktree forge created, in any repository it knows, with what state it is in and the command that removes it safely. Commands are only copied: this page runs nothing.';
 
     const head = el('div', undefined, 'wt-head');
@@ -327,6 +329,19 @@
       text.replaceChildren(box);
       syncSelectAll();
     }
+    // Sort, drag, Alt+arrow, the Columns menu and Reset all rebuild the header from `c.label` and swap the table root
+    // with replaceWith. Nothing tells us, so the box mounted after render would vanish until the next full draw.
+    function armRedraw(node) {
+      if (!node || armedTables.has(node) || typeof node.replaceWith !== 'function') return;
+      const orig = node.replaceWith;
+      armedTables.add(node);
+      node.replaceWith = function (...nodes) {
+        const out = orig.apply(this, nodes);
+        for (const next of nodes) armRedraw(next);
+        if (s.controls && host.isConnected) mountSelectAll();
+        return out;
+      };
+    }
     function drawNow() {
       pruneSelection();
       syncFilters(); drawNotes();
@@ -342,11 +357,11 @@
       const id = 'worktrees';
       const cols = s.controls ? [selectColumn].concat(columns) : columns;
       tableHost.replaceChildren();
-      root.ForgeTable.render(tableHost, { id, label: 'Worktrees', columns: cols, rows, className: 'wt-grid', rowClass: r => 'wt-row-' + r.status,
+      const table = root.ForgeTable.render(tableHost, { id, label: 'Worktrees', columns: cols, rows, className: 'wt-grid', rowClass: r => 'wt-row-' + r.status,
         // a cell cut short by its width says the whole of itself on hover
         onRow: (_row, tr) => { for (const td of tr.children) if (!td.classList.contains('wt-command-col') && !td.title) td.title = td.textContent; },
         prefs: ctx.tablePrefs ? ctx.tablePrefs(id) : null, savePrefs: p => ctx.saveTablePrefs && ctx.saveTablePrefs(id, p) });
-      if (s.controls) { mountSelectAll(); syncBar(); }
+      if (s.controls) { armRedraw(table); mountSelectAll(); syncBar(); }
     }
     // A redraw never pulls a command out from under someone selecting or copying it (#115).
     const draw = () => { if (UI.guard) UI.guard(host, drawNow); else drawNow(); };
@@ -400,6 +415,8 @@
         const data = dry.data || {};
         const n = answerRows(data).filter(r => r.status === 'would-remove').length;
         outcomeHost.replaceChildren(el('p', summaryText(data)));
+        // Nothing would be removed: the summary is the answer. Do not ask, and do not send the real call.
+        if (n === 0) return;
         const yes = await UI.confirmInline(outcomeHost, confirmQuestion(n), { danger: true });
         if (!yes || !host.isConnected) return;
         const real = await UI.post('/api/worktrees/remove', body(false)) || { ok: false };

@@ -91,6 +91,24 @@ class Element {
     this.parent = null;
     this.isConnected = false;
   }
+  // ForgeTable redraws by swapping its root. Without this, a header click throws and the select-all bug cannot show.
+  replaceWith(...nodes) {
+    const parent = this.parent;
+    const prepared = [];
+    for (const n of nodes) {
+      if (n == null) continue;
+      if (n.parent) n.parent.children = n.parent.children.filter(c => c !== n);
+      if (parent) { n.parent = parent; n.isConnected = parent.isConnected !== false; }
+      else { n.parent = null; n.isConnected = false; }
+      prepared.push(n);
+    }
+    if (!parent) { this.isConnected = false; return; }
+    const at = parent.children.indexOf(this);
+    this.parent = null;
+    this.isConnected = false;
+    if (at < 0) parent.children.push(...prepared);
+    else parent.children.splice(at, 1, ...prepared);
+  }
   contains(node) { return node === this || this.children.some(c => c.contains && c.contains(node)); }
   setAttribute(name, value) { this.attrs[name] = String(value); }
   getAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null; }
@@ -430,6 +448,70 @@ test('controls put a checkbox and Remove only on removable rows, and select the 
     assert.deepEqual(shown.map(b => b._path), ['/s/.forge-worktrees/lib']);
     assert.equal(shown[0].checked, true);
     assert.equal(buttons(host, 'Copy').length, 1);
+  } finally { stop(); }
+});
+
+function selectAllBox(host) {
+  const th = host.querySelector('th[data-col="select"]');
+  const box = th && th.querySelector('[aria-label="Select all removable worktrees"]');
+  assert.ok(box, 'select-all stays in the Select header');
+  return box;
+}
+function clickHeader(host, col) {
+  const btn = host.querySelector(`th[data-col="${col}"] button`);
+  assert.ok(btn, col + ' header');
+  fire(btn, 'click');
+}
+
+test('the select-all checkbox survives sort, a column move and reset', async () => {
+  const stop = guardTimers();
+  try {
+    const rows = [
+      wt('/r/.forge-worktrees/fin'),
+      wt('/r/.forge-worktrees/bad', { status: 'failed' }),
+      wt('/r/.forge-worktrees/dirt', { status: 'dirty' }),
+    ];
+    const host = await renderScreen({ controls: true, rows, onPost: () => { throw new Error('posted'); } });
+    const fin = host.querySelector('[aria-label="Select /r/.forge-worktrees/fin"]');
+    fin.checked = true; fire(fin, 'change');
+    assert.equal(selectAllBox(host).indeterminate, true);
+    clickHeader(host, 'status');
+    clickHeader(host, 'status');
+    assert.equal(selectAllBox(host).indeterminate, true, 'a second sort still redraws through the replacement root');
+    assert.equal(host.querySelector('[aria-label="Select /r/.forge-worktrees/fin"]').checked, true);
+    fire(host.querySelector('[aria-label="Move Status left"]'), 'click');
+    assert.equal(selectAllBox(host).indeterminate, true);
+    fire(buttons(host, 'Reset')[0], 'click');
+    const all = selectAllBox(host);
+    assert.equal(all.indeterminate, true);
+    all.checked = true; fire(all, 'change');
+    assert.equal(buttons(host, 'Remove selected (2)')[0].disabled, false);
+    assert.equal(host.querySelector('[aria-label="uncommitted changes"]').checked, false);
+    assert.equal(posts(host).length, 0);
+  } finally { stop(); }
+});
+
+test('a dry run that would remove nothing does not confirm or send the real call', async () => {
+  const stop = guardTimers();
+  try {
+    const host = await renderScreen({
+      controls: true, rows: [wt('/r/.forge-worktrees/fin')],
+      onPost: () => ({ ok: true, status: 200, data: { ok: true, dry_run: true, rows: [
+        { path: '/r/.forge-worktrees/fin', status: 'skipped', reason: 'uncommitted changes' },
+      ] }, error: null, detail: null, result: null }),
+    });
+    pressRemove(host, '/r/.forge-worktrees/fin');
+    await settle();
+    assert.equal(posts(host).length, 1);
+    assert.equal(posts(host)[0].body.dry_run, true);
+    assert.equal(host.querySelector('.ui-confirm'), null);
+    assert.equal(host.textContent.includes('Remove 0 worktrees?'), false);
+    assert.match(host.textContent, /0 worktrees would be removed/);
+    assert.match(host.textContent, /Skipped: \/r\/\.forge-worktrees\/fin \(uncommitted changes\)/);
+    assert.equal(host._calls.some(c => c.path === '/api/worktrees?refresh=1'), false);
+    assert.equal(buttons(host, 'Remove')[0].disabled, false);
+    await settle();
+    assert.equal(posts(host).length, 1);
   } finally { stop(); }
 });
 
