@@ -30,7 +30,10 @@ run goes on, with the same exit code.
   *Retry now* for a stopped or failed task (optionally on a chosen model), which shows its queued
   request until the scheduler applies or refuses it. Each infrastructure pause gets a line: what
   is paused, why, its tasks and the time left. Each is one `forge control` call; the change is
-  confirmed first and logged in `control.log`.
+  confirmed first and logged in `control.log`. A `NEEDS_INPUT` task has an answer field instead of
+  *Retry now*: *Send answer* runs `forge control retry --answer` (queued while a scheduler is live,
+  otherwise prepared for the next `run`), with no confirm. The copyable `retry --answer` command
+  stays either way.
 - **Brief questions and summaries:** forge-ui can answer a brief question, propose a change from an
   answered parked `wave` or `plan` question, and approve or reject that proposal. It can also turn
   summaries on or off, for a run or one task. Each one is a forge command: `forge brief answer`,
@@ -45,6 +48,17 @@ run goes on, with the same exit code.
   filed as GitHub issues or dismissed through `forge issues`.
 - **Delete a run:** a dry run, then `forge runs rm`: the dataset keeps the traces, an archive is
   written unless declined, and clean worktrees and unchecked-out branches can go with it.
+- **Worktrees:** every worktree forge created, plus a safe command to copy (never `--force`).
+  When the server can write, *Remove* on a row and *Remove selected* (checkboxes and select-all
+  on the filtered view) run `forge worktrees rm` (`--actor ui`) after one dry run and a confirm.
+  *Delete merged branches too* is `--branches` (`git branch -d` on a finished merged branch).
+  A row that cannot go shows why. The per-run `forge runs rm` line stays a command to copy.
+- **Disk:** the `forge du --all` report, and the `forge runs compact --logs` command to copy.
+  *Compact* (one run) and *Compact all* dry-run first, say how much space would be freed, then
+  confirm. That command records `run_compacted` and takes no actor.
+- **Memories** (Projects): each learning's state, as `forge memory learnings` reports it.
+  *Forget selected* dry-runs `forge memory forget` on the checkout shown (`--actor ui`), then
+  confirms with the learnings and the `memory.md` lines that go.
 - **Settings:** `forge config show` in one view: the registry, decision-model gates (each says what it does, when, what it sends and what `on` changes, and **How to set this up** opens a setup guide), profiles,
   the per-repo files, the dataset and `FORGE_*` variables, with edits where the server can write.
 - **Export a run:** one HTML file to share that opens without forge-ui; prompts, diffs, reports
@@ -106,8 +120,10 @@ limit's reset is known. A pause that needs the user says "needs you" with the fi
 sideways move is a "moved sideways" line under Models. A task at `NEEDS_DECISION` is waiting, not
 failed: its inspector gives the reasons, the attempts against the cap, the review ledger, and the
 text of `tasks/<id>/decision.md`. forge-ui shows those commands and does not run them, and it does
-not offer Retry now. A group at `NEEDS_DECISION` is the same: the group page shows
-`forge group retry` and does not run it. A run whose unfinished tasks are all waiting is `WAITING`.
+not offer Retry now. A `NEEDS_INPUT` task is the exception: the inspector can send the answer
+(`forge control retry --answer`) and still copies the command. A group at `NEEDS_DECISION` still only shows
+`forge group retry` and does not run it. A run whose
+unfinished tasks are all waiting is `WAITING`.
 
 The 3D view loads three.js from cdn.jsdelivr.net when first used; offline, the page shows the
 same run in 2D. The full page description is in [ui/README.md](../ui/README.md).
@@ -168,6 +184,12 @@ bash <skill_dir>/scripts/forge-solo.sh "$FORGE_RUN" --repo "$REPO" --dwarf <spec
 - `forge ui status` exits 0 when the server runs and 1 when not; `--json` prints
   `{"running": ...}` with pid, port, url, version, build, started and log.
 - `forge ui stop` stops it; it exits 0 when nothing was running.
+- When the server can write, the page's own actions are forge commands too, each with `--actor ui`
+  except compact: Worktrees *Remove* is `forge worktrees rm`, Memories *Forget selected* is
+  `forge memory forget`, a waiting task's *Send answer* is `forge control retry --answer-file -`,
+  and Disk *Compact* / *Compact all* is `forge runs compact --logs`. Removing, forgetting and
+  compacting dry-run and ask first; sending an answer does not. `--read-only` hides those buttons
+  and leaves every copy button. See [forge-ui](../docs/forge-ui.md#controls).
 
 | Variable | Meaning |
 |---|---|
@@ -209,7 +231,9 @@ later rerun with `--no-ui`.
 
 **Changing needs one.** The server never writes a run file, a repo or a config itself: every
 change is a call of forge's own CLI (`forge control`, `forge brief`, `forge issues`, `forge runs rm`,
-`forge config`), so validation, locks and the audit log are the CLI's. Each server start makes a
+`forge runs compact`, `forge worktrees rm`, `forge memory forget`, `forge config`), so validation,
+locks and the audit log are the CLI's. Reading a run, the worktree list, the disk report and a
+project's memories stays a read. Each server start makes a
 random token and puts it in the page it serves; every change must send it back, from a `Host` of
 `127.0.0.1` or `localhost` and with an `Origin` equal to that host when the browser sends one, or
 it is refused before any CLI runs. There are no CORS headers, so another site in your browser
@@ -217,6 +241,7 @@ can neither send nor read a change. Any process that can fetch the page can read
 it can read the runs, so on a shared machine start the server **read-only**: `--read-only`
 (`python3 -m forge_ui`) or `FORGE_UI_READONLY=1` (also for `forge ui open`). A read-only server
 issues no token and answers every change with 405; its `/api/health` says `"controls": false`.
+No Remove, Forget selected, Compact or Send answer button is shown, and every copy button stays.
 `forge ui open` never reuses a server in the other mode: it replaces it, as it does one running
 old code, and `forge ui status` shows the mode.
 
