@@ -64,7 +64,8 @@ class Plan:
     """A run dir, read without ever blocking or writing. warnings collects what could not be read."""
 
     def __init__(self, path):
-        self.path = Path(path)
+        # absolute, so the next commands still work from another directory
+        self.path = Path(os.path.abspath(path))
         self.warnings = []
 
     def warn(self, text):

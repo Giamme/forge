@@ -123,6 +123,14 @@ class ShowTests(HandoffCase):
         commands = [step['command'] for step in self.data(plan)['next']]
         self.assertEqual(commands, [f'forge handoff resume {plan}'])
 
+    def test_relative_run_dir_gives_absolute_commands(self):
+        plan = self.make([('a', 'MERGED'), ('b', 'FAIL')])
+        result = self.run_cli(plan.name, '--json')  # cwd is self.root
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual(data['run']['plan'], str(plan))
+        self.assertEqual([step['command'] for step in data['next']], [f'forge handoff resume {plan}'])
+
     def test_stale_running_task(self):
         plan = self.make([('a', 'RUNNING'), ('b', 'MERGED')])
         (plan / 'scheduler.live').write_text(json.dumps({'pid': dead_pid(), 'started': 1}))
