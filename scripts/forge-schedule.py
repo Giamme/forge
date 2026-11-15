@@ -277,7 +277,7 @@ def _write_atomic(plan: object, text: str, *parts: str) -> bool:
     try:
         path = _resolve(plan, *parts)
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix='.' + parts[-1] + '.')
-        with os.fdopen(fd, 'w') as handle:
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
             os.fchmod(handle.fileno(), 0o644)
             handle.write(text)
         os.replace(tmp, path)
@@ -481,6 +481,7 @@ def stop_harnesses(plan: object, names: object, groups: object = ()) -> None:
 GROUP_KEY = 'group:'   # the `active` key of a running group review: a prefix no task id takes (#140)
 REQUESTS = 'control.requests'
 REQUEST_MAX = 64 * 1024
+ANSWER_MAX = 8000   # characters of a NEEDS_INPUT answer a request may carry (#147)
 # What `forge control retry --decide` may carry: retry=N (1 to 20) or threshold=Pn.
 DECISION = re.compile(r'retry=(?:[1-9]|1[0-9]|20)|threshold=P[0-3]')
 # NEEDS_INPUT is in neither: a task stopped for the user's answer resumes only through
@@ -543,6 +544,9 @@ def read_request(plan: object, name: str) -> dict | None:
         return None
     if not isinstance(request.get('approved', False), bool):
         return None
+    answer = request.get('answer')
+    if answer is not None and (not isinstance(answer, str) or not 1 <= len(answer) <= ANSWER_MAX or '\0' in answer):
+        return None
     actor = request.get('actor')
     if actor is not None and actor not in ('ui', 'cli'):
         return None
@@ -554,7 +558,8 @@ def settle_request(plan: object, name: str, request: dict | None, outcome: str, 
     verb = request.get('verb') if request else None
     task = request.get('task') if request else None
     entry = {'at': time.time(), 'actor': 'scheduler', 'action': verb, 'task': task, 'key': None,
-             'value': request.get('dwarf') if request else None, 'previous': None, 'request': name,
+             'value': ('answer' if request.get('answer') is not None else request.get('dwarf')) if request else None,
+             'previous': None, 'request': name,
              'outcome': outcome, 'reason': reason}
     try:
         fd = os.open(_resolve(plan, 'control.log'), os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o644)
@@ -1273,9 +1278,18 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             return 'refused', 'the task is merged'
         if state == 'INFRA':
             return 'refused', 'an infrastructure stop is resumed by the scheduler itself'
-        if state == 'NEEDS_INPUT':
+        answer = request.get('answer')
+        if answer is not None:
+            # A NEEDS_INPUT task's answer (#147), the text `forge-parallel.sh retry --answer` takes.
+            if state != 'NEEDS_INPUT':
+                return 'refused', (name + ' is ' + state + ', not waiting for an answer; an answer only resumes a '
+                                   + 'NEEDS_INPUT task')
+            if dwarf or request.get('decide'):
+                return 'refused', 'an answer is not combined with --dwarf or --decide'
+        elif state == 'NEEDS_INPUT':
             return 'refused', (name + ' is waiting for an answer: forge-parallel.sh retry ' + str(plan)
-                               + ' ' + name + ' --answer \u2026')
+                               + ' ' + name + ' --answer \u2026 (on a live run: forge control retry ' + str(plan)
+                               + ' ' + name + ' --answer \u2026)')
         decide, reason, approved = request.get('decide'), request.get('reason'), request.get('approved') is True
         if decide and state != 'NEEDS_DECISION':
             return 'refused', name + ' is ' + state + ', not waiting for a decision; --decide only decides a NEEDS_DECISION task'
@@ -1289,10 +1303,15 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             if not (reason or '').strip() or not approved:
                 return 'refused', name + ' is waiting for your decision: a decision needs --reason and --approved'
             decision = (['--decide', decide] if decide else []) + ['--reason', reason, '--approved']
-        elif state not in RETRYABLE:
+        elif state != 'NEEDS_INPUT' and state not in RETRYABLE:
             return 'refused', 'a ' + state + ' task is not retried'
         if state == 'STALE' and dwarf:
             return 'refused', name + ' is STALE: it re-runs with the changed prompt on the same implementer; --dwarf does not apply'
+        if answer is not None:
+            # Atomic, and before the preparation: it takes the answer only when it is newer than the question,
+            # and keeps it when it then refuses, so the same answer can be retried.
+            if not _write_atomic(plan, answer + '\n', 'tasks', name, 'answer.md'):
+                return 'refused', 'the answer could not be written to tasks/' + name + '/answer.md'
         # A STALE task spent no attempt: it is prepared with the new prompt, not as a failed one (#150).
         command = ['/bin/bash', script, '_prepare_retry', str(plan), name] + (
             ['--prompt'] if state == 'STALE' else (['--dwarf', dwarf] if dwarf else []) + decision)
