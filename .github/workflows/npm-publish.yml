@@ -1,0 +1,55 @@
+# Publishes @giamme/forge to npm when a GitHub Release is published.
+# No token: npm trusted publishing (OIDC). One-time setup on npmjs.com, package @giamme/forge →
+# Settings → Trusted publishing → GitHub Actions: owner Giamme, repository forge, workflow
+# npm-publish.yml. Provenance is attached automatically.
+# Re-run for a tag by hand: Actions → npm publish → Run workflow (tag, e.g. v0.19).
+name: npm publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. v0.19)"
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      # Trusted publishing needs npm 11.5.1 or later.
+      - run: npm install -g npm@^11.5.1 && npm --version
+      - name: The tag, VERSION and package.json agree
+        run: |
+          ver="$(tr -d '[:space:]' < VERSION)"
+          pkg="$(node -p "require('./package.json').version")"
+          [ "$TAG" = "v$ver" ] || { echo "tag $TAG is not v$ver (VERSION)"; exit 1; }
+          case "$pkg" in "$ver"|"$ver".0) ;; *) echo "package.json $pkg does not match VERSION $ver"; exit 1 ;; esac
+          echo "PKG_VERSION=$pkg" >> "$GITHUB_ENV"
+      - name: Skip a version npm already has
+        id: seen
+        run: |
+          if npm view "@giamme/forge@$PKG_VERSION" version >/dev/null 2>&1; then
+            echo "@giamme/forge@$PKG_VERSION is already on npm"; echo "skip=1" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish
+        if: steps.seen.outputs.skip != '1'
+        run: npm publish
