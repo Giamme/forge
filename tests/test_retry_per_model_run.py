@@ -170,8 +170,9 @@ class RetryPerModelRunTests(unittest.TestCase):
             ('1', 'FAIL', 'luna'), ('2', 'FAIL', 'luna'),
             ('3', 'FAIL', 'sonnet'), ('4', 'FAIL', 'sonnet'),
             ('5', 'FAIL', 'opus'), ('6', 'FAIL', 'opus')])
-        self.assertIn('escalating from luna to sonnet', result.stdout)
-        self.assertIn('escalating from sonnet to opus', result.stdout)
+        self.assertIn('escalating from luna to sonnet after 2 failed attempts on one model', result.stdout)
+        self.assertIn('escalating from sonnet to opus after 2 failed attempts on one model', result.stdout)
+        self.assertNotIn('--escalate-after 0 turns this off', result.stdout)
         # The count in the line is the failures on that rung before the retry was prepared,
         # and the rung is the one it was failing on, not the one the retry moves to.
         for line in ('automatic retry 1, 1 of 2 failed on luna',
