@@ -33,6 +33,7 @@ from pathlib import Path
 
 from . import SKILL, connect, dataset_dir, record
 from .export import Runs, Store
+from .names import registry_models  # noqa: F401  (forge-route, forge-compare and efforts import it from here)
 from .routing import tasks as routing_tasks, wilson
 
 MIN_HISTORY = 5
@@ -42,23 +43,6 @@ OFF = {'0', 'off', 'false', 'no'}
 
 
 # --- the registry, as forge-route.py reads it (that module's name is not importable) ---
-
-def registry_models() -> dict:
-    """{alias: {harness: model id}}; the first row of an alias is its default."""
-    out = {}
-    path = Path(os.environ.get('FORGE_REGISTRY') or str(SKILL / 'registry.tsv'))
-    try:
-        lines = path.read_text().splitlines()
-    except OSError:
-        return out
-    for line in lines:
-        if not line.strip() or line.startswith('#'):
-            continue
-        cells = line.split('\t')
-        if len(cells) >= 3:
-            out.setdefault(cells[0], {}).setdefault(cells[1], cells[2])
-    return out
-
 
 def resolve(spec, registry: dict) -> tuple:
     """(model id, effort or None) a dwarf spec such as `sol`, `sol:high` or `sol:high:codex` runs."""

@@ -22,6 +22,7 @@ from collections import defaultdict
 
 from . import connect, dataset_dir
 from .export import SURVIVES_AT, Runs, Store
+from .names import dispatch_name
 from .routing import wilson
 
 MIN_LANDED = 10
@@ -68,7 +69,7 @@ def report(runs: Runs, *, horizon_days: int = HORIZON_DAYS, repo: str = None) ->
                         if r['attempt'] == attempt and (r.get('d') or {}).get('scope') != 'group']
         passed = {}
         for r in sorted(reviews, key=lambda r: r['ts']):
-            name = r['d'].get('alias') or r['d'].get('model')
+            name = dispatch_name(r['d'])
             if r['d'].get('verdict') == 'PASS' and name:
                 passed[name] = r['d']
         if not passed:

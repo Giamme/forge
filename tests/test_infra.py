@@ -14,7 +14,7 @@ import time
 import unittest
 
 import test_forge as fixtures
-from test_dispatch import CODEX_CAPACITY, CODEX_NO_ROUTE
+from test_dispatch import CODEX_CAPACITY, CODEX_NO_ROUTE, GROK_CANCELLED
 from test_infra_causes import module as script_module
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,9 +53,9 @@ class InfraTests(unittest.TestCase):
     scenario = fixtures.ForgeTests.scenario
     calls = fixtures.ForgeTests.calls
 
-    def plan_of(self, rows):
+    def plan_of(self, rows, dwarf='sol'):
         p = self.root / 'plan'; p.mkdir()
-        (p / 'tasks.tsv').write_text(''.join(f'{i}\t{d}\tlow\t{f}\tsol\topus\t{i.upper()}\n' for i, d, f in rows))
+        (p / 'tasks.tsv').write_text(''.join(f'{i}\t{d}\tlow\t{f}\t{dwarf}\topus\t{i.upper()}\n' for i, d, f in rows))
         for i, _d, _f in rows:
             t = p / 'tasks' / i; t.mkdir(parents=True)
             (t / 'prompt.md').write_text('Implement change. REQUIREMENT_SENTINEL TASK_' + i)
@@ -145,6 +145,28 @@ class InfraTests(unittest.TestCase):
         self.assertEqual(r.returncode, 8, r.stdout)
         self.assertEqual(self.text(p, 'tasks/a/status'), 'INFRA')
         self.assertIn('class=empty', (p / 'tasks/a/infra.txt').read_text())
+
+    def test_a_dwarf_its_cli_cancelled_before_changing_anything_is_paused_not_failed(self):
+        # grok cancels a headless session at a tool call it cannot approve, and still exits 0.
+        # With no diff there is nothing to review: an infrastructure stop, no attempt spent.
+        cli = self.bin / 'grok'; cli.write_text(fixtures.FAKE); cli.chmod(0o755)
+        p = self.plan_of([('a', '-', 'a.txt')], dwarf='grok:high')
+        self.scenario({'a.dwarf.*': {'stdout': GROK_CANCELLED, 'no_edit': True}})
+        r = self.run_script('forge-parallel.sh', 'run', p)
+        self.assertEqual(r.returncode, 8, r.stdout)
+        self.assertEqual(self.text(p, 'tasks/a/status'), 'INFRA')
+        self.assertFalse((p / 'tasks/a/noretry').exists())
+        self.assertIn('class=cancelled', (p / 'tasks/a/infra.txt').read_text())
+
+    def test_a_solo_dwarf_its_cli_cancelled_before_changing_anything_is_an_infrastructure_stop(self):
+        cli = self.bin / 'grok'; cli.write_text(fixtures.FAKE); cli.chmod(0o755)
+        self.scenario({'change.dwarf.*': {'stdout': GROK_CANCELLED, 'no_edit': True}})
+        run = self.root / 'solo'; run.mkdir(); (run / 'prompt.md').write_text('Implement change. REQUIREMENT_SENTINEL\n')
+        r = self.run_script('forge-solo.sh', run, '--repo', self.repo, '--dwarf', 'grok:high')
+        self.assertEqual(r.returncode, 8, r.stdout)
+        self.assertIn('cancelled by its CLI', r.stdout)
+        self.assertFalse((run / 'verdict').exists())                     # not NOCHANGES
+        self.assertEqual(self.calls(), ['dwarf'])
 
     def test_an_ordinary_nonzero_exit_is_still_just_an_error(self):
         p = self.plan_of([('a', '-', 'a.txt')])

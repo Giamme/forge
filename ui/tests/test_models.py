@@ -71,6 +71,13 @@ class Builder:
 
 
 class ModelsTests(unittest.TestCase):
+    def test_a_moved_alias_names_its_old_model_by_the_versioned_alias(self):
+        # terra moved to gpt-6.1-terra; a run recorded on gpt-5.6-terra is terra-5.6 on the leaderboard.
+        self.assertEqual(models._named(dict(alias='terra', model='gpt-5.6-terra', harness='codex')), 'terra-5.6')
+        self.assertEqual(models._named(dict(alias='terra', model='gpt-6.1-terra', harness='codex')), 'terra')
+        self.assertEqual(models._named(dict(alias='opus', model='opus', harness='claude')), 'opus')
+        self.assertIsNone(models._named(None))
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)

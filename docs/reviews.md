@@ -48,6 +48,16 @@ file) is retried the same way: its verdict counts for nothing, but the committed
 Untracked files a reviewer leaves in its copy, such as a test run's `__pycache__/`, do not void
 the review.
 
+### A large task diff
+
+A task review inlines its diff up to 400 KB, the whole-run review's limit. Over it, the prompt
+holds the diff's stat and the reviewer reads the diff in its working copy, which holds the attempt
+as one commit over its base (`git diff HEAD~1 HEAD`), as the whole-run review and `adopt` already
+do. If the reviewer's harness still refuses the prompt as too large (codex's `input_too_large`,
+claude's "Prompt is too long"), the task ends `ERROR` with a note that names the cause and the way
+out: a retry would send the same prompt, so review the commit with `forge-parallel.sh adopt`, or
+split the task.
+
 ## Retrying a failed task
 
 ```bash

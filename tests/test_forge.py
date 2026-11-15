@@ -31,7 +31,7 @@ p = (pathlib.Path(a[a.index('--prompt-file')+1]).read_text() if '--prompt-file' 
 eq = [x for x in a if x.startswith('--resume=')]
 cont = (eq[0].split('=', 1)[1] if eq else a[a.index('--resume')+1] if '--resume' in a
         else a[a.index('--')+1] if 'resume' in a and '--' in a else a[a.index('resume')+1] if 'resume' in a else None)
-qa = ('--disallowed-tools' in a or '--deny' in a or '-s' in a or 'review' in a
+qa = ('--disallowed-tools' in a or '--deny' in a or '-s' in a or 'sandbox_mode="read-only"' in a or 'review' in a
       or (cont is not None and '--permission-mode' not in a))
 name = 'a.txt' if 'TASK_a' in p else ('b.txt' if 'TASK_b' in p else ('c.txt' if 'TASK_c' in p else ('d.txt' if 'TASK_d' in p else 'change.txt')))
 # A shadow review (forge-shadow.py) is a review the run never reads; it gets its own role so
@@ -55,6 +55,8 @@ if os.environ.get('SCENARIO'):
  table = json.loads(sp.read_text()) if sp.exists() else {}
  for k in (task+'.'+role+'.'+str(n), task+'.'+role+'.*', '*.'+role+'.'+str(n), '*.'+role+'.*'):
   if k in table: sc = table[k]; break
+if os.environ.get('TMPS'):
+ with open(os.environ['TMPS'], 'a') as f: f.write(role+' '+os.environ.get('TMPDIR', '')+' '+str(os.path.isdir(os.environ.get('TMPDIR', '')))+'\\n')
 if os.environ.get('CWDS'):
  with open(os.environ['CWDS'], 'a') as f: f.write(os.getcwd()+'\\n')
 # 'detached': a tool command in a session of its own, holding a child, as a test runner's web server

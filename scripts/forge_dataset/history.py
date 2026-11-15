@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 
 from . import connect, dataset_dir, enabled, is_side_role
+from .names import dispatch_name
 
 _HEAD_MAX = 400
 _TEXT_MAX = 2000
@@ -74,7 +75,7 @@ def load() -> dict:
             if task is None and parent in attempt_task:
                 task, attempt = task or attempt_task[parent][0], attempt or attempt_task[parent][1]
             role = d.get('role')
-            spec = d.get('alias') or d.get('model')
+            spec = dispatch_name(d)
             if d.get('effort') and spec and ':' not in str(spec):
                 spec = '%s:%s' % (spec, d['effort'])
             found = d.get('findings')

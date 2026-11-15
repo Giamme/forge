@@ -119,6 +119,18 @@ and [Claude headless guide](https://code.claude.com/docs/en/headless).
 `--approve-for-me` and `--dangerously-bypass-approvals-and-sandbox` are mutually exclusive,
 and `--approve-for-me` additionally conflicts with an explicit `-s/--sandbox`.
 
+**A read-only role's temp dir.** Every read-only role (QA, including shadow, group, whole-run and
+adopt reviews, the planner and side dispatches) gets a temp dir of its own, `<run dir>/.<role>-tmp.*`,
+outside the repository, exported as `TMPDIR`, `TMP` and `TEMP` and removed when the dispatch
+ends. Test runners such as Vitest stop with `EPERM` without one. On codex the read-only sandbox
+allows no write at all, so a read-only role is passed as config overrides:
+`-c 'sandbox_mode="read-only"' -c 'default_permissions="forge-read-only"'
+-c 'permissions.forge-read-only.filesystem={"/"="read", "<temp dir>"="write"}'`. The profile reads
+everything and writes only the temp dir, so the repository and its fingerprint stay as they were
+(probed with `codex sandbox -P` and `codex debug prompt-input` on 0.164). A codex without permission
+profiles keeps the plain read-only sandbox from the first override. Claude, openclaude and grok
+reviewers write through Bash anyway, and the variable is what they need.
+
 **Native review** (`codex exec review`) has two constraints worth knowing:
 
 - Its scope flags (`--uncommitted`, `--base`, `--commit`) are **mutually exclusive with a
@@ -310,8 +322,11 @@ GitHub Copilot) as a second row.
   `cancelled`), still exiting 0.
   - **What forge records:** class `cancelled` in `<role>.infra`, with the refused command, and
     a note in the run output.
-  - **It is not an infrastructure stop:** the dwarf's diff so far still goes to review, and a
-    reviewer cut off before its verdict is UNKNOWN, which re-runs only the review.
+  - **It is not an infrastructure stop when there is work to judge:** the dwarf's diff so far
+    still goes to review, and a reviewer cut off before its verdict is UNKNOWN, which re-runs
+    only the review. A dwarf cancelled before it changed anything is an infrastructure stop
+    (status `INFRA`, no attempt spent), not a failed attempt with an empty diff.
+  - **Also seen:** a multi-line scratch script starting `tmp=$(mktemp -d)`.
   - **Untested:** whether `--permission-mode dontAsk` (deny without cancelling) together with
     explicit Edit/Write/Bash allows would avoid the cancel. Nothing changes until that is
     proven live.
@@ -367,7 +382,7 @@ Probed 2026-10-22 (claude 2.1.307, codex 0.162.0):
 | Harness | Argv | Notes |
 |---|---|---|
 | claude, openclaude | the fresh QA argv plus `--resume <id>` | Continues from a different working directory and keeps the same session id. Permission flags and the read-only restriction stay; the prompt is still on stdin. |
-| codex | `codex exec resume <id> --json -m MODEL --skip-git-repo-check -o LAST [-c model_reasoning_effort=…] -c 'sandbox_mode="read-only"' -` | Continues from a different working directory. `exec resume` has **no `-C/--cd` and no `-s/--sandbox`**, so the dispatch's own `cd "$REPO"` sets the directory and the sandbox is passed as a config override (the quotes are TOML). The first turn's sandbox was inherited when probed (read-only); the override makes it explicit. Under `--yolo` the bypass flag replaces the override. |
+| codex | `codex exec resume <id> --json -m MODEL --skip-git-repo-check -o LAST [-c model_reasoning_effort=…] -c 'sandbox_mode="read-only"' [the temp-dir profile overrides] -` | Continues from a different working directory. `exec resume` has **no `-C/--cd` and no `-s/--sandbox`**, so the dispatch's own `cd "$REPO"` sets the directory and the sandbox is passed as a config override (the quotes are TOML). The first turn's sandbox was inherited when probed (read-only); the override makes it explicit. Under `--yolo` the bypass flag replaces the override. |
 
 The prompt is preceded by a short fixed preamble (this continues your earlier review, the work has changed,
 the working directory is now `<repo>`, re-read files, this round's instructions win). `<role>.prompt` includes

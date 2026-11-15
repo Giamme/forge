@@ -356,6 +356,8 @@ git -C "$REPO" diff --binary "$START" "$END" -- . ':(exclude).forge' > "$RUN/cha
 if [ ! -s "$RUN/changes.diff" ]; then
   # An exit-0 harness with an empty final message and no changes never really ran.
   grep -qx 'class=empty' "$RUN/dwarf.infra" 2>/dev/null && die "the dwarf returned nothing (empty output, no changes) — an infrastructure failure, not a refusal; fix the cause and run again (see $RUN/dwarf.infra)" 8
+  # Nor did one its CLI cancelled before it changed anything.
+  grep -qx 'class=cancelled' "$RUN/dwarf.infra" 2>/dev/null && die "the dwarf was cancelled by its CLI before it changed anything — an infrastructure failure, not a refusal: $(sed -n 's/^detail=//p' "$RUN/dwarf.infra"); fix the cause and run again (see $RUN/dwarf.infra)" 8
   note "the dwarf produced no changes at all — see $RUN/dwarf.last for what it said"
   echo NOCHANGES > "$RUN/verdict"
   exit 5

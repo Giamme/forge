@@ -179,15 +179,15 @@ class DeriveTests(unittest.TestCase):
         plan = make_plan(waves=self.WAVES)
         groups = fg.derive(plan)
         self.assertEqual([(g.id, g.review, g.qa, g.members, g.title, g.goal) for g in groups],
-                         [('w1', 'task', '-', ('a', 'b', 'c'), '-', '-'),
-                          ('w3', 'task', '-', ('e', 'f'), '-', '-')])
+                         [('w1', 'task', '-', ('a', 'b', 'c'), 'Wave 1', '-'),
+                          ('w3', 'task', '-', ('e', 'f'), 'Wave 3', '-')])
 
     def test_split_at_max_tasks_in_tasks_order(self):
         tasks = [('t%d' % i, '-', 'low', 'f%d' % i, '-', '-', '-') for i in range(7)]
         plan = make_plan(tasks, waves=[(3, 't%d' % i) for i in reversed(range(7))])
         groups = fg.derive(plan, max_tasks=3)
-        self.assertEqual([(g.id, g.members) for g in groups],
-                         [('w3a', ('t0', 't1', 't2')), ('w3b', ('t3', 't4', 't5'))])  # w3c has one task: dropped
+        self.assertEqual([(g.id, g.members, g.title) for g in groups],
+                         [('w3a', ('t0', 't1', 't2'), 'Wave 3a'), ('w3b', ('t3', 't4', 't5'), 'Wave 3b')])  # w3c: one task, dropped
         groups = fg.derive(plan)
         self.assertEqual([(g.id, len(g.members)) for g in groups], [('w3a', 6)])
 
@@ -331,10 +331,10 @@ class CliTests(unittest.TestCase):
         self.assertEqual(self.run_cli('of', str(plan), 'e'), (0, 'w3\tgroup\tqa-f\n', ''))
         self.assertEqual(self.run_cli('of', str(plan), 'c'), (0, '', ''))
         code, out, _ = self.run_cli('show', str(plan))
-        self.assertEqual((code, out.splitlines()[0]), (0, 'w1\tgroup\tqa-b\ta,b\t-\t-'))
+        self.assertEqual((code, out.splitlines()[0]), (0, 'w1\tgroup\tqa-b\ta,b\tWave 1\t-'))
         code, out, _ = self.run_cli('show', str(plan), '--json')
         self.assertEqual(json.loads(out)[1], dict(id='w3', review='group', qa='qa-f', members=['e', 'f'],
-                                                  title='-', goal='-'))
+                                                  title='Wave 3', goal='-'))
 
     def test_resolve_without_groups_tsv_leaves_the_plan_alone(self):
         plan = make_plan()

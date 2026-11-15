@@ -171,3 +171,11 @@ or absent = the built-in default). It applies only when neither `--timeout` nor
 elsewhere.
 
 Adding a model is one line in this file. Nothing else needs to change.
+
+**Moving an alias to a newer model.** Keep the old model under a versioned alias, as
+`terra-5.6` keeps gpt-5.6-terra now that `terra` is gpt-6.1-terra. Each dispatch records
+the model id it ran, so the statistics that count by alias (`forge dataset reviewers`, review
+history, forge-ui's model leaderboard) count an old `terra` dispatch under `terra-5.6`, the
+alias that resolves to its model today, and never under the newer `terra`. Without a versioned
+alias for the old model, its dispatches stay counted with the alias's new ones. Statistics that count by
+model id (routing, forecasts, effort notes, shadow pairs) were already separate.

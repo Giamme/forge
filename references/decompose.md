@@ -321,7 +321,8 @@ Where a row comes from:
   `qa` always `-`. A planner group may have one member. The planner never sets `review=group`.
 - `plan --groups waves` makes one group per computed wave that has at least two tasks, named
   `w1`, `w2`, and so on. A wave larger than the max splits in `tasks.tsv` order into `w3a`,
-  `w3b`, and so on. A leftover single task is dropped.
+  `w3b`, and so on. A leftover single task is dropped. Each gets the title `Wave 3` (`Wave 3a`)
+  and no goal: nothing in a computed wave says what it is for.
 - `--group-review` is only valid with `--groups waves`. Without it, `plan` exits 2:
   `--group-review goes with --groups waves (it sets the review of the groups waves derives)`.
   The derived groups then have `review=group`. High-difficulty tasks stay out and keep their
@@ -330,6 +331,12 @@ Where a row comes from:
   as it is.
 
 `plan` computes waves, then validates, resolves each review group's `qa`, and freezes.
+The approval table shows each group's title and goal, `(no goal)` when it has none, and one line
+naming the groups without a goal. `forge group set PLAN GID --goal "…"` (or `--title`) writes it
+and freezes the groups again, under the control lock and logged in `control.log` (actor `cli`).
+It refuses (exit 3) when `groups.tsv` or a member's deps or files already differ from what `plan`
+froze, since freezing again would accept those edits too. It works on a live run: a title or a
+goal changes no membership, and the next group review or brief prompt uses the new text.
 
 ### Rules for `review=group`
 
