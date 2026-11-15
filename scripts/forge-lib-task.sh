@@ -963,7 +963,7 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf [decided]]
   # (default 3) the next attempt goes a tier up in the user's own pools instead of repeating
   # the dispatch whose fourth try passes least often, or the task stops with a split
   # suggestion.
-  local cur next rc esc_source="" pinned="" has_pin=0
+  local cur next rc esc_source="" pinned="" has_pin=0 per_model=""
   cur="$(field "$T" "$id" dwarf)"
   [ -f "$tdir/escalation.pin" ] && [ ! -L "$tdir/escalation.pin" ] && has_pin=1
   if [ -n "$newdwarf" ]; then

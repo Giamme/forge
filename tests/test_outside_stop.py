@@ -58,10 +58,35 @@ class OutsideStopCase(unittest.TestCase):
         self.assertIn('make this task depend on the owner', decision)
         self.assertIn('merge the two rows into one task', decision)
         self.assertIn('--decide retry=N', decision)  # the existing choices stay
+        # The plan section and the choices keep the blank line the other decision reasons have.
+        self.assertRegex(decision, r'Attempts used so far: .*\n\nFiles outside this task:\n')
+        self.assertRegex(decision, r'\n\nChoices \(each needs your reason')
         outside = json.loads(self.read(p, 'outside.json'))
         self.assertEqual(outside, [{'path': 'a.txt', 'owner': 'a', 'owners': ['a'], 'owner_status': 'MERGED'}])
         self.assertFalse((p / 'tasks/b/escalation.next').exists())
         self.assertFalse((p / 'tasks/b/escalation.stop').exists())
+
+    def test_a_decision_that_cannot_be_written_does_not_escalate(self):
+        # decision.md is written through .decision.md.tmp. A directory there makes the write fail
+        # after the review is in the ledger. Falling through would append that review again and,
+        # with --escalate-after 1, leave the escalation marker this stop exists to prevent.
+        p = self.plan_of()
+        (p / 'tasks' / 'b' / '.decision.md.tmp').mkdir()
+        self.scenario({'b.qa.1': {'verdict': 'FAIL', 'findings': finding('a.txt:1', '{outside=a.txt}')}})
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 0, '--escalate-after', 1)
+        b = p / 'tasks' / 'b'
+        names = sorted(x.name for x in b.iterdir())
+        qa = (b / 'qa.last').read_text()[:500] if (b / 'qa.last').exists() else 'NONE'
+        self.fail('status=%r files=%s outside=%s ledger=%s qa=%r stdout_has_write=%s' % (
+            (b / 'status').read_text().strip() if (b / 'status').exists() else None,
+            names, (b / 'outside.json').exists(), (b / 'ledger.tsv').exists(), qa,
+            'could not write decision.md' in r.stdout))
+        self.assertEqual(self.read(p, 'status').strip(), 'FAIL')
+        self.assertFalse((p / 'tasks' / 'b' / 'decision.md').exists())
+        self.assertFalse((p / 'tasks' / 'b' / 'escalation.next').exists())
+        self.assertFalse((p / 'tasks' / 'b' / 'escalation.stop').exists())
+        self.assertEqual(len((p / 'tasks' / 'b' / 'ledger.tsv').read_text().splitlines()), 1)
+        self.assertEqual(self.dwarf_calls(), 2)  # a once, b once: the failed stop is not a retry
 
     def test_a_path_no_task_declares_stops(self):
         p, _ = self.run_b(finding('docs/x.md:1', '{outside=docs/x.md}'))
