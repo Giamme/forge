@@ -1787,6 +1787,94 @@ PY
   return 0
 }
 
+# A scripted task (#142) has the literal `script` in its dwarf column: its command is the executable
+# tasks/<id>/run, and its qa column reviews the result.
+task_is_script() { # task_is_script <plan> <id>
+  [ "$(field "$1/tasks.tsv" "$2" dwarf)" = script ]
+}
+
+# A fenced block of a file (its last <chars> characters when given), the fence longer than any run of
+# backticks inside it so the content cannot close it early.
+script_fenced() { # script_fenced <file> [chars]
+  python3 - "$1" "${2:-}" <<'PY'
+import re, sys
+text = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+if sys.argv[2]:
+    text = text[-int(sys.argv[2]):]
+fence = '`' * max([3] + [len(m) + 1 for m in re.findall(r'`+', text)])
+print(fence)
+print(text, end='' if text.endswith('\n') or not text else '\n')
+print(fence)
+PY
+}
+
+# Runs a scripted task's command from the task's base and records the run. Returns 0 when the command
+# exited 0 (the caller goes on to the snapshot and the review); otherwise the status and qa.last are
+# written and it returns 1: no review, no noretry (a person may edit run, and the next attempt resets
+# the worktree).
+run_script_task() { # run_script_task <plan> <id> <tdir> <wt> <base>
+  local PLAN="$1" id="$2" tdir="$3" wt="$4" base="$5" run="$3/run"
+  local limit="${FORGE_TIMEOUT:-2700}" pid rc=0 timed_out=0 started deadline waited=0 hex rec exit_json note_txt
+  case "$limit" in ''|*[!0-9]*|0) limit=2700 ;; esac
+  local cmd=("$run")
+  if [ ! -f "$run" ] || [ ! -x "$run" ]; then
+    echo FAIL > "$tdir/status"
+    echo "tasks/$id/run is missing or not executable." > "$tdir/qa.last"
+    note "$id: tasks/$id/run is missing or not executable"; return 1
+  fi
+  head -c 2 "$run" | grep -q '^#!' || cmd=(/bin/bash "$run")
+  # Every attempt starts from the base, so the cumulative diff is what the command produced. The branch
+  # history stays; .forge is forge's own.
+  if ! { git -C "$wt" read-tree -u --reset "$base" && git -C "$wt" clean -fdq -e .forge; } >"$tdir/script.reset.out" 2>&1; then
+    echo ERROR > "$tdir/status"
+    note "$id: could not reset the worktree to its base — see $tdir/script.reset.out"; return 1
+  fi
+  : > "$tdir/script.log"
+  started="$(python3 -c 'import time; print(time.time())')"
+  # exec keeps the pid: forge-guard.py session makes it a process group leader, so pid is the group id.
+  ( cd "$wt" && export FORGE_TASK_ID="$id" FORGE_PLAN="$PLAN" FORGE_WORKTREE="$wt" FORGE_BASE_REF="$base" \
+      && exec python3 "$SKILL_DIR/scripts/forge-guard.py" session -- "${cmd[@]}" ) </dev/null >"$tdir/script.log" 2>&1 &
+  pid=$!
+  deadline=$(( SECONDS + limit ))
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$SECONDS" -ge "$deadline" ]; then timed_out=1; break; fi
+    sleep 0.2
+  done
+  if [ "$timed_out" = 1 ]; then
+    # TERM the group, KILL after 10 s whatever is left of it (timeout(1) is not on macOS).
+    kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+    while kill -0 -- "-$pid" 2>/dev/null && [ "$waited" -lt 50 ]; do sleep 0.2; waited=$(( waited + 1 )); done
+    kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+  else
+    wait "$pid"; rc=$?
+    # What the command left running in its group is stopped with it.
+    python3 "$SKILL_DIR/scripts/forge-guard.py" reap "$pid" "$tdir/script.orphans" >/dev/null 2>&1 || true
+  fi
+  exit_json="$rc"; [ "$timed_out" = 0 ] || exit_json=""
+  hex="$(python3 -c 'import uuid; print(uuid.uuid4().hex[:16])')"
+  rec="$tdir/attempts/script-$hex"
+  if mkdir -p "$rec" && cp "$tdir/script.log" "$rec/script.log" && cp "$run" "$rec/run"; then
+    python3 - "$rec/metrics.json" "$started" "$exit_json" <<'PY' || note "$id: the script run was not recorded in attempts/"
+import json, os, sys, time
+path, started, code = sys.argv[1:4]
+data = {'role': 'script', 'harness': 'script', 'exit_code': int(code) if code else None,
+        'wall_started': float(started), 'elapsed_s': {'total': time.time() - float(started)}}
+with open(path + '.tmp', 'w') as handle:
+    json.dump(data, handle, indent=2)
+os.replace(path + '.tmp', path)
+PY
+  else
+    note "$id: the script run was not recorded in attempts/"
+  fi
+  [ "$timed_out" = 1 ] || [ "$rc" != 0 ] || return 0
+  if [ "$timed_out" = 1 ]; then note_txt="The script timed out after ${limit}s."; else note_txt="The script exited $rc."; fi
+  { echo "$note_txt"; echo; echo "Its output (last 3000 characters of script.log):"; script_fenced "$tdir/script.log" 3000; } > "$tdir/qa.last"
+  echo FAIL > "$tdir/status"
+  note "$id: ${note_txt%.} — not reviewed (see $tdir/script.log)"
+  return 1
+}
+
 do_task_body() (
   local PLAN="${1:?}" id="${2:?}"
   local T="$PLAN/tasks.tsv" REPO run_id base wt br tdir attempt resume=""
@@ -1863,12 +1951,23 @@ do_task_body() (
     return 1
   fi
 
+  local is_script=0
+  task_is_script "$PLAN" "$id" && is_script=1
   if [ -z "$resume" ]; then
     # Persist each source separately; QA receives complete context once.
     write_capsule "$PLAN" "$id" dwarf >/dev/null
     cp "$tdir/capsule.md" "$tdir/baseline.capsule"
     # What this attempt's implementer is given, to tell later whether the planner edited it (#150).
     record_dispatched_inputs "$tdir" || { rm -f "$tdir/prompt.dispatched"; note "$id: could not record the dispatched prompt; a later edit will not be detected"; }
+    if [ "$is_script" = 1 ]; then
+      # A scripted task (#142) runs its command here instead of the implementer below (memory,
+      # dispatch, gates). The snapshot and everything after it are the same.
+      forge_metric_phase dispatch
+      run_script_task "$PLAN" "$id" "$tdir" "$wt" "$base" || return 1
+    fi
+    # The implementer's part, from here to the snapshot, belongs to model tasks only (no reindent, to
+    # keep the diff of this section readable).
+    if [ "$is_script" != 1 ]; then
     # --task lets Jev narrow the injected slice to facts that bear on THIS task. Without
     # it, or with Jev off, the full role slice is injected exactly as before.
     /bin/bash "$MEMORY" inject "$REPO" dwarf --task "$tdir/prompt.md" \
@@ -1971,6 +2070,7 @@ do_task_body() (
     guard_after_dwarf "$wt" "$tdir" "$id"
     # Before the snapshot, so a dwarf that only asked a question (and changed nothing) still reaches it.
     forge_post_dwarf_gates "$PLAN" "$id" "$tdir" "$wt" "$attempt" || return 0
+    fi
     forge_metric_phase snapshot
     # Capture the real diff, including new files, then commit on the task branch.
     # Diffed against the task's pinned base rather than the branch head, so a retry
@@ -1992,6 +2092,10 @@ do_task_body() (
       fi
       echo FAIL > "$tdir/status"
       : > "$tdir/noretry"
+      if [ "$is_script" = 1 ]; then
+        echo "The script produced no changes." > "$tdir/qa.last"
+        note "$id: the script produced an empty diff"; return 1
+      fi
       echo "The dwarf produced no changes at all." > "$tdir/qa.last"
       note "$id: dwarf produced an empty diff"; return 1
     fi
@@ -2016,7 +2120,7 @@ do_task_body() (
     fi
 
     (cd "$wt" && git -c user.name=forge -c user.email=forge@local \
-        commit --allow-empty -q -m "forge($id) attempt $attempt: $(field "$T" "$id" title)") >/dev/null 2>&1 || {
+        commit --allow-empty -q -m "forge($id) attempt $attempt: $(field "$T" "$id" title)$([ "$is_script" != 1 ] || echo ' (script)')") >/dev/null 2>&1 || {
       echo ERROR > "$tdir/status"; return 1;
     }
     reviewed="$(git -C "$wt" rev-parse HEAD)" || return 1
@@ -2124,6 +2228,7 @@ do_task_body() (
   # A finding sweep's fix task gets the narrow review: one FIXED / NOT FIXED line per finding.
   local qa_kind=task
   [ ! -f "$tdir/sweep.json" ] || qa_kind=sweep
+  [ "$is_script" != 1 ] || qa_kind=script
   # QA uses the dispatch-time ownership and baseline, never later merge state.
   /bin/bash "$MEMORY" inject "$REPO" qa --task "$tdir/prompt.md" \
       --run-dir "$tdir" > "$tdir/qa.memory"
@@ -2131,6 +2236,11 @@ do_task_body() (
     python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --retry-source "$(cat "$tdir/retry_findings.source" 2>/dev/null || echo review)" ${prompt_extra[@]+"${prompt_extra[@]}"} --memory "$tdir/dwarf.memory" --memory "$tdir/qa.memory"
     python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind "$qa_kind"
     echo
+    if [ "$is_script" = 1 ]; then
+      echo "The command (tasks/$id/run):"; script_fenced "$tdir/run"
+      echo; echo "Its output (last 3000 characters of script.log):"; script_fenced "$tdir/script.log" 3000
+      echo
+    fi
     [ ! -f "$PLAN/sweep_ahead" ] || python3 "$SKILL_DIR/scripts/forge-sweep.py" ahead "$PLAN" "$id" --role qa 2>/dev/null
     cat "$tdir/review.deps"
     [ -s "$tdir/failfirst.txt" ] || [ -s "$tdir/prereview.txt" ] || echo "Forge ran no tests of its own on this attempt, so nothing here stands in for yours."
