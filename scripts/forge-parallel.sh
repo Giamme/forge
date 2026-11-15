@@ -1862,8 +1862,10 @@ do_task_body() (
         && git diff --cached --binary "$base" -- . ":(exclude).forge") > "$tdir/changes.diff" 2>/dev/null || { echo ERROR > "$tdir/status"; return 1; }
     if [ ! -s "$tdir/changes.diff" ]; then
       # A harness that exited 0 with an empty final message and changed nothing did not
-      # decline the task; it never really ran (login, quota, a dropped connection).
-      if grep -qx 'class=empty' "$tdir/dwarf.infra" 2>/dev/null; then
+      # decline the task; it never really ran (login, quota, a dropped connection). Nor did one
+      # its CLI cancelled first (grok, at a tool call a headless run cannot approve): a pause,
+      # not a failed attempt marked never to retry.
+      if grep -qxE 'class=(empty|cancelled)' "$tdir/dwarf.infra" 2>/dev/null; then
         infra_stop "$tdir" "$id" dwarf "$attempt"; return 8
       fi
       echo FAIL > "$tdir/status"

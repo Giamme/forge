@@ -54,7 +54,8 @@
 #               provider_down, network, or an empty answer; forge_infra.py says what each
 #               means): the model never got to do its work. $ROLE.infra says which.
 #               A DWARF that exits 0 with an empty final message also writes $ROLE.infra
-#               (class=empty) but still exits 0; consult the file only if the diff is empty.
+#               (class=empty) but still exits 0, as does one its CLI cancelled (class=cancelled);
+#               consult the file only if the diff is empty.
 #             9 the session was not continued (--continue-session only): the harness cannot
 #               continue one, or it ran and failed. The caller may dispatch fresh; dispatch
 #               never does, so each dispatch keeps its own record. $ROLE.continue says why.

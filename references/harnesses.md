@@ -322,8 +322,11 @@ GitHub Copilot) as a second row.
   `cancelled`), still exiting 0.
   - **What forge records:** class `cancelled` in `<role>.infra`, with the refused command, and
     a note in the run output.
-  - **It is not an infrastructure stop:** the dwarf's diff so far still goes to review, and a
-    reviewer cut off before its verdict is UNKNOWN, which re-runs only the review.
+  - **It is not an infrastructure stop when there is work to judge:** the dwarf's diff so far
+    still goes to review, and a reviewer cut off before its verdict is UNKNOWN, which re-runs
+    only the review. A dwarf cancelled before it changed anything is an infrastructure stop
+    (status `INFRA`, no attempt spent), not a failed attempt with an empty diff.
+  - **Also seen:** a multi-line scratch script starting `tmp=$(mktemp -d)`.
   - **Untested:** whether `--permission-mode dontAsk` (deny without cancelling) together with
     explicit Edit/Write/Bash allows would avoid the cancel. Nothing changes until that is
     proven live.
