@@ -130,7 +130,185 @@ plans_make_integration() { # plans_make_integration <repo> <branch> <commit> <wt
 
 # Per-plan option files carried to a derived plan. The cost-bearing choices a user made
 # for this plan apply to the plan made from it; `planner` does not (nothing plans again).
-PLANS_OPTION_FILES="no_ripwire no_memory yolo_dwarf yolo_qa reviewer_session reviewer_session_rate reviewer_session_tasks implementer_session fast pre_review_tests pre_review_parallel qa_threshold timeout verify_retries verify_cmd verify_parallel setup_cmd final_qa shadow_qa shadow_rate explore escalate_after retry_per_model fractal-routing.json fractal-selection.json jev-selection.json profile.json routed.json retro_mode brief brief_scope brief_model summaries summaries_model groups.tsv groups.frozen group_max_tasks group_max_diff_kb"
+PLANS_OPTION_FILES="no_ripwire no_memory yolo_dwarf yolo_qa reviewer_session reviewer_session_rate reviewer_session_tasks implementer_session fast pre_review_tests pre_review_parallel qa_threshold timeout verify_retries verify_cmd verify_parallel setup_cmd final_qa shadow_qa shadow_rate explore escalate_after retry_per_model fractal-routing.json fractal-selection.json jev-selection.json profile.json routed.json retro_mode brief brief_scope brief_model summaries summaries_model groups.tsv groups.frozen group_max_tasks group_max_diff_kb after"
+
+# --- plan --after: a plan that starts from another plan's integration branch (#143) -------
+# $PLAN/after holds the previous plan's absolute path; $PLAN/integration.base the commit its work
+# started from (the previous plan's accepted.integration). The integration branch of this plan is
+# created there at plan time, so `run` finds it and reuses it.
+
+# The repository a checkout belongs to: its main working tree, as a physical path. The same for the
+# main checkout and every linked worktree; repo.identity names it once the checkout is gone.
+plans_repo_root() { # plans_repo_root <checkout> <plan dir>
+  local root=""
+  root="$(git -C "$1" worktree list --porcelain 2>/dev/null | awk '/^worktree /{ sub(/^worktree /, ""); print; exit }')"
+  if [ -z "$root" ] && [ -f "$2/repo.identity" ]; then
+    root="$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1])).get("root") or "")' "$2/repo.identity" 2>/dev/null)"
+  fi
+  [ -n "$root" ] || root="$1"
+  (cd "$root" 2>/dev/null && pwd -P) || printf '%s\n' "$root"
+}
+
+# The pid of a plan's live scheduler (scheduler.live names it), else nothing.
+plans_live_pid() { # plans_live_pid <plan dir>
+  local pid
+  [ -f "$1/scheduler.live" ] || return 0
+  pid="$(python3 -I -c 'import json, sys; print(int(json.load(open(sys.argv[1]))["pid"]))' "$1/scheduler.live" 2>/dev/null)" || return 0
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && printf '%s\n' "$pid"
+  return 0
+}
+
+# plans_chain_early <plan> <plan's arguments...>: settles --after before plan writes anything.
+# Refuses (exit 2) with nothing written; otherwise sets CHAIN_PREV (the previous plan's absolute
+# path) and CHAIN_BASE (the commit to start from), both empty when plan has no new --after to
+# apply: none given, or the one the plan already records.
+plans_chain_early() {
+  local plan="$1" given="" repo_flag="" want="" arg have_after=0
+  shift
+  CHAIN_PREV=""; CHAIN_BASE=""; CHAIN_MOVE=0
+  for arg in "$@"; do
+    case "$want" in
+      --after) given="$arg"; have_after=1; want=""; continue ;;
+      --repo) repo_flag="$arg"; want=""; continue ;;
+    esac
+    want=""
+    case "$arg" in --after|--repo) want="$arg" ;; esac
+  done
+  [ "$want" != --after ] || die "--after needs a plan directory" 2
+  [ "$have_after" = 1 ] || return 0
+  [ -n "$given" ] || die "--after needs a plan directory" 2
+  [ -d "$given" ] || die "--after '$given' is not a directory" 2
+  local prev prev_phys old="" merged=0
+  prev="$(plans_abs "$given")"; prev_phys="$(cd "$given" && pwd -P)"
+  [ "$prev_phys" != "$(cd "$plan" && pwd -P)" ] || die "--after: a plan cannot come after itself" 2
+  [ -s "$prev/tasks.tsv" ] && [ -s "$prev/run_id" ] && [ -s "$prev/repo" ] \
+    || die "--after '$given' is not a plan directory (it needs tasks.tsv, run_id and repo)" 2
+  # Once a task of this plan has merged, its base is fixed: the predecessor it records again is a
+  # plain re-plan, any other is refused.
+  local m
+  for m in "$plan"/tasks/*/merged; do [ ! -e "$m" ] || merged=1; done
+  [ ! -s "$plan/after" ] || old="$(head -1 "$plan/after")"
+  if [ "$merged" = 1 ] && [ -n "$old" ]; then
+    if [ "$old" = "$prev" ] || { [ -d "$old" ] && [ "$(cd "$old" && pwd -P)" = "$prev_phys" ]; }; then return 0; fi
+    die "this plan already follows '$old' and has merged work: --after '$given' would move it to another base" 2
+  fi
+
+  local repo="$repo_flag"
+  [ -n "$repo" ] || repo="$(cat "$plan/repo" 2>/dev/null)"
+  [ -n "$repo" ] || die "plan needs --repo the first time" 2
+  [ -d "$repo" ] || die "--repo '$repo' is not a directory" 2
+  local prepo; prepo="$(head -1 "$prev/repo")"
+  [ "$(plans_repo_root "$repo" "$plan")" = "$(plans_repo_root "$prepo" "$prev")" ] \
+    || die "--after '$given' belongs to another repository ($prepo), not $repo" 2
+
+  local prid id st bad="" ibr tip acc
+  prid="$(head -1 "$prev/run_id")"
+  for id in $(all_ids "$prev/tasks.tsv"); do
+    st="$(task_status "$prev" "$id")"
+    [ "$st" = MERGED ] || bad="${bad:+$bad, }$id ($st)"
+  done
+  [ -z "$bad" ] || die "plan $prid is not finished: not merged yet: $bad" 2
+  ibr="forge/$prid-integration"
+  tip="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$ibr")" \
+    || die "plan $prid's integration branch $ibr is missing" 2
+  acc="$(head -1 "$prev/accepted.integration" 2>/dev/null)"
+  [ -n "$acc" ] || die "plan $prid has no accepted.integration: run it first" 2
+  [ "$tip" = "$acc" ] \
+    || die "$ibr is at $(plans_short "$tip") but plan $prid accepted $(plans_short "$acc"): adopt it into that plan first (forge-parallel.sh adopt $prev --head --reason \"...\")" 2
+  local pid; pid="$(plans_live_pid "$prev")"
+  [ -z "$pid" ] || die "plan $prid is running (scheduler pid $pid): wait for it to stop" 2
+  # This plan's own integration branch: a re-plan finds it where it belongs, or the name is taken.
+  local rid mine
+  if [ -s "$plan/run_id" ]; then rid="$(head -1 "$plan/run_id")"; else rid="$(plans_run_id "$plan")"; fi
+  [ -n "$rid" ] || die "'$plan' has no usable name: its run id is the directory name minus a leading 'forge-'" 2
+  git check-ref-format "refs/heads/forge/$rid-integration" >/dev/null 2>&1 \
+    || die "'$rid' cannot be part of a branch name; use a plan directory name of plain letters, digits, '-' and '_'" 2
+  if mine="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/forge/$rid-integration")"; then
+    if [ "$mine" != "$acc" ]; then
+      # Its own branch, still where this plan started and holding nothing of its work (a re-plan after the
+      # plan it follows moved, or after another --after), is moved to the new base. Any other branch of
+      # that name is somebody's work: it is never reset.
+      local oldbase=""
+      [ ! -s "$plan/integration.base" ] || oldbase="$(head -1 "$plan/integration.base")"
+      if [ "$merged" = 0 ] && [ -n "$oldbase" ] && [ "$mine" = "$oldbase" ]; then
+        if git -C "$repo" worktree list --porcelain 2>/dev/null | grep -qx "branch refs/heads/forge/$rid-integration"; then
+          die "forge/$rid-integration is checked out in a worktree: remove that worktree (git worktree remove) before planning from another base" 2
+        fi
+        CHAIN_MOVE=1
+      else
+        die "forge/$rid-integration already exists at $(plans_short "$mine"), not at $(plans_short "$acc") where plan $prid ended: pick another plan directory name or delete that branch" 2
+      fi
+    fi
+  fi
+  CHAIN_PREV="$prev"; CHAIN_BASE="$acc"
+}
+
+# Writes what plans_chain_early settled: after, integration.base, and the integration branch.
+plans_chain_store() { # plans_chain_store <plan> <repo> <run id>
+  local plan="$1" repo="$2" rid="$3"
+  [ -n "${CHAIN_PREV:-}" ] || return 0
+  local oldbase=""
+  [ ! -s "$plan/integration.base" ] || oldbase="$(head -1 "$plan/integration.base")"
+  if [ "${CHAIN_MOVE:-0}" = 1 ]; then
+    git -C "$repo" branch -f "forge/$rid-integration" "$CHAIN_BASE" >/dev/null 2>&1 \
+      || die "could not move forge/$rid-integration to $(plans_short "$CHAIN_BASE")" 3
+    # What an earlier run accepted was that branch at the old base: it is not a tip to hold the branch to.
+    if [ -n "$oldbase" ] && [ "$(head -1 "$plan/accepted.integration" 2>/dev/null)" = "$oldbase" ]; then
+      rm -f "$plan/accepted.integration"
+    fi
+  elif ! git -C "$repo" rev-parse --verify --quiet "refs/heads/forge/$rid-integration" >/dev/null; then
+    git -C "$repo" branch "forge/$rid-integration" "$CHAIN_BASE" >/dev/null 2>&1 \
+      || die "could not create forge/$rid-integration at $(plans_short "$CHAIN_BASE")" 3
+  fi
+  printf '%s\n' "$CHAIN_PREV" > "$plan/after" || die "could not write $plan/after" 3
+  printf '%s\n' "$CHAIN_BASE" > "$plan/integration.base" || die "could not write $plan/integration.base" 3
+}
+
+# The table's line for a chained plan. Nothing without `after`.
+plans_chain_line() { # plans_chain_line <plan>
+  [ -s "$1/after" ] || return 0
+  local prev prid base=""
+  prev="$(head -1 "$1/after")"
+  prid="$(head -1 "$prev/run_id" 2>/dev/null)"
+  [ -n "$prid" ] || prid="$(plans_run_id "$prev")"
+  [ ! -s "$1/integration.base" ] || base="$(head -1 "$1/integration.base")"
+  printf 'after: %s (%s)\n' "$prid" "${base:0:12}"
+}
+
+# `run` on a chained plan, before it creates or reuses the integration branch: while no task of
+# this plan has merged, the plan it follows must still end where this plan started. A plan that
+# moved on since (an adoption, a later run) would make this plan's tasks start from old code.
+# An ancestor is enough: a plan split from a chained plan starts later than its predecessor ended.
+plans_chain_run_check() { # plans_chain_run_check <plan> <repo>
+  local plan="$1" repo="$2" prev prid acc base m
+  [ -s "$plan/after" ] || return 0
+  for m in "$plan"/tasks/*/merged; do [ ! -e "$m" ] || return 0; done
+  prev="$(head -1 "$plan/after")"
+  if [ ! -s "$prev/accepted.integration" ]; then
+    note "plan --after: '$prev' has no accepted.integration to check this plan's base against; going on"
+    return 0
+  fi
+  prid="$(head -1 "$prev/run_id" 2>/dev/null)"; [ -n "$prid" ] || prid="$(plans_run_id "$prev")"
+  acc="$(head -1 "$prev/accepted.integration")"
+  base="$(head -1 "$plan/integration.base" 2>/dev/null)"
+  [ -n "$base" ] || die "plan $plan follows $prev but has no integration.base: run plan $plan --after $prev again" 3
+  git -C "$repo" merge-base --is-ancestor "$acc" "$base" >/dev/null 2>&1 \
+    || die "plan $prid moved since this plan was made: run plan $plan --after $prev again" 3
+}
+
+# `integrate` on a chained plan: the run ids from the first plan to this one, from the after files.
+plans_chain_names() { # plans_chain_names <plan>
+  local cur="$1" ids="" rid next n=0
+  while :; do
+    rid="$(head -1 "$cur/run_id" 2>/dev/null)"; [ -n "$rid" ] || rid="$(plans_run_id "$cur")"
+    ids="$rid${ids:+ → $ids}"
+    [ -s "$cur/after" ] || { printf '%s\n' "$ids"; return 0; }
+    next="$(head -1 "$cur/after")"
+    n=$((n + 1))
+    if [ "$n" -gt 64 ] || [ ! -r "$next/run_id" ]; then printf '… → %s\n' "$ids"; return 0; fi
+    cur="$next"
+  done
+}
 
 # --- groups across a split (#140) -----------------------------------------------------
 # groups.tsv names tasks, so a split has to say where each group goes. A group whose members all
