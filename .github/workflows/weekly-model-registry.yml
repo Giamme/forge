@@ -1,0 +1,61 @@
+name: Weekly model registry update
+
+# Once a week, ask Claude to look for new model releases and retirements and open a PR
+# that updates registry.tsv, the docs that quote it, and the tests that pin old ids.
+# A person reviews and merges; nothing lands on the default branch by itself.
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"   # Mondays, 06:17 UTC (scheduled runs use the default branch)
+  workflow_dispatch: {}     # run it by hand to test
+
+concurrency:
+  group: weekly-model-registry
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You maintain forge's model registry. Do this once, then stop.
+
+            1. If a PR from a branch named `model-registry/*` is already open
+               (`gh pr list --state open`), stop and say so. Do not open a second one.
+            2. Search the web for new model releases, renames and retirements from
+               Anthropic, OpenAI, Google (Gemini and Antigravity), xAI, Moonshot, Z.ai,
+               Qwen, and the GitHub Copilot and OpenCode Go model lists. Prefer vendor
+               docs and the GitHub Copilot supported-models page over news posts.
+            3. Compare against registry.tsv. Update it, docs/models.md,
+               references/harnesses.md and any test that pins an old id. Rules:
+               - Keep the built-in profile names `balanced` and `lite` and their routing.
+               - Keep the first-row-is-default convention and the effort column forms.
+               - Keep an old model as a pinned alias (for example `gemini-3.1`) when a
+                 test or doc relies on it; delete an alias only if the harness removed
+                 the model.
+               - Add a fragment in .changelog/unreleased/ describing the user-visible change.
+            4. Run only the tests that touch what you changed, from inside `tests/`
+               (for example `python3 -m unittest test_dispatch test_efforts test_effort_step`).
+               The full suite is too slow for this job.
+            5. If nothing changed, stop without a PR. Otherwise commit on a branch named
+               `model-registry/<yyyy-mm-dd>` and open a PR.
+            6. The PR body must have two lists: "Confirmed" (ids you saw in a vendor doc or
+               model list) and "Inferred" (ids you built from a naming pattern, such as
+               Antigravity `agy` ids or Copilot ids on the opencode route). You cannot run
+               `agy` or sign in to Copilot here, so be explicit about which is which.
+          claude_args: |
+            --max-turns 80
+            --allowedTools "WebSearch,WebFetch,Read,Edit,Write,Bash(git *),Bash(gh pr *),Bash(python3 *),Bash(bash tests/*),Bash(cd tests*)"
