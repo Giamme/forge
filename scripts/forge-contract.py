@@ -3,7 +3,7 @@
 
 Subcommands, stdlib only, no network:
 
-  qa --part head|tail [--kind task|final|solo|sweep|adopt|group] [--threshold P0|P1|P2|P3|none]
+  qa --part head|tail [--kind task|final|solo|sweep|adopt|group|script] [--threshold P0|P1|P2|P3|none]
       Prints one piece of the QA prompt. The caller prints everything between and
       after the pieces itself (scope notes, the diff fence, the memory note and the
       "Place any learning notes before the final FORGE_VERDICT ..." sentence).
@@ -97,7 +97,7 @@ import sys
 
 SEVERITIES = ('P0', 'P1', 'P2', 'P3')
 PLACEHOLDER = 'path/file.py:123'
-KINDS = ('task', 'final', 'solo', 'sweep', 'adopt', 'group')
+KINDS = ('task', 'final', 'solo', 'sweep', 'adopt', 'group', 'script')
 DEFAULT_THRESHOLD = 'P2'
 QA_TEST_MINUTES = 5        # the reviewer's own test time, beyond which it says the check is too broad (#89)
 
@@ -168,6 +168,15 @@ _HEAD = {
         'diff itself.',
     ],
 }
+
+# A scripted task (#142): its diff is what tasks/<id>/run produced; the reviewer judges the command
+# and its result. Same tail as `task`.
+_HEAD['script'] = _HEAD['task'] + [
+    'This diff was produced by the command below, not written by hand. Check the command and its',
+    'result: is the result complete and correct for the requirements, and did the command do only',
+    'what it should? When the change is mechanical you need not read every changed file; sample it,',
+    'and say what you sampled.',
+]
 # Group review (#140) is the task contract plus one review over several tasks. The shared
 # preamble stays the task one, so a change to it reaches group; these lines are the addition.
 _HEAD['group'] = _HEAD['task'] + [
@@ -306,11 +315,11 @@ def qa_text(part: str, kind: str = 'task', threshold=None) -> str:
     if part != 'tail':
         raise ValueError('part must be head or tail')
     lines = list(_SWEEP_FINDINGS if kind == 'sweep' else _FINDINGS)
-    if kind in ('task', 'solo', 'adopt', 'group'):
+    if kind in ('task', 'solo', 'adopt', 'group', 'script'):
         lines += _ALL_CONFIRMED + _SOLO_EXTRA
     lines += [''] + _VERIFY
     lines += [''] + _SEVERITY
-    if kind in ('task', 'solo', 'group'):
+    if kind in ('task', 'solo', 'group', 'script'):
         lines += [''] + _OUTSIDE
     if kind == 'group':
         lines += [''] + _GROUP_ATTRIB

@@ -762,7 +762,10 @@ decision_after_attempt() { # decision_after_attempt <plan> <id> <stop-before> <c
   python3 "$SKILL_DIR/scripts/forge-ledger.py" append "$PLAN" "$id" >/dev/null 2>&1 \
     || note "$id: could not add this review to the findings ledger"
   [ "$(task_status "$PLAN" "$id")" = FAIL ] || return 0
-  if python3 "$SKILL_DIR/scripts/forge-ledger.py" signal "$tdir" >/dev/null 2>&1; then reasons="converging"; fi
+  # A scripted task's reviews judge the same command again, not findings a person closes one by one:
+  # no convergence count (#142).
+  if [ "$(field "$PLAN/tasks.tsv" "$id" dwarf)" != script ] \
+      && python3 "$SKILL_DIR/scripts/forge-ledger.py" signal "$tdir" >/dev/null 2>&1; then reasons="converging"; fi
   stop="$(cat "$tdir/escalation.stop" 2>/dev/null)"
   if [ -n "$stop" ] && { [ "$crc" = 3 ] || [ "$stop" != "$before" ]; }; then reasons="${reasons:+$reasons }split"; fi
   read -r used cap <<< "$(attempt_cap_of "$PLAN" "$id")"
