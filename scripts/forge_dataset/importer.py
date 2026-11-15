@@ -196,6 +196,9 @@ def legacy_task_events(tdir: Path, task_attempts: list[Path], prov_base: dict) -
             verdict = h.verdict_of(h.text(qa[-1] / 'qa.last')) if qa else None
             data['status'], data['status_source'] = ((row['status'], 'attempts.tsv') if row else
                                                      (verdict, 'qa_verdict') if verdict else (None, None))
+            # task_event read the task dir's current status. This attempt's status is the
+            # attempts.tsv row, so the prompt_changed flag has to follow the row.
+            data['prompt_changed'] = h.attempt_prompt_changed(data.get('status'))
             event['attempt'], data['attempt_source'] = ((row['attempt'], 'attempts.tsv') if row else
                                                         (index + 1, 'order'))
             blocks = _DIFF_BLOCK.findall(h.text(qa[-1] / 'qa.prompt') or '') if qa else []
