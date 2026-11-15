@@ -267,6 +267,65 @@ and pipeline checkpoints. A task/subtree selector resumes only that execution sc
 Explicit `retry` retains the backend and frozen pools; a replacement dwarf must already
 belong to that pool. See [recovery](../references/fractal.md#limits-and-lifecycle).
 
+### From another session or harness
+
+Start with `forge handoff`. With no argument inside a checkout, or with `--repo DIR`, it
+reports that repository's newest registered plan that is live or still has a task not
+`MERGED` (run-dir mtime; a plan is one with `tasks.tsv`). `forge handoff [show] RUN_DIR
+[--json]` reports the run you name and writes nothing: id, kind, the first five non-empty
+lines of `request.md`, the plan dir, repo, worktree root and integration branch, plus the
+recorded base and accepted commits; the option files and `run.flags.json`; whether the
+scheduler is live; each task; what needs a person (a `NEEDS_INPUT` question verbatim, the
+first line of a `NEEDS_DECISION`'s `decision.md`, an `INFRA` cause and hint); the last
+`control.log` changes; tasks left `RUNNING` with no live scheduler; session notes, newest
+first; the driver; and the exact next commands. A path that is not a run dir exits 2. No
+matching run exits 3.
+
+`forge handoff resume RUN_DIR` carries a decomposed run on. It claims the run first; a
+refused claim exits 3 and changes nothing else. A live scheduler is followed and nothing is
+started — leave that run to `forge control show`, and do not start `run` beside it. A
+Fractal plan is not restarted here; resume names `forge fractal resume`. Otherwise each
+task still `RUNNING` is recovered, and only when its worktree is exactly `<wt_root>/<id>`
+on `forge/<run_id>/<id>` and any leftover `dwarf.harness` or `qa.harness` has been stopped:
+the uncommitted work, untracked files included, is saved to
+`tasks/<id>/interrupted-<epoch>.diff`, and only then is the worktree reset and cleaned, the
+status set to `INTERRUPTED`, and the attempt counter rewound when `attempts.tsv` has no row
+for that attempt, so the attempt is not counted twice. A guard that fails leaves that
+worktree untouched. Every `INTERRUPTED` task, including one that was already interrupted,
+is prepared with `retry --no-dispatch`. `run` then starts again, detached, from
+`run.flags.json`. Output goes to `resume-<epoch>.log`; the exit code is written to
+`resume-<epoch>.done` when the run ends. A launch that fails exits 1.
+
+`run` writes `run.flags.json` at each real start. A dry run and a `retry` do not, and a
+split or rerun does not copy it. The fields are `retry_failed`, `infra_retries`, `sweep`,
+`sweep_max`, `sweep_plausible`, `sweep_ahead`, `max_parallel`, `timeout`, `verify`,
+`fractal`, `argv` and `at`. `retry_failed` and `infra_retries` are the budgets the
+scheduler removes when it stops (`retry_budget`, `infra_budget`, and each task's
+`retry_budget`), so resume can pass them again. Resume rebuilds the `run` command from
+those fields; it does not replay `argv` as typed. A run from before 0.19 has no file:
+resume still saves and prepares, then prints the `run` command to finish by hand and
+starts nothing. An unreadable file does the same, and says the file cannot be read.
+
+`forge handoff note RUN_DIR TEXT [--actor A]` appends one JSON line to
+`handoff.notes.jsonl` (`at`, `actor`, `text`): a decision the user made, or a hand fix
+under way, that is not in the plan. Whitespace collapses to single spaces. Empty text,
+text over 2000 characters, and text that is not UTF-8 are refused. `--actor` defaults to
+`cli`.
+
+`forge handoff claim RUN_DIR --harness H [--session S]` writes `handoff.driver.json`
+(`harness`, `session`, `since`, `last_seen`). `--harness` matches `[a-z0-9._-]{1,40}`.
+`--session` is an id with no whitespace, at most 200 characters. `resume` claims the same
+way, and its `--harness` defaults to `unknown`. The same harness and session keep `since`
+and refresh `last_seen`. A different driver last seen under 12 hours ago is refused
+(exit 3) unless `--take-over`. One last seen 12 hours ago or earlier is replaced without that flag.
+Replacing a driver appends one `control.log` line (`action` `take-over`, `actor` `cli`,
+`key` `driver`) and a dataset `control` event. When `control.log` is not a regular file
+the replacement is refused before the driver file changes. Take over only when asked.
+
+Running `run` again, and an explicit `retry` for a failed or interrupted task, stays
+the way to finish by hand. That is also the command resume prints when
+`run.flags.json` is missing.
+
 ## Changing a run while it works
 
 `forge control` changes a plan's knobs without stopping it (forge-ui calls the same command):

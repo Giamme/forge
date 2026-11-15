@@ -1567,6 +1567,8 @@ baselines are retained. A per-plan advisory lock excludes concurrent run/retry/i
 operations. A `review=group` member left `IMPLEMENTED` is not implemented again; its group's
 review resumes as in [Groups and group review](#groups-and-group-review-opt-in).
 
+From another session or harness, `forge handoff resume <plan>` follows a live scheduler and restarts a stopped run with its recorded flags; see [From another session or harness](../docs/decomposed-runs.md#from-another-session-or-harness). The `run` and per-task `retry` above remain the way to finish by hand.
+
 **Interrupts.** A SIGINT or SIGTERM to `run` (or to its scheduler), and `forge control stop
 --now`, first reap the tasks that already ended (a PASS still merges), then send TERM to each
 running task's process group, wait up to `FORGE_INTERRUPT_GRACE` seconds (default 10) for the
@@ -1817,6 +1819,11 @@ follows, and Followed by, the plans whose `after` names this run.
 <plan-dir>/tasks/<id>/source.fingerprint        worktree fingerprint beside that commit
 <plan-dir>/tasks/<id>/settled.group             gid and round, once a group FAIL judged this member
 <plan-dir>/tasks/<id>/retry_sources.tsv         attempt, source, epoch: why each retried attempt ran (#133)
+<plan-dir>/run.flags.json                       flags of this run of the plan, rewritten at each real start; not copied by split or rerun
+<plan-dir>/handoff.notes.jsonl                  session notes of what is not on disk: at, actor, text; newest first in forge handoff
+<plan-dir>/handoff.driver.json                  harness, session, since, last_seen of the session driving the run
+<plan-dir>/tasks/<id>/interrupted-<epoch>.diff  uncommitted work saved before forge handoff resume resets a stale RUNNING worktree
+<plan-dir>/resume-<epoch>.{log,done}            log of the run forge handoff resume started, and its exit code once that run ends
 <repo>/.forge/                                  project memory (survives the run)
 <repo>/../.forge-worktrees/<run-id>/<task-id>   task worktree
 <repo>/../.forge-worktrees/<run-id>/_integration integration worktree
