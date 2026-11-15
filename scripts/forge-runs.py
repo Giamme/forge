@@ -2,9 +2,10 @@
 """forge runs [--repo DIR | --all] [--limit N] [--json]: this repo's recent runs, in the terminal.
 
 Every solo run, `plan` and `run` registers its run dir (forge_registry.py); this lists them newest
-first, one line each (run id, kind, age, task states, verification and final review, goal) with the
-run dir under it, so you can see what happened without a browser and get the dir to resume, retry
-or open with `forge ui open`. The repo is the Git top level of the current directory unless
+first, one line each (run id, kind, age, task states, verification, final review, goal, and
+`after <run>` when the plan was chained) with the run dir under it, so you can see what happened
+without a browser and get the dir to resume, retry or open with `forge ui open`. The repo is the
+Git top level of the current directory unless
 `--repo` names one; `--all` lists the runs of every repo. It reads the same run summaries as
 forge-ui and never writes anything.
 
@@ -36,7 +37,7 @@ import forge_registry  # noqa: E402
 from forge_ui import reader  # noqa: E402
 
 FIELDS = ('key', 'run_id', 'kind', 'goal', 'repo', 'path', 'created', 'updated', 'task_count', 'counts',
-          'verification_status', 'final_review')
+          'verification_status', 'final_review', 'after')
 
 
 def repo_of(start: Path) -> Path:
@@ -89,11 +90,14 @@ def line(run: dict, now: float, with_repo: bool = False) -> str:
     counts = ' · '.join(f'{status.lower()} {n}' for status, n in (run['counts'] or {}).items()) or 'no tasks'
     checks = ''.join(f'  {label} {run[key]}' for label, key in (('verify', 'verification_status'), ('review', 'final_review'))
                      if run.get(key))
+    previous = run.get('after') or {}
+    predecessor = previous.get('run_id') or previous.get('key')
+    chain = f'  after {predecessor}' if predecessor else ''
     goal = str(run['goal'] or 'Untitled run').splitlines()[0]
     if len(goal) > 72:
         goal = goal[:71] + '…'
     repo = f"  {Path(run['repo']).name or run['repo']}" if with_repo and run.get('repo') else ''
-    return f"{run['run_id'] or run['key']}  {run['kind']}{repo}  {age(run['updated'], now)}  {counts}{checks}  {goal}\n    {run['path']}"
+    return f"{run['run_id'] or run['key']}  {run['kind']}{repo}  {age(run['updated'], now)}  {counts}{checks}{chain}  {goal}\n    {run['path']}"
 
 
 def remove(argv) -> int:
