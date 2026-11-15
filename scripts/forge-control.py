@@ -917,6 +917,36 @@ def decision_of(plan, args, dwarf):
 
 ANSWER_MAX = 8000          # characters; the scheduler reads the same limit
 REQUEST_MAX = 64 * 1024    # bytes of one request file; the scheduler ignores a larger one
+ANSWER_READ = ANSWER_MAX * 4 + 1024  # bytes; one more means the file continues past the read
+
+
+def read_capped(handle):
+    """Up to ANSWER_READ bytes, and whether at least one byte follows."""
+    data = handle.read(ANSWER_READ)
+    extra = handle.read(1) if len(data) == ANSWER_READ else b''
+    return data, extra
+
+
+def answer_file_text(path):
+    """The answer file's text. A file that continues past the read is over the character limit:
+    a prefix of only whitespace is not an empty answer, and a character split by the read is not bad UTF-8."""
+    try:
+        if path == '-':
+            data, extra = read_capped(sys.stdin.buffer)
+        else:
+            with open(path, 'rb') as handle:
+                data, extra = read_capped(handle)
+    except OSError as error:
+        raise Invalid(f'--answer-file {path}: {error.strerror or error}')
+    try:
+        text = data.decode('utf-8')
+    except UnicodeDecodeError as error:
+        if extra and error.reason == 'unexpected end of data':
+            raise Invalid(f'the answer is limited to {ANSWER_MAX} characters')
+        raise Invalid('the answer is not valid UTF-8 text')
+    if extra and not text.strip():
+        raise Invalid(f'the answer is limited to {ANSWER_MAX} characters')
+    return text
 
 
 def answer_of(args):
@@ -927,20 +957,11 @@ def answer_of(args):
         raise Invalid('give --answer or --answer-file, not both')
     if args.dwarf is not None or args.decide is not None:
         raise Invalid('--answer answers a NEEDS_INPUT task and is not combined with --dwarf or --decide')
+    if args.reason is not None or args.approved:
+        raise Invalid('--answer answers a NEEDS_INPUT task and is not combined with --reason or --approved')
     text = args.answer
     if args.answer_file is not None:
-        try:
-            if args.answer_file == '-':
-                data = sys.stdin.buffer.read(ANSWER_MAX * 4 + 1024)
-            else:
-                with open(args.answer_file, 'rb') as handle:
-                    data = handle.read(ANSWER_MAX * 4 + 1024)
-        except OSError as error:
-            raise Invalid(f'--answer-file {args.answer_file}: {error.strerror or error}')
-        try:
-            text = data.decode('utf-8')
-        except UnicodeDecodeError:
-            raise Invalid('the answer is not valid UTF-8 text')
+        text = answer_file_text(args.answer_file)
     text = text.strip()
     if not text:
         raise Invalid('the answer is empty')

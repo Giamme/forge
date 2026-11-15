@@ -100,6 +100,62 @@ class CliTests(Base):
         self.assertEqual(self.log(), [])
         self.assertEqual(self.control('retry', self.plan, 'x', '--answer', 'x' * 8000).returncode, 0)   # the limit itself
 
+    def test_a_file_past_the_read_is_too_long_not_empty_or_invalid(self):
+        # The read keeps 8000 characters of UTF-8 plus a little whitespace. Past that, the refusal is the
+        # character limit: a prefix of only spaces is not an empty answer, and a character split by the
+        # cut is not bad UTF-8. A file that ends on the cap is still judged whole.
+        self.waiting()
+        self.live()
+        cap = 8000 * 4 + 1024
+        limited = 'limited to 8000 characters'
+
+        def refuse(path):
+            result = self.control('retry', self.plan, 'x', '--answer-file', path)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn(limited, result.stderr)
+            self.assertNotIn('empty', result.stderr)
+            self.assertNotIn('UTF-8', result.stderr)
+
+        spaces = self.root / 'spaces.txt'
+        spaces.write_bytes(b' ' * 40000 + b'yes')
+        split = self.root / 'split.txt'
+        split.write_bytes(b' ' * (cap - 1) + 'é'.encode() + b'yes')
+        blank = self.root / 'blank.txt'
+        blank.write_bytes(b' ' * cap)
+        whole = self.root / 'whole.txt'
+        whole.write_bytes(b' ' * (cap - 3) + b'yes')
+        refuse(spaces)
+        refuse(split)
+        piped = subprocess.run([sys.executable, str(fixtures.CONTROL), 'retry', str(self.plan), 'x', '--answer-file', '-'],
+                               input=' ' * 40000 + 'yes', capture_output=True, text=True, env=self.env, timeout=60)
+        self.assertEqual(piped.returncode, 2, piped.stderr)
+        self.assertIn(limited, piped.stderr)
+        self.assertNotIn('empty', piped.stderr)
+        result = self.control('retry', self.plan, 'x', '--answer-file', blank)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('the answer is empty', result.stderr)
+        self.assertNotIn(limited, result.stderr)
+        self.assertEqual(self.requests(), [])
+        self.assertEqual(self.control('retry', self.plan, 'x', '--answer-file', whole).returncode, 0)
+        [name] = self.requests()
+        self.assertEqual(json.loads((self.plan / 'control.requests' / name).read_text())['answer'], 'yes')
+
+    def test_reason_and_approved_with_an_answer_are_refused(self):
+        self.waiting()
+        self.live()
+        cases = [
+            ('reason', ('--answer', 'ok', '--reason', 'r')),
+            ('approved', ('--answer', 'ok', '--approved')),
+            ('both', ('--answer', 'ok', '--reason', 'r', '--approved')),
+        ]
+        for what, args in cases:
+            with self.subTest(what):
+                result = self.control('retry', self.plan, 'x', *args)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn('not combined with --reason or --approved', result.stderr)
+        self.assertEqual(self.requests(), [])
+        self.assertEqual(self.log(), [])
+
     def test_an_answer_that_would_not_fit_in_a_request_is_refused(self):
         self.waiting()
         self.live()
