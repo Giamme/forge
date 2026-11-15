@@ -302,6 +302,10 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `POST /api/runs/<key>/issues` | file GitHub issues for chosen findings; authenticated, 300 s timeout |
 | `POST /api/runs/<key>/issues/dismiss` | dismiss or (`undo`) restore findings; authenticated |
 | `POST /api/runs/<key>/delete` | dry-run or delete a run with `forge runs rm`; authenticated, 900 s timeout; later requests for the key answer `404` |
+| `POST /api/runs/<key>/tasks/<id>/answer` | answer a task that waits for input (`forge control retry … --answer-file -`); authenticated, see Controls |
+| `POST /api/worktrees/remove` | remove chosen worktrees (`forge worktrees rm`); authenticated, 900 s timeout |
+| `POST /api/projects/<id>/memories/forget` | forget learnings in a project's checkouts (`forge memory forget`); authenticated |
+| `POST /api/storage/compact` | compact one run or all (`forge runs compact --logs`); authenticated, 900 s timeout |
 | `GET /api/models/reviewers` | `200` the `forge dataset reviewers --json` report (how each reviewer's PASSed work held up); no parameters |
 | `GET /api/projects` | `200 {projects: [ProjectRow]}`: one row per repository (see Projects) |
 | `GET /api/projects/<id>` | `200 Project`, `404` for an unknown id |
@@ -1552,7 +1556,7 @@ each authenticated POST to the table, so a new write route is one entry in it.
 
 **The call.** `[<forge root>/forge, ...]`, an argv list with no shell, in a process
 group of its own. `stdin` is closed, except for a profile create or edit (the profile object) and a
-brief answer (the answer text), both via `--file -`. `<forge root>` is two directories above `forge_ui/` and can be replaced as
+brief answer (the answer text), both via `--file -`, and a task answer (its text, via `--answer-file -`). `<forge root>` is two directories above `forge_ui/` and can be replaced as
 `forge_ui.server.forge_cli`. A call that outlives its timeout (60 s) gets SIGTERM for its whole
 group, SIGKILL 5 s later if anything is left, and is reaped, all before the run's lock is
 released; the answer is `504 {"error": "timeout", "detail": "the operation may have partly
@@ -1743,6 +1747,51 @@ completed): exit 2 `400`, exit 3 (busy or the run is active) `409`, exit 4 (fail
 deletion) `500`. Deletion holds the run's write lock and a server-wide lock on the run's real
 directory (`409 busy` when either is held). The run key is looked up again under the lock, and
 once the directory is gone every later request for that key is `404`. Timeout 900 s.
+
+### `POST /api/worktrees/remove`
+
+Body: `{"paths": [string, 1 to 200], "branches": bool (false), "dry_run": bool (false)}`. Every path
+is absolute, has no control characters and is a row of `GET /api/worktrees`: the cached rows are
+checked and, when a path is missing, read once again. A path that is not listed is `400`. Runs
+`worktrees rm <paths…> [--branches] [--dry-run] --json --actor ui` and answers with its object
+(`ok`, `dry_run`, `rows: [{path, action, status, reason}]`, status `removed`, `skipped`, `failed` or
+`would-remove`). Exit 4 (a row failed) is a `200` with `ok: false` and the rows, so the page can say
+which row failed; exit 2 `400`, exit 3 `409`. A server-wide lock (`409 {"error": "busy"}`) covers
+the call; timeout 900 s. After a real removal (not `dry_run`) the worktrees and storage caches are
+dropped, so the next `GET` reads again. Refused under `--read-only` (`405`) and without the token.
+
+### `POST /api/projects/<id>/memories/forget`
+
+Body: `{"keys": [string "category:key", 1 to 200], "dry_run": bool (false), "path": string}`. The
+project is `<id>` of `GET /api/projects` (`404` when unknown). Without `path` the call runs in every
+checkout of the project that exists; `path` must be one of them (`400` otherwise). Runs `memory
+forget <checkout> <keys…> [--dry-run] --json --actor ui` once per checkout and answers `200
+{"ok", "dry_run", "checkouts": [{"path", "result"}]}`, `result` being that CLI's object. A checkout
+whose call failed has `result: null` plus `status` and `error` (the mapped answer), and `ok` is
+false; when every checkout failed the first failure is the answer. A project with no existing
+checkout is `409`. A server-wide lock (`409 busy`); timeout 60 s per checkout. A real forget drops
+the project screen's memory answers. Refused under `--read-only` and without the token.
+
+### `POST /api/storage/compact`
+
+Body: `{"run": "<12-hex run key>"}` or `{"all": true}` (exactly one), and `"dry_run": bool (false)`.
+Runs `runs compact <run dir> --logs --json [--dry-run]`, or `runs compact --all --logs --json
+[--dry-run]`, and answers with its object (`ok`, `dry_run`, `bytes_freed`, `runs`). An unknown run
+key is `404`. Exit 2 `400`; exit 3 (the named run is active) `409` with the CLI's message; exit 4
+`500`. A server-wide lock (`409 {"error": "busy"}`); timeout 900 s. A real compaction marks the
+`GET /api/storage` answer stale, so the next read measures again. Refused under `--read-only` and
+without the token.
+
+### `POST /api/runs/<key>/tasks/<id>/answer`
+
+Body: `{"text": string}`, 1 to 8000 characters after stripping, no NUL; `<id>` is a task id as for
+the brief route. The run must be a plan (`404` otherwise). Always runs `control retry <plan> <id>
+--answer-file - --actor ui --json` with the stripped text on stdin: forge queues the answer for a
+live scheduler and prepares the retry itself when none runs. The answer is `200 {"live": bool,
+"result": <the CLI's object>}`, where `live` says whether `scheduler.live` named a live process (as
+RunDetail's `scheduler.live`) and `result` is `{"queued": true, "request"}` or `{"queued": false,
+"prepared": true}`. Exit 3 (the task is not `NEEDS_INPUT`) is `409` with the CLI's message. Holds
+the run's write lock (`409 busy`); timeout 60 s. Refused under `--read-only` and without the token.
 
 ### `GET /api/models/reviewers`
 
