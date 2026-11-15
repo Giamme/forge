@@ -86,12 +86,18 @@ def _tsv(path: Path) -> list:
 
 
 def plan_tasks(plan: Path) -> tuple:
-    """([task dicts to forecast], [ids already merged]) from tasks.tsv (declared tier when kept)."""
+    """([task dicts to forecast], [ids already merged]) from tasks.tsv (declared tier when kept).
+
+    A dwarf cell of `script` is a task that runs `tasks/<id>/run`, not a model to price. Those
+    rows are left out of both lists: not forecast, and not reported as already merged.
+    """
     declared = {r['id']: r for r in _tsv(plan / 'tasks.declared.tsv')}
     out, merged = [], []
     for row in _tsv(plan / 'tasks.tsv'):
         tid = row.get('id')
         if not tid:
+            continue
+        if (row.get('dwarf') or '').strip() == 'script':
             continue
         if (plan / 'tasks' / tid / 'merged').exists():
             merged.append(tid)

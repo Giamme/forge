@@ -241,6 +241,16 @@ pool_pick() { # pool_pick <comma-list> <index>
   echo "$last"
 }
 
+# `script` is a task kind (tasks/<id>/run), not a model. A pool that can hand it out would
+# make a blank row look scripted without a run file, or run a model under that name.
+forge_refuse_script_pool() { # forge_refuse_script_pool <flag> <comma-list>
+  local spec
+  for spec in $(printf '%s' "${2:-}" | tr ',' ' '); do
+    [ "$spec" = script ] || continue
+    die "the $1 pool names 'script', which is reserved for a task that runs tasks/<id>/run"
+  done
+}
+
 # --- profiles (#48) -------------------------------------------------------------
 # A named profile is chosen at `plan` (or by forge-solo.sh), frozen as <dir>/profile.json
 # and applied as the values its flags would have set. forge_decide.profiles does the
@@ -849,6 +859,11 @@ do_plan() {
   # The profile (#48) first: its gates and budget count for every decision-model step below,
   # and its values stand in for the flags this call did not give.
   forge_profile_plan
+  # Pools are flags or the profile just applied. `script` in either is a reserved word.
+  forge_refuse_script_pool --dwarf "$D_ANY"
+  forge_refuse_script_pool --dwarf-high "$D_HI"
+  forge_refuse_script_pool --dwarf-medium "$D_MD"
+  forge_refuse_script_pool --dwarf-low "$D_LO"
   [ "$JEV_OPTS" = 1 ] && forge_jev_export
   # Freeze the selection next to the task table, so run and retry restore it rather
   # than re-deciding. Written on every plan: a re-plan is a new decision.
@@ -1098,8 +1113,12 @@ EOF
     fi
     # resolve dwarf. UNASSIGNED is a marker from a previous plan, not a user
     # choice, so it must be re-resolved rather than preserved like a real override.
+    # `script` is an override too: no pool, no exploration, and the cell stays `script`.
     [ "$dw" = "UNASSIGNED" ] && dw="-"
-    if [ "$dw" = "-" ] || [ -z "$dw" ]; then
+    if [ "$dw" = "script" ]; then
+      [ -x "$PLAN/tasks/$id/run" ] \
+        || die "task '$id' is a script task but tasks/$id/run is missing or not executable"
+    elif [ "$dw" = "-" ] || [ -z "$dw" ]; then
       case "$diff" in
         high)   if [ -n "$D_HI" ]; then dw="$(pool_pick "$D_HI" "$hi_i")"; hi_i=$((hi_i+1)); fi ;;
         medium) if [ -n "$D_MD" ]; then dw="$(pool_pick "$D_MD" "$md_i")"; md_i=$((md_i+1)); fi ;;
@@ -1308,7 +1327,17 @@ render_table() {
   local waves; waves="$(awk -F'\t' '{print $1}' "$W" | sort -u | wc -l | tr -d ' ')"
   echo "run forge/$run_id   repo $(cat "$PLAN/repo")"
   [ -s "$PLAN/goal.txt" ] && echo "goal: $(head -1 "$PLAN/goal.txt")"
-  local est=$((n*2)) extra=""
+  # A scripted task runs tasks/<id>/run: no implementer dispatch. Its review still counts.
+  local dwarfs scripted=0 script_ids="" sid
+  dwarfs="$(awk -F'\t' '!/^#/ && NF && $5 != "script" { c++ } END { print c + 0 }' "$T")"
+  while IFS= read -r sid; do
+    [ -n "$sid" ] || continue
+    scripted=$((scripted + 1))
+    script_ids="${script_ids:+$script_ids, }$sid"
+  done <<EOF
+$(awk -F'\t' '!/^#/ && NF && $5 == "script" { print $1 }' "$T")
+EOF
+  local est=$((dwarfs + n)) extra=""
   if [ -s "$PLAN/planner" ]; then
     est=$((est+1)); extra=" + 1 planner ($(cat "$PLAN/planner"))"
   fi
@@ -1318,10 +1347,13 @@ render_table() {
   if [ -n "$grp_counts" ]; then
     read -r grp_n grp_m <<<"$grp_counts"
     reviews=$((n - grp_m + grp_n))
-    est=$((n + reviews + (est - n * 2)))
+    est=$((dwarfs + reviews + (est - dwarfs - n)))
   fi
-  echo "tasks: $n   waves: $waves   estimated dispatches: $est ($n dwarf + $reviews qa$extra)"
+  echo "tasks: $n   waves: $waves   estimated dispatches: $est ($dwarfs dwarf + $reviews qa$extra)"
   [ -z "$grp_counts" ] || echo "reviews: $reviews ($grp_n groups replace $grp_m task reviews)"
+  if [ "$scripted" -gt 0 ]; then
+    echo "scripted tasks: $scripted ($script_ids) run tasks/<id>/run; no implementer model"
+  fi
   render_retry_per_model "$PLAN"
   if [ -s "$PLAN/shadow_qa" ]; then
     local rate; rate="$(cat "$PLAN/shadow_rate" 2>/dev/null || echo 0.1)"
@@ -1469,6 +1501,10 @@ preflight_plan() {
       flags=""; [ -f "$plan/yolo_$role" ] && flags=--yolo
       ft="$(forge_fast_tier "$plan" "$role")"
       spec="$(field "$plan/tasks.tsv" "$id" "$role")"
+      # A scripted task has no implementer model. Its reviewer is still checked.
+      if [ "$role" = dwarf ] && [ "$spec" = script ]; then
+        continue
+      fi
       # Once per spec, role and options: the same arguments get the same answer, and a note doctor
       # adds (a slow effort) is said once, not once per task.
       key="$role|$spec|$flags|$ft"

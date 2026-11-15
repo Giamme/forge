@@ -184,13 +184,14 @@ def plan_notes(plan) -> list:
     """`note:` lines for the distinct slow specs in a plan's dwarf and qa columns.
 
     After routing, tasks.tsv holds concrete specs. The same spec twice is one line. A
-    missing table prints nothing.
+    missing table prints nothing. A dwarf cell of `script` is a task kind, not a model spec.
     """
     from .harvest import tasks_rows
     seen, out = set(), []
     for row in tasks_rows(Path(plan) / 'tasks.tsv').values():
-        for spec in (row.get('dwarf'), row.get('qa')):
-            spec = (spec or '').strip()
+        dwarf = (row.get('dwarf') or '').strip()
+        qa = (row.get('qa') or '').strip()
+        for spec in (('' if dwarf == 'script' else dwarf), qa):
             if not spec or spec == '-' or spec in seen:
                 continue
             seen.add(spec)
