@@ -3223,6 +3223,71 @@ forge_brief_stale() { # forge_brief_stale <plan> <merged-task>
   return 0
 }
 
+# The values this run is using, after profile defaults. verify_cmd and timeout are paths:
+# python reads the files, so a quote or a trailing newline is not stripped on the way in.
+# A failure here is one note; the run goes on. run.flags.json describes this run of the plan,
+# not a choice a split or rerun copies, so it is not in the plan option lists.
+forge_run_flags_write() { # forge_run_flags_write <plan> <max-parallel> [argv...]
+  local plan="$1" maxp="$2" timeout_file="" verify_file="" fractal=0 ahead=0 sweep_max=""
+  shift 2
+  [ ! -s "$plan/timeout" ] || timeout_file="$plan/timeout"
+  [ ! -f "$plan/verify_cmd" ] || verify_file="$plan/verify_cmd"
+  forge_plan_is_fractal "$plan" && fractal=1
+  [ ! -f "$plan/sweep_ahead" ] || ahead=1
+  [ "$PP_SWEEP_MAX_SET" = 1 ] && sweep_max="$PP_SWEEP_MAX"
+  python3 - "$plan/run.flags.json" \
+    "$PP_RETRY_FAILED" "$PP_INFRA_RETRIES" "$PP_SWEEP" "$sweep_max" \
+    "$PP_SWEEP_PLAUSIBLE" "$ahead" "$maxp" "$timeout_file" "$verify_file" "$fractal" \
+    -- "$@" <<'PY' >/dev/null 2>&1 || note "could not write $plan/run.flags.json"
+import json, os, sys, tempfile, time
+
+def text(path):
+    if not path:
+        return None
+    with open(path, 'r', encoding='utf-8', newline='') as handle:
+        raw = handle.read()
+    return raw if raw != '' else None
+
+def whole(value):
+    return int(value) if value != '' else None
+
+args = sys.argv[1:]
+if len(args) < 12 or args[11] != '--':
+    sys.exit(1)
+dest = args[0]
+retry, infra, sweep, sweep_max, plausible, ahead, maxp, timeout_file, verify_file, fractal = args[1:11]
+timeout = text(timeout_file)
+data = {
+    'retry_failed': int(retry),
+    'infra_retries': int(infra),
+    'sweep': sweep or None,
+    'sweep_max': whole(sweep_max),
+    'sweep_plausible': plausible == '1',
+    'sweep_ahead': ahead == '1',
+    'max_parallel': int(maxp),
+    'timeout': int(timeout.strip()) if timeout is not None else None,
+    'verify': text(verify_file),
+    'fractal': fractal == '1',
+    'argv': args[12:],
+    'at': time.time(),
+}
+parent = os.path.dirname(dest) or '.'
+fd, tmp = tempfile.mkstemp(prefix='.run.flags.json.', dir=parent)
+try:
+    with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+        json.dump(data, handle, ensure_ascii=False, indent=2)
+        handle.write('\n')
+    os.replace(tmp, dest)
+except Exception:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    sys.exit(1)
+PY
+  return 0
+}
+
 do_run() {
   local run_child="" run_stop=0 run_phase=pre run_rc=0 interrupted=0 vstopped=0
   FORGE_RUN_STOPPABLE=1
@@ -3337,6 +3402,9 @@ do_run() {
     echo "(dry run — nothing created or dispatched)"
     return 0
   fi
+
+  # run.flags.json describes this run of the plan, not a choice a split or rerun copies.
+  forge_run_flags_write "$PLAN" "$MAXP" ${fractal_pipeline_args[@]+"${fractal_pipeline_args[@]}"}
 
   forge_metric_begin "$PLAN" parallel
   forge_metric_phase preflight
