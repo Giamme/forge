@@ -11,13 +11,30 @@
       Read-only: it writes nothing, takes no lock and never waits on one. A file that is
       missing or unreadable becomes null and a `warnings` entry says why.
 
-Exit codes: 0 ok, 2 usage or a path that is not a run dir, 3 no run to report.
+  note RUN_DIR TEXT [--actor A] [--json]
+      Append one session note to handoff.notes.jsonl: what is not on disk, such as an
+      acceptance or a hand fix in progress. Whitespace in TEXT collapses to single spaces.
+      Empty text, text over 2000 characters, and text that is not valid UTF-8, is refused.
+      The actor defaults to cli.
+
+  claim RUN_DIR --harness H [--session S] [--take-over] [--json]
+      Record this session as the driver in handoff.driver.json (harness, session, since,
+      last_seen). The same harness and session keep since and refresh last_seen. A different
+      driver whose last_seen is under 12 hours ago is refused unless --take-over is given;
+      a different driver older than that is replaced. Replacing a different driver appends
+      one control.log take-over line through forge-control's audit. A control.log that is
+      not a regular file refuses that replacement before the driver file changes.
+
+Exit codes: 0 ok, 2 usage or a path that is not a run dir, 3 no run to report, or another
+driver still holds the run (claim without --take-over).
 """
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
+import re
 import shlex
 import stat
 import subprocess
@@ -50,6 +67,15 @@ FLAG_KEYS = ('retry_failed', 'infra_retries', 'sweep', 'sweep_max', 'sweep_plaus
              'max_parallel', 'timeout', 'verify', 'fractal', 'argv', 'at')
 JSON_KEYS = ('run', 'choices', 'flags', 'scheduler', 'tasks', 'needs_you', 'changes', 'stale', 'notes',
              'driver', 'next')
+NOTE_MAX = 2000
+SESSION_MAX = 200
+# A different driver last seen longer ago than this is replaced without --take-over. Tests patch it.
+DRIVER_STALE_S = 12 * 3600
+HARNESS_RE = re.compile(r'[a-z0-9._-]{1,40}')
+# Subcommands. Any other first word is a RUN_DIR for the default, show.
+COMMANDS = ('show', 'note', 'claim', '-h', '--help')
+
+_control = None
 
 
 class Usage(Exception):
@@ -58,6 +84,20 @@ class Usage(Exception):
 
 class Nothing(Exception):
     pass
+
+
+class Refused(Exception):
+    """A well-formed request the run's state does not allow. Exit 3."""
+
+
+class Held(Refused):
+    """A different driver was seen inside the stale window. Nothing was written."""
+
+    def __init__(self, driver):
+        self.driver = driver
+
+    def __str__(self):
+        return held_message(self.driver)
 
 
 class Plan:
@@ -521,14 +561,218 @@ def cmd_show(args):
     return 0
 
 
+# ------------------------------------------------------------------------------------ notes and driver
+
+def control():
+    """forge-control.py, loaded by path: its file name is not importable.
+
+    audit, append_line, write_atomic and control_lock are the writers to reuse.
+    """
+    global _control
+    if _control is None:
+        spec = importlib.util.spec_from_file_location('forge_control_handoff', SCRIPTS / 'forge-control.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _control = module
+    return _control
+
+
+def require_run(path):
+    """The canonical plan dir, or Usage. The same shape show accepts."""
+    message = f'{path}: not a forge run dir (no tasks.tsv, and no prompt.md with a repo file)'
+    if not os.path.isdir(path):
+        raise Usage(message)
+    plan = os.path.realpath(path)
+    root = Path(plan)
+    if (root / 'tasks.tsv').is_file() or ((root / 'prompt.md').is_file() and (root / 'repo').is_file()):
+        return plan
+    raise Usage(message)
+
+
+def collapse_text(text):
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def require_utf8(value, what):
+    """Usage when value cannot be stored as UTF-8.
+
+    A non-UTF-8 argv byte arrives surrogate-escaped. The writers encode with UTF-8,
+    which would otherwise raise UnicodeEncodeError and exit 1.
+    """
+    try:
+        value.encode('utf-8')
+    except UnicodeEncodeError:
+        raise Usage(f'the {what} is not valid text') from None
+    return value
+
+
+def note_text(text):
+    collapsed = collapse_text(text)
+    if not collapsed:
+        raise Usage('the note is empty')
+    if len(collapsed) > NOTE_MAX:
+        raise Usage(f'the note is longer than {NOTE_MAX} characters')
+    return require_utf8(collapsed, 'note')
+
+
+def check_harness(harness):
+    if not isinstance(harness, str) or HARNESS_RE.fullmatch(harness) is None:
+        raise Usage('harness must match [a-z0-9._-]{1,40}')
+
+
+def check_session(session):
+    """None when omitted. A present id has no whitespace and is at most 200 characters."""
+    if session is None:
+        return None
+    if (not isinstance(session, str) or not session or any(ch.isspace() for ch in session)
+            or len(session) > SESSION_MAX):
+        raise Usage('session must be an id with no whitespace, at most 200 characters')
+    return require_utf8(session, 'session')
+
+
+def _epoch(value):
+    """A finite JSON number, or None. Bool is a subclass of int and is not a timestamp."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value != value or value in (float('inf'), float('-inf')):
+        return None
+    return value
+
+
+def parse_driver(raw):
+    """The driver record, or None when the file is missing, unreadable or not that record."""
+    if not raw or not str(raw).strip():
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    harness = data.get('harness')
+    if not isinstance(harness, str) or HARNESS_RE.fullmatch(harness) is None:
+        return None
+    if 'session' not in data or data.get('session') is None:
+        session = None
+    else:
+        session = data.get('session')
+        if (not isinstance(session, str) or not session or any(ch.isspace() for ch in session)
+                or len(session) > SESSION_MAX):
+            return None
+    since, last_seen = _epoch(data.get('since')), _epoch(data.get('last_seen'))
+    if since is None or last_seen is None:
+        return None
+    return {'harness': harness, 'session': session, 'since': since, 'last_seen': last_seen}
+
+
+def read_driver(ctrl, plan):
+    """None when the file is absent, unreadable, or not a driver record."""
+    try:
+        raw = ctrl.read_file(plan, 'handoff.driver.json')
+    except OSError:
+        return None
+    return parse_driver(raw)
+
+
+def driver_ref(driver):
+    """'<harness>/<session>' as control.log records a driver. An omitted session is empty."""
+    session = driver.get('session') or ''
+    return f"{driver['harness']}/{session}"
+
+
+def held_message(driver):
+    session = driver.get('session')
+    name = driver['harness'] if not session else f"{driver['harness']}/{session}"
+    return f'{name} holds this run, last seen {when(driver["last_seen"])} ({driver["last_seen"]})'
+
+
+def under_lock(ctrl, plan, work):
+    """Run work(ctrl) while holding the plan's control lock. Map control's errors to ours."""
+    try:
+        with ctrl.control_lock(plan):
+            return work(ctrl)
+    except Held:
+        raise  # a refused claim, not a control error: nothing was written
+    except ctrl.Invalid as error:
+        raise Usage(str(error)) from error
+    except ctrl.Refused as error:
+        raise Refused(str(error)) from error
+
+
+def cmd_note(args):
+    text = note_text(args.text)
+    actor = args.actor.strip()
+    if not actor:
+        raise Usage('the actor is empty')
+    actor = require_utf8(actor, 'actor')
+    plan = require_run(args.run_dir)
+    line = json.dumps({'at': time.time(), 'actor': actor, 'text': text}, ensure_ascii=False) + '\n'
+
+    def write(ctrl):
+        ctrl.append_line(plan, 'handoff.notes.jsonl', line)
+
+    under_lock(control(), plan, write)
+    print(json.dumps({'noted': True}) if args.json else 'noted')
+    return 0
+
+
+def cmd_claim(args):
+    check_harness(args.harness)
+    session = check_session(args.session)
+    plan = require_run(args.run_dir)
+
+    def decide(ctrl):
+        now = time.time()
+        previous = read_driver(ctrl, plan)
+        if previous is None:
+            record = {'harness': args.harness, 'session': session, 'since': now, 'last_seen': now}
+            took_over = False
+        elif previous['harness'] == args.harness and previous['session'] == session:
+            record = {'harness': args.harness, 'session': session, 'since': previous['since'], 'last_seen': now}
+            took_over = False
+        elif now - previous['last_seen'] < DRIVER_STALE_S and not args.take_over:
+            raise Held(previous)
+        else:
+            record = {'harness': args.harness, 'session': session, 'since': now, 'last_seen': now}
+            took_over = True
+        if took_over:
+            # Same order as forge-control change: an unsafe log refuses the take-over
+            # before the driver file changes, so a failed audit cannot leave the new driver.
+            ctrl.probe(plan, 'control.log')
+        ctrl.write_atomic(plan, 'handoff.driver.json', json.dumps(record, ensure_ascii=False) + '\n')
+        if took_over:
+            ctrl.audit(plan, 'cli', 'take-over', None, 'driver', driver_ref(record), driver_ref(previous))
+        return record, took_over, previous
+
+    record, took_over, previous = under_lock(control(), plan, decide)
+    if args.json:
+        print(json.dumps({'driver': record, 'took_over': took_over, 'previous': previous}, ensure_ascii=False))
+    else:
+        print('took over' if took_over else 'claimed')
+    return 0
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog='forge handoff', description=__doc__.split('\n\n')[0])
-    sub = parser.add_subparsers(dest='command', metavar='{show}')
+    sub = parser.add_subparsers(dest='command', metavar='{show,note,claim}')
     show = sub.add_parser('show', help='report a run (the default)')
     show.add_argument('run_dir', nargs='?', metavar='RUN_DIR')
     show.add_argument('--repo', metavar='DIR', help="report DIR's newest active or unfinished run")
     show.add_argument('--json', action='store_true', help='one JSON object instead of text')
     show.set_defaults(func=cmd_show)
+    note = sub.add_parser('note', help='append a session note to handoff.notes.jsonl')
+    note.add_argument('run_dir', metavar='RUN_DIR')
+    note.add_argument('text', metavar='TEXT')
+    note.add_argument('--actor', default='cli', help='who is writing (default cli)')
+    note.add_argument('--json', action='store_true', help='print {"noted": true}')
+    note.set_defaults(func=cmd_note)
+    claim = sub.add_parser('claim', help='claim the run, or take it over from another driver')
+    claim.add_argument('run_dir', metavar='RUN_DIR')
+    claim.add_argument('--harness', required=True, metavar='H', help='a short word: [a-z0-9._-]{1,40}')
+    claim.add_argument('--session', metavar='S', help='an opaque id, no whitespace, at most 200 characters')
+    claim.add_argument('--take-over', action='store_true', help='replace a different driver that was seen recently')
+    claim.add_argument('--json', action='store_true', help='print the driver, whether it took over, and the previous one')
+    claim.set_defaults(func=cmd_claim)
     return parser
 
 
@@ -536,13 +780,20 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
     # `forge handoff RUN_DIR` and `forge handoff --repo DIR` mean `show`; a bare `forge handoff` too.
-    if not argv or argv[0] not in ('show', '-h', '--help'):
+    if not argv or argv[0] not in COMMANDS:
         argv = ['show'] + argv
     try:
         args = parser.parse_args(argv)
     except SystemExit as error:
         return error.code if isinstance(error.code, int) else 2
-    return args.func(args)
+    try:
+        return args.func(args)
+    except Usage as error:
+        print(f'forge handoff: {error}', file=sys.stderr)
+        return 2
+    except Refused as error:
+        print(f'forge handoff: {error}', file=sys.stderr)
+        return 3
 
 
 if __name__ == '__main__':
