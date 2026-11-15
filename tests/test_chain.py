@@ -340,6 +340,48 @@ class ReplanTests(ChainCase):
         self.assertEqual(self.text(b, 'after'), str(a))
         self.assertEqual(self.tip(b), self.text(a, 'accepted.integration'))
 
+    def test_a_replan_after_a_run_records_the_new_tip_of_the_same_predecessor(self):
+        # B ran, nothing merged, so forge/B-integration is checked out in B's _integration worktree.
+        # A then moved. run says to plan B --after A again; that re-plan has to record A's new tip
+        # instead of sending the user to remove the worktree and plan once more.
+        a = self.finished('first', 'a')
+        b, r = self.make('second', 'b', '--after', str(a))
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.scenario({'b.qa.*': {'verdict': 'FAIL', 'findings': P1.replace('a.txt', 'b.txt')}})
+        r = self.forge('run', b)
+        self.assertEqual(r.returncode, 5, r.stdout)
+        self.assertFalse((b / 'tasks/b/merged').exists())
+        wt = Path(self.text(b, 'wt_root')) / '_integration'
+        self.assertTrue((wt / '.git').exists())
+        self.scenario({})
+        self.hand_commit_and_adopt(a)
+        base = self.text(b, 'integration.base')
+        r = self.forge('run', b)
+        self.assertEqual(r.returncode, 3, r.stdout)
+        self.assertIn('plan first %s: run plan %s --after %s again' % (MOVED, b, a), r.stdout)
+        # an uncommitted edit in that worktree is not discarded so the branch can move
+        (wt / 'a.txt').write_text('local edit\n')
+        refused = self.forge('plan', b, '--after', str(a))
+        self.assertEqual(refused.returncode, 2, refused.stdout)
+        self.assertIn('checked out in a worktree', refused.stdout)
+        self.assertEqual(self.text(b, 'integration.base'), base)
+        self.assertEqual(self.tip(b), base)
+        self.assertEqual((wt / 'a.txt').read_text(), 'local edit\n')
+        self.git('-C', str(wt), 'checkout', '-q', '--', 'a.txt')
+        again = self.forge('plan', b, '--after', str(a))
+        self.assertEqual(again.returncode, 0, again.stdout)
+        new = self.text(a, 'accepted.integration')
+        self.assertEqual(self.text(b, 'after'), str(a))
+        self.assertEqual(self.text(b, 'integration.base'), new)
+        self.assertEqual(self.tip(b), new)
+        self.assertEqual(self.git('-C', str(wt), 'rev-parse', 'HEAD').decode().strip(), new)
+        self.assertEqual((wt / 'fix.txt').read_text(), 'a fix\n')
+        self.assertFalse((b / 'accepted.integration').exists())
+        r = self.forge('run', b)
+        self.assertNotIn(MOVED, r.stdout)
+        self.assertNotIn('changed outside this run', r.stdout)
+        self.assertNotEqual(r.returncode, 3, r.stdout)
+
 
 class IntegrateChainTests(ChainCase):
     def test_integrate_names_the_chain_and_brings_both_plans(self):
@@ -373,6 +415,15 @@ class IntegrateChainTests(ChainCase):
         b = self.finished('second', 'b', '--after', str(a))
         c = self.finished('third', 'c', '--after', str(b))
         (b / 'after').write_text(str(self.root / 'gone') + '\n')
+        r = self.forge('integrate', c, '--approved')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn('this brings plans … → second → third', r.stdout)
+
+    def test_an_empty_after_file_along_the_way_ends_the_list_with_an_ellipsis(self):
+        a = self.finished('first', 'a')
+        b = self.finished('second', 'b', '--after', str(a))
+        c = self.finished('third', 'c', '--after', str(b))
+        (b / 'after').write_text('')
         r = self.forge('integrate', c, '--approved')
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertIn('this brings plans … → second → third', r.stdout)
