@@ -12,6 +12,7 @@ run leaves branches behind.
 - [tasks.tsv](#taskstsv)
 - [Routing](#routing)
 - [Profiles](#profiles)
+- [Scripted tasks](#scripted-tasks)
 - [Fractal within decomposed tasks](#fractal-within-decomposed-tasks)
 - [Waves and disjointness](#waves-and-disjointness)
 - [Groups and group review (opt-in)](#groups-and-group-review-opt-in)
@@ -29,6 +30,7 @@ run leaves branches behind.
 - [Infrastructure failures](#infrastructure-failures)
 - [Implementer guards](#implementer-guards)
 - [Accepting, splitting, combining and the whole-run review](#accepting-splitting-combining-and-the-whole-run-review)
+- [Chained plans](#chained-plans)
 - [Branches, worktrees, cleanup](#branches-worktrees-cleanup)
 - [Failure modes](#failure-modes)
 
@@ -102,7 +104,7 @@ tests	mul	medium	tests/test_calc.py	-	-	Tests for multiply()
 | `deps` | comma-list of task ids that must land first, or `-` |
 | `difficulty` | `low` \| `medium` \| `high` |
 | `files` | expected touch set, comma-separated. Drives disjointness — see below |
-| `dwarf` / `qa` | `-` to resolve from the routing rules; an explicit spec always wins |
+| `dwarf` / `qa` | `-` to resolve from the routing rules; an explicit spec always wins. `script` in `dwarf` runs the executable `tasks/<id>/run` ([Scripted tasks](#scripted-tasks)) |
 | `title` | one line, shown in the approval table and the capsule |
 
 Each task also needs `tasks/<id>/prompt.md` — the implementation instruction, written the
@@ -128,7 +130,8 @@ already named, instead of leaving someone to diff two branches to find out.
 `plan` resolves difficulty into concrete specs and writes them back into the `dwarf`/`qa`
 columns, so `run` never consults the routing rules. This is also what makes a gate override
 durable: an explicit value is preserved across a re-plan, while `UNASSIGNED` is treated as a
-leftover marker and re-resolved.
+leftover marker and re-resolved. A `script` cell is one of those explicit values: `plan` leaves
+it, and requires `tasks/<id>/run` to be executable.
 
 ## Routing
 
@@ -148,7 +151,8 @@ carry, since distinct harnesses have independent quotas.
 Resolution order per task: explicit column value → the tier's rule → plain `--dwarf` → and if
 none of those exist, `UNASSIGNED`. An `UNASSIGNED` task makes `plan` exit 2 and `run` refuse
 outright. Forge does not invent a model when the user has not said which one should spend
-their quota.
+their quota. The explicit value `script` is reserved for a command, and it is not drawn from a
+pool. See [Scripted tasks](#scripted-tasks).
 
 QA has no tier rules by default and falls back to `opus` at `high`, matching single-task forge.
 When the user names no reviewers, offer reviewers sized to the task's difficulty, which is what
@@ -219,6 +223,58 @@ in the frozen body. With neither `--profile` nor `--no-profile`, a plan keeps th
 froze and does not apply it again; a plan with no copy gets the default profile, if one is
 set. The runner does not select `balanced` on its own. `--no-profile` removes the frozen
 copy. See [commands](../docs/commands.md#forge-config-profile).
+
+### Scripted tasks
+
+A dwarf cell of `script` runs the executable `tasks/<id>/run` in the task's worktree. Use it
+when the change is already a command: a codemod, a move by a map, a generator. The command
+should be atomic, and it should produce the same tree each time it runs from the same base.
+
+`plan` leaves the cell as `script`. It does not draw a pool, does not explore the row, and
+does not record `tasks/<id>/running.tier`. The `qa` cell is resolved as usual, and doctor
+still checks that reviewer. Doctor is skipped for the implementer. The approval table shows
+`script`. The dispatch estimate counts no implementer for the row, and prints
+`scripted tasks: N (ids) run tasks/<id>/run; no implementer model`. The review is still
+counted. If `tasks/<id>/run` is missing or not executable, `plan` exits 2
+(`task '<id>' is a script task but tasks/<id>/run is missing or not executable`) and stops
+before writing the resolved `tasks.tsv`. A `--dwarf` pool, a tier pool, or a profile pool that names `script` is
+refused with exit 2: the word is reserved for a task that runs `tasks/<id>/run`.
+
+Each attempt resets the worktree to the task's pinned base (the tracked tree, and untracked
+files other than `.forge`), then runs the command in its own process group. The working
+directory is the worktree. Standard input is empty. The environment is `FORGE_TASK_ID`,
+`FORGE_PLAN`, `FORGE_WORKTREE` and `FORGE_BASE_REF`. A file that does not start with `#!`
+runs under `/bin/bash`. The limit is the plan's `timeout` when that file holds a positive
+number of seconds, and 2700 seconds otherwise, including `0`. A timeout stops the process
+group. Both streams go to `tasks/<id>/script.log`. The run is also recorded at
+`tasks/<id>/attempts/script-<hex>/`, where `<hex>` is 16 hex digits: a copy of `script.log`,
+the `run` file, and `metrics.json` (`role` and `harness` are `script`; `exit_code` is null
+when the run timed out).
+
+Exit 0 with a new diff commits `forge(<id>) attempt N: <title> (script)` and reviews with
+`forge-contract.py qa --kind script`. The head is the task head, plus an instruction to judge
+the command and its result: whether the result is complete and correct for the requirements,
+and whether the command did only what it should. A mechanical change can be sampled, and the
+review says what it sampled. The prompt includes the command and the last 3000 characters of
+`script.log`. The tail matches a task review. A member of a `review=group` group still waits
+for that group's review.
+
+A non-zero exit is `FAIL`. `tasks/<id>/qa.last` starts `The script exited N.` A timeout is
+`FAIL`, and `qa.last` says `The script timed out after Ns.` Both quote the last 3000
+characters of `script.log`. There is no review and no `noretry`, so a later retry can run.
+The worktree is left as the command left it. Exit 0 that changes nothing is `FAIL` as well,
+with `The script produced no changes.` and `noretry`, so it is not retried. A reset that
+cannot reach the base is `ERROR` and is not reviewed (`tasks/<id>/script.reset.out`).
+
+The task is never escalated, and its failed reviews are not counted as converging. The
+scheduler, `forge-route.py`, dataset routing and forge-ui treat `script` as no model. The
+plan forecast does not price the row. The reviewer is still a model, and a pause on that
+reviewer holds the task.
+
+A retry runs the same command again from the base. Editing `tasks/<id>/run` is how the diff
+changes. An unchanged command repeats the previous diff, and that retry stops: `FAIL`,
+`noretry`, and `The retry changed nothing: the diff is byte-identical to the previous
+attempt.` It is not reviewed again.
 
 ## Fractal within decomposed tasks
 
@@ -1694,6 +1750,54 @@ Four subcommands act on plans after tasks have run. Full usage and refusal condi
 
 `split`/`combine` hold the plans' advisory locks for their whole duration, and every failure path
 removes what it created.
+
+## Chained plans
+
+`plan <dir> --after <prev>` starts `<dir>` from an earlier plan's integration branch. `<prev>`
+is that plan's directory. See the [plan flags](../docs/commands.md#scriptsforge-parallelsh).
+
+`plan` writes `<prev>`'s absolute path to `after` and the starting commit to
+`integration.base`, and creates `forge/<run>-integration` at `<prev>`'s
+`accepted.integration`. A branch that already points at that commit is kept. The approval
+table prints `after: <run> (<base>)`, with the first 12 characters of that commit. A later `plan` of the same directory without `--after` keeps the
+files and the branch. A chained plan skips the warning about uncommitted changes in the
+repository: its worktrees start from the previous plan's accepted tip.
+
+`<prev>` has to be a plan of the same repository. Every refusal below is exit 2, and it leaves
+the plan directory and the branches as they were:
+
+- `<prev>` is not a directory, `--after` was given no directory, or the directory has no
+  `tasks.tsv`, `run_id` and `repo`
+- the plan would come after itself
+- the two plans belong to different repositories
+- a task of `<prev>` is not `MERGED`
+- `forge/<prev-run>-integration` is missing, `<prev>` has no `accepted.integration`, or the
+  branch tip is not that accepted commit. Extra commits on the branch are adopted into
+  `<prev>` first (`forge-parallel.sh adopt <prev> --head --reason "…"`)
+- `<prev>`'s scheduler is live (`scheduler.live` names a pid that is still running)
+- this plan's own `forge/<run>-integration` is at another commit: it is checked out, it is
+  not still at the recorded `integration.base`, or this plan already has merged work
+
+Before any merge, a different `--after` moves the branch when it is still at its old
+`integration.base` and is not checked out. After a task has merged, a different `--after`
+is the same exit 2, and the recorded base stays.
+
+`run` checks again while no task of this plan has merged. If `<prev>` has no
+`accepted.integration`, `run` notes that and goes on. Otherwise that commit must be an
+ancestor of this plan's `integration.base`. If `<prev>` moved, `run` exits 3, dispatches
+nothing, and tells you to run `plan <dir> --after <prev>` again. Planning again with the
+same `--after` records the new tip. A plan split from a chained plan starts later than
+`<prev>` ended; the old tip is still an ancestor, so the check passes. Once a task of this
+plan has merged, `run` does not check again.
+
+`integrate` merges this plan's integration branch, which already holds every plan it follows,
+and prints `this brings plans A → B → C` with the run ids, oldest first. A predecessor
+that cannot be read, or a chain longer than 64, makes that line start with `…`. A plan
+with no `after` file prints no such line.
+
+`forge runs` puts `after <run>` on the plan's summary line. `<run>` is the predecessor's run
+id, or its key when that directory is gone. forge-ui shows After, a link to the plan this run
+follows, and Followed by, the plans whose `after` names this run.
 
 ## Branches, worktrees, cleanup
 

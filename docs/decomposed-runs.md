@@ -227,6 +227,21 @@ For Fractal execution, pass tier pools to `plan` and backend/limit flags to `run
 `--max-parallel` limits task pipelines; the shared `--fractal-concurrency` limit includes
 all their child invocations and QA. See [decomposed Fractal execution](../references/decompose.md#fractal-within-decomposed-tasks).
 
+A plan can start from a finished plan's integration branch. `A` and `B` are plan directories:
+
+```
+plan B --after A
+run B
+integrate B --approved
+```
+
+`plan` exits 2 unless `A` is a plan of the same repo, every task is `MERGED`, the integration
+branch tip is `A`'s `accepted.integration`, and `A`'s scheduler is not live. It writes `after`
+and `integration.base`, and creates `B`'s integration branch at that tip. `run` exits 3 if `A`
+moved and `B` has not yet merged a task. `integrate` prints `this brings plans` and the run
+ids, oldest first. `forge runs` shows `after <run>` on `B`. See
+[Chained plans](../references/decompose.md#chained-plans).
+
 ## Resuming an interrupted run
 
 Ctrl-C (or a SIGTERM) on `run` stops the running tasks' process groups, waiting up to
@@ -396,7 +411,7 @@ docs	-	low	README.md	-	-	Document the auth flow
 | `deps` | comma-list of task ids that must land first, or `-` |
 | `difficulty` | `low` \| `medium` \| `high` |
 | `files` | expected touch set, comma-separated — **drives disjointness** |
-| `dwarf` / `qa` | `-` to resolve from the routing rules; an explicit spec always wins |
+| `dwarf` / `qa` | `-` to resolve from the routing rules; an explicit spec always wins. `script` in `dwarf` runs `tasks/<id>/run` |
 | `title` | one line, shown in the approval table and the capsule |
 
 Each task also needs `tasks/<id>/prompt.md`, written the same way a single-task forge goal is.
@@ -408,3 +423,9 @@ understated `files` is how two dwarves end up in the same file.
 `plan` writes resolved specs back into the `dwarf`/`qa` columns, so `run` never consults the
 routing rules — and an explicit value survives a re-plan, which is what makes a gate override
 durable. (`UNASSIGNED` is treated as a leftover marker and re-resolved.)
+
+A `dwarf` value of `script` runs the executable `tasks/<id>/run` and is not given a model.
+`plan` exits 2 when that file is missing or not executable, shows the row, and counts no
+implementer dispatch. A non-zero exit or a timeout is `FAIL` with no review and no escalation.
+A retry runs the command again from the base, so the way to change the diff is to edit `run`.
+See [Scripted tasks](../references/decompose.md#scripted-tasks).
