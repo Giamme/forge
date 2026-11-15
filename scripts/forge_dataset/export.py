@@ -330,15 +330,18 @@ def _siblings(plan, task_id) -> list:
 def _attempts(runs: Runs, run, task, rows) -> list:
     """One entry per real attempt number, oldest first: {n, events, outcome, reason}.
 
-    Refunded and infra-stopped executions spent no attempt. A QA-only rerun keeps its
-    attempt's number, so the number's last execution holds its final status. outcome is
-    True or False, or None when the attempt says nothing about the implementer (reason
-    names why): a later success must never be labeled as the first attempt's.
+    Refunded and infra-stopped executions spent no attempt. So did one whose prompt or
+    approach changed while it ran (`prompt_changed`): the plan moved, not the implementer.
+    A row stored before that field exists has no key and is counted, the same as an
+    explicit false. A QA-only rerun keeps its attempt's number, so the number's last
+    execution holds its final status. outcome is True or False, or None when the attempt
+    says nothing about the implementer (reason names why): a later success must never be
+    labeled as the first attempt's.
     """
     by_n = {}
     for e in rows:
         d = e['d']
-        if d.get('refunded') or d.get('infra') or not d.get('status'):
+        if d.get('refunded') or d.get('infra') or d.get('prompt_changed') or not d.get('status'):
             continue
         by_n.setdefault(e['attempt'] or 0, []).append(e)
     out = []
