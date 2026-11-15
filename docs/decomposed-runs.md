@@ -297,6 +297,11 @@ waiting on it start in the same run. `control.log` records who asked (`--actor`)
 A forge command the plan lock refuses says which command holds it (pid and since when), and on a
 live run which `forge control` command to use instead.
 
+Editing a task's `prompt.md` or `approach.md` while a run is going is allowed. An attempt
+already running is not reviewed against the new text: it is marked `STALE` and re-dispatched
+with the new requirements, and the attempt is not spent. `control.log` records `prompt-changed`
+with actor `scheduler`. See [failures that are the plan's](reviews.md#failures-that-are-the-plans).
+
 Each change is validated, written under `control.lock`, and says when it applies:
 
 - **The QA threshold is read once per attempt**, at the start of the task's next attempt; the
