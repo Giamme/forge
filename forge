@@ -33,6 +33,7 @@ usage() {
     '  brief     each task'"'"'s open questions, asked before it starts: write, show' \
     '  group     a plan'"'"'s task groups: show, retry a review=group group' \
     '  handoff   a run'"'"'s state for the next session, with the commands to carry on: show (the default)' \
+    '  worktrees the worktrees forge created: rm removes the safe ones by forge-ui'"'"'s rules' \
     '  watch     follow runs live and get a desktop notification when one finishes or fails' \
     '  control   a plan'"'"'s live controls: show, set (QA threshold, retries, timeouts), pin, unpin' \
     '  config    every config source: show, and set/unset the per-repo .forge files and Jev on/off' \
@@ -155,6 +156,11 @@ case "${1:-}" in
   handoff)
     shift
     exec python3 "$ROOT/scripts/forge-handoff.py" "$@"
+    ;;
+  worktrees)
+    shift
+    help_if_bare $# python3 "$ROOT/scripts/forge-worktrees.py"
+    exec python3 "$ROOT/scripts/forge-worktrees.py" "$@"
     ;;
   watch)
     shift
