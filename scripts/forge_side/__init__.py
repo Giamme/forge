@@ -20,6 +20,12 @@ Precedence for each switch, first match wins:
 A `brief-change` dispatch (a wave-scoped proposal, #136) follows the brief settings: the same
 level, `FORGE_BRIEF=off`, model, `never-send` floor and its own cap.
 
+A `triage` dispatch reads one repository's open findings from outside any plan. It is a
+kind, but it has no plan dir: `allowed` and `run` raise ValueError (`use the triage
+functions`). `triage_home` and `allocate_triage` place it at
+`${XDG_STATE_HOME:-~/.local/state}/forge/triage/<key>/<n>/`. An empty or relative
+`XDG_STATE_HOME` counts as unset. `triage_allowed` and `run_triage` are the entry points.
+
 `allowed` refuses with `env`, `off`, `never-send` (the plan repo's privacy floor),
 `no-model` or `cap`, in that order. For a summary, `tasks/<task>/summaries` (`on` or
 `off`) overrides the plan's mode and nothing else. The cap is
@@ -33,7 +39,9 @@ from __future__ import annotations
 import fcntl
 import os
 from pathlib import Path
+import re
 import signal
+import stat
 import subprocess
 import sys
 
@@ -43,9 +51,12 @@ from forge_decide.providers import privacy_floor
 SCRIPTS = Path(__file__).resolve().parent.parent
 DISPATCH = SCRIPTS / 'forge-dispatch.sh'
 
-KINDS = ('brief', 'brief-change', 'summary')
+KINDS = ('brief', 'brief-change', 'summary', 'triage')
 # Kinds that follow the brief settings: `FORGE_BRIEF=off`, the plan's brief level and brief model.
 BRIEF_KINDS = ('brief', 'brief-change')
+# Numbered triage dispatch dirs one repository key may keep. A non-numeric sibling is not one.
+_TRIAGE_CAP = 200
+_TRIAGE_KEY = re.compile(r'^[0-9a-f]{16}$')
 ON_OFF = ('off', 'on')
 BRIEF_LEVELS = ('off', 'advisory', 'gated', 'strict')
 BRIEF_SCOPES = ('task', 'wave', 'plan')
@@ -63,6 +74,10 @@ _STOP_GRACE_S = 2
 
 class _Capped(Exception):
     """The per-kind dispatch cap is already full. Not an error for the caller."""
+
+
+class TriageCapped(Exception):
+    """This repository key already holds 200 triage dispatch dirs."""
 
 
 def _read(path: Path) -> str | None:
@@ -287,11 +302,105 @@ def _allocate(plan: Path, kind: str, task: str) -> Path:
         os.close(fd)
 
 
+def _state_root() -> Path:
+    """Absolute `XDG_STATE_HOME`, or `~/.local/state`. Empty or relative counts as unset.
+
+    A relative state home would name a directory below the current one, usually the
+    repository. The same rule as forge-issues' findings store.
+    """
+    for candidate in (os.environ.get('XDG_STATE_HOME') or '', '~/.local/state'):
+        try:
+            base = Path(candidate).expanduser() if candidate else None
+        except RuntimeError:  # no home directory to expand "~" against
+            base = None
+        if base is not None and base.is_absolute():
+            return base
+    raise ValueError('cannot place the triage home: no home directory and no absolute XDG_STATE_HOME')
+
+
+def triage_home(key) -> Path:
+    """`${XDG_STATE_HOME:-~/.local/state}/forge/triage/<key>`.
+
+    `key` is 16 lowercase hex characters, the repository identity computed elsewhere.
+    This does not create the directory and does not import that computation.
+    """
+    if not isinstance(key, str) or _TRIAGE_KEY.fullmatch(key) is None:
+        raise ValueError('triage key must be 16 lowercase hex chars, not %r' % (key,))
+    return _state_root() / 'forge' / 'triage' / key
+
+
+def _refuse_symlink(path: Path, what: str) -> None:
+    """Raise ValueError when `path` is a symlink. A path that is not there yet is fine."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise ValueError('%s: %s' % (what, exc.strerror or exc)) from exc
+    if stat.S_ISLNK(info.st_mode):
+        raise ValueError('%s must be a real directory, not a symlink' % what)
+
+
+def _triage_slots(home: Path) -> tuple[int, int]:
+    """`(highest numeric n, how many real numeric dirs)`.
+
+    A sibling whose name is not numeric takes no number, as `_next_n` does, and is not
+    a dispatch dir. A symlinked numeric directory is refused rather than followed.
+    """
+    highest = 0
+    count = 0
+    try:
+        children = list(home.iterdir())
+    except OSError:
+        return 0, 0
+    for child in children:
+        if not child.name.isdigit():
+            continue
+        try:
+            info = child.lstat()
+        except OSError:
+            continue
+        if stat.S_ISLNK(info.st_mode):
+            raise ValueError('triage dispatch dir must be a real directory, not a symlink')
+        if not stat.S_ISDIR(info.st_mode):
+            continue
+        highest = max(highest, int(child.name))
+        count += 1
+    return highest, count
+
+
+def allocate_triage(key) -> Path:
+    """Create the next `<triage_home(key)>/<n>/` under an flock on `<home>/.lock`.
+
+    n starts at 1. A non-numeric sibling takes no number and does not count toward the
+    cap of 200 dispatch dirs. Past the cap this raises `TriageCapped`. A symlinked home
+    or numeric directory raises ValueError, and nothing is written through the link.
+    """
+    home = triage_home(key)
+    _refuse_symlink(home, 'triage home')
+    fd = _lock(home)
+    try:
+        _refuse_symlink(home, 'triage home')
+        highest, count = _triage_slots(home)
+        if count >= _TRIAGE_CAP:
+            raise TriageCapped('200 triage dispatch dirs already exist for this repository')
+        dest = home / str(highest + 1)
+        _refuse_symlink(dest, 'triage dispatch dir')
+        dest.mkdir()
+        _refuse_symlink(dest, 'triage dispatch dir')
+        return dest
+    finally:
+        os.close(fd)
+
+
 def allowed(kind, plan, task=None):
     """`(ok, reason)` for a `brief`, `brief-change` or `summary` dispatch. `reason` is None when it may run.
 
     Reasons, in the order they are decided: `env`, `off`, `never-send`, `no-model`, `cap`.
+    `triage` is not a plan dispatch: it raises ValueError (`use the triage functions`).
     """
+    if kind == 'triage':
+        raise ValueError('use the triage functions')
     if kind not in KINDS:
         raise ValueError('kind must be brief, brief-change or summary, not %r' % (kind,))
     plan = Path(plan)
@@ -315,6 +424,22 @@ def allowed(kind, plan, task=None):
         return False, 'no-model'
     if _at_cap(plan, kind):
         return False, 'cap'
+    return True, None
+
+
+def triage_allowed(repo, spec):
+    """`(ok, reason)` for a triage dispatch. `reason` is None when it may run.
+
+    Decided in order. No settings file is read: the caller names the spec each time.
+    `env` when `FORGE_TRIAGE` is off, `never-send` when `privacy_floor(repo)` says so,
+    `no-model` when `spec` is empty.
+    """
+    if _env_off('FORGE_TRIAGE'):
+        return False, 'env'
+    if privacy_floor(repo):
+        return False, 'never-send'
+    if spec is None or (isinstance(spec, str) and not spec.strip()):
+        return False, 'no-model'
     return True, None
 
 
@@ -399,6 +524,52 @@ def _stop_dispatch(proc: subprocess.Popen) -> None:
         pass
 
 
+def _dispatch_and_wait(dest: Path, repo, prompt, spec, limit: int, event_dir, task, kind) -> dict:
+    """Write `prompt.txt` and run `forge-dispatch.sh side` in its own session.
+
+    Shared by `run` and `run_triage`. `event_dir` is the run dir on the `side_dispatch`
+    event: the plan, or the triage dest. Returns `{ok, last, dir, reason}` and does not
+    raise. A dispatch that outlives `limit` plus `_DISPATCH_GRACE_S` is stopped with
+    its session, including a preflight that has not exited.
+    """
+    try:
+        text = prompt if isinstance(prompt, str) else ('' if prompt is None else str(prompt))
+        (dest / 'prompt.txt').write_text(text, encoding='utf-8')
+    except (OSError, UnicodeError):
+        return _finish(event_dir, task, kind, spec, False, None, dest, 'error')
+    if not repo:
+        return _finish(event_dir, task, kind, spec, False, None, dest, 'error')
+    argv = ['/bin/bash', str(DISPATCH), 'side', '' if spec is None else str(spec),
+            '--repo', str(repo), '--run-dir', str(dest), '--prompt-file', str(dest / 'prompt.txt'),
+            '--timeout', str(max(0, limit))]
+    # Own session, so a timeout can stop the preflight with the shell.
+    try:
+        proc = subprocess.Popen(
+            argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True, close_fds=True)
+    except (OSError, subprocess.SubprocessError):
+        return _finish(event_dir, task, kind, spec, False, _last(dest), dest, 'error')
+    wait = None if limit <= 0 else limit + _DISPATCH_GRACE_S
+    try:
+        proc.wait(timeout=wait)
+    except subprocess.TimeoutExpired:
+        _stop_dispatch(proc)
+        return _finish(event_dir, task, kind, spec, False, _last(dest), dest, 'timeout')
+    except (OSError, subprocess.SubprocessError):
+        _stop_dispatch(proc)
+        return _finish(event_dir, task, kind, spec, False, _last(dest), dest, 'error')
+    ok = proc.returncode == 0
+    reason = None if ok else ('timeout' if proc.returncode == 7 else 'error')
+    return _finish(event_dir, task, kind, spec, ok, _last(dest), dest, reason)
+
+
+def _seconds(timeout, default: int) -> int:
+    try:
+        return int(timeout)
+    except (TypeError, ValueError):
+        return default
+
+
 def run(kind, plan, task, prompt, spec, timeout=900) -> dict:
     """Dispatch once. Returns `{ok, last, dir, reason}` and never raises on a failure.
 
@@ -408,7 +579,10 @@ def run(kind, plan, task, prompt, spec, timeout=900) -> dict:
     when this kind is already at its limit, `timeout` when the dispatch times out,
     `missing` when the dispatch script is not there, and `error` otherwise. A timeout
     stops the dispatch's session, including a preflight that has not exited.
+    `triage` is not a plan dispatch: it raises ValueError (`use the triage functions`).
     """
+    if kind == 'triage':
+        raise ValueError('use the triage functions')
     if kind not in KINDS:
         raise ValueError('kind must be brief, brief-change or summary, not %r' % (kind,))
     plan = Path(plan)
@@ -417,45 +591,56 @@ def run(kind, plan, task, prompt, spec, timeout=900) -> dict:
     if not DISPATCH.is_file():
         return _finish(plan, task, kind, spec, False, None, None, 'missing')
     try:
-        limit = int(timeout)
-    except (TypeError, ValueError):
-        limit = 900
-    try:
         dest = _allocate(plan, kind, task)
     except _Capped:
         return _finish(plan, task, kind, spec, False, None, None, 'cap')
     except OSError:
         return _finish(plan, task, kind, spec, False, None, None, 'error')
+    return _dispatch_and_wait(dest, _read(plan / 'repo'), prompt, spec, _seconds(timeout, 900),
+                              plan, task, kind)
+
+
+def _path_or_none(value):
     try:
-        text = prompt if isinstance(prompt, str) else ('' if prompt is None else str(prompt))
-        (dest / 'prompt.txt').write_text(text, encoding='utf-8')
-    except (OSError, UnicodeError):
-        return _finish(plan, task, kind, spec, False, None, dest, 'error')
-    repo = _read(plan / 'repo')
-    if not repo:
-        return _finish(plan, task, kind, spec, False, None, dest, 'error')
-    argv = ['/bin/bash', str(DISPATCH), 'side', '' if spec is None else str(spec),
-            '--repo', repo, '--run-dir', str(dest), '--prompt-file', str(dest / 'prompt.txt'),
-            '--timeout', str(max(0, limit))]
-    # Own session, so a timeout can stop the preflight with the shell.
+        return Path(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _repo_text(repo) -> str:
+    if isinstance(repo, Path):
+        return str(repo)
+    if isinstance(repo, str):
+        return repo.strip()
+    return '' if repo is None else str(repo).strip()
+
+
+def run_triage(dest, repo, prompt, spec, timeout=3600) -> dict:
+    """Dispatch one triage read into an already allocated `dest`. Never raises.
+
+    The caller writes `findings.json` there first. `triage_allowed` is checked first
+    (`env`, `never-send`, `no-model`) and then nothing is started. Otherwise this is
+    the same `side` dispatch as `run`: `prompt.txt`, its own session, the grace past
+    the watchdog, and a session stop on timeout. `reason` is one of those, or
+    `timeout`, `missing` or `error`. The `side_dispatch` event has kind `triage`,
+    task None, and `dest` as its run dir.
+    """
+    directory = _path_or_none(dest)
     try:
-        proc = subprocess.Popen(
-            argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True, close_fds=True)
-    except (OSError, subprocess.SubprocessError):
-        return _finish(plan, task, kind, spec, False, _last(dest), dest, 'error')
-    wait = None if limit <= 0 else limit + _DISPATCH_GRACE_S
+        ok, reason = triage_allowed(repo, spec)
+    except Exception:
+        return _finish(directory, None, 'triage', spec, False, None, None, 'error')
+    if not ok:
+        return _finish(directory, None, 'triage', spec, False, None, None, reason)
+    if directory is None:
+        return _finish(None, None, 'triage', spec, False, None, None, 'error')
+    if not DISPATCH.is_file():
+        return _finish(directory, None, 'triage', spec, False, None, None, 'missing')
     try:
-        proc.wait(timeout=wait)
-    except subprocess.TimeoutExpired:
-        _stop_dispatch(proc)
-        return _finish(plan, task, kind, spec, False, _last(dest), dest, 'timeout')
-    except (OSError, subprocess.SubprocessError):
-        _stop_dispatch(proc)
-        return _finish(plan, task, kind, spec, False, _last(dest), dest, 'error')
-    ok = proc.returncode == 0
-    reason = None if ok else ('timeout' if proc.returncode == 7 else 'error')
-    return _finish(plan, task, kind, spec, ok, _last(dest), dest, reason)
+        return _dispatch_and_wait(directory, _repo_text(repo), prompt, spec, _seconds(timeout, 3600),
+                                  directory, None, 'triage')
+    except Exception:
+        return _finish(directory, None, 'triage', spec, False, None, directory, 'error')
 
 
 def cap(text, limit) -> str:
