@@ -147,8 +147,11 @@ locks, the audit log) whichever way you change something, and a change from the 
 indistinguishable from the same command typed in a terminal, except that the page passes
 `--actor ui` (`control.log` says `ui` instead of `cli` for a control change). A destructive change
 shows a dry run and then asks: removing worktrees, forgetting memories, compacting disk and deleting
-a run. A brief answer, a proposal, approving or rejecting one, and *Send answer* on a task that is
-waiting go out when you press the button, with no dry run. The HTTP shapes are in
+a run. A finding action (mark fixed, dismiss, reopen, mark to file, duplicate, tag, note or edit),
+adding or editing a learning, starting a triage, and approving a triage proposal each ask you to
+confirm first, with no dry run. A brief answer, a brief proposal, approving or rejecting a brief
+proposal, rejecting a triage proposal, and *Send answer* on a task that is waiting go out when you
+press the button, with no dry run. The HTTP shapes are in
 [the API](../ui/docs/api.md); this page describes what you do.
 
 - **Run controls** (a plan's inspector): the QA threshold (shown with its source, `P2 (default)`
@@ -170,19 +173,66 @@ waiting go out when you press the button, with no dry run. The HTTP shapes are i
   and runs `forge control retry --answer`.
 - **Projects (`#/projects`):** one page per repository with its runs, every finding forge's reviews
   wrote about it (each attempt, final reviews, shadow reviews behind a toggle), and every memory forge
-  keeps for it, whichever run or checkout they came from. A finding a later review got past is
-  `superseded`, never `fixed`; repeats across rounds are one row with a count. The Memories tab shows
-  what `memory.md` gives each role and each learning's state, as `forge memory learnings` reports it.
-  Runs and checkouts that are gone are read from the dataset, and those rows say so. When the server
-  can write, each learning on the checkout you are looking at has a checkbox, the filtered list has
-  *Select all*, and *Forget selected* runs
-  [`forge memory forget`](commands.md#forge-memory-forget) on that checkout with `--actor ui`. It
-  dry-runs first. The confirm lists the learnings (`category:key` and the text) and the `memory.md`
-  lines that go, or says that no `memory.md` line goes. Cancelling sends nothing more. The result
-  then says how many ledger rows each key lost, or that the key was not found. A learning with no
-  category or key cannot be selected. Under `--read-only` the tab still shows the learnings and
-  hides the checkboxes and the button. Reachable from the header, a run's repository name and each
-  map district.
+  keeps for it, whichever run or checkout they came from. Repeats across rounds are one row with a count.
+  The status column is the one [`forge findings`](commands.md#forge-findings) prints. The record wins
+  when it says `duplicate`, `dismissed`, `fixed`, `filed` or `to-file`. Otherwise a filed issue GitHub
+  has closed is `fixed` and one still open is `filed`; unless the record reopened the finding, a swept
+  one is `swept` and an old dismissal is `dismissed`. A shadow review is `shadow`, an unlabelled one
+  (`UNSTATED`) is `unlabelled`, and a finding a later review of the same task got past is `superseded`
+  (that does not say it was fixed). Anything else is `open`. The open count, on the project list and
+  in the Findings filter named `open`, counts only `open` and `to-file`, so `shadow`, `unlabelled`,
+  `superseded`, `swept`, `dismissed`, `duplicate`, `filed` and `fixed` are left out. The project list
+  does not ask GitHub, so a filed or swept finding can still be in that number; the Findings tab asks
+  and can count fewer. A `to-file` row keeps its draft. Each row shows its tags: the ones stored on
+  the record, or, when none are stored, the default for its path (`tests`, `docs`, `infra`, `ui` or
+  `backend`), marked as derived from the path. The tab asks `forge issues` online, so a closed issue
+  can show `fixed`, and says when those states were read. When GitHub cannot be asked it says so, and
+  that a filed finding may show as open. When the server can write, select findings (a row with no
+  record key cannot) and confirm one action. There is no dry run. Each runs
+  [`forge findings`](commands.md#forge-findings) on the repository root with `--actor ui`: *Mark fixed*
+  is `forge findings fix REPO FP…` with `--commit` (7 to 40 hex characters), `--reason`, or both;
+  *Dismiss* is `forge findings dismiss REPO FP… --reason TEXT` (the reason is required); *Reopen* is
+  `forge findings reopen REPO FP…`; *Mark to file* is `forge findings to-file REPO FP…` with an
+  optional `--title` and keeps a draft, it does not open a GitHub issue; *Duplicate of…* is
+  `forge findings dup REPO FP --of FP` (one finding); *Tags…* is `forge findings tag REPO FP… -- TAG…`
+  with `--add` or `--remove`. A row's *Note* is `forge findings note REPO FP TEXT` (empty text clears
+  it) and *Edit* is `forge findings edit REPO FP` with `--severity` (`P0`–`P3`), `--text-file`, or
+  both: the replacement stays on the record and does not rewrite the review. Note and edit take one
+  finding. *File selected* is separate and still runs `forge issues`: it shows the drafts and creates
+  the GitHub issues only after that confirm. *Triage with an agent* is on the same tab. You name a
+  spec; the page checks it with `bash scripts/forge-dispatch.sh doctor --spec S --role side` and does
+  not call a model for that check. *Start triage* stays disabled until that check passes, while a
+  triage is already running, or when *Most findings* is filled in with anything other than a whole
+  number from 1 to 2000. Starting
+  asks you to confirm, because it spends that model's quota, then runs
+  `forge findings triage REPO --spec S [--max-findings N] --detach --actor ui`. Left empty, *Most
+  findings* omits `--max-findings` and the command's default of 400 applies. While it runs, the page reads
+  `forge findings triage-status` and `forge findings proposals` every 5 seconds. The agent only
+  proposes. Each proposal is `duplicate`, `fixed`, `tag`, `issue` or `plan`. *Approve* asks first and
+  runs `forge findings apply REPO N PID --approve HASH [--plan-dir DIR] --actor ui` with the hash on
+  that card, so a proposal that changed since you read it is refused and nothing is written. An
+  `issue` approval only marks those findings `to-file` with the draft; GitHub is not contacted. A
+  `plan` approval writes a plan directory and shows
+  `bash scripts/forge-parallel.sh plan DIR --repo CHECKOUT`. Nothing runs by itself. *Reject* runs
+  `forge findings reject REPO N PID [--reason TEXT] --actor ui` when you press it, with no confirm.
+  Under `--read-only` the tab still lists the findings and shows those `forge findings` commands to
+  copy, including the triage ones, and hides the buttons. The Memories tab shows what `memory.md`
+  gives each role and each learning's state, as `forge memory learnings` reports it. Runs and
+  checkouts that are gone are read from the dataset, and those rows say so. When the server can write,
+  each learning on the checkout you are looking at has a checkbox, the filtered list has *Select all*,
+  and *Forget selected* runs [`forge memory forget`](commands.md#forge-memory-forget) on that checkout
+  with `--actor ui`. It dry-runs first. The confirm lists the learnings (`category:key` and the text)
+  and the `memory.md` lines that go, or says that no `memory.md` line goes. Cancelling sends nothing
+  more. The result then says how many ledger rows each key lost, or that the key was not found. A
+  learning with no category or key cannot be selected. *Add learning* runs `forge memory add` on the
+  checkout you picked, or on every checkout of the project that exists when none is picked:
+  `--category verify|trap|finding --text TEXT [--path P]… --actor ui`. *Edit* on a row runs
+  `forge memory edit` there with that learning's `category:key` and `--text`, the same `--actor ui`.
+  Each asks you to confirm first, with no dry run; the confirm names the checkouts and, for an edit,
+  the old text and the new. Add and edit are documented with
+  [`forge memory forget`](commands.md#forge-memory-forget). Under `--read-only` the tab still shows
+  the learnings, hides the checkboxes, Forget, Add and Edit, and shows the `forge memory` commands
+  to copy. Reachable from the header, a run's repository name and each map district.
 - **Disk (`#/disk`):** what forge takes on disk in every repository it has runs for (each run dir's
   review snapshots, logs and anything forge does not create, each run's worktree folder, the data home),
   what can go without losing a run, and the command that takes it back (`forge runs compact --logs`),
@@ -247,10 +297,11 @@ the page sends it with every change, and the server also checks the `Host` and `
 headers, so another website open in your browser cannot make your browser change a run. Reading
 needs no token. `--read-only` (or `FORGE_UI_READONLY=1`) turns writing off altogether: no
 token is issued and every change is refused. No action button is shown: not the run controls,
-not Remove or Forget selected or Compact, and not *Send answer*. The summaries and the questions
-still show, without their switches, answer boxes, or Propose, Approve and Reject buttons, and
-every copy button stays (worktree commands, compact commands, and the `retry --answer` command
-on a waiting task). `FORGE_UI_READONLY=1 forge ui open` starts such a
+not Remove or Forget selected or Compact, not the finding actions, Add learning, Edit or triage
+Start, Approve and Reject, and not *Send answer*. The summaries and the questions still show,
+without their switches, answer boxes, or Propose, Approve and Reject buttons, and every copy
+button stays (worktree commands, compact commands, the `forge findings` and `forge memory`
+commands, the triage commands, and the `retry --answer` command on a waiting task). `FORGE_UI_READONLY=1 forge ui open` starts such a
 server, and the launcher never reuses a server running in the other mode; it replaces it.
 
 Also: replay, critical path, Fractal child-task trees, quick jump (Ctrl K, ⌘K on a Mac, or
