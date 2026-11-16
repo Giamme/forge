@@ -15,8 +15,11 @@ Sources, run dirs first:
   dataset    `forge dataset history --json` for runs whose dir is gone and checkouts that are gone; those rows
              say so and link to no run page or diff
 
-Finding statuses: open, filed, fixed, swept, dismissed (as on a run's Open findings page) and superseded: a later
-review of the same task (or a later final review) passed. That does not claim the finding was fixed.
+Finding statuses come from forge_findings.status.effective (the one rule the CLI and the sweep share): the finding
+record first (duplicate, dismissed, fixed, filed, to-file), then the issue's state in `forge issues` (online, so a
+closed issue is `fixed`; offline when GitHub cannot be asked), then the review row: shadow, unlabelled, superseded
+(a later review of the same task, or a later final review, passed: that does not claim the finding was fixed).
+Only `open` and `to-file` are worked on.
 
 Cost: nothing here runs on the page's poll. Each tab's endpoint is read when the tab opens; a run's findings
 are cached by its `updated` time, the CLI answers for CACHE_S, and ?refresh=1 reads everything again.
@@ -25,15 +28,19 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import inspect
 import os
 from pathlib import Path
+import sys
 import threading
 import time
 
 from forge_ui import executions, findings as F, models, reader, repos
 
 ISSUES = Path(__file__).resolve().parents[2] / 'scripts' / 'forge-issues.py'
+SCRIPTS = ISSUES.parent
 CACHE_S = 300
+ONLINE_S = 60                    # the online listing may take this long before the offline one is read instead
 _SEVERITIES = ('P0', 'P1', 'P2', 'P3')
 _STATE = {}
 _LOCK = threading.Lock()
@@ -71,8 +78,8 @@ def project_id(root):
     return '%08x' % h
 
 
-def fingerprint(first_line):
-    """`forge issues`' key for a finding whose first line it can parse, else None (such rows never collapse).
+def parsed_finding(first_line):
+    """The finding `forge issues` parses from a first line ({file, text, ...}), else None.
     The canonical `[P1][CONFIRMED] path:line — text` form first, then the other forms forge issues reads from a
     known_issues.md (`parse_known`), so a tolerated finding written another way still finds its entry."""
     module = issues_module()
@@ -82,7 +89,77 @@ def fingerprint(first_line):
         parsed = module.parse_findings(first_line)
         if not parsed and callable(getattr(module, 'parse_known', None)):
             parsed = module.parse_known(first_line)
-        return module.finding_key(parsed[0]) if parsed else None
+        return parsed[0] if parsed else None
+    except Exception:
+        return None
+
+
+def fingerprint(first_line):
+    """`forge issues`' key for a finding whose first line it can parse, else None (such rows never collapse)."""
+    parsed = parsed_finding(first_line)
+    if parsed is None:
+        return None
+    try:
+        return issues_module().finding_key(parsed)
+    except Exception:
+        return None
+
+
+class _Record:
+    """forge_findings' store, status and tags and forge_identity, loaded read-only like models.py loads forge_dataset."""
+
+    def __init__(self, store, status, tags, identity):
+        self.store, self.status, self.tags, self.identity = store, status, tags, identity
+
+
+def record_modules():
+    """The finding record's modules, or None when they cannot be loaded (rows then keep the old status)."""
+    with _LOCK:
+        if 'record' in _STATE:
+            return _STATE['record']
+        found = None
+        scripts = str(SCRIPTS)
+        inserted = scripts not in sys.path
+        if inserted:
+            sys.path.insert(0, scripts)
+        try:
+            import forge_identity
+            loaded = {}
+            for name in ('status', 'tags', 'store'):
+                path = SCRIPTS / 'forge_findings' / (name + '.py')
+                module_name = 'forge_findings_%s_for_ui' % name
+                spec = importlib.util.spec_from_file_location(
+                    module_name, path, loader=_ReadOnlyLoader(module_name, str(path)))
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                loaded[name] = module
+            if not (callable(loaded['status'].effective) and callable(loaded['tags'].tags_for)
+                    and callable(loaded['store'].load) and callable(forge_identity.identity)):
+                raise TypeError('not the finding record')
+            found = _Record(loaded['store'], loaded['status'], loaded['tags'], forge_identity)
+        except Exception:
+            found = None
+        finally:
+            if inserted and scripts in sys.path:
+                sys.path.remove(scripts)
+        _STATE['record'] = found
+        return found
+
+
+def read_record(root):
+    """(ident, {fingerprint: entry}) of the repository at `root`; entries are {} when it has no identity or no
+    record yet. None when the record cannot be read at all (not loadable, corrupt, no state directory)."""
+    modules = record_modules()
+    if modules is None or not root:
+        return None
+    try:
+        ident = modules.identity.identity(root)
+        if ident is None:
+            return None, {}
+        data = modules.store.load(ident)
+        if isinstance(data, dict) and data.get('version') == 1 and isinstance(data.get('findings'), dict):
+            data = data['findings']
+        return ident, dict(data) if isinstance(data, dict) else {}
     except Exception:
         return None
 
@@ -340,6 +417,27 @@ def issue_for(index, row, run_path):
     return found
 
 
+def _first_of(row):
+    return (row.get('text') or '').split('\n', 1)[0]
+
+
+def _slug_of(ident):
+    try:
+        return record_modules().identity.github_slug(ident) or ''
+    except Exception:
+        return ''
+
+
+def _issues_call(issues, path, online):
+    """issues(path, online=...) when the callable takes `online`, else issues(path) (it knows one way to ask)."""
+    try:
+        params = inspect.signature(issues).parameters
+        takes = 'online' in params or any(q.kind == q.VAR_KEYWORD for q in params.values())
+    except (TypeError, ValueError):
+        takes = False
+    return issues(path, online=online) if takes else issues(path)
+
+
 # ---- the cached screen -----------------------------------------------------------------------------
 
 class Screen:
@@ -350,13 +448,17 @@ class Screen:
         self.runs = {}            # run path -> (updated, occurrences)
         self.cli = {}             # key -> (time, value)
 
-    def _cli(self, key, call, refresh, now):
+    def _cli_at(self, key, call, refresh, now):
+        """(value, the time it was read) of a CLI answer, cached for CACHE_S."""
         hit = self.cli.get(key)
         if not refresh and hit is not None and now - hit[0] < CACHE_S:
-            return hit[1]
+            return hit[1], hit[0]
         value = call()
         self.cli[key] = (now, value)
-        return value
+        return value, now
+
+    def _cli(self, key, call, refresh, now):
+        return self._cli_at(key, call, refresh, now)[0]
 
     def occurrences(self, run):
         hit = self.runs.get(run['path'])
@@ -377,15 +479,43 @@ class Screen:
             projects = self.projects(catalog)
             out = []
             for p in projects.values():
-                # not superseded by a later passing review; dismissals and filed issues show on the Findings tab
-                open_findings = sum(1 for row in collapse([o for run in p['runs'] for o in self.occurrences(run)])
-                                    if not row['superseded'])
+                # Rows the finding record and the review rules call open (or to-file): not shadow, unlabelled,
+                # superseded, nor closed in the record. The listing of issues needs GitHub, so filed and swept
+                # findings are not known here: the Findings tab's own count can be lower still.
+                open_findings = self._open_findings(p, collapse([o for run in p['runs'] for o in self.occurrences(run)]))
                 out.append(dict(id=p['id'], name=p['name'], root=p['root'], exists=p['exists'], runs=len(p['runs']),
                                 live=p['live'], last=p['last'], path_only=p['path_only'],
                                 checkouts=len(checkouts(p)), memory_lines=_memory_lines(p['root']) if p['exists'] else None,
                                 open_findings=open_findings))
             out.sort(key=lambda p: p['last'] or 0, reverse=True)
             return dict(projects=out)
+
+    def _open_findings(self, p, rows):
+        record = read_record(p['root']) if p['exists'] else (None, {})
+        modules = record_modules()
+        if modules is None or record is None:
+            return sum(1 for row in rows if not row['superseded'])
+        ident, entries = record
+        slug = _slug_of(ident) if ident and entries else ''
+        count = 0
+        for row in rows:
+            entry = entries.get(self._record_fp(slug, row)) if entries else None
+            if modules.status.effective(entry, None, row) in modules.status.OPEN:
+                count += 1
+        return count
+
+    @staticmethod
+    def _record_fp(slug, row, issue=None):
+        """The record's key of a row: its issues entry's `fp`, else the one forge-issues computes for its first line."""
+        if issue is not None and isinstance(issue.get('fp'), str) and issue['fp']:
+            return issue['fp']
+        parsed = parsed_finding(_first_of(row))
+        if parsed is None:
+            return None
+        try:
+            return issues_module().fingerprint(slug, parsed)
+        except Exception:
+            return None
 
     def detail(self, catalog, pid):
         p = self.project(catalog, pid)
@@ -415,6 +545,27 @@ class Screen:
                     out.add(run['run'])
         return out
 
+    def _read_issues(self, p, issues, refresh, now):
+        """(listing, online, read_at) of `forge issues` for the project: asked once of the repository's root, online
+        first (it knows which issues are closed), offline when that fails or takes over ONLINE_S. Only a root
+        that is no checkout, or that gave nothing, sends it through the project's runs (at most three)."""
+        paths = []
+        if p['exists']:
+            paths.append(p['root'])
+        paths += [run['path'] for run in sorted(p['runs'], key=lambda r: (r.get('repo_worktree') is not None,
+                                                                          r.get('kind') != 'plan'))[:3]]
+        online_failed = False
+        for path in paths:
+            if not online_failed:
+                listing, at = self._cli_at(('issues', path, True), lambda: _issues_call(issues, path, True), refresh, now)
+                if listing is not None:
+                    return listing, True, at
+                online_failed = True
+            listing, at = self._cli_at(('issues', path, False), lambda: _issues_call(issues, path, False), refresh, now)
+            if listing is not None:
+                return listing, False, at
+        return None, False, None
+
     def findings(self, catalog, pid, history, issues, refresh=False, now=None):
         now = time.time() if now is None else now
         with self.lock:
@@ -431,21 +582,32 @@ class Screen:
             gone = self._dataset_runs(p, hist, projects) if hist else set()
             if hist:
                 occ += _dataset_occurrences(hist, gone)
-            # forge issues reads every run of the repository (--all-runs) from any one of them, but needs that run's
-            # checkout to name its GitHub repository: runs started in the root first, at most three tries.
-            tried = sorted(p['runs'], key=lambda r: (r.get('repo_worktree') is not None, r.get('kind') != 'plan'))[:3]
-            listing = None
-            for run in tried:
-                listing = self._cli(('issues', run['path']), lambda: issues(run['path']), refresh, now)
-                if listing is not None:
-                    break
+            listing, online, read_at = self._read_issues(p, issues, refresh, now)
             index = issue_index(listing)
             paths = {run['key']: run['path'] for run in p['runs']}
             rows = collapse(occ)
+            record = read_record(p['root']) if p['exists'] else (None, {})
+            modules = record_modules()
+            ident, entries = record if record is not None else (None, {})
+            slug = (listing or {}).get('repo') if listing is not None else None
+            if not isinstance(slug, str):
+                slug = _slug_of(ident) if (ident and listing is None) else ''
             for row in rows:
                 issue = issue_for(index, row, paths.get(row['run']))
-                row['status'] = status_of(row, issue)
-                row['fileable'] = issue is not None and row['status'] == 'open' and row['source'] == 'run'
+                row['record_fp'] = self._record_fp(slug, row, issue)
+                if modules is None or record is None:
+                    row['status'], row['record'], row['tags'], row['draft'] = status_of(row, issue), None, [], None
+                else:
+                    entry = entries.get(row['record_fp']) if row['record_fp'] else None
+                    parsed = None if issue else parsed_finding(_first_of(row))
+                    where = ((issue or {}).get('file') or (parsed or {}).get('file')
+                             or str(row.get('location') or '').rsplit(':', 1)[0])
+                    row['record'] = entry
+                    row['status'] = modules.status.effective(entry, issue, row)
+                    row['tags'] = modules.tags.tags_for(entry, where)
+                    row['draft'] = entry.get('draft') if isinstance(entry, dict) else None
+                row['fileable'] = (issue is not None and row['status'] in ('open', 'to-file')
+                                   and row['source'] == 'run')
                 row['origin'] = issue.get('origin') if issue else None
             rows.sort(key=lambda r: (_SEVERITIES.index(r['severity']) if r['severity'] in _SEVERITIES else 9, -(r['at'] or 0)))
             notes = []
@@ -455,8 +617,12 @@ class Screen:
                 notes.append('the dataset is off (FORGE_DATASET=off): only the run directories that still exist are read')
             if listing is None:
                 notes.append('forge issues could not be read: dismissed and filed findings show as open')
+            elif not online:
+                notes.append('issue states could not be read from GitHub: filed findings may show as open')
+            if modules is None or record is None:
+                notes.append('the finding record could not be read')
             return dict(id=pid, rows=rows, notes=notes, runs=len(p['runs']), dataset_runs=len(gone),
-                        computed=now, available=F.available())
+                        computed=now, available=F.available(), issues_online=online, issues_read_at=read_at)
 
     def memories(self, catalog, pid, learnings, history, refresh=False, now=None):
         now = time.time() if now is None else now
