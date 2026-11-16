@@ -29,7 +29,7 @@ STATIC = server.STATIC_DIR
 # groupsview.js is the group page. It is named here before that file exists; _page skips a
 # SCRIPTS entry whose file is absent, so the export still builds.
 SCRIPTS = ('theme.js', 'icons.js', 'datatable.js', 'shell.js', 'runmodel.js', 'cloudmodel.js', 'graph.js', 'gantt.js', 'verifyview.js', 'checksview.js',
-           'briefview.js', 'groupsview.js', 'findingsactions.js', 'panel.js', 'diffview.js', 'convo.js', 'files.js', 'map3d.js', 'search.js', 'app.js')
+           'briefview.js', 'groupsview.js', 'findingsactions.js', 'triageview.js', 'panel.js', 'diffview.js', 'convo.js', 'files.js', 'map3d.js', 'search.js', 'app.js')
 LEFT_OUT = {
     'uikit.js': 'write helpers and the guards that keep a poll from redrawing what a person holds; a snapshot neither writes nor polls',
     'controls.js': 'changes a live run',
