@@ -132,13 +132,14 @@
       timers().clearTimeout(checkTimer); checkTimer = null;
       cancelConfirms();
     }
+    // a panel is drawn into its host before the host is on the page, so only a firing timer judges whether the host left
     const alive = () => live && host.isConnected !== false;
 
     /* the state, and the one polling timer */
     const stateNow = () => store.data && store.data.state || null;
     function schedule() {
       timers().clearTimeout(pollTimer); pollTimer = null;
-      if (!alive()) { if (live && host.isConnected === false) stop(); return; }
+      if (!live) return;
       const delay = pollDelay(stateNow());
       if (delay == null) return;
       pollTimer = timers().setTimeout(async () => { pollTimer = null; if (alive()) await load(); else stop(); }, delay);

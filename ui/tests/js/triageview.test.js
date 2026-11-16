@@ -441,6 +441,34 @@ test('Approve confirms what changes, then sends exactly the card\'s hash, then r
   assert.match(card('p3').textContent, /applied/);
 });
 
+test('a panel drawn into a host that is not on the page yet still works once it is attached', async () => {
+  reset(); reply(DONE, proposals());
+  const store = { open: true, data: { state: DONE, proposals: proposals() } };
+  const h = document.createElement('div');                  // detached while render runs, as drawFindings does
+  const calls = { reload: 0 };
+  T.render(h, { id: 'proj1', root: '/my repo', writes: true, store, rows: () => ROWS, reload: () => { calls.reload += 1; } });
+  const page = mount(); page.append(h);                     // attached right after
+  await until(() => byClass(h, 'triage-card').length === 5);
+  const card = byClass(h, 'triage-card').find(c => c.dataset.pid === 'p1');
+  click(button(card, 'Approve'));
+  await until(() => confirmText(card));
+  click(button(card, 'Confirm'));
+  await until(() => state.posts.length === 1);
+  assert.equal(state.posts[0].body.hash, 'h1');
+});
+
+test('a running panel drawn before its host is attached still polls', async () => {
+  reset(); reply(RUNNING, null);
+  const store = { open: true, data: { state: RUNNING, proposals: null } };
+  const h = document.createElement('div');
+  T.render(h, { id: 'proj1', root: '/my repo', writes: true, store, rows: () => ROWS });
+  const page = mount(); page.append(h);
+  await until(() => timers().length === 1);
+  const before = state.gets.length;
+  await fire(5000);
+  assert.ok(state.gets.length > before);
+});
+
 test('each kind confirms with what it changes', () => {
   const [dup, fixed, tag, issue, plan] = proposals().proposals;
   assert.equal(T.confirmFor(dup), `Mark 1 finding ${FP(1)} as a duplicate of ${FP(2)}?`);
