@@ -1,0 +1,58 @@
+name: Bug report
+description: forge did something wrong or failed
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! [Troubleshooting](https://github.com/Giamme/forge/blob/main/docs/troubleshooting.md) may already cover it. For a security issue, please [report it privately](https://github.com/Giamme/forge/security/advisories/new) instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what happened instead.
+      placeholder: |
+        /forge "…" --dwarf sol:high --qa opus
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The smallest set of steps that shows the problem, if you have one.
+  - type: textarea
+    id: output
+    attributes:
+      label: Output and logs
+      description: Error messages, and relevant lines from the run directory (`dwarf.last`, `qa.last`, `task.out`). Remove anything private first.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: forge version
+      description: The output of `forge version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS
+        - Linux
+        - Windows (MSYS2)
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Doctor output
+      description: The output of `bash <forge>/scripts/forge-dispatch.sh doctor`, which shows the agent CLIs forge can reach.
+      render: text
+  - type: input
+    id: harness
+    attributes:
+      label: Agent CLI and models
+      description: Which CLI you ran forge from, and the model specs involved.
+      placeholder: "Claude Code; --dwarf sol:high --qa opus"

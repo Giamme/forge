@@ -188,6 +188,13 @@ python3 ui/tools/demo_runs.py /tmp/forge-demo
 | [Ripwire and Jev](docs/add-ons.md) | optional repository context and advisory judgments |
 | [Troubleshooting](docs/troubleshooting.md) | symptoms, causes and fixes |
 | [Development](docs/development.md) | repository layout, offline checks, runtime measurement |
+| [Contributing](CONTRIBUTING.md) | setting up, running the tests, the rules reviewers check, pull requests |
+
+## Contributing
+
+Issues and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers setting up,
+running the tests and what reviewers look for. Please report security issues privately, as
+[SECURITY.md](SECURITY.md) describes.
 
 ## License
 
