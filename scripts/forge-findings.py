@@ -149,7 +149,8 @@ def build_parser():
                      help=f"1 to {triage.MAX_FINDINGS_LIMIT}, default {triage.DEFAULT_MAX_FINDINGS}")
     run.add_argument("--detach", action="store_true", help="return at once; the triage goes on in its own session")
 
-    job = sub.add_parser("_triage-job", parents=[common], help=argparse.SUPPRESS)
+    # No help= keeps it out of the command list; help=SUPPRESS would print "==SUPPRESS==" there.
+    job = sub.add_parser("_triage-job", parents=[common])
     job.add_argument("repo")
     job.add_argument("n", type=int)
     job.add_argument("--timeout", type=int, default=triage.DEFAULT_TIMEOUT)
@@ -161,6 +162,8 @@ def build_parser():
     proposals = sub.add_parser("proposals", parents=[common], help="what a triage proposed (the newest by default)")
     proposals.add_argument("repo")
     proposals.add_argument("n", nargs="?", type=int, metavar="N")
+    # The usage line and the error text list the choices; leave the internal one out of them.
+    sub.metavar = "{" + ",".join(name for name in sub.choices if not name.startswith("_")) + "}"
     return parser
 
 
