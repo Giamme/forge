@@ -101,11 +101,11 @@ test('commandFor names every op and keeps a placeholder for what was not typed',
   assert.equal(A.commandFor('to-file', '/r', [FP], {}), `forge findings to-file /r ${FP}`);
   assert.equal(A.commandFor('dup', '/r', [FP], { of: FP2 }), `forge findings dup /r ${FP} --of ${FP2}`);
   assert.equal(A.commandFor('dup', '/r', [FP], {}), `forge findings dup /r ${FP} --of FP`);
-  assert.equal(A.commandFor('tag', '/r', [FP], { tags: 'ui, flaky' }), `forge findings tag /r ${FP} ui flaky --add`);
-  assert.equal(A.commandFor('tag', '/r', [FP], { tags: ['ui'], remove: true }), `forge findings tag /r ${FP} ui --remove`);
-  assert.equal(A.commandFor('tag', '/r', [FP], {}), `forge findings tag /r ${FP} TAG --add`);
+  assert.equal(A.commandFor('tag', '/r', [FP], { tags: 'ui, flaky' }), `forge findings tag /r ${FP} -- ui flaky --add`);
+  assert.equal(A.commandFor('tag', '/r', [FP], { tags: ['ui'], remove: true }), `forge findings tag /r ${FP} -- ui --remove`);
+  assert.equal(A.commandFor('tag', '/r', [FP], {}), `forge findings tag /r ${FP} -- TAG --add`);
   assert.equal(A.commandFor('note', '/r', [FP], {}), `forge findings note /r ${FP} TEXT`);
-  assert.equal(A.commandFor('edit', '/r', [FP], {}), `forge findings edit /r ${FP} --severity P2`);
+  assert.equal(A.commandFor('edit', '/r', [FP], {}), `forge findings edit /r ${FP} --severity Pn`);
   assert.equal(A.commandFor('edit', '/r', [FP], { severity: 'P0' }), `forge findings edit /r ${FP} --severity P0`);
 });
 
@@ -158,6 +158,7 @@ test('fileableFps takes open fileable rows, at most 25, once each', () => {
   assert.deepEqual(A.fileableFps(mixed), ['f3']);
   assert.equal(A.fileRun(mixed), 'run1');
   assert.equal(A.fileRun([row('a', { fileable: false })]), null);
+  assert.equal(A.allowed([row('a', { run: null })]).file, false, 'no run to read: File selected stays disabled');
   assert.deepEqual(A.fileableFps(null), []);
 });
 

@@ -326,7 +326,7 @@
       const count = el('p', '', 'muted prj-count'), tableHost = el('div', undefined, 'prj-table');
       const formHost = el('div', undefined, 'fnd-form'), actHost = el('div', undefined, 'fnd-confirm'), noteHost = el('div', undefined, 'fnd-result');
       s.actHost = actHost;
-      if (s.actResult) UI.outcome(noteHost, s.actResult.res, s.actResult.text, { silent: true });
+      if (s.actResult) { UI.outcome(noteHost, s.actResult.res, s.actResult.text, { silent: true }); s.actResult = null; }   // shown once
       const shownNow = () => filterFindings(rows, s.ffilter);
       const selectedNow = () => A.selectedRows(shownNow(), s.fsel);
 
@@ -358,7 +358,7 @@
           s.actResult = { res, text: `${fps.length} finding${fps.length === 1 ? '' : 's'} ${A.PAST[op]}` };
           if (res && res.ok) for (const fp of fps) s.fsel.delete(fp);
           if (!current()) { if (s.tab === 'findings') await loadTab(true); return; }
-          if (!res || !res.ok) { UI.outcome(noteHost, res); return; }
+          if (!res || !res.ok) { s.actResult = null; UI.outcome(noteHost, res); return; }   // shown here, not again on a redraw
           closeForm();
           s.acting = false;
           await loadTab(true);

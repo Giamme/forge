@@ -779,6 +779,10 @@ test.describe('findings actions on the page', { concurrency: 1 }, () => {
     await until(() => h.textContent.includes('FP aaaaaaaaaaaa is filed already'));
     assert.equal(button(h, 'Mark fixed').disabled, false);
     assert.equal(labelled(h, 'Select finding ' + FA).checked, true, 'the selection survives a refusal');
+    click(button(h, 'Read again'));
+    await until(() => state.gets.includes('/api/projects/proj1/findings?refresh=1'));
+    await tick(8);
+    assert.equal(h.textContent.includes('FP aaaaaaaaaaaa is filed already'), false, 'a refusal is not replayed on the next redraw');
   });
 
   test('a redraw while the confirm is open leaves the buttons usable', async () => {

@@ -52,7 +52,7 @@
     const rows = list(selected).filter(selectable), n = rows.length, many = n >= 1 && n <= MAX_FPS, one = n === 1;
     const why = n > MAX_FPS ? `${n} selected: at most ${MAX_FPS} per action` : '';
     return { count: n, why, fix: many, dismiss: many, reopen: many && rows.some(r => r.status !== 'open'), 'to-file': many, tag: many,
-      dup: one, note: one, edit: one, file: fileableFps(rows).length > 0 };
+      dup: one, note: one, edit: one, file: fileableFps(rows).length > 0 && fileRun(rows) !== null };
   }
   // The fingerprints "File selected" hands to forge issues: rows `forge issues` can file, still open, at most 25.
   function fileableFps(rows) {
@@ -163,12 +163,12 @@
     else if (op === 'dup') head.push(has(o.of) ? option('of', str(o.of).trim()) : '--of FP');
     else if (op === 'tag') {
       const tags = Array.isArray(o.tags) ? o.tags : has(o.tags) ? parseTags(o.tags).tags : [];
-      head.push(...(tags.length ? tags.map(shellQuote) : ['TAG']), o.remove ? '--remove' : '--add');
+      head.push('--', ...(tags.length ? tags.map(shellQuote) : ['TAG']), o.remove ? '--remove' : '--add');   // `--` ends the fingerprints
     } else if (op === 'note') { const text = o.text === undefined ? 'TEXT' : str(o.text).trim(); head.push(...(text.startsWith('-') ? ['--', shellQuote(text)] : [shellQuote(text)])); }
     else if (op === 'edit') {
       if (has(o.severity)) head.push(option('severity', str(o.severity).trim()));
       if (o.text !== undefined && o.text !== null) head.push('--text-file FILE');
-      if (!has(o.severity) && (o.text === undefined || o.text === null)) head.push('--severity P2');
+      if (!has(o.severity) && (o.text === undefined || o.text === null)) head.push('--severity Pn');
     }
     return head.join(' ');
   }
