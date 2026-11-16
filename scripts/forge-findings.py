@@ -10,6 +10,9 @@
   tag REPO FP… -- TAG… (--add | --remove)
   note REPO FP TEXT
   edit REPO FP [--severity Pn] [--text-file F]
+  triage REPO --spec S [--timeout N] [--max-findings N] [--detach]
+  triage-status REPO [N]
+  proposals REPO [N]
 
 REPO is a checkout, a linked worktree, or a plan or solo run dir. FP is the
 12-hex fingerprint `show` prints. `--actor` is cli (the default), ui or triage.
@@ -30,13 +33,13 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import forge_identity  # noqa: E402
-from forge_findings import status, store, tags  # noqa: E402
+from forge_findings import status, store, tags, triage  # noqa: E402
 
 ACTORS = ("cli", "ui", "triage")
 FP_RE = re.compile(r"[0-9a-f]{12}\Z")
 SEVERITIES = ("P0", "P1", "P2", "P3")
 
-# Later tasks add triage, triage-status, proposals, apply and reject here and in build_parser.
+# A later task adds apply and reject here and in build_parser.
 COMMANDS = {}
 
 
@@ -135,6 +138,29 @@ def build_parser():
     edit.add_argument("fp", metavar="FP")
     edit.add_argument("--severity", choices=SEVERITIES, help="P0, P1, P2 or P3")
     edit.add_argument("--text-file", metavar="F", help="read the replacement text from this file")
+
+    run = sub.add_parser("triage", parents=[common],
+                         help="have a read-only model propose duplicates, fixes, tags, issues and plans")
+    run.add_argument("repo")
+    run.add_argument("--spec", required=True, metavar="S", help="the model, as forge --dwarf names one")
+    run.add_argument("--timeout", type=int, default=triage.DEFAULT_TIMEOUT, metavar="N",
+                     help=f"seconds the model may take (default {triage.DEFAULT_TIMEOUT})")
+    run.add_argument("--max-findings", type=int, default=triage.DEFAULT_MAX_FINDINGS, metavar="N",
+                     help=f"1 to {triage.MAX_FINDINGS_LIMIT}, default {triage.DEFAULT_MAX_FINDINGS}")
+    run.add_argument("--detach", action="store_true", help="return at once; the triage goes on in its own session")
+
+    job = sub.add_parser("_triage-job", parents=[common], help=argparse.SUPPRESS)
+    job.add_argument("repo")
+    job.add_argument("n", type=int)
+    job.add_argument("--timeout", type=int, default=triage.DEFAULT_TIMEOUT)
+
+    state = sub.add_parser("triage-status", parents=[common], help="the state of a triage (the newest by default)")
+    state.add_argument("repo")
+    state.add_argument("n", nargs="?", type=int, metavar="N")
+
+    proposals = sub.add_parser("proposals", parents=[common], help="what a triage proposed (the newest by default)")
+    proposals.add_argument("repo")
+    proposals.add_argument("n", nargs="?", type=int, metavar="N")
     return parser
 
 
@@ -272,18 +298,23 @@ def _rows(listed, records):
     return rows
 
 
-@command("show")
-def cmd_show(args):
-    ident = require_ident(args.repo)
+def collect(repo, ident, online=False):
+    """`(listed, rows)`: the issues listing of a repository and one row per finding, with its record."""
     records = call_store(lambda: store.load(ident))
     module = issues()
     try:
-        listed = module.listing(args.repo, online=bool(args.online))
+        listed = module.listing(repo, online=online)
     except module.Busy as exc:
         raise Refused(str(exc)) from exc
     except module.Fail as exc:
         raise Failed(str(exc)) from exc
-    rows = _rows(listed, records)
+    return listed, _rows(listed, records)
+
+
+@command("show")
+def cmd_show(args):
+    ident = require_ident(args.repo)
+    listed, rows = collect(args.repo, ident, online=bool(args.online))
     chosen = _wanted(args.status)
     if chosen is not None:
         rows = [row for row in rows if row.get("status") in chosen]
@@ -418,6 +449,113 @@ def cmd_edit(args):
     severity = args.severity
     return apply(args, [args.fp],
                  lambda ident, fps, actor: store.set_edit(ident, fps[0], actor, severity=severity, text=text))
+
+
+def _checkout(ident):
+    checkout = ident.get("checkout")
+    return checkout if isinstance(checkout, str) else ""
+
+
+def _triage_call(fn):
+    try:
+        return fn()
+    except triage.Refused as exc:
+        raise Refused(str(exc)) from exc
+    except triage.Failed as exc:
+        raise Failed(str(exc)) from exc
+
+
+def _job_argv(args, n):
+    """The hidden job's command line: this script again, as a process of its own."""
+    return [sys.executable, str(Path(__file__).resolve()), "_triage-job", os.path.abspath(args.repo), str(n),
+            "--timeout", str(args.timeout)]
+
+
+@command("triage")
+def cmd_triage(args):
+    if args.timeout < 0:
+        raise Usage("--timeout must not be negative")
+    if not 1 <= args.max_findings <= triage.MAX_FINDINGS_LIMIT:
+        raise Usage(f"--max-findings must be 1 to {triage.MAX_FINDINGS_LIMIT}")
+    ident = require_ident(args.repo)
+    checkout = _checkout(ident)
+    _listed, rows = collect(args.repo, ident)
+    n, dest = _triage_call(lambda: triage.start(
+        ident, rows, args.spec, checkout, max_findings=args.max_findings, actor=args.actor))
+    if args.detach:
+        triage.detach(dest, _job_argv(args, n))
+        out = {"triage": n, "state": "running"}
+    else:
+        final = triage.run_job(dest, checkout, n, timeout=args.timeout)
+        triage.write_done(dest, 0 if final.get("state") == "done" else 1)
+        out = {"triage": n, **{k: final[k] for k in ("state", "reason", "proposals") if k in final}}
+    if args.json:
+        print(json.dumps(out, ensure_ascii=False))
+    else:
+        extra = out.get("reason") or (f"{out['proposals']} proposals" if "proposals" in out else "")
+        print(f"triage {n}: {out['state']}" + (f" ({extra})" if extra else ""))
+    return 1 if out["state"] == "failed" else 0
+
+
+@command("_triage-job")
+def cmd_triage_job(args):
+    ident = require_ident(args.repo)
+    found = triage.triage_dir(ident["key"], args.n)
+    if found is None:
+        raise Refused(f"no triage {args.n}")
+    final = triage.run_job(found[1], _checkout(ident), args.n, timeout=args.timeout)
+    return 0 if final.get("state") == "done" else 1
+
+
+def _find_triage(args):
+    """`(n, dir)` of the triage asked for, or the newest. Refused when there is none."""
+    ident = require_ident(args.repo)
+    found = triage.triage_dir(ident["key"], args.n)
+    if found is None:
+        raise Refused(f"no triage {args.n}" if args.n is not None else "no triage has run for this repository")
+    return found
+
+
+@command("triage-status")
+def cmd_triage_status(args):
+    n, dest = _find_triage(args)
+    state = triage.read_state(dest)
+    if state is None:
+        raise Refused(f"triage {n} has no state")
+    if args.json:
+        print(json.dumps({"triage": n, "dir": str(dest), **state}, indent=2, ensure_ascii=False))
+    else:
+        extra = state.get("reason") or (f"{state['proposals']} proposals" if "proposals" in state else "")
+        print(f"triage {n}: {state.get('state')}" + (f" ({extra})" if extra else "")
+              + f"  {state.get('findings', 0)} findings  {state.get('spec', '-')}")
+    return 0
+
+
+def _proposal_line(item):
+    kind = item.get("kind")
+    if kind in ("duplicate", "fixed"):
+        target = f"{item.get('fp')}" + (f" of {item.get('of')}" if kind == "duplicate" else "")
+    else:
+        target = ",".join(item.get("fps") or [])
+    label = " ".join(str(item.get("title") or "").split())
+    if kind == "tag":
+        label = ",".join(item.get("tags") or [])
+    return f"{item.get('id')}  {item.get('hash')}  {item.get('state')}  {kind}  {target}" + (f"  {label}" if label else "")
+
+
+@command("proposals")
+def cmd_proposals(args):
+    n, dest = _find_triage(args)
+    data = triage.read_json(dest / "proposals.json")
+    if not isinstance(data, dict) or not isinstance(data.get("proposals"), list):
+        state = triage.read_state(dest) or {}
+        raise Refused(f"triage {n} has no proposals ({state.get('state', 'no state')})")
+    if args.json:
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+    else:
+        for item in data["proposals"]:
+            print(_proposal_line(item))
+    return 0
 
 
 def report(exc, code, args):
