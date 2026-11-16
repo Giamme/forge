@@ -314,15 +314,18 @@ class FindingsCliTests(unittest.TestCase):
         self.assertEqual(action.returncode, 1, action.stderr)
         self.assertEqual(path.read_text(), "{")
 
-    def test_the_parser_lists_these_commands_and_not_triage(self):
+    def test_the_parser_lists_these_commands_and_hides_the_internal_job(self):
         spec = importlib.util.spec_from_file_location("forge_findings_cli_under_test", SCRIPT)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        names = ["show", "fix", "dismiss", "reopen", "to-file", "dup", "tag", "note", "edit"]
+        names = ["show", "fix", "dismiss", "reopen", "to-file", "dup", "tag", "note", "edit",
+                 "triage", "_triage-job", "triage-status", "proposals"]
         self.assertEqual(list(module.COMMANDS), names)
         parser = module.build_parser()
         choices = next(action for action in parser._actions if isinstance(action, argparse._SubParsersAction))
         self.assertEqual(list(choices.choices), names)
+        self.assertNotIn("_triage-job", [c.dest for c in choices._choices_actions])
+        self.assertNotIn("_triage-job", parser.format_help())
 
     def test_launcher_help_lists_findings_and_memory_add_reaches_the_script(self):
         def forge(*args):
@@ -334,7 +337,10 @@ class FindingsCliTests(unittest.TestCase):
         self.assertIn("  findings  every review finding of a repository: show, mark, tag, triage\n", helped.stdout)
         command = forge("findings", "--help")
         self.assertEqual(command.returncode, 0, command.stderr)
-        self.assertIn("{show,fix,dismiss,reopen,to-file,dup,tag,note,edit}", command.stdout)
+        self.assertIn("{show,fix,dismiss,reopen,to-file,dup,tag,note,edit,triage,triage-status,proposals}",
+                      command.stdout)
+        self.assertNotIn("_triage-job", command.stdout)
+        self.assertNotIn("SUPPRESS", command.stdout)
         bare = forge("findings")
         self.assertEqual((bare.returncode, bare.stdout), (2, ""))
         self.assertEqual(bare.stderr, command.stdout)
