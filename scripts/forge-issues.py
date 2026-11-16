@@ -694,12 +694,31 @@ def collect(path: Path, include_plausible, all_runs=False):
         found, [note] if note else []
 
 
+def enclosing_run_dir(path):
+    """The run dir (the dir holding a `repo` file) that <path> is, or sits at most three levels inside; None when
+    it is not inside one. A checkout (a dir with `.git`) ends the walk."""
+    current = Path(path).resolve()
+    if current.is_file():
+        current = current.parent
+    for _ in range(4):
+        if (current / "repo").is_file():
+            return current
+        if (current / ".git").exists() or current.parent == current:
+            return None
+        current = current.parent
+    return None
+
+
 def run_identity(args, meta):
-    """The repository identity of the run, resolved once: from <run> itself (a run whose checkout is gone still
-    names its repository), else from the recorded checkout, else from the current directory."""
-    ident = forge_identity.identity(args.run) if meta["repo_path"] else None
-    if ident is None and meta["repo_path"]:
-        ident = forge_identity.identity(meta["repo_path"])
+    """The repository identity of the run, resolved once: from the run dir <run> is or sits in (a run whose
+    checkout is gone still names its repository; a task or review dir has no `repo` file of its own, so it is the
+    plan dir that is asked), else from the recorded checkout, else from the current directory."""
+    ident = None
+    if meta["repo_path"]:
+        run_dir = enclosing_run_dir(args.run)
+        ident = forge_identity.identity(run_dir) if run_dir else None
+        if ident is None:
+            ident = forge_identity.identity(meta["repo_path"])
     if ident is None:
         ident = forge_identity.identity(os.getcwd())
     if ident is None:

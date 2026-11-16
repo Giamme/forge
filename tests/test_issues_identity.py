@@ -230,6 +230,22 @@ class RecordTests(IdentityCase):
         self.assertEqual(again['findings'][0]['status'], 'open')
         self.assertEqual(len(again['drafts']), 1)
 
+    def test_a_task_dir_or_file_in_a_plan_resolves_the_plans_repository(self):
+        wt = self.worktree('linked')
+        run = self.plan('linked-run', wt, 'Linked finding.')
+        task = run / 'tasks' / 't0'
+        fp = self.cli(str(run), '--offline')['findings'][0]['fp']
+        for form in (task, task / 'known_issues.md'):
+            with self.subTest(form=form.name):
+                self.cli(str(form), '--dismiss', fp, '--reason', 'x')
+                findings = self.state_home / 'forge' / 'findings'
+                self.assertEqual(sorted(p.name for p in findings.glob('*.json')), [self.record_file().name])
+                self.assertEqual(self.record()[fp]['status'], 'dismissed')
+                self.assertEqual(self.listed()['findings'][0]['status'], 'dismissed')
+                self.assertEqual(self.cli(str(form), '--offline')['findings'][0]['status'], 'dismissed')
+                self.cli(str(form), '--undismiss', fp)
+                self.assertEqual(self.record()[fp]['status'], 'open')
+
     def test_an_old_store_dismissal_of_a_worktree_still_shows_and_is_never_written(self):
         wt = self.worktree('linked')
         self.plan('linked-run', wt, 'Linked finding.')
