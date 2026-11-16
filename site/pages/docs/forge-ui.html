@@ -29,7 +29,7 @@ forge ui stop</pre>
   <dt>Diffs</dt><dd>Any diff of a task, or exactly the diff one reviewer read, with every finding pinned under the line it names.</dd>
   <dt>Conversations</dt><dd>What each dwarf and reviewer said, ran (with exit codes) and changed, read from its CLI's own log, live while it runs.</dd>
   <dt>Models</dt><dd>A leaderboard of your models on your runs: first-attempt pass rate with a confidence interval, retries, escalations, time and tokens.</dd>
-  <dt>Projects</dt><dd>One page per repository: its runs, every finding of every review, and what its memory gives each role.</dd>
+  <dt>Projects</dt><dd>One page per repository: its runs, every finding of every review and what happened to each, and its memory, which you can forget, add to and edit.</dd>
   <dt>Worktrees and disk</dt><dd>Every worktree forge created and its state, and what forge takes on disk, each with the command that safely removes it.</dd>
 </dl>
 <p>The lamps mean one thing everywhere: <span class="lamp is-amber"></span> amber running, <span class="lamp is-green"></span> green merged, <span class="lamp is-red"></span> red failed, unlit pending. Every state also has a text label.</p>
@@ -41,7 +41,9 @@ forge ui stop</pre>
 <p>forge-ui reads everything and changes things only by calling forge's own commands, so the page and the terminal share one set of rules and one log. Every change asks you to confirm. Start it with <code>FORGE_UI_READONLY=1 forge ui open</code> to make it watch-only; it then shows each command to copy instead of a button.</p>
 <ul>
   <li><strong>Worktrees:</strong> select finished or failed worktrees, or all of them, and remove them in one go. A dry run says first what goes and what's skipped and why; one in use, dirty or still needed can't be selected.</li>
-  <li><strong>Memories:</strong> on a project's Memories tab, select learnings and forget them. The confirm lists what <code>memory.md</code> loses.</li>
+  <li><strong>Findings:</strong> on a project's Findings tab, select findings and mark them fixed, dismissed, a duplicate, to file or open again, or tag, note or edit one. Each asks first, then runs <code>forge findings</code> with <code>--actor ui</code>. A closed GitHub issue shows as fixed. A read-only page shows the command to copy.</li>
+  <li><strong>Memories:</strong> on a project's Memories tab, select learnings and forget them (the confirm lists what <code>memory.md</code> loses), or add one and edit one. Add and edit ask first and run <code>forge memory add</code> and <code>forge memory edit</code>.</li>
+  <li><strong>Triage:</strong> on the Findings tab, name a model (checked before anything is spent), then start a read-only agent that proposes duplicates, fixes, tags, issues and plans. You approve each one; the approval is tied to that proposal. An issue is only marked to file, a plan is written for you to run later, and nothing runs by itself. A read-only page shows the commands.</li>
   <li><strong>Disk:</strong> compact one run or all of them, with the space it frees shown first.</li>
   <li><strong>A waiting task:</strong> answer its question in the task panel.</li>
 </ul>

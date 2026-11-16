@@ -75,3 +75,6 @@ bash scripts/forge-parallel.sh run "$PLAN" --retry-failed 2</pre>
 <p>Tolerated findings aren't forgotten. After a run, forge offers once to file them as GitHub issues, each with its severity, task, reviewer and a link to the code. A finding is never filed twice.</p>
 <pre>./forge issues "$PLAN"                         <span class="c"># drafts only</span>
 ./forge issues "$PLAN" --apply --label bug     <span class="c"># file them</span></pre>
+<p>forge remembers what happened to each finding (<code>forge findings</code>). One you mark fixed, dismissed or a duplicate is not offered again. An optional triage agent proposes duplicates, issues and plans for you to approve.</p>
+<pre>./forge findings show "$PLAN"                        <span class="c"># what happened to each</span>
+./forge findings triage "$PLAN" --spec sol:high      <span class="c"># proposes; you approve</span></pre>
