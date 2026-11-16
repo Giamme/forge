@@ -1001,11 +1001,18 @@ def _project_findings(ctx):
         refresh = _bit(_query_params(ctx.query, ('refresh',)), 'refresh')
     except BadBody as exc:
         return _invalid(str(exc))
-    # --offline: no gh call; the listing says which findings are dismissed, filed (as recorded) or swept.
+    # The listing is read online (GitHub says which issues are closed), for at most 60 s; projects.py asks again
+    # with --offline when that fails.
+    def listing(path, online=True):
+        args = ('issues', path, '--json', '--all-runs', '--include-plausible', '--include-dismissed')
+        if online:
+            status, body = ctx.call(*args, limit=projects.ONLINE_S)
+            return body if status == 200 else None
+        return _project_call(ctx, *args[:3], '--offline', *args[3:])
+
     found = projects.screen(ctx.server).findings(
-        ctx.server.catalog, ctx.key, lambda: _project_call(ctx, 'dataset', 'history', '--json'),
-        lambda path: _project_call(ctx, 'issues', path, '--json', '--offline', '--all-runs', '--include-plausible',
-                                   '--include-dismissed'), refresh=refresh)
+        ctx.server.catalog, ctx.key, lambda: _project_call(ctx, 'dataset', 'history', '--json'), listing,
+        refresh=refresh)
     return (404, {'error': 'not found'}) if found is None else (200, found)
 
 
