@@ -6,23 +6,30 @@ A run can end with findings nobody acts on in the run: CONFIRMED findings `--qa-
 sweep they reach `forge issues` and are fixed later, if at all. With one, the scheduler calls `plan` once
 every task has merged: the open findings become a few fix tasks, one per file, added to the live run.
 
-  plan   <plan> --severity P0..P3 [--plausible] [--max N]
+  plan   <plan> --severity P0..P3 [--plausible] [--max N] [--check]
       Collect the open findings (forge-issues.py's collector), triage them, group them by file, write
       each fix task (tasks.tsv row, prompt.md, sweep.json) and the sweep plan (sweep/plan.json and
-      plan.md, also printed to stderr), then print the new task ids, one per line. A plan is swept at
-      most once: an existing sweep/plan.json prints nothing.
+      plan.md, also printed to stderr), then print the new task ids, one per line. A plan is swept in
+      rounds (#152): round 1 is sweep/plan.json, round N >= 2 is sweep/rounds/<N>/plan.json, and a
+      finding is swept at most once: one an earlier round attempted, or the record of the repository's
+      findings (forge_findings) marks fixed, filed or duplicate, is left out. A later round with nothing
+      new writes and prints nothing. --check does the same triage, writes nothing and prints
+      {"eligible": E, "attempted": A, "left": L}; it exits 0 when E >= 1, else 1.
   ahead  <plan> <task> [--role dwarf|qa] [--cap N]
       The prompt step: the open findings in files <task> owns, as a prompt section. Picked once per
       task (tasks/<task>/sweep.ahead.json), so every attempt and its reviewer see the same list.
   settle <plan> <task>
       After a sweep task merged: its reviewer's `S<n>: FIXED` / `S<n>: NOT FIXED` lines, per finding,
-      in tasks/<task>/sweep.outcome.json. `forge issues` leaves out the findings marked fixed.
+      in tasks/<task>/sweep.outcome.json. `forge issues` leaves out the findings marked fixed, and the
+      record gets a `fixed` entry for each (actor sweep, the task, the merge commit).
   report <plan>
-      What the sweep did, for the run's closing summary; nothing when the plan was never swept.
+      What each sweep round did, for the run's closing summary, and the line saying a sweep found nothing
+      new (sweep/nothing.json, written by the scheduler); nothing when the plan was never swept.
 
 Triage keeps a finding only when it is CONFIRMED and tolerated (or PLAUSIBLE, with --plausible), at
 least as severe as --severity, from a task that is not itself a sweep task (one round: what a sweep
-review finds goes to `forge issues`), not dismissed (`forge issues --dismiss`), located in a file the
+review finds goes to `forge issues`), not dismissed (`forge issues --dismiss`) or otherwise settled in the finding record, not attempted by
+an earlier round, located in a file the
 integration branch still has, and still there: when a later merge changed the file and the line the
 reviewer saw is gone from it, the finding is left for `forge issues` rather than "fixed" twice. A
 person's acceptance of a reviewer's FAIL (`accept`, or `adopt --approved`) is theirs to triage, so accepted
@@ -53,11 +60,17 @@ import tempfile
 import time
 
 SCRIPTS = Path(__file__).resolve().parent
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
 SEVERITIES = ('P0', 'P1', 'P2', 'P3')
 DEFAULT_MAX = 5     # fix tasks one sweep may add
 GROUP_CAP = 8       # findings one fix task is given; the rest of its file stays for forge issues
 AHEAD_CAP = 3       # findings the prompt step hands one task
 LOCK_WAIT = 5.0
+try:
+    from forge_findings.status import OPEN      # the record statuses a finding can still be swept in
+except Exception:                               # fail-open: the sweep never depends on the record store loading
+    OPEN = ('open', 'to-file')
 # A reviewer's line per finding: `- S2: NOT FIXED — why`. A placeholder (`S<n>`) never matches.
 S_LINE = re.compile(r'^[ \t]*(?:[-*+][ \t]+)?[*_`]*(S\d{1,3})[*_`]*[ \t]*[:—–-][ \t]*[*_`]*(NOT[ \t]+FIXED|FIXED)\b'
                     r'[*_`]*[ \t]*[:—–-]?[ \t]*(.*)$', re.I | re.M)
@@ -67,6 +80,8 @@ REASONS = {
     'no-location': 'no file in the repository to fix it in',
     'file-gone': 'its file is no longer on the integration branch',
     'changed': 'the code it points at changed after the review',
+    'attempted': 'an earlier sweep round already tried it',
+    'recorded': 'the finding record marks it fixed, filed or a duplicate',
     'duplicate': 'the same finding was reported again',
     'group-cap': 'over the %d findings one fix task takes' % GROUP_CAP,
     'over-max': 'over --sweep-max fix tasks',
@@ -190,8 +205,50 @@ def location(f, path=None) -> str:
     return where + (':%d' % f['line'] if f.get('line') else '')
 
 
+def round_paths(plan: Path) -> dict:
+    """{round number: its plan.json}: round 1 is sweep/plan.json, round N >= 2 sweep/rounds/<N>/plan.json."""
+    found = {}
+    if (plan / 'sweep' / 'plan.json').exists():
+        found[1] = plan / 'sweep' / 'plan.json'
+    try:
+        names = sorted((plan / 'sweep' / 'rounds').iterdir())
+    except OSError:
+        names = []
+    for path in names:
+        if path.name.isdigit() and int(path.name) >= 2 and (path / 'plan.json').exists():
+            found[int(path.name)] = path / 'plan.json'
+    return found
+
+
+def round_record(path: Path) -> 'dict | None':
+    """A round's plan record, None when it is not one."""
+    try:
+        record = json.loads(read(path))
+    except ValueError:
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def attempted_keys(plan: Path) -> dict:
+    """{finding key: the sweep task that took it} over every sweep task's sweep.json, once a round exists.
+    Whatever its outcome: a finding is swept once."""
+    found = {}
+    if not round_paths(plan):
+        return found
+    for path in sorted((plan / 'tasks').glob('sweep-*/sweep.json')):
+        try:
+            entries = json.loads(read(path))['findings']
+        except (ValueError, KeyError, TypeError):
+            continue
+        for entry in entries if isinstance(entries, list) else []:
+            if isinstance(entry, dict) and isinstance(entry.get('key'), str):
+                found.setdefault(entry['key'], path.parent.name)
+    return found
+
+
 class Context:
-    """What triage reads once per plan: the repository, its checkouts, the dismissal marks."""
+    """What triage reads once per plan: the repository, its checkouts, the finding record (what became of
+    each finding), the findings earlier rounds attempted."""
 
     def __init__(self, plan: Path):
         self.plan = plan
@@ -202,12 +259,26 @@ class Context:
         self.tip = tip.decode().strip() if not rc else ''
         self.roots = [self.integration, self.repo] + [os.path.join(wt_root, r[0]) for r in rows(plan)] if wt_root \
             else [self.repo]
-        mod = issues()
-        self.slug = mod.github_slug(self.repo) if self.repo else None
-        self.dismissed = {}
-        if self.slug:
-            with contextlib.suppress(Exception):
-                self.dismissed = mod.load_dismissed(mod.repo_key(self.repo))
+        self.ident, self.slug, self.record = None, '', {}
+        if self.repo:
+            try:
+                import forge_identity
+                from forge_findings import store
+                self.ident = forge_identity.identity(plan)
+                self.slug = forge_identity.github_slug(self.ident) or ''
+                self.record = store.load(self.ident)       # an unreadable record leaves every finding in
+            except Exception:
+                self.record = {}
+        self.attempted = attempted_keys(plan)
+
+    def status(self, f) -> str:
+        """The record's status for a finding: open when it says nothing or cannot be read."""
+        try:
+            from forge_findings import fingerprint
+            entry = self.record.get(fingerprint(self.slug, f['file'], f['text']))
+            return entry['status'] if isinstance(entry, dict) and isinstance(entry.get('status'), str) else 'open'
+        except Exception:
+            return 'open'
 
     def candidates(self, include_plausible: bool) -> list:
         found, _ = issues().collect_plan(self.plan, include_plausible)
@@ -239,8 +310,15 @@ def triage(ctx: Context, found: list, severity: str, plausible: bool) -> tuple:
         if SEVERITIES.index(f['severity']) > cut:
             drop('below-severity')
             continue
-        if ctx.slug and mod.fingerprint(ctx.slug, f) in ctx.dismissed:
+        recorded = ctx.status(f)
+        if recorded == 'dismissed':
             drop('dismissed')
+            continue
+        if recorded not in OPEN:
+            drop('recorded', status=recorded)
+            continue
+        if f['key'] in ctx.attempted:
+            drop('attempted', task=ctx.attempted[f['key']])
             continue
         if f['key'] in seen:
             drop('duplicate', of=seen[f['key']])
@@ -343,7 +421,8 @@ def plan_markdown(record: dict) -> str:
     tasks, dropped = record['tasks'], record['dropped']
     scope = '%s and worse, %s' % (record['severity'], 'CONFIRMED and PLAUSIBLE' if record['plausible'] else 'CONFIRMED only')
     n = sum(len(t['findings']) for t in tasks)
-    out = ['# Finding sweep: %d fix task(s) for %d finding(s) (%s)' % (len(tasks), n, scope), '']
+    label = 'Finding sweep' if record.get('round', 1) == 1 else 'Finding sweep, round %d' % record['round']
+    out = ['# %s: %d fix task(s) for %d finding(s) (%s)' % (label, len(tasks), n, scope), '']
     if tasks:
         out += ['Each fix task is one implementation and one narrow review: %d dispatches, plus any automatic'
                 % record['estimate']['dispatches'], 'retries (--retry-failed). They run on the integration branch at %s.'
@@ -365,27 +444,50 @@ def plan_markdown(record: dict) -> str:
     return '\n'.join(out)
 
 
-def cmd_plan(args) -> int:
-    plan = Path(args.plan).resolve()
-    sweep_dir = plan / 'sweep'
-    if (sweep_dir / 'plan.json').exists():
-        return 0                                   # one sweep per plan
-    ctx = Context(plan)
-    if not ctx.tip:
-        print('forge: sweep: the integration branch cannot be read; nothing swept', file=sys.stderr)
-        return 3
+def eligible_groups(plan: Path, ctx: Context, args) -> tuple:
+    """(chosen, dropped, table, by_id): the triage and grouping a sweep round runs, writing nothing."""
     kept, dropped = triage(ctx, ctx.candidates(args.plausible), args.severity, args.plausible)
     chosen, over = groups(kept, args.max)
     dropped += over
     table = rows(plan)
     by_id = {row[0]: row for row in table}
-    ids = free_ids(set(by_id) | {p.name for p in (plan / 'tasks').iterdir() if p.is_dir()}, len(chosen))
-    run_id = read(plan / 'run_id') or plan.name
-    tasks, new_rows = [], []
     for path, items in list(chosen):
         if not all(models(plan, by_id.get(items[0]['task']), items[0], table)):
             chosen.remove((path, items))
             dropped += [dict(f, reason='no-model', detail={}) for f in items]
+    return chosen, dropped, table, by_id
+
+
+def cmd_check(args, plan: Path) -> int:
+    """plan --check: how many findings a round would sweep, nothing written."""
+    ctx = Context(plan)
+    if not ctx.tip:
+        print('forge: sweep: the integration branch cannot be read; nothing swept', file=sys.stderr)
+        return 3
+    chosen, dropped, _, _ = eligible_groups(plan, ctx, args)
+    eligible = sum(len(items) for _, items in chosen)
+    attempted = sum(1 for f in dropped if f['reason'] == 'attempted')
+    print(json.dumps(dict(eligible=eligible, attempted=attempted, left=len(dropped) - attempted)))
+    return 0 if eligible else 1
+
+
+def cmd_plan(args) -> int:
+    plan = Path(args.plan).resolve()
+    if args.check:
+        return cmd_check(args, plan)
+    sweep_dir = plan / 'sweep'
+    rounds = round_paths(plan)
+    number = max(rounds, default=0) + 1
+    ctx = Context(plan)
+    if not ctx.tip:
+        print('forge: sweep: the integration branch cannot be read; nothing swept', file=sys.stderr)
+        return 3
+    chosen, dropped, table, by_id = eligible_groups(plan, ctx, args)
+    if number > 1 and not chosen:
+        return 0                                   # a later round with nothing new leaves no trace
+    ids = free_ids(set(by_id) | {p.name for p in (plan / 'tasks').iterdir() if p.is_dir()}, len(chosen))
+    run_id = read(plan / 'run_id') or plan.name
+    tasks, new_rows = [], []
     for ident, (path, items) in zip(ids, chosen):
         entries = [dict(id='S%d' % n, key=f['key'], severity=f['severity'], confidence=f['confidence'],
                         origin=f['origin'], task=f['task'], file=f['file'], line=f.get('line'), path=path,
@@ -399,18 +501,19 @@ def cmd_plan(args) -> int:
         write_atomic(root / 'sweep.json', json.dumps(dict(file=path, findings=entries), indent=1) + '\n')
         tasks.append(dict(id=ident, file=path, dwarf=dwarf, qa=qa, title=title, findings=entries))
         new_rows.append('\t'.join([ident, '-', 'low', path, dwarf, qa, title]))
-    record = dict(version=1, at=time.time(), severity=args.severity, plausible=args.plausible, max=args.max,
-                  integration=ctx.tip, tasks=tasks, estimate=dict(dispatches=2 * len(tasks)),
+    record = dict(version=1, round=number, at=time.time(), severity=args.severity, plausible=args.plausible,
+                  max=args.max, integration=ctx.tip, tasks=tasks, estimate=dict(dispatches=2 * len(tasks)),
                   dropped=[dict(task=f['task'], severity=f['severity'], confidence=f['confidence'], origin=f['origin'],
                                 file=f['file'], line=f.get('line'), text=f['text'], key=f['key'], reason=f['reason'],
                                 detail=f['detail'])
                            for f in dropped])
-    sweep_dir.mkdir(exist_ok=True)
+    target = sweep_dir if number == 1 else sweep_dir / 'rounds' / str(number)
+    target.mkdir(parents=True, exist_ok=True)
     text = plan_markdown(record)
-    write_atomic(sweep_dir / 'plan.md', text)
-    # The marker before the rows: a crash in between loses this sweep (its findings still reach forge
+    write_atomic(target / 'plan.md', text)
+    # The marker before the rows: a crash in between loses this round (its findings still reach forge
     # issues), and never plans a second one over tasks already in tasks.tsv.
-    write_atomic(sweep_dir / 'plan.json', json.dumps(record, indent=1) + '\n')
+    write_atomic(target / 'plan.json', json.dumps(record, indent=1) + '\n')
     if new_rows:
         with control_lock(plan):
             current = (plan / 'tasks.tsv').read_text(encoding='utf-8')
@@ -451,7 +554,7 @@ def cmd_ahead(args) -> int:
             key = mod.finding_key(f)
             if path is None or not owns(scopes, path) or key in seen:
                 continue
-            if ctx.slug and mod.fingerprint(ctx.slug, f) in ctx.dismissed:
+            if ctx.status(f) not in OPEN:
                 continue
             seen.add(key)
             picked.append(dict(key=key, severity=f['severity'], confidence=f['confidence'], task=f['task'],
@@ -485,14 +588,43 @@ def outcome(text: str, findings: list) -> list:
                  note=said.get(f['id'], ('', ''))[1]) for f in findings]
 
 
+def record_fixed(plan: Path, task: str, findings: list) -> None:
+    """A `fixed` record for each finding the sweep review marked fixed (actor sweep, the task, the merge
+    commit). Best effort: whatever goes wrong here is ignored, settle never fails because of it."""
+    try:
+        fixed = [f for f in findings if f.get('status') == 'fixed']
+        if not fixed:
+            return
+        ctx = Context(plan)
+        if not ctx.ident:
+            return
+        from forge_findings import fingerprint, store
+        try:
+            entries = json.loads(read(plan / 'tasks' / task / 'sweep.json'))['findings']
+        except (ValueError, KeyError, TypeError):
+            return
+        by_id = {e['id']: e for e in entries if isinstance(e, dict) and 'id' in e}
+        fps = [fingerprint(ctx.slug, by_id[f['id']]['file'], by_id[f['id']]['text']) for f in fixed if f['id'] in by_id]
+        fields = dict(reason='sweep ' + task)
+        commit = read(plan / 'accepted.integration')
+        if store.COMMIT_RE.fullmatch(commit):
+            fields['commit'] = commit
+        if fps:
+            store.set_status(ctx.ident, fps, 'fixed', 'sweep', **fields)
+    except Exception:
+        pass
+
+
 def cmd_settle(args) -> int:
-    root = Path(args.plan).resolve() / 'tasks' / args.task
+    plan = Path(args.plan).resolve()
+    root = plan / 'tasks' / args.task
     try:
         findings = json.loads(read(root / 'sweep.json'))['findings']
     except (ValueError, KeyError, TypeError):
         return 0
     result = dict(at=time.time(), findings=outcome(read(root / 'qa.last'), findings))
     write_atomic(root / 'sweep.outcome.json', json.dumps(result, indent=1) + '\n')
+    record_fixed(plan, args.task, result['findings'])
     return 0
 
 
@@ -502,12 +634,7 @@ def task_state(root: Path) -> str:
     return (read(root / 'status').split() or ['PENDING'])[0]
 
 
-def cmd_report(args) -> int:
-    plan = Path(args.plan).resolve()
-    try:
-        record = json.loads(read(plan / 'sweep' / 'plan.json'))
-    except ValueError:
-        return 0
+def report_round(plan: Path, record: dict, path: Path, number: 'int | None') -> None:
     tasks, fixed, total = record.get('tasks') or [], 0, 0
     lines = []
     for task in tasks:
@@ -522,10 +649,32 @@ def cmd_report(args) -> int:
         fixed += done
         total += len(task['findings'])
         lines.append('  %-14s %-9s %d of %d fixed  %s' % (task['id'], state, done, len(task['findings']), task['file']))
-    left = len(record.get('dropped') or []) + total - fixed
-    print('finding sweep (%s and worse): %d fix task(s), %d of %d finding(s) fixed; %d left for forge issues'
-          % (record.get('severity'), len(tasks), fixed, total, left))
-    print('\n'.join(lines + ['  plan: %s' % (plan / 'sweep' / 'plan.md'), '']))
+    # what an earlier round attempted, or the record settled, is not this round's to leave for forge issues
+    left = sum(1 for d in record.get('dropped') or [] if d.get('reason') not in ('attempted', 'recorded')) + total - fixed
+    print('finding sweep%s (%s and worse): %d fix task(s), %d of %d finding(s) fixed; %d left for forge issues'
+          % (' round %d' % number if number else '', record.get('severity'), len(tasks), fixed, total, left))
+    print('\n'.join(lines + ['  plan: %s' % path.with_name('plan.md'), '']))
+
+
+def cmd_report(args) -> int:
+    plan = Path(args.plan).resolve()
+    paths = round_paths(plan)
+    if not paths:
+        return 0
+    records = {n: round_record(path) for n, path in sorted(paths.items())}
+    records = {n: record for n, record in records.items() if record is not None}
+    if not records:
+        return 0
+    for number, record in records.items():
+        report_round(plan, record, paths[number], number if len(records) > 1 else None)
+    last = records[max(records)]
+    try:
+        nothing = json.loads(read(plan / 'sweep' / 'nothing.json'))
+        if float(nothing['at']) > float(last.get('at') or 0):
+            print('sweep: nothing new to sweep (%d finding(s) already swept or attempted, %d left for forge issues)\n'
+                  % (int(nothing.get('attempted') or 0), int(nothing.get('left') or 0)))
+    except (ValueError, KeyError, TypeError, OSError):
+        pass
     return 0
 
 
@@ -537,6 +686,7 @@ def main(argv=None) -> int:
     p.add_argument('--severity', choices=SEVERITIES, required=True)
     p.add_argument('--plausible', action='store_true')
     p.add_argument('--max', type=int, default=DEFAULT_MAX)
+    p.add_argument('--check', action='store_true')
     a = sub.add_parser('ahead')
     a.add_argument('plan')
     a.add_argument('task')
