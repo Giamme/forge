@@ -20,8 +20,9 @@ every task has merged: the open findings become a few fix tasks, one per file, a
       task (tasks/<task>/sweep.ahead.json), so every attempt and its reviewer see the same list.
   settle <plan> <task>
       After a sweep task merged: its reviewer's `S<n>: FIXED` / `S<n>: NOT FIXED` lines, per finding,
-      in tasks/<task>/sweep.outcome.json. `forge issues` leaves out the findings marked fixed, and the
-      record gets a `fixed` entry for each (actor sweep, the task, the merge commit).
+      in tasks/<task>/sweep.outcome.json. `forge issues` leaves out the findings marked fixed once the
+      task has merged, and only then does the record get a `fixed` entry for each (actor sweep, the
+      task, the merge commit).
   report <plan>
       What each sweep round did, for the run's closing summary, and the line saying a sweep found nothing
       new (sweep/nothing.json, written by the scheduler); nothing when the plan was never swept.
@@ -589,9 +590,13 @@ def outcome(text: str, findings: list) -> list:
 
 
 def record_fixed(plan: Path, task: str, findings: list) -> None:
-    """A `fixed` record for each finding the sweep review marked fixed (actor sweep, the task, the merge
-    commit). Best effort: whatever goes wrong here is ignored, settle never fails because of it."""
+    """A `fixed` record for each finding the sweep review marked fixed, once that sweep task has merged
+    (actor sweep, the task, the merge commit). Best effort: whatever goes wrong here is ignored, settle
+    never fails because of it. Before `tasks/<task>/merged` exists, write nothing."""
     try:
+        # `forge issues` counts a finding swept only after this marker exists; the record follows it.
+        if not (plan / 'tasks' / task / 'merged').exists():
+            return
         fixed = [f for f in findings if f.get('status') == 'fixed']
         if not fixed:
             return
