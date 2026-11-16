@@ -12,7 +12,8 @@ so the state shown is the one forge's bash decided, never a second implementatio
   muted      every row of it was marked not injectable (Jev's curation)
 
 A learning is a (category, key) group, as rebuild groups the ledger: `count` is the number of distinct runs
-it appeared in, `text` the latest wording. `memory` is the repo's current .forge/memory.md by section, with
+it appeared in, `text` the latest wording. `manual` is true when a person wrote any row of it (role
+`person`); the field is absent otherwise. `memory` is the repo's current .forge/memory.md by section, with
 the roles each section reaches; `rebuilt_differs` says the current file is not what a rebuild makes now (an
 older forge wrote it, or a `prune` asked Jev to drop facts). Stdlib only.
 """
@@ -119,8 +120,11 @@ def classify(groups, rebuilt, drops):
             else:
                 state = 'dropped'                     # not reached by today's rebuild; kept honest if it changes
         rows = g['rows']
-        out.append(dict(category=cat, key=key, text=text, count=count, state=state,
-                        first=min(r['ts'] for r in rows), last=max(r['ts'] for r in rows), rows=rows))
+        item = dict(category=cat, key=key, text=text, count=count, state=state,
+                    first=min(r['ts'] for r in rows), last=max(r['ts'] for r in rows), rows=rows)
+        if any(r['role'] == 'person' for r in rows):
+            item['manual'] = True
+        out.append(item)
     out.sort(key=lambda r: (r['last'], r['category'], r['key']), reverse=True)
     return out
 
