@@ -1496,6 +1496,27 @@ table.wt-grid { width: max-content; min-width: 100%; }
 .prj-findings td.prj-wide { white-space: normal; min-width: 26em; }
 .prj-summary { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; max-width: 46em; }
 .prj-learning { display: inline-block; max-width: 48em; }
+.prj-actions { margin-top: var(--s-2); }
+.prj-actions .fnd-picked { min-width: 8em; font-size: var(--t-sm); font-variant-numeric: tabular-nums; }
+.prj-findings td:first-child input[type=checkbox] { margin: 0; }
+.fnd-form { display: grid; gap: var(--s-2); }
+.fnd-form:empty { display: none; }
+.fnd-form-title { margin: 0; font-size: var(--t-sm); }
+.fnd-form-body { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--s-2); }
+.fnd-form-body textarea { min-width: 26em; font: inherit; }
+.fnd-form-msg { margin: 0; font-size: var(--t-sm); }
+.fnd-form-msg:empty { display: none; }
+.fnd-confirm:empty, .fnd-result:empty { display: none; }
+.fnd-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.fnd-tag { padding: 0 6px; border: 1px solid var(--rule); border-radius: var(--r-small); background: var(--key); color: var(--ink); font-size: var(--t-xs); }
+.fnd-tag-derived { color: var(--muted); border-style: dashed; background: transparent; }
+.fnd-rowbtn { padding: 0 6px; min-height: 22px; font-size: var(--t-xs); }
+.fnd-rec { margin: var(--s-2) 0 0; font-size: var(--t-xs); overflow-wrap: anywhere; }
+.fnd-cmds { display: grid; gap: 4px; margin-top: var(--s-2); }
+.fnd-cmds p { margin: 0; font-size: var(--t-xs); }
+.fnd-cmd { display: flex; align-items: center; gap: var(--s-2); }
+.fnd-cmd code { flex: 1 1 auto; min-width: 0; padding: 2px 6px; border: 1px solid var(--rule); border-radius: var(--r-small); font-size: var(--t-xs); white-space: pre-wrap; overflow-wrap: anywhere; }
+.fnd-copy { min-height: 22px; padding: 0 8px; font-size: var(--t-xs); }
 .prj-where a, .project-link { white-space: nowrap; }
 .prj-tabs a:focus-visible, .prj-links a:focus-visible, .project-link:focus-visible { outline: 2px solid var(--route); outline-offset: 2px; }
 

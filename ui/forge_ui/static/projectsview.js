@@ -14,21 +14,27 @@
   'use strict';
 
   const list = v => Array.isArray(v) ? v : [];
+  const A = root.ForgeFindingsActions || (typeof require === 'function' ? require('./findingsactions.js') : null);
   const SEVERITIES = ['P0', 'P1', 'P2', 'P3'];
-  const STATUSES = ['open', 'filed', 'fixed', 'swept', 'dismissed', 'superseded'];
+  const STATUSES = ['open', 'to-file', 'filed', 'fixed', 'swept', 'dismissed', 'duplicate', 'shadow', 'unlabelled', 'superseded'];
+  const LAMPS = { open: 'lamp-off', 'to-file': 'lamp-route', filed: 'fnd-amber', fixed: 'st-pass', swept: 'st-pass', dismissed: 'lamp-off', duplicate: 'lamp-off',
+    shadow: 'st-outdated', unlabelled: 'st-unknown', superseded: 'st-outdated' };
+  const OPEN = ['open', 'to-file'];   // the filter `open` shows both: a finding marked to file is still open work
   const STATES = { in_memory: 'in memory', waiting: 'waiting for a second run', stale: 'dropped: stale', capped: 'dropped: trimmed by the cap',
     muted: 'not injected (curated out)', dropped: 'dropped', gone: 'from a checkout that is gone' };
   const TABS = ['runs', 'findings', 'memories'];
   const ROLES_NOTE = 'planner and dwarf get Verify, Known traps and Recurring QA findings; QA gets the last two';
 
   /* ---------- pure ---------- */
-  // filter = { severity: 'all' | P0..P3, status: 'all' | 'open' (default) | STATUSES, run: '' | run id, reviewer: '', path: '' (substring),
-  //            since: 0 (days, 0 = any), shadow: false }
+  // filter = { severity: 'all' | P0..P3, status: 'all' | 'open' (default: open and to-file) | STATUSES, tag: '' | a tag, run: '' | run id,
+  //            reviewer: '', path: '' (substring), since: 0 (days, 0 = any), shadow: false }
   function filterFindings(rows, filter, now) {
     const f = filter || {}, sev = f.severity || 'all', status = f.status || 'open', path = String(f.path || '').toLowerCase();
     const since = Number(f.since) > 0 ? (now || Date.now() / 1000) - Number(f.since) * 86400 : null;
-    return list(rows).filter(r => (f.shadow || r.kind !== 'shadow')
-      && (sev === 'all' || r.severity === sev) && (status === 'all' || r.status === status)
+    return list(rows).filter(r => (f.shadow || r.kind !== 'shadow' || status === 'shadow')
+      && (sev === 'all' || r.severity === sev)
+      && (status === 'all' || (status === 'open' ? OPEN.includes(r.status) : r.status === status))
+      && (!f.tag || list(r.tags).includes(f.tag))
       && (!f.run || r.run_id === f.run) && (!f.reviewer || r.reviewer === f.reviewer)
       && (!path || String(r.location || '').toLowerCase().includes(path))
       && (since === null || (Number.isFinite(r.at) && r.at >= since)));
@@ -133,9 +139,10 @@
     const when = t => Number.isFinite(t) ? new Date(t * 1000).toLocaleString() : '—';
     const guard = (region, draw) => { if (UI.guard) UI.guard(region, draw); else draw(); };
     const s = { id: ctx.id || null, tab: TABS.includes(ctx.tab) ? ctx.tab : 'runs', list: null, detail: null, findings: null, memories: null,
-      ffilter: { severity: 'all', status: 'open', run: '', reviewer: '', path: '', since: 0, shadow: false },
+      ffilter: { severity: 'all', status: 'open', tag: '', run: '', reviewer: '', path: '', since: 0, shadow: false },
       mfilter: { category: 'all', state: 'all', text: '' }, source: null, checkout: '', error: null, seq: 0, timer: null,
-      writes: false, picked: new Set(), forgetNote: null, forgetting: false, forgetEpoch: 0, forgetHost: null };
+      writes: false, picked: new Set(), forgetNote: null, forgetting: false, forgetEpoch: 0, forgetHost: null,
+      fsel: new Set(), acting: false, actEpoch: 0, actHost: null, actResult: null };
     const tablePrefs = id => ctx.tablePrefs ? ctx.tablePrefs(id) : null, savePrefs = id => p => ctx.saveTablePrefs && ctx.saveTablePrefs(id, p);
 
     function table(parent, id, label, columns, rows, extra) {
@@ -161,7 +168,17 @@
         }
       }
     }
+    // The same for a finding action (a confirm, or the drafts being made for File selected).
+    function abandonAct() {
+      if (!s.acting) return;
+      const host = s.actHost;
+      s.acting = false;
+      s.actEpoch += 1;
+      s.actHost = null;
+      dismissConfirm(host);
+    }
     function abandonForget() {
+      abandonAct();
       if (!s.forgetting) return;
       const host = s.forgetHost;
       s.forgetting = false;
@@ -261,12 +278,27 @@
     }
 
     /* Findings */
+    function copyButton(command) {
+      const b = el('button', 'Copy', 'fnd-copy'); b.type = 'button'; b.setAttribute('aria-label', 'Copy: ' + command);
+      b.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(command); b.textContent = 'Copied'; } catch (_) { b.textContent = 'Copy failed: select it'; }
+        setTimeout(() => { b.textContent = 'Copy'; }, 2500);
+      });
+      return b;
+    }
     function drawFindings(body, note) {
       abandonForget();
       const d = s.findings;
       if (!d) { fill(note, []); body.replaceChildren(el('p', s.ferror ? `Could not read the findings (${s.ferror}).` : 'Reading every review of every run… the first read parses each reply, so it can take a few seconds.', s.ferror ? 'warn' : 'muted')); return; }
-      fill(note, list(d.notes).concat(d.dataset_runs ? [`${d.dataset_runs} run(s) whose directory is gone are read from the dataset: their findings link to no run page or diff.`] : []));
+      const lines = list(d.notes).concat(d.dataset_runs ? [`${d.dataset_runs} run(s) whose directory is gone are read from the dataset: their findings link to no run page or diff.`] : []);
+      if (d.issues_online && Number.isFinite(d.issues_read_at)) lines.push(`issue states read from GitHub at ${when(d.issues_read_at)}`);
+      else if (!d.issues_online && !lines.some(n => /GitHub/.test(String(n)))) lines.push('issue states were not read from GitHub (offline): filed findings may show as open');
+      fill(note, lines);
       const rows = list(d.rows);
+      const have = new Set(rows.map(r => r.record_fp));
+      for (const fp of [...s.fsel]) if (!have.has(fp)) s.fsel.delete(fp);
+      const tags = A.tagsIn(rows);
+      if (s.ffilter.tag && !tags.includes(s.ffilter.tag)) s.ffilter.tag = '';
       const bar = el('div', undefined, 'prj-filters');
       const select = (name, text, options) => {
         const l = el('label', undefined, 'fnd-field'), sel = el('select'); sel.dataset.filter = name;
@@ -276,7 +308,9 @@
         l.append(el('span', text, 'plate'), sel); bar.append(l);
       };
       const counts = {}; for (const r of rows) counts[r.status] = (counts[r.status] || 0) + 1;
-      select('status', 'Status', [['all', 'all']].concat(STATUSES.map(x => [x, `${x} (${counts[x] || 0})`])));
+      const countOf = x => x === 'open' ? OPEN.reduce((n, k) => n + (counts[k] || 0), 0) : counts[x] || 0;
+      select('status', 'Status', [['all', 'all']].concat(STATUSES.map(x => [x, `${x} (${countOf(x)})`])));
+      select('tag', 'Tag', [['', 'all']].concat(tags.map(t => [t, t])));
       select('severity', 'Severity', [['all', 'all']].concat(SEVERITIES.map(x => [x, x])));
       select('run', 'Run', [['', 'all']].concat(Array.from(new Set(rows.map(r => r.run_id).filter(Boolean))).sort().map(x => [x, x])));
       select('reviewer', 'Reviewer', [['', 'all']].concat(Array.from(new Set(rows.map(r => r.reviewer).filter(Boolean))).sort().map(x => [x, x])));
@@ -290,34 +324,269 @@
       const again = readAgain(() => loadTab(true));
       bar.append(again);
       const count = el('p', '', 'muted prj-count'), tableHost = el('div', undefined, 'prj-table');
-      body.replaceChildren(bar, count, tableHost);
+      const formHost = el('div', undefined, 'fnd-form'), actHost = el('div', undefined, 'fnd-confirm'), noteHost = el('div', undefined, 'fnd-result');
+      s.actHost = actHost;
+      if (s.actResult) { UI.outcome(noteHost, s.actResult.res, s.actResult.text, { silent: true }); s.actResult = null; }   // shown once
+      const shownNow = () => filterFindings(rows, s.ffilter);
+      const selectedNow = () => A.selectedRows(shownNow(), s.fsel);
+
+      /* the write controls */
+      let allBox = null, picked = null;
+      const opButtons = {};
+      function syncBar() {
+        if (!picked) return;
+        const sel = selectedNow(), ok = A.allowed(sel);
+        picked.textContent = ok.why || `${ok.count} selected`;
+        for (const [op, b] of Object.entries(opButtons)) b.disabled = s.acting || !ok[op];
+        const shown = shownNow().filter(A.selectable);
+        allBox.checked = shown.length > 0 && shown.every(r => s.fsel.has(r.record_fp));
+        allBox.disabled = !shown.length;
+      }
+      const closeForm = () => formHost.replaceChildren();
+      // Confirm, post, and show what the route said. Copies forgetSelected's guard: a redraw (Read again, another tab)
+      // drops this strip, so its epoch is retired, the controls are usable again, and a request already sent keeps its result.
+      async function perform(op, fps, request) {
+        if (s.acting) { UI.outcome(noteHost, { ok: false, status: 409, error: 'busy', detail: 'another action is waiting for its confirm' }); return; }
+        const epoch = s.actEpoch, host = actHost, current = () => epoch === s.actEpoch && host.isConnected;
+        s.acting = true; s.actResult = null; s.actHost = host; syncBar();
+        noteHost.replaceChildren();
+        for (const child of [...host.children]) child.remove();
+        try {
+          const yes = await UI.confirmInline(host, A.confirmText(op, fps.length, request), {});
+          if (!current() || !yes) return;
+          const res = await UI.post(A.pathOf(s.id, op), request);
+          s.actResult = { res, text: `${fps.length} finding${fps.length === 1 ? '' : 's'} ${A.PAST[op]}` };
+          if (res && res.ok) for (const fp of fps) s.fsel.delete(fp);
+          if (!current()) { if (s.tab === 'findings') await loadTab(true); return; }
+          if (!res || !res.ok) { s.actResult = null; UI.outcome(noteHost, res); return; }   // shown here, not again on a redraw
+          closeForm();
+          s.acting = false;
+          await loadTab(true);
+        } finally {
+          if (epoch === s.actEpoch) { s.acting = false; if (host.isConnected) syncBar(); }
+        }
+      }
+      const textInput = (ph, max) => { const i = el('input'); i.type = 'text'; i.placeholder = ph; if (max) i.maxLength = max; return i; };
+      const field = (label, input) => { const l = el('label', undefined, 'fnd-field'); l.append(el('span', label, 'plate'), input); return l; };
+      function openForm(op, row) {
+        const fpsNow = () => row ? [row.record_fp] : A.fpsOf(selectedNow());
+        if (op === 'reopen') { const fps = fpsNow(), built = A.bodyFor(op, fps, {}); if (built.error) UI.outcome(noteHost, { ok: false, error: built.error }); else perform(op, fps, built.body); return; }
+        closeForm();
+        let collect = () => ({}), first = null;
+        const parts = [], heading = el('p', undefined, 'fnd-form-title');
+        if (op === 'fix') {
+          const c = textInput('7 to 40 hex characters'), r = textInput('why (optional with a commit)', 500); first = c;
+          parts.push(field('Commit', c), field('Reason', r)); collect = () => ({ commit: c.value, reason: r.value });
+          heading.textContent = 'Mark fixed: give a commit, a reason, or both';
+        } else if (op === 'dismiss') {
+          const r = textInput('why it needs no work', 500); first = r;
+          parts.push(field('Reason (required)', r)); collect = () => ({ reason: r.value });
+          heading.textContent = 'Dismiss: say why';
+        } else if (op === 'to-file') {
+          const t = textInput('issue title (optional)', 200); first = t;
+          parts.push(field('Title', t)); collect = () => ({ title: t.value });
+          heading.textContent = 'Mark to file: keep a draft issue for these findings';
+        } else if (op === 'dup') {
+          const sel = el('select'); first = sel;
+          const mine = fpsNow()[0];
+          for (const r of shownNow().filter(x => A.selectable(x) && x.record_fp !== mine)) {
+            const o = el('option', `${r.severity || '—'} ${cleanSummary(r.summary, r.location).slice(0, 90)} · ${r.record_fp}`); o.value = r.record_fp; sel.append(o);
+          }
+          if (!sel.children.length) parts.push(el('p', 'No other finding is shown: widen the filters to pick the original.', 'muted'));
+          else { parts.push(field('Duplicate of', sel)); collect = () => ({ of: sel.value }); }
+          heading.textContent = 'Mark duplicate: pick the finding it repeats';
+        } else if (op === 'tag') {
+          const t = textInput('tags, comma separated'), m = el('select'); first = t;
+          for (const [v, x] of [['add', 'Add'], ['remove', 'Remove']]) { const o = el('option', x); o.value = v; m.append(o); }
+          parts.push(field('Tags', t), field('Action', m)); collect = () => ({ tags: t.value, remove: m.value === 'remove' });
+          heading.textContent = 'Tags: lowercase, digits and dashes, at most 8';
+        } else if (op === 'note') {
+          const t = el('textarea'); t.rows = 3; t.maxLength = 2000; t.placeholder = 'a note (empty clears it)'; t.value = row && row.record && row.record.note || ''; first = t;
+          parts.push(field('Note', t)); collect = () => ({ text: t.value });
+          heading.textContent = 'Note on ' + (row ? cleanSummary(row.summary, row.location).slice(0, 80) : 'the finding');
+        } else if (op === 'edit') {
+          const sv = el('select'), t = el('textarea'); first = sv; t.rows = 4; t.maxLength = 4000;
+          const was = row && row.record && row.record.edit && row.record.edit.text || (row && (row.text || row.summary)) || '';
+          t.value = was;
+          for (const v of [''].concat(SEVERITIES)) { const o = el('option', v || 'keep'); o.value = v; sv.append(o); }
+          sv.value = '';
+          parts.push(field('Severity', sv), field('Text', t));
+          collect = () => ({ severity: sv.value, text: t.value === was ? undefined : t.value });
+          heading.textContent = 'Edit ' + (row ? cleanSummary(row.summary, row.location).slice(0, 80) : 'the finding') + (row && row.severity ? ` (now ${row.severity})` : '');
+        }
+        const msg = el('p', undefined, 'warn fnd-form-msg');
+        const apply = () => {
+          const fps = fpsNow(), built = A.bodyFor(op, fps, collect());
+          if (built.error) { msg.textContent = built.error; return; }
+          msg.textContent = '';
+          perform(op, fps, built.body);
+        };
+        const go = el('button', 'Apply', 'primary'); go.type = 'button'; go.addEventListener('click', apply);
+        const cancel = el('button', 'Cancel'); cancel.type = 'button'; cancel.addEventListener('click', closeForm);
+        const wrap = el('div', undefined, 'fnd-form-body');
+        wrap.append(...parts, go, cancel);
+        wrap.addEventListener('keydown', e => {
+          if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeForm(); }
+          else if (e.key === 'Enter' && e.target && e.target.tagName === 'INPUT') { e.preventDefault(); apply(); }
+        });
+        formHost.append(heading, wrap, msg);
+        if (first && first.focus) first.focus();
+      }
+      // File selected: drafts for exactly the chosen findings, a dialog, and the POST only after its confirm.
+      async function fileSelected() {
+        const FF = root.ForgeFindings;
+        if (s.acting || !FF) return;
+        const sel = selectedNow(), fps = A.fileableFps(sel), key = A.fileRun(sel);
+        if (!fps.length || !key) return;
+        const epoch = s.actEpoch;
+        s.acting = true; s.actResult = null; s.actHost = actHost; noteHost.replaceChildren(); syncBar();
+        let res;
+        try { res = await UI.get(FF.issuesUrl(key, { scope: 'repo', offline: false, plausible: true, only: fps })); }
+        finally { if (epoch === s.actEpoch) { s.acting = false; if (actHost.isConnected) syncBar(); } }
+        if (!res || !res.ok) {
+          if (epoch === s.actEpoch && actHost.isConnected) UI.outcome(noteHost, res); else s.actResult = { res };
+          return;
+        }
+        fileDialog(FF, key, fps, list(res.data && res.data.drafts));
+      }
+      function fileDialog(FF, key, fps, drafts) {
+        const dlg = el('dialog', undefined, 'fnd-dialog'); dlg.setAttribute('aria-label', 'File issues on GitHub');
+        document.body.append(dlg);
+        let posting = false;
+        const cleanup = () => { dlg.remove(); };
+        const shut = () => { if (typeof dlg.close === 'function') dlg.close(); else cleanup(); };
+        dlg.addEventListener('close', cleanup);
+        dlg.addEventListener('click', e => { if (e.target === dlg && !posting) shut(); });
+        dlg.addEventListener('cancel', e => { if (posting) e.preventDefault(); });
+        dlg.append(el('h2', 'File issues on GitHub'));
+        const warn = el('p', undefined, 'fnd-warn');
+        warn.append(el('i', undefined, 'lamp st-running'), el('span', `This creates ${drafts.length} issue${drafts.length === 1 ? '' : 's'} on this repository's GitHub project, from your gh login, and cannot be undone from here.`));
+        dlg.append(warn);
+        if (!drafts.length) dlg.append(el('p', 'forge has no draft for this selection (its findings may be filed already).', 'muted'));
+        for (const dr of drafts) {
+          const art = el('article', undefined, 'fnd-draft'), h = el('h3', undefined, 'fnd-draft-title');
+          h.append(el('span', dr.severity || '—', 'chip sev-chip sev-' + (SEVERITIES.includes(dr.severity) ? dr.severity : 'none')), el('span', dr.title || 'untitled'));
+          art.append(h);
+          if (dr.same_title) {
+            const url = FF.safeUrl(dr.same_title), p = el('p', undefined, 'fnd-same');
+            p.append(el('i', undefined, 'lamp fnd-amber'), el('span', 'An open issue with this title exists already: '));
+            if (url) { const a = el('a', url); a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer'; p.append(a); } else p.append(el('span', String(dr.same_title)));
+            p.append(el('span', '. forge skips it.')); art.append(p);
+          }
+          art.append(el('pre', dr.body || '', 'fnd-body')); dlg.append(art);
+        }
+        const labels = el('input'); labels.type = 'text'; labels.placeholder = 'bug, forge (optional, comma separated)';
+        const labelNote = el('p', undefined, 'warn fnd-label-note'); labelNote.hidden = true;
+        const results = el('div', undefined, 'fnd-results');
+        const go = el('button', 'File on GitHub', 'primary'), cancel = el('button', 'Cancel'); go.type = 'button'; cancel.type = 'button';
+        go.disabled = !drafts.length;
+        cancel.addEventListener('click', shut);
+        go.addEventListener('click', async () => {
+          const parsed = FF.parseLabels(labels.value);
+          labelNote.hidden = !parsed.error; labelNote.textContent = parsed.error || '';
+          if (parsed.error) return;
+          go.disabled = true; cancel.disabled = true; labels.disabled = true; results.replaceChildren(); posting = true;
+          const res = await UI.post(FF.issuesPath(key), FF.fileBody('repo', fps, true, parsed.labels));
+          posting = false;
+          if (!res || !res.ok) { go.disabled = false; cancel.disabled = false; labels.disabled = false; UI.outcome(results, res); return; }
+          const made = FF.resultLines(res.data.created), ul = el('ul', undefined, 'fnd-created');
+          for (const ln of made) {
+            const li = el('li', undefined, 'fnd-created-' + ln.kind), url = FF.safeUrl(ln.url);
+            li.append(el('i', undefined, 'lamp ' + (ln.kind === 'created' ? 'st-pass' : 'fnd-amber')));
+            if (url) { const a = el('a', ln.text); a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer'; li.append(a); } else li.append(el('span', ln.text));
+            ul.append(li);
+          }
+          results.replaceChildren(el('p', `${made.filter(l => l.kind === 'created').length} created`, 'fnd-done'), ul);
+          for (const n of FF.emptyNotes(res.data.created, res.data.notes)) results.append(el('p', n, 'muted fnd-result-note'));
+          go.remove(); cancel.textContent = 'Close'; cancel.disabled = false;
+          for (const r of list(s.findings && s.findings.rows)) if (fps.includes(r.fp)) s.fsel.delete(r.record_fp);
+          if (s.tab === 'findings') loadTab(true);
+        });
+        const actions = el('div', undefined, 'fnd-dialog-actions'); actions.append(cancel, go);
+        const labelField = el('label', undefined, 'fnd-field'); labelField.append(el('span', 'Labels', 'plate'), labels);
+        dlg.append(labelField, labelNote, results, actions);
+        if (typeof dlg.showModal === 'function') dlg.showModal(); else dlg.setAttribute('open', '');
+        (drafts.length ? go : cancel).focus();
+      }
+
+      if (s.writes) {
+        const abar = el('div', undefined, 'fnd-actions prj-actions');
+        const lab = el('label', undefined, 'fnd-toggle');
+        allBox = el('input'); allBox.type = 'checkbox'; allBox.setAttribute('aria-label', 'Select all shown findings');
+        lab.append(allBox, el('span', 'Select all'));
+        picked = el('span', '0 selected', 'muted fnd-picked');
+        allBox.addEventListener('change', () => {
+          for (const r of shownNow()) { if (!A.selectable(r)) continue; if (allBox.checked) s.fsel.add(r.record_fp); else s.fsel.delete(r.record_fp); }
+          drawTable();
+        });
+        abar.append(lab, picked);
+        for (const [op, text] of [['fix', 'Mark fixed'], ['dismiss', 'Dismiss'], ['reopen', 'Reopen'], ['to-file', 'Mark to file'], ['dup', 'Duplicate of…'], ['tag', 'Tags…']]) {
+          const b = el('button', text); b.type = 'button'; b.dataset.op = op; b.disabled = true;
+          b.addEventListener('click', () => openForm(op)); opButtons[op] = b; abar.append(b);
+        }
+        const fileKey = el('button', 'File selected', 'primary'); fileKey.type = 'button'; fileKey.dataset.op = 'file'; fileKey.disabled = true;
+        fileKey.title = 'creates GitHub issues for the selected findings that forge issues can file (at most ' + A.MAX_FILE + ')';
+        fileKey.addEventListener('click', () => { fileSelected(); }); opButtons.file = fileKey; abar.append(fileKey);
+        body.replaceChildren(bar, abar, formHost, actHost, noteHost, count, tableHost);
+      } else body.replaceChildren(bar, count, tableHost);
+
+      /* the table */
       const summaryCell = r => {
         const wrap = el('div', undefined, 'fnd-summary'), line = el('div', undefined, 'fnd-summary-line');
         const more = el('button', undefined, 'fnd-more'); more.type = 'button'; more.setAttribute('aria-expanded', 'false'); more.setAttribute('aria-label', 'Show the full text');
         more.append(el('span', '▸', 'fnd-caret'));
         const detail = el('div', undefined, 'fnd-detail'); detail.hidden = true;
         detail.append(el('pre', r.text || r.summary || '', 'fnd-text'));
+        const rec = r.record || {};
+        for (const [k, label] of [['reason', 'reason'], ['commit', 'fixed by'], ['duplicate_of', 'duplicate of'], ['issue', 'issue'], ['note', 'note']]) {
+          if (rec[k] != null && String(rec[k]) !== '') detail.append(el('p', `${label}: ${rec[k]}`, 'fnd-rec'));
+        }
         if (list(r.occurrences).length > 1) {
           const ul = el('ul', undefined, 'prj-occ');
           for (const o of r.occurrences) { const li = el('li'); const t = `${o.run_id || '—'} · ${o.task || 'final review'} · attempt ${o.attempt == null ? '—' : o.attempt} · ${o.reviewer || '—'} · ${when(o.at)}`; if (o.href) { const a = el('a', t); a.href = o.href; li.append(a); } else li.append(el('span', t)); ul.append(li); }
           detail.append(el('p', `Seen ${r.count} times, the newest first in the row:`, 'muted'), ul);
         }
+        if (!s.writes) {
+          const cmds = A.commandsFor(s.detail && s.detail.root, r), cbox = el('div', undefined, 'fnd-cmds');
+          if (!cmds.length) cbox.append(el('p', 'This finding has no record key, so forge cannot change it.', 'muted'));
+          else {
+            cbox.append(el('p', 'This page is read-only. Change this finding from a terminal:', 'muted'));
+            for (const c of cmds) { const rowEl = el('div', undefined, 'fnd-cmd'), code = el('code', c.command, 'mono'); code.tabIndex = 0; code.title = c.label; rowEl.append(code, copyButton(c.command)); cbox.append(rowEl); }
+          }
+          detail.append(cbox);
+        }
         more.addEventListener('click', () => { const open = detail.hidden; detail.hidden = !open; more.setAttribute('aria-expanded', String(open)); more.firstChild.textContent = open ? '▾' : '▸'; });
         line.append(more, el('span', cleanSummary(r.summary, r.location) || '—', 'prj-summary'));
         if (r.count > 1) line.append(el('span', `×${r.count}`, 'chip prj-count-chip'));
-        wrap.append(line, detail); return wrap;
+        wrap.append(line);
+        if (list(r.tags).length) {
+          const chips = el('div', undefined, 'fnd-tags'), derived = A.derivedTags(r);
+          for (const t of r.tags) {
+            const c = el('span', t, 'fnd-tag' + (derived ? ' fnd-tag-derived' : '')); if (derived) c.title = 'derived from the path';
+            chips.append(c);
+          }
+          wrap.append(chips);
+        }
+        wrap.append(detail); return wrap;
       };
       const statusCell = r => {
         const b = el('span', undefined, 'fnd-status fnd-' + r.status);
-        b.append(el('i', undefined, 'lamp ' + (r.status === 'open' ? 'lamp-off' : r.status === 'filed' ? 'fnd-amber' : r.status === 'superseded' ? 'st-outdated' : r.status === 'dismissed' ? 'lamp-off' : 'st-pass')), el('span', r.status));
+        b.append(el('i', undefined, 'lamp fnd-lamp-' + r.status + ' ' + (LAMPS[r.status] || 'lamp-off')), el('span', r.status));
         if (r.status === 'superseded') b.title = 'a later review of the same task passed; that does not say this finding was fixed';
+        else if (r.status === 'to-file') b.title = 'marked to file as a GitHub issue: still open work';
+        else if (r.status === 'unlabelled') b.title = 'the finding has no usable label, so forge cannot say what it is';
         return b;
       };
       const whereCell = r => {
         if (r.source === 'dataset') { const x = el('span', 'from the dataset', 'chip st-unknown'); x.title = 'its run directory is gone: no run page or diff to open'; return x; }
         const box = el('span', undefined, 'prj-where');
         if (r.href) { const a = el('a', 'diff'); a.href = r.href; a.title = 'open the diff at this finding'; box.append(a); }
-        if (r.fileable && s.writes) { const f = el('a', 'file or dismiss'); f.href = '#/runs/' + encodeURIComponent(r.run) + '/findings'; f.title = 'on the run\'s Open findings page, through forge issues'; box.append(document.createTextNode(' · '), f); }
+        if (s.writes && A.selectable(r)) {
+          for (const op of ['note', 'edit']) {
+            const b = el('button', op === 'note' ? 'Note' : 'Edit', 'fnd-rowbtn'); b.type = 'button'; b.dataset.op = op; b.title = op === 'note' ? 'add or change a note' : 'change the severity or the text';
+            b.addEventListener('click', () => openForm(op, r)); box.append(document.createTextNode(' '), b);
+          }
+        }
         return box;
       };
       const runCell = r => { if (!r.run) return r.run_id || '—'; const a = el('a', r.run_id || r.run, 'mono'); a.href = ctx.runHref(r.run); return a; };
@@ -334,9 +603,16 @@
         { id: 'status', label: 'Status', value: r => STATUSES.indexOf(r.status), cell: statusCell },
         { id: 'open', label: 'Open', sortable: false, cell: whereCell },
       ];
+      if (s.writes) columns.unshift({ id: 'pick', label: '', title: 'Select', sortable: false, hideable: false, cell: r => {
+        if (!A.selectable(r)) { const n = el('span', '—', 'muted'); n.title = 'this finding has no record key: forge cannot change it'; return n; }
+        const cb = el('input'); cb.type = 'checkbox'; cb.checked = s.fsel.has(r.record_fp); cb.setAttribute('aria-label', 'Select finding ' + r.record_fp);
+        cb.addEventListener('change', () => { if (cb.checked) s.fsel.add(r.record_fp); else s.fsel.delete(r.record_fp); syncBar(); });
+        return cb;
+      } });
       function drawTable() {
-        const shown = filterFindings(rows, s.ffilter);
+        const shown = shownNow();
         count.textContent = `${shown.length} of ${rows.length} findings`;
+        syncBar();
         if (!shown.length) { tableHost.replaceChildren(el('p', rows.length ? 'No findings match these filters.' : 'No review of this repository wrote a finding.', 'muted')); return; }
         table(tableHost, 'project-findings', 'Findings', columns, shown, { className: 'fnd-grid prj-findings' });
       }
@@ -533,7 +809,7 @@
         if (id === s.id && t === s.tab) return;             // the page's own refresh: nothing changed here
         const same = id === s.id;
         s.id = id || null; s.tab = t;
-        if (!same) { s.detail = s.findings = s.memories = null; s.source = null; s.checkout = ''; s.picked = new Set(); s.forgetNote = null; }
+        if (!same) { s.detail = s.findings = s.memories = null; s.source = null; s.checkout = ''; s.picked = new Set(); s.forgetNote = null; s.fsel = new Set(); s.actResult = null; }
         if (same && s.id) { redraw = drawProject(); redraw(); if (t === 'runs') loadDetail(); else if (!(t === 'findings' ? s.findings : s.memories)) loadTab(false); }
         else open();
       },
