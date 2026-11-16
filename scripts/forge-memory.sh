@@ -638,15 +638,17 @@ do_spend() {
 # edit of that same ledger, so it runs when memory is off too. There is no early return.
 #
 # Sets FORGET_CANON to the ledger's "category:key" form (norm_key on each part), or exits 2.
-parse_forget_key() {
-  local raw="$1" cat key
+# <cmd> is the word in the error (default forget). edit uses the same parse and must not
+# tell the person they ran forget.
+parse_forget_key() { # parse_forget_key <raw> [cmd]
+  local raw="$1" cmd="${2:-forget}" cat key
   case "$raw" in
     *:*) ;;
-    *) die "forget: KEY must be category:key, got '$raw'" ;;
+    *) die "$cmd: KEY must be category:key, got '$raw'" ;;
   esac
   cat="$(norm_key "${raw%%:*}")"
   key="$(norm_key "${raw#*:}")"
-  [ -n "$cat" ] && [ -n "$key" ] || die "forget: KEY must be category:key with neither part empty, got '$raw'"
+  [ -n "$cat" ] && [ -n "$key" ] || die "$cmd: KEY must be category:key with neither part empty, got '$raw'"
   FORGET_CANON="$cat:$key"
 }
 
@@ -886,14 +888,38 @@ refuse_memory_text() { # refuse_memory_text <cmd> <text>
   [ -n "$cleaned" ] || die "$cmd: text must be 1 to 300 characters"
 }
 
+# 0 when a path can sit in column 12 and be parsed back out of a trailing [anchor].
+# anchor_of stops at the first '[' or ']', so a path like app/[id]/page.tsx would be
+# stored and then never go stale. Same rule as check_memory_path, without the message.
+memory_path_ok() { # memory_path_ok <path>
+  local p="$1" rest part
+  [ -n "$p" ] || return 1
+  [ "${#p}" -le 300 ] || return 1
+  case "$p" in
+    *$'\n'*|*$'\t'*|*,*|*'['*|*']'*|/*) return 1 ;;
+  esac
+  rest="$p"
+  while [ -n "$rest" ]; do
+    part="${rest%%/*}"
+    if [ "$part" = ".." ]; then return 1; fi
+    case "$rest" in
+      */*) rest="${rest#*/}" ;;
+      *) rest="" ;;
+    esac
+  done
+  return 0
+}
+
 # A path stored in column 12 or used as an anchor: relative, no .. component, at most
-# 300 characters, and none of the characters that would break the column or the line.
+# 300 characters, and none of the characters that would break the column, the line,
+# or anchor_of's bracket match.
 check_memory_path() { # check_memory_path <cmd> <path>
   local cmd="$1" p="$2" rest part
   [ -n "$p" ] || die "$cmd: path is empty"
   [ "${#p}" -le 300 ] || die "$cmd: path is longer than 300 characters"
   case "$p" in
     *$'\n'*|*$'\t'*|*,*) die "$cmd: path must not contain a tab, newline or comma" ;;
+    *'['*|*']'*) die "$cmd: path must not contain '[' or ']'" ;;
     /*) die "$cmd: path must be relative" ;;
   esac
   rest="$p"
@@ -907,22 +933,28 @@ check_memory_path() { # check_memory_path <cmd> <path>
   done
 }
 
-# First-seen order. A path that cannot live in a comma-joined column is dropped; new
-# --path values are refused earlier, so this only filters an old anchor that has one.
+# First-seen order, at most 20 distinct paths that memory_path_ok accepts. A --path
+# argument is refused before it gets here. An old column-12 entry or anchor that fails
+# the same rule is omitted: it was not typed as --path, and refusing the edit would
+# leave that learning uncorrectable. Returns 1 when more than 20 remain.
 # Sets MEM_PATHS (csv) and MEM_FIRST (the anchor to append, or empty).
 collect_paths() {
-  local p f
+  local p f n=0
   MEM_PATHS=""
   MEM_FIRST=""
   [ "$#" -gt 0 ] || return 0
   f="$(mktemp "${TMPDIR:-/tmp}/forge-memory-paths.XXXXXX")" || die "memory: no scratch file"
   : > "$f"
   for p in "$@"; do
-    [ -n "$p" ] || continue
-    case "$p" in
-      *$'\n'*|*$'\t'*|*,*) continue ;;
-    esac
+    memory_path_ok "$p" || continue
     if grep -F -x -q -- "$p" "$f"; then continue; fi
+    n=$((n + 1))
+    if [ "$n" -gt 20 ]; then
+      rm -f "$f"
+      MEM_PATHS=""
+      MEM_FIRST=""
+      return 1
+    fi
     printf '%s\n' "$p" >> "$f"
     [ -n "$MEM_FIRST" ] || MEM_FIRST="$p"
   done
@@ -949,13 +981,18 @@ prepare_memory_text() { # prepare_memory_text <cmd> <text> <first-path>
 
 # One person row. The header matches do_record when the file is missing or empty;
 # an existing header is left as it is. The data row always has the 12th column.
+# forget_filter keeps a ledger whose last line has no newline. The append below would
+# glue this row onto that line, so a non-empty ledger is given its missing newline first.
 write_person_row() { # write_person_row <ledger> <category> <paths-csv>
   local led="$1" cat="$2" paths="$3" ts run_id
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   run_id="manual-$(date +%s)"
   mkdir -p "$(dirname "$led")"
   if [ ! -s "$led" ]; then
-    printf '# ts\trun_id\ttask\trole\tmodel\tverdict\tcategory\tkey\ttext\tduration_s\tinjectable\n' > "$led"
+    printf '# ts\trun_id\ttask\trole\tmodel\tverdict\tcategory\tkey\ttext\tduration_s\tinjectable\n' > "$led" \
+      || return 1
+  else
+    ensure_trailing_newline "$led" || return 1
   fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$ts" "$run_id" "-" "person" "-" "-" "$cat" "$MEM_KEY" "$MEM_TEXT" "0" "1" "$paths" >> "$led"
@@ -1091,7 +1128,7 @@ do_add() { # do_add <repo> --category C --text TEXT [--path P]... [--actor ui|cl
   [ "${#paths[@]}" -le 20 ] || die "add: at most 20 paths"
   if [ "${#paths[@]}" -gt 0 ]; then
     for p in "${paths[@]}"; do check_memory_path add "$p"; done
-    collect_paths "${paths[@]}"
+    collect_paths "${paths[@]}" || die "add: at most 20 paths"
   else
     MEM_PATHS=""
     MEM_FIRST=""
@@ -1106,7 +1143,8 @@ do_add() { # do_add <repo> --category C --text TEXT [--path P]... [--actor ui|cl
       || forget_fail "$scratch" "add: could not preview memory"
   fi
   mkdir -p "$(dir_for "$repo")"
-  write_person_row "$led" "$cat" "$MEM_PATHS"
+  write_person_row "$led" "$cat" "$MEM_PATHS" \
+    || forget_fail "$scratch" "add: could not write the ledger"
   rebuild "$repo" >/dev/null || forget_fail "$scratch" "add: could not rebuild memory"
   memory_line_changes "$scratch/before.md" "$mem" "$scratch/added" "$scratch/removed" \
     || forget_fail "$scratch" "add: could not compare memory"
@@ -1166,7 +1204,7 @@ do_edit() { # do_edit <repo> <category:key> --text TEXT [--path P]... [--actor u
     for p in "${paths[@]}"; do check_memory_path edit "$p"; done
   fi
   # Same parser forget uses, so Trap:Foo_Bar is the ledger's trap:foo bar.
-  parse_forget_key "$rawkey"
+  parse_forget_key "$rawkey" edit
   refuse_memory_text edit "$text"
   led="$(ledger_for "$repo")"
   [ -f "$led" ] || die "edit: no ledger row for '$FORGET_CANON'"
@@ -1186,8 +1224,10 @@ do_edit() { # do_edit <repo> <category:key> --text TEXT [--path P]... [--actor u
   if [ "${#paths[@]}" -gt 0 ]; then
     for p in "${paths[@]}"; do union+=("$p"); done
   fi
+  # Old paths that cannot be an anchor were dropped inside collect_paths. What remains,
+  # including every new --path, is still at most 20. Past that, write nothing.
   if [ "${#union[@]}" -gt 0 ]; then
-    collect_paths "${union[@]}"
+    collect_paths "${union[@]}" || forget_fail "$scratch" "edit: at most 20 paths"
   else
     MEM_PATHS=""
     MEM_FIRST=""
@@ -1209,7 +1249,8 @@ do_edit() { # do_edit <repo> <category:key> --text TEXT [--path P]... [--actor u
   # writes only the scratch copy used to name the lines that changed.
   ensure_trailing_newline "$scratch/ledger.new" \
     || forget_fail "$scratch" "edit: could not write the ledger"
-  write_person_row "$scratch/ledger.new" "$cat" "$MEM_PATHS"
+  write_person_row "$scratch/ledger.new" "$cat" "$MEM_PATHS" \
+    || forget_fail "$scratch" "edit: could not write the ledger"
   tmp="$(mktemp "$(dir_for "$repo")/ledger.tsv.tmp.XXXXXX")" \
     || forget_fail "$scratch" "edit: could not write the ledger"
   { cp -p "$led" "$tmp" && cat "$scratch/ledger.new" > "$tmp"; } \

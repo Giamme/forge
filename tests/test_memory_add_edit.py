@@ -238,6 +238,8 @@ class AddEditTests(unittest.TestCase):
             ['--category', 'trap', '--text', 'hello', '--path', 'p\nq'],
             ['--category', 'trap', '--text', 'hello', '--path', ''],
             ['--category', 'trap', '--text', 'hello', '--path', 'p' * 301],
+            ['--category', 'trap', '--text', 'hello', '--path', 'app/[id]/page.tsx'],
+            ['--category', 'trap', '--text', 'hello', '--path', 'app/id]/page.tsx'],
             ['--category', 'trap', '--text', 'hello', '--actor', 'person'],
             ['--category', 'trap', '--text', 'hello', '--actor', 'UI'],
             ['--category', 'trap', '--text', 'hello', '--nope'],
@@ -294,6 +296,25 @@ class AddEditTests(unittest.TestCase):
         self.assertEqual(cols[0][11].split(','), ['p%d.py' % i for i in range(20)])
         self.assertEqual(cols[0][8], 'twenty paths [p0.py]')
 
+    def test_add_keeps_the_previous_row_when_the_ledger_has_no_final_newline(self):
+        # forget_filter leaves a last line with no newline. The new row has to start after it.
+        bare = HEADER + row('2026-10-01T00:00:01Z', 'r1', 'qa', 'trap', 'foo', 'foo [a.py]')
+        self.write_ledger(bare[:-1])
+        done = self.memory('add', str(self.repo), '--category', 'trap', '--text', 'bar', '--path', 'a.py')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout, 'added trap:bar\n')
+        data = self.ledger()
+        self.assertTrue(data.startswith(bare[:-1] + b'\n'), data)
+        rows = self.data_rows()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0][7:], ['foo', 'foo [a.py]', '1', '1'])
+        self.assertEqual(rows[1][3], 'person')
+        self.assertEqual(rows[1][7], 'bar')
+        self.assertEqual(rows[1][8], 'bar [a.py]')
+        self.assertRegex(rows[1][1], r'^manual-\d+$')
+        self.assertIn('- foo [a.py]\n', self.memory_text())
+        self.assertIn('- bar [a.py]\n', self.memory_text())
+
     def test_edit_replaces_the_text_and_keeps_every_old_path(self):
         # Plain and --json must both write the same ledger. The spelling of the key is not the
         # ledger's; parse_forget_key folds it. src/b.py is column 12, src/a.py is only the anchor.
@@ -341,13 +362,17 @@ class AddEditTests(unittest.TestCase):
             ['trap:no such thing', '--text', 'hello'],
             ['nocolon', '--text', 'hello'],
             ['trap:', '--text', 'hello'],
+            [':cache ignores mtime', '--text', 'hello'],
             ['Trap:Cache_Ignores_Mtime', '--text', 'hello', '--actor', 'person'],
             ['Trap:Cache_Ignores_Mtime', '--text', 'a\nb'],
+            ['Trap:Cache_Ignores_Mtime', '--text', 'hello', '--path', 'app/[id]/page.tsx'],
+            ['Trap:Cache_Ignores_Mtime', '--text', 'hello', '--path', '../secret'],
+            ['Trap:Cache_Ignores_Mtime', '--text', 'hello', '--path', '/etc/passwd'],
             ['Trap:Cache_Ignores_Mtime'],
         ):
             done = self.memory('edit', str(self.repo), *args)
             self.assertEqual(done.returncode, 2, args)
-            self.assertTrue(done.stderr.startswith('forge:'), done.stderr)
+            self.assertTrue(done.stderr.startswith('forge: edit:'), done.stderr)
             self.assertEqual(done.stdout, '')
             self.assertEqual(self.snapshot(), before, args)
         empty = self.base / 'empty'
@@ -355,6 +380,66 @@ class AddEditTests(unittest.TestCase):
         missing = self.memory('edit', str(empty), 'trap:alpha', '--text', 'hello')
         self.assertEqual(missing.returncode, 2, missing.stderr)
         self.assertFalse((empty / '.forge').exists())
+
+    def test_edit_omits_old_paths_that_cannot_be_anchors(self):
+        # Column 12 can already hold a bracket, a .. component, an absolute path or a
+        # path past 300 characters. None of those may be copied onto the new row, and
+        # the first path that remains is the anchor.
+        stored = ','.join((
+            'app/[id]/page.tsx', '../secret', '/etc/passwd', 'src/../../etc/passwd',
+            'q' * 301, 'src/b.py',
+        ))
+        self.write_ledger(HEADER + row(
+            '2026-10-02T00:00:02Z', 't1', 'qa', 'trap', 'cache ignores mtime',
+            'cache ignores mtime [src/a.py]', stored))
+        done = self.memory('edit', str(self.repo), 'trap:cache ignores mtime',
+                           '--text', 'cache ignores inode', '--path', 'src/c.py')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        cols = self.data_rows()
+        self.assertEqual(len(cols), 1)
+        self.assertEqual(cols[0][8], 'cache ignores inode [src/b.py]')
+        self.assertEqual(cols[0][11], 'src/b.py,src/a.py,src/c.py')
+        self.assertIn('- cache ignores inode [src/b.py]\n', self.memory_text())
+        self.assertNotIn('[id]', self.ledger().decode())
+        self.assertNotIn('..', cols[0][11])
+
+    def test_edit_refuses_a_union_of_more_than_twenty_paths(self):
+        # The cap counts the old column, the old anchor and any new --path together,
+        # after paths that cannot be an anchor have been left out.
+        twenty = ['p%d.py' % i for i in range(20)]
+        self.write_ledger(HEADER + row(
+            '2026-10-02T00:00:02Z', 't1', 'qa', 'trap', 'cache ignores mtime',
+            'cache ignores mtime [extra.py]', ','.join(twenty)))
+        before = self.snapshot()
+        over_anchor = self.memory('edit', str(self.repo), 'trap:cache ignores mtime',
+                                  '--text', 'cache ignores inode')
+        self.assertEqual(over_anchor.returncode, 2, over_anchor.stderr)
+        self.assertTrue(over_anchor.stderr.startswith('forge: edit:'), over_anchor.stderr)
+        self.assertIn('at most 20 paths', over_anchor.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+        self.write_ledger(HEADER + row(
+            '2026-10-02T00:00:02Z', 't1', 'qa', 'trap', 'cache ignores mtime',
+            'cache ignores mtime [p0.py]', ','.join(twenty)))
+        before = self.snapshot()
+        over_new = self.memory('edit', str(self.repo), 'trap:cache ignores mtime',
+                               '--text', 'cache ignores inode', '--path', 'src/c.py')
+        self.assertEqual(over_new.returncode, 2, over_new.stderr)
+        self.assertIn('at most 20 paths', over_new.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+        # ../secret is already in the column. It is omitted, so the twenty real paths fit.
+        self.write_ledger(HEADER + row(
+            '2026-10-02T00:00:02Z', 't1', 'qa', 'trap', 'cache ignores mtime',
+            'cache ignores mtime [p0.py]', ','.join(twenty + ['../secret'])))
+        done = self.memory('edit', str(self.repo), 'trap:cache ignores mtime',
+                           '--text', 'cache ignores inode')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        cols = self.data_rows()
+        self.assertEqual(len(cols), 1)
+        self.assertEqual(cols[0][11].split(','), twenty)
+        self.assertEqual(cols[0][8], 'cache ignores inode [p0.py]')
+        self.assertNotIn('..', cols[0][11])
 
     def test_the_cap_trims_a_run_learning_before_a_persons(self):
         # Two runs sort above the person's one row, so the person fact is the last line.
