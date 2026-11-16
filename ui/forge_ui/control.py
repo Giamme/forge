@@ -1227,6 +1227,149 @@ def _memories_forget(ctx):
         lock.release()
 
 
+MAX_MEMORY_TEXT = 300
+MAX_MEMORY_PATHS = 20         # --path arguments on one memory add
+MAX_MEMORY_PATH = 300
+_MEMORY_CATEGORIES = ('verify', 'trap', 'finding')
+
+
+def _optional_checkout(body):
+    path = body.get('path')
+    if path is not None and (not isinstance(path, str) or not path):
+        raise BadBody('path must be a checkout path')
+    return path
+
+
+def _memory_text(value):
+    """One argv element: 1 to 300 characters, one line, no control character."""
+    if not isinstance(value, str) or not 1 <= len(value) <= MAX_MEMORY_TEXT or not _no_control_chars(value):
+        raise BadBody(f'text must be one line of 1 to {MAX_MEMORY_TEXT} characters')
+    try:
+        value.encode('utf-8')
+    except UnicodeEncodeError:
+        raise BadBody('text must be valid text')
+    return value
+
+
+def _memory_paths(value):
+    """Relative paths for `--path`, at most 20, in first-seen order. Empty is no paths."""
+    if not isinstance(value, list) or len(value) > MAX_MEMORY_PATHS:
+        raise BadBody(f'paths must be a list of at most {MAX_MEMORY_PATHS} relative paths')
+    out = []
+    for item in value:
+        if not isinstance(item, str) or not item or len(item) > MAX_MEMORY_PATH or not _no_control_chars(item):
+            raise BadBody('paths holds a value that is not acceptable')
+        if os.path.isabs(item) or item.startswith(('/', '\\')):
+            raise BadBody('paths holds a value that is not acceptable')
+        if any(part == '..' for part in re.split(r'[\\/]', item)):
+            raise BadBody('paths holds a value that is not acceptable')
+        if any(ch in item for ch in ',[]'):
+            raise BadBody('paths holds a value that is not acceptable')
+        if item not in out:
+            out.append(item)
+    return out
+
+
+def _memory_key(value):
+    if (not isinstance(value, str) or not value or len(value) > MAX_FIELD or not _no_control_chars(value)
+            or not _MEMORY_KEY.match(value)):
+        raise BadBody('key must be category:key')
+    return value
+
+
+def _memory_category(value):
+    if value not in _MEMORY_CATEGORIES:
+        raise BadBody('category must be verify, trap or finding')
+    return value
+
+
+def _memory_checkouts(ctx, path):
+    """The checkouts a memory write runs in, or an error response.
+
+    One checkout when `path` names an existing one, else each existing checkout of the project.
+    404 unknown project, 400 when path is not one of them, 409 when none exists.
+    """
+    from forge_ui import projects
+    project = projects.screen(ctx.server).projects(ctx.server.catalog).get(ctx.key)
+    if project is None:
+        return 404, {'error': 'not found'}
+    existing = [c['path'] for c in projects.checkouts(project) if c['exists']]
+    if path is not None:
+        if path not in existing:
+            return _invalid('path is not a checkout of this project')
+        existing = [path]
+    if not existing:
+        return 409, {'error': 'refused', 'detail': 'no checkout of this project exists'}
+    return existing
+
+
+def _memory_each(ctx, checkouts, argv_of):
+    """argv_of(checkout) once per checkout under memory_lock. The memories cache drops after the calls."""
+    lock = _server_lock(ctx.server, 'memory_lock')
+    if not lock.acquire(blocking=False):
+        return 409, {'error': 'busy'}
+    try:
+        results, failed = [], []
+        for checkout in checkouts:
+            status, answer = ctx.call(*argv_of(checkout))
+            if status == 200:
+                results.append({'path': checkout, 'result': answer})
+            else:
+                failed.append((status, answer))
+                results.append({'path': checkout, 'result': None, 'status': status, 'error': answer})
+        invalidate_memories(ctx.server)
+        if failed and len(failed) == len(results):
+            return failed[0]
+        return 200, {'ok': not failed, 'checkouts': results}
+    finally:
+        lock.release()
+
+
+def _memories_add(ctx):
+    """POST `{path?, category, text, paths?}`: `forge memory add <checkout> --category C --text T [--path P]…
+    --actor ui --json`, once per checkout. Text is one argv element, never a shell string."""
+    ctx.route = 'memories add'
+    try:
+        body = _body_object(ctx, ('path', 'category', 'text', 'paths'))
+        path = _optional_checkout(body)
+        category = _memory_category(body.get('category'))
+        text = _memory_text(body.get('text'))
+        paths = _memory_paths(body.get('paths', []))
+    except BadBody as exc:
+        return _invalid(str(exc))
+    checkouts = _memory_checkouts(ctx, path)
+    if not isinstance(checkouts, list):
+        return checkouts
+
+    def argv(checkout):
+        command = ['memory', 'add', checkout, '--category', category, '--text', text]
+        for item in paths:
+            command.extend(('--path', item))
+        command.extend(('--actor', 'ui', '--json'))
+        return command
+    return _memory_each(ctx, checkouts, argv)
+
+
+def _memories_edit(ctx):
+    """POST `{path?, key, text}`: `forge memory edit <checkout> <key> --text T --actor ui --json`, once per checkout.
+    Text is one argv element, never a shell string."""
+    ctx.route = 'memories edit'
+    try:
+        body = _body_object(ctx, ('path', 'key', 'text'))
+        path = _optional_checkout(body)
+        key = _memory_key(body.get('key'))
+        text = _memory_text(body.get('text'))
+    except BadBody as exc:
+        return _invalid(str(exc))
+    checkouts = _memory_checkouts(ctx, path)
+    if not isinstance(checkouts, list):
+        return checkouts
+
+    def argv(checkout):
+        return ['memory', 'edit', checkout, key, '--text', text, '--actor', 'ui', '--json']
+    return _memory_each(ctx, checkouts, argv)
+
+
 def _storage_compact(ctx):
     """POST `{run | all, dry_run?}`: `forge runs compact <run dir>|--all --logs --json [--dry-run]`."""
     ctx.route = 'compact'
@@ -1525,6 +1668,8 @@ ROUTES = [
     ('POST', re.compile(r'/api/worktrees/remove()'), _worktrees_remove),
     ('POST', re.compile(r'/api/storage/compact()'), _storage_compact),
     ('POST', re.compile(r'/api/projects/([0-9a-f]{8})/memories/forget'), _memories_forget),
+    ('POST', re.compile(r'/api/projects/([0-9a-f]{8})/memories/add'), _memories_add),
+    ('POST', re.compile(r'/api/projects/([0-9a-f]{8})/memories/edit'), _memories_edit),
     ('GET', re.compile(r'/api/config/profiles()'), _config_profiles_get),
     ('POST', re.compile(r'/api/config/profiles()'), _config_profiles_set),
     ('GET', re.compile(r'/api/config()'), _config_get),

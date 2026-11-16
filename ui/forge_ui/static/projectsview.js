@@ -3,7 +3,9 @@
    Routes: #/projects (the list) and #/projects/<id>[/runs|/findings|/memories]. The id is the run cloud's.
    Each tab reads its own endpoint when it opens, never on the page's poll; "Read again" asks the server to read
    everything again. A redraw keeps filters, scroll and a selection (#115). Finding and memory texts are untrusted
-   and only ever enter the page as text. The pure helpers are tested in ui/tests/js/projectsview.test.js.
+   and only ever enter the page as text. With writes on, Memories can edit or add a learning (confirm first);
+   read-only, the row shows the forge memory command to copy. The pure helpers are tested in
+   ui/tests/js/projectsview.test.js and ui/tests/js/memoriesedit.test.js.
    ctx = { id?, tab?, runs() (the page's run list), runHref(key), tablePrefs?(id), saveTablePrefs?(id, prefs) }. */
 (function (root, factory) {
   'use strict';
@@ -119,6 +121,88 @@
     if (data.runs > 0 && data.memory_off_runs === data.runs) return 'Every run of this repository ran with memory turned off (--no-memory), so forge recorded no learnings.';
     if (!list(data.learnings).length && !list(data.sources).some(s => s.memory)) return 'No memories yet: forge has recorded no learning for this repository.';
     return null;
+  }
+  const MEMORY_CATEGORIES = ['verify', 'trap', 'finding'];
+  const MEMORY_TEXT_MAX = 300;
+  const MEMORY_PATH_MAX = 300;
+  const MEMORY_PATHS_MAX = 20;
+  const MEMORY_KEY_MAX = 256;
+  const MEMORY_KEY_RE = /^[^:\s-][^:]*:.+$/;
+  const MEMORY_CONTROL_RE = /[\u0000-\u001f\u007f]/;
+  function memoryTextError(text) {
+    if (typeof text !== 'string' || MEMORY_CONTROL_RE.test(text) || text.length < 1 || text.length > MEMORY_TEXT_MAX)
+      return 'text must be one line of 1 to 300 characters';
+    return '';
+  }
+  function memoryPathError(path) {
+    if (typeof path !== 'string' || !path || path.length > MEMORY_PATH_MAX) return 'a path is at most 300 characters';
+    if (MEMORY_CONTROL_RE.test(path) || /[,[\]]/.test(path)) return 'a path must not contain a comma, a bracket or a control character';
+    if (path.startsWith('/') || path.startsWith('\\')) return 'a path must be relative';
+    if (path.split(/[\\/]/).includes('..')) return 'a path must not contain ..';
+    return '';
+  }
+  // `value` is a list or a comma-separated line. Empty means no paths.
+  function memoryPaths(value) {
+    if (value == null || value === '') return { paths: [] };
+    let items = value;
+    if (typeof value === 'string') items = value.split(',').map(part => part.trim()).filter(Boolean);
+    if (!Array.isArray(items)) return { error: 'paths must be a list of relative paths' };
+    if (items.length > MEMORY_PATHS_MAX) return { error: 'at most 20 paths' };
+    const paths = [];
+    for (const item of items) {
+      const path = typeof item === 'string' ? item.trim() : item;
+      const error = memoryPathError(path);
+      if (error) return { error };
+      if (!paths.includes(path)) paths.push(path);
+    }
+    return { paths };
+  }
+  // The POST body for memories/add: {body} or {error}. `input` is {category, text, paths?, path?}.
+  function memoryAddBody(input) {
+    const o = input || {};
+    const category = typeof o.category === 'string' ? o.category : '';
+    if (!MEMORY_CATEGORIES.includes(category)) return { error: 'category must be verify, trap or finding' };
+    const textError = memoryTextError(o.text);
+    if (textError) return { error: textError };
+    const parsed = memoryPaths(o.paths);
+    if (parsed.error) return { error: parsed.error };
+    const body = { category, text: o.text };
+    if (parsed.paths.length) body.paths = parsed.paths;
+    if (typeof o.path === 'string' && o.path) body.path = o.path;
+    return { body };
+  }
+  // The POST body for memories/edit: {body} or {error}. The checkout path, when there is one, is added by the page.
+  function memoryEditBody(key, text) {
+    if (typeof key !== 'string' || !key || key.length > MEMORY_KEY_MAX || MEMORY_CONTROL_RE.test(key) || !MEMORY_KEY_RE.test(key))
+      return { error: 'key must be category:key' };
+    const textError = memoryTextError(text);
+    if (textError) return { error: textError };
+    return { body: { key, text } };
+  }
+  // One argument for a POSIX shell. A safe word stays bare; quotes and `$` stay literal inside single quotes.
+  function shellQuote(value) {
+    const text = value == null ? '' : String(value);
+    if (text !== '' && /^[A-Za-z0-9_@%+=:,./-]+$/.test(text) && !text.startsWith('-')) return text;
+    return "'" + text.replace(/'/g, "'\\''") + "'";
+  }
+  // `forge memory add|edit <checkout> …`, shell-quoted, for a person to copy. Not the argv the server runs.
+  function memoryCommand(op, checkout, input) {
+    const o = input || {};
+    const head = ['forge memory', op, shellQuote(checkout == null ? '' : checkout)];
+    if (op === 'edit') {
+      head.push(shellQuote(o.key == null ? 'category:key' : o.key), '--text', shellQuote(o.text == null ? 'TEXT' : o.text));
+    } else {
+      head.push('--category', shellQuote(o.category || 'verify'), '--text', shellQuote(o.text == null ? 'TEXT' : o.text));
+      for (const path of list(o.paths)) head.push('--path', shellQuote(path));
+    }
+    return head.join(' ');
+  }
+  // `manual` is set when a person wrote a row. The projects answer keeps each row's role and may omit the flag;
+  // forge sets the flag for exactly the role `person`.
+  function learningManual(row) {
+    if (!row) return false;
+    if (row.manual === true) return true;
+    return list(row.rows).some(item => item && item.role === 'person');
   }
   // A summary without what its own columns show: the bullet, the [P1][CONFIRMED] tags and a leading location.
   function cleanSummary(text, location) {
@@ -636,8 +720,193 @@
       }
       bar.append(readAgain(() => loadTab(true)));
       const parts = [bar];
+      const learnings = list(d.learnings);
+      const shownNow = () => filterLearnings(learnings, s.mfilter, s.source);
+      let allBox = null, forget = null, addButton = null, saveEdit = null, editButtons = [];
+      const faction = el('div'), noteHost = el('div'); faction.append(noteHost);
+      s.forgetHost = faction;
+      const editHost = el('div', undefined, 'prj-edit');
+      const lcount = el('p', '', 'muted prj-count'), lhost = el('div', undefined, 'prj-table');
+      const checkoutOf = () => s.source || (s.detail && s.detail.root) || '';
+      const writeCheckouts = () => s.source ? [s.source] : list(d.sources).map(item => item && item.path).filter(Boolean);
+      const whereText = targets => targets.length ? targets.join(', ') : 'every checkout of this project';
+      function commandLine(command) {
+        const rowEl = el('div', undefined, 'fnd-cmd'), code = el('code', command, 'mono');
+        code.tabIndex = 0; rowEl.append(code, copyButton(command)); return rowEl;
+      }
+      function terminalBox(intro, commands) {
+        const box = el('div', undefined, 'fnd-cmds');
+        box.append(el('p', intro, 'muted'));
+        for (const command of commands) box.append(commandLine(command));
+        return box;
+      }
+      function paintNote() { noteHost.replaceChildren(...list(s.forgetNote).map(line => el('p', line, 'muted'))); }
+      // Forget, Edit and Add share s.forgetting, so one confirm is the only write in flight.
+      function syncForget() {
+        const busy = s.forgetting;
+        if (forget) {
+          const keys = forgetKeys(shownNow(), s.picked);
+          forget.textContent = `Forget selected (${keys.length})`;
+          forget.disabled = busy || keys.length === 0;
+          if (allBox) {
+            const selectable = shownNow().map(learningKey).filter(Boolean);
+            allBox.checked = selectable.length > 0 && selectable.every(key => s.picked.has(key));
+            allBox.disabled = busy || selectable.length === 0;
+          }
+        }
+        if (addButton) addButton.disabled = busy;
+        if (saveEdit) saveEdit.disabled = busy;
+        for (const b of editButtons) b.disabled = busy || !b.dataset.key;
+      }
+      function memoryResultLines(op, res) {
+        const data = forgetData(res), verb = op === 'add' ? 'added' : 'edited';
+        if (!data) return [verb];
+        const lines = [];
+        for (const checkout of list(data.checkouts)) {
+          const where = checkout && checkout.path ? String(checkout.path) : 'checkout';
+          const result = checkout && checkout.result;
+          if (!result || result.ok === false) {
+            const err = checkout && checkout.error;
+            const why = typeof err === 'string' ? err : err && (err.detail || err.error);
+            lines.push(where + ': ' + (why || 'failed'));
+            continue;
+          }
+          lines.push(where + ': ' + verb + (result.key ? ' ' + result.key : ''));
+        }
+        return lines.length ? lines : [verb];
+      }
+      function memoryFailLine(op, res) {
+        return (op === 'add' ? 'Could not add: ' : 'Could not edit: ') + ((res && (res.detail || res.error)) || 'no answer');
+      }
+      // Same epoch guard as forgetSelected: a redraw retires this attempt, the new controls stay usable,
+      // and a request already sent keeps its result line.
+      async function commitMemory(op, request, sentence) {
+        if (s.forgetting) return;
+        const epoch = s.forgetEpoch, host = faction;
+        const current = () => epoch === s.forgetEpoch && host.isConnected;
+        s.forgetting = true; s.forgetNote = null; syncForget(); paintNote();
+        for (const child of [...host.children]) if (child !== noteHost) child.remove();
+        try {
+          const yes = await UI.confirmInline(host, sentence, {});
+          if (!current() || !yes) return;
+          const res = await UI.post('/api/projects/' + encodeURIComponent(s.id) + '/memories/' + op, request);
+          if (!current()) {
+            s.forgetNote = res && res.ok ? memoryResultLines(op, res) : [memoryFailLine(op, res)];
+            if (s.tab === 'memories') await loadTab(true);
+            return;
+          }
+          if (!res || !res.ok) { UI.outcome(host, res); return; }
+          s.forgetNote = memoryResultLines(op, res);
+          s.forgetting = false;
+          await loadTab(true);
+        } finally {
+          if (epoch !== s.forgetEpoch) return;
+          s.forgetting = false;
+          if (host.isConnected) syncForget();
+        }
+      }
+      function countedField(label, value, field) {
+        const input = el('input'); input.type = 'text'; input.value = value || ''; input.dataset.field = field;
+        input.setAttribute('aria-label', label);
+        const count = el('span', '', 'muted'); count.dataset.field = field + '-count';
+        const sync = () => {
+          const n = String(input.value || '').length;
+          count.textContent = n + '/300';
+          count.className = n > MEMORY_TEXT_MAX ? 'warn' : 'muted';
+        };
+        input.addEventListener('input', sync); sync();
+        const wrap = el('label', undefined, 'fnd-field');
+        wrap.append(el('span', label, 'plate'), input, count);
+        return { wrap, input };
+      }
+      function addConfirm(body, targets) {
+        const lines = ['Add this learning to ' + whereText(targets) + '?', body.category + ': ' + body.text];
+        if (body.paths && body.paths.length) lines.push('paths: ' + body.paths.join(', '));
+        return lines.join('\n');
+      }
+      function editConfirm(key, before, after, targets) {
+        return 'Change ' + key + ' in ' + whereText(targets) + '?\n' + before + ' → ' + after;
+      }
+      function buildAddForm() {
+        const form = el('div', undefined, 'prj-add');
+        form.append(el('h3', 'Add learning'));
+        const cat = el('select'); cat.dataset.field = 'add-category'; cat.setAttribute('aria-label', 'Category');
+        for (const name of MEMORY_CATEGORIES) { const o = el('option', name); o.value = name; cat.append(o); }
+        cat.value = 'verify';
+        const catLabel = el('label', undefined, 'fnd-field'); catLabel.append(el('span', 'Category', 'plate'), cat);
+        const text = countedField('Text', '', 'add-text');
+        const paths = el('input'); paths.type = 'text'; paths.placeholder = 'optional paths, comma separated';
+        paths.dataset.field = 'add-paths'; paths.setAttribute('aria-label', 'Paths');
+        const pathsLabel = el('label', undefined, 'fnd-field'); pathsLabel.append(el('span', 'Paths', 'plate'), paths);
+        const msg = el('p', '', 'warn');
+        addButton = el('button', 'Add learning', 'primary'); addButton.type = 'button';
+        const submit = () => {
+          if (s.forgetting) return;
+          const built = memoryAddBody({ category: cat.value, text: text.input.value, paths: paths.value, path: s.source || undefined });
+          if (built.error) { msg.textContent = built.error; return; }
+          msg.textContent = '';
+          commitMemory('add', built.body, addConfirm(built.body, writeCheckouts()));
+        };
+        addButton.addEventListener('click', submit);
+        const onEnter = e => { if (e.key === 'Enter') { e.preventDefault(); submit(); } };
+        text.input.addEventListener('keydown', onEnter);
+        paths.addEventListener('keydown', onEnter);
+        form.append(catLabel, text.wrap, pathsLabel, addButton, msg);
+        return form;
+      }
+      function openEdit(row) {
+        if (s.forgetting) return;
+        const key = learningKey(row);
+        if (!key) return;
+        const before = row.text == null ? '' : String(row.text);
+        editHost.replaceChildren();
+        const text = countedField('Text', before, 'edit-text');
+        const msg = el('p', '', 'warn');
+        saveEdit = el('button', 'Save', 'primary'); saveEdit.type = 'button';
+        const cancel = el('button', 'Cancel'); cancel.type = 'button'; cancel.setAttribute('aria-label', 'Cancel edit');
+        const close = () => { saveEdit = null; editHost.replaceChildren(); };
+        cancel.addEventListener('click', close);
+        const apply = () => {
+          if (s.forgetting) return;
+          const built = memoryEditBody(key, text.input.value);
+          if (built.error) { msg.textContent = built.error; return; }
+          if (s.source) built.body.path = s.source;
+          msg.textContent = '';
+          commitMemory('edit', built.body, editConfirm(key, before, built.body.text, writeCheckouts()));
+        };
+        saveEdit.addEventListener('click', apply);
+        text.input.addEventListener('keydown', e => {
+          if (e.key === 'Enter') { e.preventDefault(); apply(); }
+          else if (e.key === 'Escape') { e.preventDefault(); close(); }
+        });
+        editHost.append(el('p', 'Edit ' + key), text.wrap, saveEdit, cancel, msg);
+        if (text.input.focus) text.input.focus();
+      }
+      function rowCommands(r) {
+        const checkout = checkoutOf(), text = r.text == null ? '' : String(r.text), commands = [];
+        const key = learningKey(r);
+        if (key) commands.push(memoryCommand('edit', checkout, { key, text }));
+        if (MEMORY_CATEGORIES.includes(r.category)) commands.push(memoryCommand('add', checkout, { category: r.category, text }));
+        return commands.length ? terminalBox('This page is read-only. From a terminal:', commands) : null;
+      }
+      function learningCell(r) {
+        const box = el('div', undefined, 'prj-learning'), line = el('div');
+        line.append(el('span', r.text == null ? '' : String(r.text)));
+        if (learningManual(r)) { line.append(document.createTextNode(' '), el('span', 'added by a person', 'chip prj-manual')); }
+        box.append(line);
+        if (!s.writes) { const commands = rowCommands(r); if (commands) box.append(commands); }
+        return box;
+      }
       const empty = memoryEmpty(d);
-      if (empty) { parts.push(el('p', empty, 'muted prj-empty')); body.replaceChildren(...parts); return; }
+      if (empty) {
+        parts.push(el('p', empty, 'muted prj-empty'));
+        paintNote();
+        if (s.writes) parts.push(buildAddForm());
+        else parts.push(terminalBox('This page is read-only. Add a learning from a terminal:', [memoryCommand('add', checkoutOf(), {})]));
+        parts.push(faction);
+        body.replaceChildren(...parts);
+        return;
+      }
       if (d.differs) parts.push(el('p', 'The checkouts\' memory.md files differ: pick a checkout to see what its runs are told.', 'warn prj-differs'));
       const src = sources.find(x => x.path === s.source);
       const given = el('section', undefined, 'prj-given');
@@ -660,9 +929,6 @@
       lsel('state', 'State', [['all', 'all']].concat(Object.entries(STATES).map(([k, v]) => [k, v])));
       const tl = el('label', undefined, 'fnd-field'), tx = el('input'); tx.type = 'search'; tx.placeholder = 'text contains…'; tx.value = s.mfilter.text; tx.dataset.filter = 'm-text';
       tx.addEventListener('input', () => { s.mfilter.text = tx.value; drawLearnings(); }); tl.append(el('span', 'Text', 'plate'), tx); lbar.append(tl);
-      let allBox = null, forget = null;
-      const faction = el('div'), noteHost = el('div'); faction.append(noteHost);
-      s.forgetHost = faction;
       if (s.writes) {
         const lab = el('label', undefined, 'fnd-toggle');
         allBox = el('input'); allBox.type = 'checkbox'; allBox.setAttribute('aria-label', 'Select all shown learnings');
@@ -670,7 +936,7 @@
         forget = el('button', 'Forget selected (0)', 'ui-danger'); forget.type = 'button';
         forget.addEventListener('click', () => { forgetSelected(); });
         allBox.addEventListener('change', () => {
-          const shown = filterLearnings(learnings, s.mfilter, s.source);
+          const shown = shownNow();
           for (const row of shown) {
             const key = learningKey(row);
             if (!key) continue;
@@ -679,26 +945,10 @@
           drawLearnings();
         });
         lbar.append(lab, forget);
-      }
-      const lcount = el('p', '', 'muted prj-count'), lhost = el('div', undefined, 'prj-table');
-      all.append(lbar, faction, lcount, lhost); parts.push(all);
+        all.append(lbar, buildAddForm(), editHost, faction, lcount, lhost);
+      } else all.append(lbar, faction, lcount, lhost);
+      parts.push(all);
       body.replaceChildren(...parts);
-      const learnings = list(d.learnings);
-      const shownNow = () => filterLearnings(learnings, s.mfilter, s.source);
-      function syncForget() {
-        if (!forget) return;
-        const keys = forgetKeys(shownNow(), s.picked);
-        forget.textContent = `Forget selected (${keys.length})`;
-        forget.disabled = s.forgetting || keys.length === 0;
-        if (allBox) {
-          const selectable = shownNow().map(learningKey).filter(Boolean);
-          allBox.checked = selectable.length > 0 && selectable.every(key => s.picked.has(key));
-          allBox.disabled = s.forgetting || selectable.length === 0;
-        }
-      }
-      function paintNote() {
-        noteHost.replaceChildren(...list(s.forgetNote).map(line => el('p', line, 'muted')));
-      }
       async function forgetSelected() {
         if (s.forgetting) return;
         const keys = forgetKeys(shownNow(), s.picked);
@@ -744,11 +994,12 @@
       function drawLearnings() {
         const shown = shownNow();
         lcount.textContent = `${shown.length} of ${learnings.length} learnings`;
-        paintNote(); syncForget();
-        if (!shown.length) { lhost.replaceChildren(el('p', 'No learnings match these filters.', 'muted')); return; }
+        paintNote();
+        editButtons = [];
+        if (!shown.length) { lhost.replaceChildren(el('p', 'No learnings match these filters.', 'muted')); syncForget(); return; }
         const columns = [
           { id: 'category', label: 'Category', value: r => r.category, cell: r => r.category },
-          { id: 'text', label: 'Learning', value: r => r.text, cell: r => el('span', r.text, 'prj-learning') },
+          { id: 'text', label: 'Learning', value: r => r.text, cell: r => learningCell(r) },
           { id: 'state', label: 'State', value: r => stateFor(r, s.source).state, cell: r => { const st = stateFor(r, s.source), b = el('span', STATES[st.state] || st.state); if (st.from && st.from !== 'dataset') b.title = 'from ' + st.from + ', not this checkout\'s ledger'; return b; } },
           { id: 'count', label: 'Runs', title: 'distinct runs that emitted it', value: r => r.count, cell: r => String(r.count || '—') },
           { id: 'run', label: 'Last run', value: r => (list(r.rows).slice(-1)[0] || {}).run_id, mono: true, cell: r => (list(r.rows).slice(-1)[0] || {}).run_id || '—' },
@@ -764,7 +1015,13 @@
           box.addEventListener('change', () => { if (!key) return; if (box.checked) s.picked.add(key); else s.picked.delete(key); syncForget(); });
           return box;
         } });
+        if (s.writes) columns.push({ id: 'edit', label: '', title: 'Edit', sortable: false, hideable: false, cell: r => {
+          const key = learningKey(r), b = el('button', 'Edit'); b.type = 'button'; b.dataset.key = key;
+          b.disabled = s.forgetting || !key; b.setAttribute('aria-label', 'Edit ' + (key || 'learning'));
+          b.addEventListener('click', () => openEdit(r)); editButtons.push(b); return b;
+        } });
         table(lhost, 'project-learnings', 'Learnings', columns, shown);
+        syncForget();
       }
       drawLearnings();
     }
@@ -823,5 +1080,5 @@
     };
   }
 
-  return { render, cleanSummary, filterFindings, filterLearnings, stateFor, memoryEmpty, routeOf, forgetKeys, STATUSES, STATES };
+  return { render, cleanSummary, filterFindings, filterLearnings, stateFor, memoryEmpty, routeOf, forgetKeys, memoryAddBody, memoryEditBody, memoryCommand, STATUSES, STATES };
 });
