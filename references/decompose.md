@@ -1229,14 +1229,23 @@ CONFIRMED finding stays a failure. The task's status is then the literal `PASS`;
 ### The finding sweep (opt-in)
 
 Tolerated findings are recorded, not fixed. `run --sweep Pn` fixes them inside the run instead: once
-every task has merged, and before the combined verification, the scheduler runs `forge-sweep.py plan`
-once. It collects the open findings at `Pn` or worse (the ones the threshold tolerated, plus
+every task has merged, and before the combined verification, the scheduler runs `forge-sweep.py plan`.
+The sweep is once per finding, not once per plan. Round 1 is `<plan>/sweep/plan.json`; round N (N ≥ 2)
+is `<plan>/sweep/rounds/<N>/plan.json`. A finding an earlier round attempted is not swept again, whatever
+that attempt's outcome. The first round is planned once every task that is not a fix task has merged.
+A later round starts when those tasks have merged, every fix task of the previous round is `MERGED`,
+`FAIL`, `NEEDS_DECISION` or `INFRA`, and new eligible findings exist. At most one round starts per
+scheduler pass. A later `plan` with nothing new writes and prints nothing. The scheduler records that
+check in `<plan>/sweep/nothing.json`, and the run's summary prints
+`sweep: nothing new to sweep (N finding(s) already swept or attempted, M left for forge issues)`.
+It collects the open findings at `Pn` or worse (the ones the threshold tolerated, plus
 PLAUSIBLE ones with `--sweep-plausible`), with `forge issues`' own collector, and leaves out:
 
 - findings a person accepted with `accept` or kept with `adopt --approved` (listed as `accepted`), and
-  findings of fix tasks (one round: what a sweep review finds goes to `forge issues`, never into another
-  sweep);
-- dismissed ones (`forge issues --dismiss`), ones with no file, and ones whose file is gone;
+  findings of fix tasks (what a sweep review finds goes to `forge issues`, never into another sweep);
+- dismissed ones (`forge issues --dismiss`), ones the finding record marks `fixed`, `filed` or
+  `duplicate`, and ones an earlier round already attempted;
+- ones with no file, and ones whose file is gone;
 - ones whose line, as the reviewer saw it, a later merge changed (`changed`, naming those merges).
 
 Every finding left out is listed in the plan with its reason. The rest become fix tasks, one per file,
@@ -1246,14 +1255,17 @@ worst first, at most 8 findings each and `--sweep-max N` (default 5) tasks. Each
 the task the worst finding came from. Its reviewer is that task's reviewer. What an adopted range's review
 tolerated is swept too: its fix task's reviewer is the adoption's, and below the low tier its implementer
 is the run's first task's. The plan (groups, findings,
-dispatches) is printed and kept in `<plan>/sweep/plan.md` and `plan.json`. A plan is swept at most once.
+dispatches) is printed and kept next to that round's `plan.json`, as `plan.md`. Round 1 lives in
+`<plan>/sweep/`; each later round lives in `<plan>/sweep/rounds/<N>/`.
 
 Fix tasks share the run's scheduling, controls and `--retry-failed` budget. Their review is narrow
 (`forge-contract.py qa --kind sweep`): one `S<n>: FIXED` or `S<n>: NOT FIXED` line per finding, plus
 regressions as findings. It passes when at least one finding is fixed and there is no blocking
 regression. When a fix task merges, its review's lines go to `tasks/<id>/sweep.outcome.json`, and
-`forge issues` leaves out what it fixed (`swept` in `--json`). A fix task that fails leaves its
-findings for `forge issues` and does not fail the run. The run's summary says what the sweep fixed,
+`forge issues` leaves out what it fixed (`swept` in `--json`). Each finding that review marked fixed
+also gets a `fixed` record, actor `sweep`, reason `sweep <task>`, and the merge commit when
+`<plan>/accepted.integration` is 7 to 40 lowercase hex characters. A fix task that fails leaves its
+findings for `forge issues` and does not fail the run. The run's summary says what each round fixed,
 and the whole-run review that follows reads the sweep's changes like any other task's.
 
 `run --sweep-ahead` (kept in `<plan>/sweep_ahead`; `--no-sweep-ahead` turns it off) is the cheaper
