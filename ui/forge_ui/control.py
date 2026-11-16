@@ -6,15 +6,18 @@ this module holds the route table, the body validation, the call and the mapping
 exit code to an HTTP answer. server.py does the authentication and hands each authenticated POST
 to `dispatch`. Profile create and edit write a JSON body to the CLI's stdin (`--file -`);
 a brief answer writes the answer text the same way. Approving, rejecting and proposing a brief
-change print text and take no stdin. Every other call has no stdin.
+change print text and take no stdin. A finding's draft body and replacement text go through a
+private temp file (`--body-file`, `--text-file`), never argv. Every other call has no stdin.
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -49,6 +52,12 @@ MAX_FPS = 25
 MAX_LABELS = 5
 MAX_LABEL = 50
 MAX_REASON = 500
+MAX_FINDING_FPS = 200         # fingerprints in one finding-record write
+MAX_NOTE = 2000
+MAX_EDIT_TEXT = 4000
+MAX_DRAFT_TITLE = 200
+MAX_DRAFT_BODY = 20000
+MAX_TAGS = 8
 MAX_CONFIG_VALUE = 4096
 MAX_DECIDE_VALUE = 256
 # The profile object written to `forge config profile … --file -`. The HTTP body is already capped
@@ -65,6 +74,9 @@ _PROFILE_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$')
 _PROFILE_KEY = re.compile(r'^(routing|policy)\.[a-z_.]+$')
 _PROFILE_ACTIONS = ('create', 'edit', 'set', 'unset', 'rm', 'use')
 FP_RE = re.compile(r'[0-9a-f]{12}')
+_COMMIT_RE = re.compile(r'[0-9a-f]{7,40}')
+_TAG_RE = re.compile(r'[a-z][a-z0-9-]{0,23}')
+_FINDING_SEVERITIES = ('P0', 'P1', 'P2', 'P3')
 # Mirrored from forge_decide.GATES and MODES. The ui tests do not put scripts/ on the path, so this
 # module does not import forge_decide; ConfigTests.test_decide_names_match_forge_decide keeps them equal.
 DECIDE_GATES = ('drift', 'forward', 'prompt', 'memory-curate', 'memory-slice', 'memory-stale',
@@ -1103,6 +1115,16 @@ def invalidate_memories(server):
             del screen.cli[key]
 
 
+def invalidate_findings(server):
+    """The next GET of a project's findings reads `forge issues` again, and re-reads the run cache."""
+    from forge_ui import projects
+    screen = projects.screen(server)
+    with screen.lock:
+        for key in [k for k in screen.cli if isinstance(k, tuple) and k and k[0] == 'issues']:
+            del screen.cli[key]
+        screen.runs.clear()
+
+
 def _worktrees_remove(ctx):
     """POST `{paths, branches?, dry_run?}`: `forge worktrees rm <paths> [--branches] [--dry-run] --json --actor ui`.
 
@@ -1292,6 +1314,201 @@ def _task_answer(ctx):
     return ctx.locked(work)
 
 
+# ------------------------------------------------------- finding-record writes (#161)
+
+# One pattern for every write. `dispatch` full-matches, so this does not swallow GET …/findings.
+_FINDINGS_FIELDS = {
+    'fix': ('fps', 'commit', 'reason'),
+    'dismiss': ('fps', 'reason'),
+    'reopen': ('fps',),
+    'to-file': ('fps', 'title', 'body'),
+    'dup': ('fps', 'of'),
+    'tag': ('fps', 'tags', 'remove'),
+    'note': ('fps', 'text'),
+    'edit': ('fps', 'severity', 'text'),
+}
+_FINDINGS_PATH = re.compile(
+    r'/api/projects/([0-9a-f]{8})/findings/(' + '|'.join(_FINDINGS_FIELDS) + ')')
+_SINGLE_FINDING = frozenset(('dup', 'note', 'edit'))
+
+
+def _argv_text(value, name, limit):
+    """A string that will be one argv element: at most `limit` characters, no NUL, UTF-8."""
+    if not isinstance(value, str) or len(value) > limit:
+        raise BadBody(f'{name} must be a string of at most {limit} characters')
+    if '\x00' in value:
+        raise BadBody(f'{name} must not contain a NUL')
+    try:
+        value.encode('utf-8')
+    except UnicodeEncodeError:
+        raise BadBody(f'{name} must be valid text')
+    return value
+
+
+def _file_text(value, name, limit):
+    """A string written to a temp file. A NUL is fine here; it cannot be an argv element."""
+    if not isinstance(value, str) or len(value) > limit:
+        raise BadBody(f'{name} must be a string of at most {limit} characters')
+    try:
+        value.encode('utf-8')
+    except UnicodeEncodeError:
+        raise BadBody(f'{name} must be valid text')
+    return value
+
+
+def _optional_text(body, name, limit, loader):
+    if name not in body:
+        return None
+    return loader(body[name], name, limit)
+
+
+def _finding_fps(value, single):
+    limit = 1 if single else MAX_FINDING_FPS
+    if not isinstance(value, list) or not 1 <= len(value) <= limit:
+        if single:
+            raise BadBody('fps must be a list of exactly one fingerprint')
+        raise BadBody(f'fps must be a list of 1 to {MAX_FINDING_FPS} fingerprints')
+    for item in value:
+        if not isinstance(item, str) or not FP_RE.fullmatch(item):
+            raise BadBody('fps holds a value that is not a 12-hex fingerprint')
+    return list(dict.fromkeys(value))  # a repeated fingerprint is one finding
+
+
+def _finding_tags(value):
+    if not isinstance(value, list) or not 1 <= len(value) <= MAX_TAGS:
+        raise BadBody(f'tags must be a list of 1 to {MAX_TAGS} tags')
+    for item in value:
+        if not isinstance(item, str) or not _TAG_RE.fullmatch(item):
+            raise BadBody('a tag is a lowercase letter, then lowercase letters, digits or dashes, at most 24 characters')
+    return list(dict.fromkeys(value))
+
+
+def _append_option(argv, name, value):
+    """`--name value`. A value that starts with '-' is `--name=value`, so the CLI does not read it as a flag."""
+    if value.startswith('-'):
+        argv.append(f'--{name}={value}')
+    else:
+        argv.extend((f'--{name}', value))
+
+
+def _findings_request(op, body):
+    """`(fps, tokens, file)` for a validated body. BadBody otherwise.
+
+    `tokens` follow the fingerprints. `file` is `('--body-file'|'--text-file', text)` or None.
+    For `note`, `tokens` is the one positional text and `file` is None.
+    """
+    fps = _finding_fps(body.get('fps'), op in _SINGLE_FINDING)
+    tokens, file = [], None
+    if op == 'fix':
+        commit = body['commit'] if 'commit' in body else None
+        if commit is not None and (not isinstance(commit, str) or not _COMMIT_RE.fullmatch(commit)):
+            raise BadBody('commit must be 7 to 40 lowercase hex characters')
+        reason = _optional_text(body, 'reason', MAX_REASON, _argv_text)
+        if commit is None and reason is None:
+            raise BadBody('fix needs a commit or a reason')
+        if commit is not None:
+            tokens.extend(('--commit', commit))
+        if reason is not None:
+            _append_option(tokens, 'reason', reason)
+    elif op == 'dismiss':
+        if 'reason' not in body:
+            raise BadBody('reason is required')
+        _append_option(tokens, 'reason', _argv_text(body['reason'], 'reason', MAX_REASON))
+    elif op == 'to-file':
+        title = _optional_text(body, 'title', MAX_DRAFT_TITLE, _argv_text)
+        text = _optional_text(body, 'body', MAX_DRAFT_BODY, _file_text)
+        if title is not None:
+            _append_option(tokens, 'title', title)
+        if text is not None:
+            file = ('--body-file', text)
+    elif op == 'dup':
+        other = body.get('of')
+        if not isinstance(other, str) or not FP_RE.fullmatch(other):
+            raise BadBody('of must be a 12-hex fingerprint')
+        tokens.extend(('--of', other))
+    elif op == 'tag':
+        tags = _finding_tags(body.get('tags'))
+        remove = _flag(body, 'remove')
+        tokens.extend(('--', *tags, '--remove' if remove else '--add'))
+    elif op == 'note':
+        if 'text' not in body:
+            raise BadBody('text is required')
+        tokens.append(_argv_text(body['text'], 'text', MAX_NOTE))
+    elif op == 'edit':
+        severity = body['severity'] if 'severity' in body else None
+        if severity is not None and severity not in _FINDING_SEVERITIES:
+            raise BadBody('severity must be P0, P1, P2 or P3')
+        text = _optional_text(body, 'text', MAX_EDIT_TEXT, _file_text)
+        if severity is None and text is None:
+            raise BadBody('edit needs a severity or text')
+        if severity is not None:
+            tokens.extend(('--severity', severity))
+        if text is not None:
+            file = ('--text-file', text)
+    return fps, tokens, file
+
+
+def _note_argv(root, fp, text):
+    """`note REPO FP TEXT`. Text that starts with '-' sits after `--`, with the options in front of that."""
+    if text.startswith('-'):
+        return ['findings', 'note', '--actor', 'ui', '--json', root, fp, '--', text]
+    return ['findings', 'note', root, fp, text, '--actor', 'ui', '--json']
+
+
+def _write_payload(directory, flag, text):
+    """`[flag, path]` for `text` in `directory` (mode 0600). The caller creates and removes the directory."""
+    path = os.path.join(directory, 'payload')
+    handle = os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w', encoding='utf-8')
+    try:
+        handle.write(text)
+    finally:
+        handle.close()
+    return [flag, path]
+
+
+def _findings_action(ctx):
+    """POST `{fps, …}`: `forge findings <op> <project root> … --actor ui --json`.
+
+    The path's last segment is the op (fix, dismiss, reopen, to-file, dup, tag, note, edit).
+    A draft body and an edit's replacement text go to a private temp file (`--body-file`,
+    `--text-file`). `findings_lock` makes a second write 409 `busy`. Exit 3 is 409 with the CLI's
+    message. A successful call drops the project screen's issues listings and its run cache.
+    """
+    from forge_ui import projects
+    op = ctx.parts[0]
+    ctx.route = 'findings ' + op
+    try:
+        body = _body_object(ctx, _FINDINGS_FIELDS[op])
+        fps, tokens, file = _findings_request(op, body)
+    except BadBody as exc:
+        return _invalid(str(exc))
+    project = projects.screen(ctx.server).projects(ctx.server.catalog).get(ctx.key)
+    root = project.get('root') if isinstance(project, dict) else None
+    if not isinstance(root, str) or not root:
+        return 404, {'error': 'not found'}
+    lock = _server_lock(ctx.server, 'findings_lock')
+    if not lock.acquire(blocking=False):
+        return 409, {'error': 'busy'}
+    directory = None
+    try:
+        file_argv = []
+        if file is not None:
+            directory = tempfile.mkdtemp(prefix='forge-ui-findings-')
+            file_argv = _write_payload(directory, *file)
+        if op == 'note':
+            argv = _note_argv(root, fps[0], tokens[0])
+        else:
+            argv = ['findings', op, root, *fps, *tokens, *file_argv, '--actor', 'ui', '--json']
+        status, answer = ctx.call(*argv)
+        if status == 200:
+            invalidate_findings(ctx.server)
+        return status, answer
+    finally:
+        if directory is not None:
+            shutil.rmtree(directory, ignore_errors=True)
+        lock.release()
+
+
 ROUTES = [
     ('GET', re.compile(r'/api/runs/([0-9a-f]{12})/controls'), _show),
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/controls'), _change),
@@ -1317,6 +1534,7 @@ ROUTES = [
     ('GET', re.compile(r'/api/storage()'), _storage),
     ('GET', re.compile(r'/api/projects()'), _projects),
     ('GET', re.compile(r'/api/projects/([0-9a-f]{8})'), _project),
+    ('POST', _FINDINGS_PATH, _findings_action),
     ('GET', re.compile(r'/api/projects/([0-9a-f]{8})/findings'), _project_findings),
     ('GET', re.compile(r'/api/projects/([0-9a-f]{8})/memories'), _project_memories),
 ]
