@@ -177,6 +177,27 @@ class UpdateTests(StoreCase):
         self.assertEqual(self.record.read_text(), first)
         self.assertEqual(len(self.log_lines()), 1)
 
+    def test_a_change_that_adds_nothing_to_an_unknown_finding_creates_no_entry(self):
+        self.assertEqual(store.remove_tags(self.ident, [FP], ['absent'], 'cli'), [])
+        self.assertEqual(store.set_note(self.ident, FP, '', 'cli'), [])
+        self.assertEqual(store.set_edit(self.ident, FP, 'ui', text=''), [])
+        self.assertFalse(self.record.exists())
+        self.assertEqual(self.log_lines(), [])
+        # so a swept finding is not turned into a reopened one
+        self.assertEqual(status.effective(store.get(self.ident, FP), {'swept': {'at': 1}}, None), 'swept')
+
+    def test_reopening_an_unknown_finding_is_still_recorded(self):
+        store.set_status(self.ident, [FP], 'open', 'cli')
+        self.assertEqual(self.stored()['findings'][FP]['status'], 'open')
+
+    def test_tags_that_are_not_a_list_are_refused(self):
+        for bad in (5, None.__class__, 'ui', {'a': 1}):
+            with self.assertRaises(store.Invalid):
+                store.update(self.ident, [FP], 'cli', add_tags=bad)
+            with self.assertRaises(store.Invalid):
+                store.update(self.ident, [FP], 'cli', remove_tags=bad)
+        self.assertFalse(self.record.exists())
+
     def test_only_the_changed_findings_of_a_batch_are_logged(self):
         store.set_status(self.ident, [FP], 'dismissed', 'cli', reason='r')
         changed = store.set_status(self.ident, [FP, FP2], 'dismissed', 'cli', reason='r')

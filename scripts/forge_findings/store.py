@@ -381,7 +381,7 @@ def _check_changes(actor, changes: dict) -> None:
         tags = changes.get(name)
         if tags is None:
             continue
-        if isinstance(tags, str) or not all(isinstance(t, str) for t in tags):
+        if not isinstance(tags, (list, tuple, set, frozenset)) or not all(isinstance(t, str) for t in tags):
             raise Invalid(f"{name} must be a list of tags")
         if name == "add_tags":
             for tag in tags:
@@ -520,6 +520,10 @@ def update(ident, fps, actor, locked=False, **changes):
             before = view.get(fp)
             after = _apply(fp, before, actor, now, changes)
             if before is not None and _comparable(before) == _comparable(after):
+                continue
+            if before is None and "status" not in changes and set(after) == {"status"}:
+                # a change that adds nothing (clearing an absent note or tag) must not create a bare `open` entry:
+                # that entry would read as a reopen and hide the finding's swept or filed state
                 continue
             after["at"] = now
             after["actor"] = actor
