@@ -319,7 +319,7 @@ class FindingsCliTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         names = ["show", "fix", "dismiss", "reopen", "to-file", "dup", "tag", "note", "edit",
-                 "triage", "_triage-job", "triage-status", "proposals"]
+                 "triage", "_triage-job", "triage-status", "proposals", "apply", "reject"]
         self.assertEqual(list(module.COMMANDS), names)
         parser = module.build_parser()
         choices = next(action for action in parser._actions if isinstance(action, argparse._SubParsersAction))
@@ -337,7 +337,7 @@ class FindingsCliTests(unittest.TestCase):
         self.assertIn("  findings  every review finding of a repository: show, mark, tag, triage\n", helped.stdout)
         command = forge("findings", "--help")
         self.assertEqual(command.returncode, 0, command.stderr)
-        self.assertIn("{show,fix,dismiss,reopen,to-file,dup,tag,note,edit,triage,triage-status,proposals}",
+        self.assertIn("{show,fix,dismiss,reopen,to-file,dup,tag,note,edit,triage,triage-status,proposals,apply,reject}",
                       command.stdout)
         self.assertNotIn("_triage-job", command.stdout)
         self.assertNotIn("SUPPRESS", command.stdout)
