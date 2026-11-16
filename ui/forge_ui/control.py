@@ -1652,6 +1652,279 @@ def _findings_action(ctx):
         lock.release()
 
 
+# ------------------------------------------------------- triage routes and spec check (#161)
+
+_SPEC_RE = re.compile(r'^[A-Za-z0-9._:/@+-]+$')
+# A triage number. Nine digits is past the directory cap; a longer digit string is not an id.
+_TRIAGE_N = re.compile(r'^[0-9]{1,9}$')
+_PROPOSAL_ID = re.compile(r'^p[0-9]{1,4}$')
+_RESOLVED_KEY = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+_MAX_SPEC = 120
+_MAX_TRIAGE_FINDINGS = 2000
+# control.py is ui/forge_ui/control.py; the skill root is three directories up, as forge-control.py's
+# SKILL is two up from scripts/. Doctor is that script, never a model and never a shell string.
+_DISPATCH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))),
+                         'scripts', 'forge-dispatch.sh')
+
+
+def _triage_spec(value):
+    """A triage or doctor spec: 1 to 120 characters of the dispatch spec alphabet."""
+    if not isinstance(value, str) or not 1 <= len(value) <= _MAX_SPEC or not _SPEC_RE.fullmatch(value):
+        raise BadBody('spec must be 1 to 120 characters of letters, digits and . _ : / @ + -')
+    return value
+
+
+def _max_findings(body):
+    """None when the body omits it. JSON true is a bool, and a bool is an int, so the type is exact."""
+    if 'max_findings' not in body:
+        return None
+    value = body['max_findings']
+    if type(value) is not int or not 1 <= value <= _MAX_TRIAGE_FINDINGS:
+        raise BadBody(f'max_findings must be an integer from 1 to {_MAX_TRIAGE_FINDINGS}')
+    return value
+
+
+def _triage_n(value):
+    if not isinstance(value, str) or not _TRIAGE_N.fullmatch(value):
+        raise BadBody('n must be a decimal integer')
+    return value
+
+
+def _proposal_id(value):
+    if not isinstance(value, str) or not _PROPOSAL_ID.fullmatch(value):
+        raise BadBody('pid must match ^p[0-9]{1,4}$')
+    return value
+
+
+def _proposal_hash(value):
+    if not isinstance(value, str) or not FP_RE.fullmatch(value):
+        raise BadBody('hash must be 12 lowercase hex characters')
+    return value
+
+
+def _plan_dir(body):
+    """None when the field is absent. Present means an absolute path, whether or not it exists yet."""
+    if 'plan_dir' not in body:
+        return None
+    value = body['plan_dir']
+    if not isinstance(value, str) or not os.path.isabs(value) or not _no_control_chars(value):
+        raise BadBody('plan_dir must be an absolute path')
+    return value
+
+
+def _triage_target(ctx):
+    """`(n, pid)` from the path. BadBody when either segment is not the shape the CLI takes."""
+    n, pid = ctx.parts[:2]
+    return _triage_n(n), _proposal_id(pid)
+
+
+def _triage_repo(ctx):
+    """The project's identity root when that folder exists, else the first existing checkout.
+
+    `checkouts` lists the root first, then the other paths. A string is the repo to pass to the CLI.
+    A tuple is the error response: 404 `not found` for an unknown project, 404 `no checkout` when
+    the project has no directory left on this machine.
+    """
+    from forge_ui import projects
+    found = projects.screen(ctx.server).projects(ctx.server.catalog).get(ctx.key)
+    if not isinstance(found, dict):
+        return 404, {'error': 'not found'}
+    root = found.get('root')
+    if isinstance(root, str) and root and os.path.isdir(root):
+        return root
+    if not isinstance(root, str) or not isinstance(found.get('runs'), list):
+        return 404, {'error': 'no checkout'}
+    existing = [c['path'] for c in projects.checkouts(found) if c['exists']]
+    if not existing:
+        return 404, {'error': 'no checkout'}
+    return existing[0]
+
+
+def _triage_repo_or_response(ctx):
+    repo = _triage_repo(ctx)
+    return (None, repo) if isinstance(repo, str) else (repo, None)
+
+
+def _no_triage(body):
+    """True when triage-status refused because no triage has run (or this number does not exist)."""
+    if not isinstance(body, dict):
+        return False
+    parts = [str(body.get('detail') or '')]
+    result = body.get('result')
+    if isinstance(result, dict):
+        parts.append(str(result.get('error') or ''))
+    return 'no triage' in '\n'.join(parts).lower()
+
+
+def _findings_write(ctx, argv):
+    """One `forge findings` write under `findings_lock`. 409 `busy` when a write already holds it.
+
+    A 200 drops the project screen's findings cache, as a finding-record write does. A refusal
+    wrote nothing, so the cache stays.
+    """
+    lock = _server_lock(ctx.server, 'findings_lock')
+    if not lock.acquire(blocking=False):
+        return 409, {'error': 'busy'}
+    try:
+        status, answer = ctx.call(*argv)
+        if status == 200:
+            invalidate_findings(ctx.server)
+        return status, answer
+    finally:
+        lock.release()
+
+
+def _triage_start(ctx):
+    """POST `{spec, max_findings?}`: `forge findings triage <root> --spec S [--max-findings N]
+    --detach --actor ui --json`.
+
+    `--detach` makes the CLI print `{triage, state}` and return at once. Exit 3 is 409 with the
+    CLI's message. This is the one route whose CLI starts a model; the route itself does not.
+    """
+    ctx.route = 'triage'
+    try:
+        body = _body_object(ctx, ('spec', 'max_findings'))
+        spec = _triage_spec(body.get('spec'))
+        limit = _max_findings(body)
+    except BadBody as exc:
+        return _invalid(str(exc))
+    error, repo = _triage_repo_or_response(ctx)
+    if error:
+        return error
+    argv = ['findings', 'triage', repo]
+    _append_option(argv, 'spec', spec)
+    if limit is not None:
+        argv += ['--max-findings', str(limit)]
+    argv += ['--detach', '--actor', 'ui', '--json']
+    return ctx.call(*argv)
+
+
+def _triage_get(ctx):
+    """GET `[?n=N]`: `{state, proposals}` from `triage-status` and `proposals`, each time, uncached.
+
+    No triage yet (the status command exits 3 with that message) is 200 `{state: null, proposals: null}`.
+    A triage with no proposals yet leaves `proposals` null and still returns the state. A read: no lock.
+    """
+    ctx.route = 'triage'
+    try:
+        params = _query_params(ctx.query, ('n',))
+        n = _triage_n(params['n']) if 'n' in params else None
+    except BadBody as exc:
+        return _invalid(str(exc))
+    error, repo = _triage_repo_or_response(ctx)
+    if error:
+        return error
+    number = [n] if n else []
+    status, state = ctx.call('findings', 'triage-status', repo, *number, '--json')
+    if status != 200:
+        if status == 409 and _no_triage(state):
+            return 200, {'state': None, 'proposals': None}
+        return status, state
+    pstatus, proposals = ctx.call('findings', 'proposals', repo, *number, '--json')
+    if pstatus == 409:
+        proposals = None
+    elif pstatus != 200:
+        return pstatus, proposals
+    return 200, {'state': state, 'proposals': proposals}
+
+
+def _triage_apply(ctx):
+    """POST `{hash, plan_dir?}`: `forge findings apply <root> N PID --approve HASH [--plan-dir D]
+    --actor ui --json`. Exit 3 is 409 with the CLI's message."""
+    ctx.route = 'triage apply'
+    try:
+        n, pid = _triage_target(ctx)
+        body = _body_object(ctx, ('hash', 'plan_dir'))
+        digest = _proposal_hash(body.get('hash'))
+        plan_dir = _plan_dir(body)
+    except BadBody as exc:
+        return _invalid(str(exc))
+    error, repo = _triage_repo_or_response(ctx)
+    if error:
+        return error
+    argv = ['findings', 'apply', repo, n, pid, '--approve', digest]
+    if plan_dir is not None:
+        argv += ['--plan-dir', plan_dir]
+    argv += ['--actor', 'ui', '--json']
+    return _findings_write(ctx, argv)
+
+
+def _triage_reject(ctx):
+    """POST `{reason?}`: `forge findings reject <root> N PID [--reason T] --actor ui --json`.
+
+    The reason is at most 500 characters. Exit 3 is 409 with the CLI's message."""
+    ctx.route = 'triage reject'
+    try:
+        n, pid = _triage_target(ctx)
+        body = _body_object(ctx, ('reason',))
+        reason = _optional_reason(body.get('reason'))
+    except BadBody as exc:
+        return _invalid(str(exc))
+    error, repo = _triage_repo_or_response(ctx)
+    if error:
+        return error
+    argv = ['findings', 'reject', repo, n, pid]
+    if reason:
+        _append_option(argv, 'reason', reason)
+    argv += ['--actor', 'ui', '--json']
+    return _findings_write(ctx, argv)
+
+
+def _spec_query(raw):
+    """The query of GET /api/specs/check. A spec may contain `+`, which form decoding would turn into
+    a space, and a spec has no spaces, so a literal `+` here is a plus."""
+    return _query_params((raw or '').replace('+', '%2B'), ('spec',))
+
+
+def _resolved_pairs(text):
+    """The `key=value` lines of a doctor's stdout. The prose line after them is not one of them."""
+    resolved = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        if _RESOLVED_KEY.fullmatch(key.strip()):
+            resolved[key.strip()] = value.strip()
+    return resolved
+
+
+def _doctor_error(result):
+    """The refusal line. Doctor prints it on stderr (`forge: …`); stdout may hold a partial block."""
+    for text in (result.stderr, result.stdout):
+        for line in text.splitlines():
+            line = line.strip()
+            if line:
+                return line[:REFUSAL_MAX]
+    return f'the doctor exited {result.code}'
+
+
+def _specs_check(ctx):
+    """GET `?spec=S`: `{ok: true, resolved}` or `{ok: false, error}` from
+    `bash scripts/forge-dispatch.sh doctor --spec S --role side`.
+
+    The same argv forge-control's doctor uses, with the role `side`. An argv list, not a shell.
+    A spec that fails the same check as triage start is 400 and the doctor is not run. A doctor
+    refusal is 200 with `ok: false`: the check finished. Read-only servers answer this GET.
+    """
+    ctx.route = 'specs check'
+    try:
+        params = _spec_query(ctx.query)
+        if 'spec' not in params:
+            raise BadBody('spec is required')
+        spec = _triage_spec(params['spec'])
+    except BadBody as exc:
+        return _invalid(str(exc))
+    result = run_cli(['bash', _DISPATCH, 'doctor', '--spec', spec, '--role', 'side'], ctx.timeout or TIMEOUT_S)
+    if result.timed_out:
+        return 504, {'error': 'timeout', 'detail': TIMEOUT_DETAIL}
+    if result.error:
+        return 502, {'error': 'bad gateway', 'detail': result.error[:DETAIL_MAX]}
+    if result.code == 0:
+        return 200, {'ok': True, 'resolved': _resolved_pairs(result.stdout)}
+    return 200, {'ok': False, 'error': _doctor_error(result)}
+
+
 ROUTES = [
     ('GET', re.compile(r'/api/runs/([0-9a-f]{12})/controls'), _show),
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/controls'), _change),
@@ -1670,6 +1943,9 @@ ROUTES = [
     ('POST', re.compile(r'/api/projects/([0-9a-f]{8})/memories/forget'), _memories_forget),
     ('POST', re.compile(r'/api/projects/([0-9a-f]{8})/memories/add'), _memories_add),
     ('POST', re.compile(r'/api/projects/([0-9a-f]{8})/memories/edit'), _memories_edit),
+    ('POST', re.compile(r'/api/projects/([0-9a-f]{8})/triage/([^/]+)/([^/]+)/apply'), _triage_apply),
+    ('POST', re.compile(r'/api/projects/([0-9a-f]{8})/triage/([^/]+)/([^/]+)/reject'), _triage_reject),
+    ('POST', re.compile(r'/api/projects/([0-9a-f]{8})/triage'), _triage_start),
     ('GET', re.compile(r'/api/config/profiles()'), _config_profiles_get),
     ('POST', re.compile(r'/api/config/profiles()'), _config_profiles_set),
     ('GET', re.compile(r'/api/config()'), _config_get),
@@ -1682,6 +1958,8 @@ ROUTES = [
     ('POST', _FINDINGS_PATH, _findings_action),
     ('GET', re.compile(r'/api/projects/([0-9a-f]{8})/findings'), _project_findings),
     ('GET', re.compile(r'/api/projects/([0-9a-f]{8})/memories'), _project_memories),
+    ('GET', re.compile(r'/api/projects/([0-9a-f]{8})/triage'), _triage_get),
+    ('GET', re.compile(r'/api/specs/check()'), _specs_check),
 ]
 
 
