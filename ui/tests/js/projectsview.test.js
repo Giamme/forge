@@ -34,6 +34,17 @@ test('findings: open and no shadow reviews by default; each filter narrows', () 
   assert.deepEqual(names(P.filterFindings(rows, { since: 1 }, 1000 + 86400 - 1)), ['one', 'two']);   // five is older than a day
 });
 
+test('findings: open means open and to-file; the new statuses and the tag filter', () => {
+  const g = [f('o'), f('t', { status: 'to-file', tags: ['ui'] }), f('d', { status: 'duplicate' }), f('s', { status: 'shadow', kind: 'shadow' }), f('u', { status: 'unlabelled', tags: ['ui', 'x'] })];
+  assert.deepEqual(names(P.filterFindings(g, {}, 2000)), ['o', 't']);
+  assert.deepEqual(names(P.filterFindings(g, { status: 'to-file' }, 2000)), ['t']);
+  assert.deepEqual(names(P.filterFindings(g, { status: 'duplicate' }, 2000)), ['d']);
+  assert.deepEqual(names(P.filterFindings(g, { status: 'unlabelled' }, 2000)), ['u']);
+  assert.deepEqual(names(P.filterFindings(g, { status: 'shadow' }, 2000)), ['s'], 'asking for shadow shows the shadow rows');
+  assert.deepEqual(names(P.filterFindings(g, { status: 'all', tag: 'ui' }, 2000)), ['t', 'u']);
+  for (const status of ['open', 'to-file', 'filed', 'fixed', 'swept', 'dismissed', 'duplicate', 'shadow', 'unlabelled', 'superseded']) assert.ok(P.STATUSES.includes(status), status);
+});
+
 test('a summary drops what its columns already show', () => {
   assert.equal(P.cleanSummary('- [P1][CONFIRMED] ui/a.py:14 — the bug', 'ui/a.py:14'), 'the bug');
   assert.equal(P.cleanSummary('- **[P2][CONFIRMED] `x/y.py:1-3` against z', 'x/y.py:1-3'), 'against z');
