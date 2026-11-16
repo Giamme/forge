@@ -17,6 +17,7 @@
 
   const list = v => Array.isArray(v) ? v : [];
   const A = root.ForgeFindingsActions || (typeof require === 'function' ? require('./findingsactions.js') : null);
+  const T = root.ForgeTriage || (typeof require === 'function' ? require('./triageview.js') : null);
   const SEVERITIES = ['P0', 'P1', 'P2', 'P3'];
   const STATUSES = ['open', 'to-file', 'filed', 'fixed', 'swept', 'dismissed', 'duplicate', 'shadow', 'unlabelled', 'superseded'];
   const LAMPS = { open: 'lamp-off', 'to-file': 'lamp-route', filed: 'fnd-amber', fixed: 'st-pass', swept: 'st-pass', dismissed: 'lamp-off', duplicate: 'lamp-off',
@@ -29,7 +30,7 @@
 
   /* ---------- pure ---------- */
   // filter = { severity: 'all' | P0..P3, status: 'all' | 'open' (default: open and to-file) | STATUSES, tag: '' | a tag, run: '' | run id,
-  //            reviewer: '', path: '' (substring), since: 0 (days, 0 = any), shadow: false }
+  //            reviewer: '', path: '' (substring), since: 0 (days, 0 = any), shadow: false, fp: '' (one finding, by its record key; set by a triage card) }
   function filterFindings(rows, filter, now) {
     const f = filter || {}, sev = f.severity || 'all', status = f.status || 'open', path = String(f.path || '').toLowerCase();
     const since = Number(f.since) > 0 ? (now || Date.now() / 1000) - Number(f.since) * 86400 : null;
@@ -37,7 +38,7 @@
       && (sev === 'all' || r.severity === sev)
       && (status === 'all' || (status === 'open' ? OPEN.includes(r.status) : r.status === status))
       && (!f.tag || list(r.tags).includes(f.tag))
-      && (!f.run || r.run_id === f.run) && (!f.reviewer || r.reviewer === f.reviewer)
+      && (!f.run || r.run_id === f.run) && (!f.reviewer || r.reviewer === f.reviewer) && (!f.fp || r.record_fp === f.fp)
       && (!path || String(r.location || '').toLowerCase().includes(path))
       && (since === null || (Number.isFinite(r.at) && r.at >= since)));
   }
@@ -226,7 +227,7 @@
       ffilter: { severity: 'all', status: 'open', tag: '', run: '', reviewer: '', path: '', since: 0, shadow: false },
       mfilter: { category: 'all', state: 'all', text: '' }, source: null, checkout: '', error: null, seq: 0, timer: null,
       writes: false, picked: new Set(), forgetNote: null, forgetting: false, forgetEpoch: 0, forgetHost: null,
-      fsel: new Set(), acting: false, actEpoch: 0, actHost: null, actResult: null };
+      fsel: new Set(), acting: false, actEpoch: 0, actHost: null, actResult: null, triage: {}, triagePanel: null };
     const tablePrefs = id => ctx.tablePrefs ? ctx.tablePrefs(id) : null, savePrefs = id => p => ctx.saveTablePrefs && ctx.saveTablePrefs(id, p);
 
     function table(parent, id, label, columns, rows, extra) {
@@ -261,7 +262,14 @@
       s.actHost = null;
       dismissConfirm(host);
     }
+    // The triage panel's polling and its confirm end with the draw that made it.
+    function abandonTriage() {
+      const panel = s.triagePanel;
+      s.triagePanel = null;
+      if (panel) panel.stop();
+    }
     function abandonForget() {
+      abandonTriage();
       abandonAct();
       if (!s.forgetting) return;
       const host = s.forgetHost;
@@ -410,6 +418,15 @@
       const count = el('p', '', 'muted prj-count'), tableHost = el('div', undefined, 'prj-table');
       const formHost = el('div', undefined, 'fnd-form'), actHost = el('div', undefined, 'fnd-confirm'), noteHost = el('div', undefined, 'fnd-result');
       s.actHost = actHost;
+      const triageHost = el('div', undefined, 'triage-host');
+      if (T) {
+        s.triagePanel = T.render(triageHost, {
+          id: s.id, root: s.detail && s.detail.root, writes: s.writes, store: s.triage, reload: () => { if (s.tab === 'findings') loadTab(true); },
+          openCount: () => rows.filter(r => OPEN.includes(r.status) && r.kind !== 'shadow').length,
+          rows: () => rows,
+          show: fp => { s.ffilter = { severity: 'all', status: 'all', tag: '', run: '', reviewer: '', path: '', since: 0, shadow: true, fp }; drawFindings(body, note); },
+        });
+      }
       if (s.actResult) { UI.outcome(noteHost, s.actResult.res, s.actResult.text, { silent: true }); s.actResult = null; }   // shown once
       const shownNow = () => filterFindings(rows, s.ffilter);
       const selectedNow = () => A.selectedRows(shownNow(), s.fsel);
@@ -611,8 +628,8 @@
         const fileKey = el('button', 'File selected', 'primary'); fileKey.type = 'button'; fileKey.dataset.op = 'file'; fileKey.disabled = true;
         fileKey.title = 'creates GitHub issues for the selected findings that forge issues can file (at most ' + A.MAX_FILE + ')';
         fileKey.addEventListener('click', () => { fileSelected(); }); opButtons.file = fileKey; abar.append(fileKey);
-        body.replaceChildren(bar, abar, formHost, actHost, noteHost, count, tableHost);
-      } else body.replaceChildren(bar, count, tableHost);
+        body.replaceChildren(triageHost, bar, abar, formHost, actHost, noteHost, count, tableHost);
+      } else body.replaceChildren(triageHost, bar, count, tableHost);
 
       /* the table */
       const summaryCell = r => {
@@ -696,6 +713,11 @@
       function drawTable() {
         const shown = shownNow();
         count.textContent = `${shown.length} of ${rows.length} findings`;
+        if (s.ffilter.fp) {
+          const all = el('button', 'Show all findings'); all.type = 'button'; all.dataset.op = 'clear-fp';
+          all.addEventListener('click', () => { s.ffilter = { severity: 'all', status: 'open', tag: '', run: '', reviewer: '', path: '', since: 0, shadow: false, fp: '' }; drawFindings(body, note); });
+          count.append(document.createTextNode(` · only ${s.ffilter.fp} `), all);
+        }
         syncBar();
         if (!shown.length) { tableHost.replaceChildren(el('p', rows.length ? 'No findings match these filters.' : 'No review of this repository wrote a finding.', 'muted')); return; }
         table(tableHost, 'project-findings', 'Findings', columns, shown, { className: 'fnd-grid prj-findings' });
@@ -1066,7 +1088,7 @@
         if (id === s.id && t === s.tab) return;             // the page's own refresh: nothing changed here
         const same = id === s.id;
         s.id = id || null; s.tab = t;
-        if (!same) { s.detail = s.findings = s.memories = null; s.source = null; s.checkout = ''; s.picked = new Set(); s.forgetNote = null; s.fsel = new Set(); s.actResult = null; }
+        if (!same) { s.detail = s.findings = s.memories = null; s.source = null; s.checkout = ''; s.picked = new Set(); s.forgetNote = null; s.fsel = new Set(); s.actResult = null; abandonTriage(); s.triage = {}; }
         if (same && s.id) { redraw = drawProject(); redraw(); if (t === 'runs') loadDetail(); else if (!(t === 'findings' ? s.findings : s.memories)) loadTab(false); }
         else open();
       },

@@ -1517,6 +1517,44 @@ table.wt-grid { width: max-content; min-width: 100%; }
 .fnd-cmd { display: flex; align-items: center; gap: var(--s-2); }
 .fnd-cmd code { flex: 1 1 auto; min-width: 0; padding: 2px 6px; border: 1px solid var(--rule); border-radius: var(--r-small); font-size: var(--t-xs); white-space: pre-wrap; overflow-wrap: anywhere; }
 .fnd-copy { min-height: 22px; padding: 0 8px; font-size: var(--t-xs); }
+
+/* ---------- triage panel on the Findings tab (#161) ---------- */
+.triage { border: 1px solid var(--rule); border-radius: var(--r-key); background: var(--module-2); }
+.triage-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-2); padding: var(--s-2) 10px; cursor: pointer; }
+.triage-title:focus-visible { outline: 2px solid var(--route); outline-offset: 2px; }
+.triage-badge { font-size: var(--t-xs); color: var(--muted); }
+.triage-badge-running { color: var(--warn-ink); font-weight: 600; }
+.triage-badge-failed { color: var(--lamp-red); font-weight: 600; }
+.triage-body { display: grid; gap: var(--s-2); padding: 0 10px 10px; }
+.triage-start { display: grid; gap: var(--s-2); }
+.triage-form { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); }
+.triage-form input[data-field=spec] { min-width: 14rem; }
+.triage-form input[data-field=max] { width: 6rem; }
+.triage-check { margin: 0; font-size: var(--t-sm); overflow-wrap: anywhere; }
+.triage-check:empty, .triage-confirm:empty, .triage-msgs:empty { display: none; }
+.triage-cmds { display: grid; gap: 4px; }
+.triage-cmds p { margin: 0; font-size: var(--t-xs); }
+.triage-view { display: grid; gap: var(--s-2); }
+.triage-state-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 0; }
+.triage-state-name { font-weight: 600; }
+.triage-reason { margin: 0; overflow-wrap: anywhere; }
+.triage-group { display: grid; gap: var(--s-2); align-content: start; }
+.triage-card { display: grid; gap: 4px; padding: var(--s-2) 10px; border: 1px solid var(--rule); border-radius: var(--r-key); background: var(--module); }
+.triage-card[aria-busy=true] { opacity: .7; }
+.triage-card-top { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+.triage-state-applied { color: var(--lamp-green, var(--ink)); }
+.triage-state-rejected { color: var(--muted); }
+.triage-summary, .triage-why, .triage-title-line, .triage-decided { margin: 0; overflow-wrap: anywhere; }
+.triage-title-line { font-weight: 600; }
+.triage-fps, .triage-tasks { margin: 0; padding-left: 1.2em; display: grid; gap: 2px; font-size: var(--t-sm); }
+.triage-fp-id { font-size: var(--t-xs); }
+button.triage-fp-id { min-height: 20px; padding: 0 6px; }
+.triage-fp-text { overflow-wrap: anywhere; }
+.triage-hash { font-size: var(--t-xs); overflow-wrap: anywhere; }
+.triage-details summary { cursor: pointer; font-size: var(--t-sm); }
+.triage-pre { margin: 4px 0 0; max-height: 12rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--t-xs); }
+.triage-actions { display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: center; }
+.triage-actions input { flex: 1 1 12rem; min-width: 8rem; min-height: 28px; padding: 4px 8px; }
 .prj-where a, .project-link { white-space: nowrap; }
 .prj-tabs a:focus-visible, .prj-links a:focus-visible, .project-link:focus-visible { outline: 2px solid var(--route); outline-offset: 2px; }
 
