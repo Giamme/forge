@@ -217,8 +217,13 @@ class ForgeIssuesTests(unittest.TestCase):
 
     def test_no_github_remote_is_a_clear_error(self):
         subprocess.run(['git', '-C', str(self.repo), 'remote', 'remove', 'origin'], check=True)
-        err = self.forge_issues(str(self.plan), code=2)
+        # a listing still works (fingerprints use an empty slug, a warning says so); filing needs a slug
+        out = self.forge_issues(str(self.plan))
+        self.assertEqual(out['repo'], '')
+        self.assertTrue(any('has no GitHub origin remote; pass --repo owner/repo' in w for w in out['warnings']))
+        err = self.forge_issues(str(self.plan), '--apply', code=2)
         self.assertIn('has no GitHub origin remote; pass --repo owner/repo', err)
+        self.assertEqual(self.created(), [])
 
     def offline_env(self):
         """PATH with a `gh` that records every call and fails."""
@@ -248,7 +253,7 @@ class ForgeIssuesTests(unittest.TestCase):
         first = out['findings'][0]
         self.assertEqual(sorted(first), sorted(['fp', 'severity', 'confidence', 'origin', 'plan', 'plan_dir', 'task',
                                                'file', 'summary', 'text', 'reviewer', 'commit', 'review', 'swept',
-                                               'filed', 'dismissed']))
+                                               'filed', 'dismissed', 'record', 'status']))
         self.assertEqual((first['origin'], first['plan'], first['task'], first['filed'], first['dismissed']),
                          ('tolerated', 'plan', 'import', None, None))
         self.assertIsNone(first['review'])
@@ -340,13 +345,13 @@ class ForgeIssuesTests(unittest.TestCase):
         fp = sorted(listed())[0]
         self.run_issues(str(task / 'known_issues.md'), '--dismiss', fp, cwd=cwd)
         self.assertIsNotNone(listed()[fp])
-        self.assertEqual([p.name for p in self.findings_dir().glob('*.json')], [f'{repo_key(self.repo)}.json'])
+        self.assertEqual([p.name for p in self.findings_dir().glob('*.json')], [f'{repo_key(self.repo)}.record.json'])
         for form in (task / 'qa.last', task):
             self.run_issues(str(form), '--undismiss', fp, cwd=cwd)
             self.assertIsNone(listed()[fp])
             self.run_issues(str(form), '--dismiss', fp, cwd=cwd)
             self.assertIsNotNone(listed()[fp])
-        self.assertEqual([p.name for p in self.findings_dir().glob('*.json')], [f'{repo_key(self.repo)}.json'])
+        self.assertEqual([p.name for p in self.findings_dir().glob('*.json')], [f'{repo_key(self.repo)}.record.json'])
         # listing through a file names the run's repository, not the cwd's
         out = self.run_issues(str(task / 'known_issues.md'), '--offline', cwd=cwd)
         self.assertEqual((out['repo'], out['warnings']), ('o/r', []))
@@ -371,7 +376,7 @@ class ForgeIssuesTests(unittest.TestCase):
         self.run_issues(str(solo / 'qa.last'), '--dismiss', fp, env=env, cwd=cwd)
         again = self.run_issues(str(solo), '--offline', '--include-plausible', env=env, cwd=cwd)
         self.assertIsNotNone(again['findings'][0]['dismissed'])
-        self.assertEqual(list(json.loads(self.store_path().read_text())), [fp])
+        self.assertEqual(self.dismissed_fps(), [fp])
 
     def test_a_run_recording_no_repository_falls_back_to_the_cwd_and_says_so(self):
         solo = self.solo_run()
@@ -395,7 +400,7 @@ class ForgeIssuesTests(unittest.TestCase):
         self.assertEqual(shown.returncode, 0, shown.stderr)
         self.assertEqual([line for line in shown.stdout.splitlines() if line.startswith('warning')],
                          [f'warning: {text}'])
-        self.assertEqual(list(json.loads(self.store_path().read_text())), [fp])
+        self.assertEqual(self.dismissed_fps(), [fp])
 
     def test_threshold_review_with_known_issues_is_collected(self):
         line = '- [P2][CONFIRMED] src/a.ts:1 — X.'
@@ -472,7 +477,8 @@ class ForgeIssuesTests(unittest.TestCase):
         shared = [f for f in out['findings'] if f['file'] == 'src/import.ts' and f['severity'] == 'P2']
         self.assertEqual([f['plan'] for f in shared], ['plan2'])
         self.assertEqual(len(out['findings']), 2)
-        self.assertTrue(any('gone' in n and 'missing' in n for n in out['notes']))
+        # a run dir that no longer exists is not a run of the repository: it is dropped, not reported
+        self.assertFalse(any('gone' in n for n in out['notes']))
         draft = next(d for d in out['drafts'] if d['severity'] == 'P2')
         self.assertIn('forge `plan2`', draft['body'])
         self.assertIn('source=forge:plan2/import', draft['body'])
@@ -487,7 +493,17 @@ class ForgeIssuesTests(unittest.TestCase):
         return self.state_home / 'forge' / 'findings'
 
     def store_path(self):
-        return self.findings_dir() / f'{repo_key(self.repo)}.json'
+        """The repository's finding record (identity key; a plain checkout's key is its repo_key)."""
+        return self.findings_dir() / f'{repo_key(self.repo)}.record.json'
+
+    def stored(self):
+        """The record's entries: {fp: {status, at, actor, reason, ...}}."""
+        data = json.loads(self.store_path().read_text())
+        self.assertEqual(data['version'], 1)
+        return data['findings']
+
+    def dismissed_fps(self):
+        return sorted(fp for fp, e in self.stored().items() if e['status'] == 'dismissed')
 
     def lock_path(self):
         return self.findings_dir() / f'{repo_key(self.repo)}.lock'
@@ -516,14 +532,15 @@ class ForgeIssuesTests(unittest.TestCase):
         out = self.run_issues(str(self.plan), '--dismiss', fp, '--reason', 'x', env=env)
         self.assertEqual(out, {'ok': True, 'dismissed': [fp], 'undismissed': [], 'warnings': []})
         self.assertFalse((self.dir / 'gh-called').exists())
-        stored = json.loads(self.store_path().read_text())
+        stored = self.stored()
         self.assertEqual(list(stored), [fp])
+        self.assertEqual((stored[fp]['status'], stored[fp]['actor']), ('dismissed', 'issues'))
         self.assertEqual(stored[fp]['reason'], 'x')
-        self.assertIsInstance(stored[fp]['at'], int)
+        self.assertIsInstance(stored[fp]['at'], (int, float))
         listed = self.run_issues(str(self.plan), '--offline')
         self.assertNotIn(fp, self.draft_fps(listed))
         marks = {f['fp']: f['dismissed'] for f in listed['findings']}
-        self.assertEqual(marks.pop(fp), {'at': stored[fp]['at'], 'reason': 'x'})
+        self.assertEqual(marks.pop(fp), {'at': int(stored[fp]['at']), 'reason': 'x'})
         self.assertEqual(list(marks.values()), [None])
         self.assertEqual(listed['summary']['dismissed'], 1)
         # --include-dismissed drafts it again, and it stays marked
@@ -537,7 +554,7 @@ class ForgeIssuesTests(unittest.TestCase):
         # --undismiss restores it
         out = self.run_issues(str(self.plan), '--undismiss', fp)
         self.assertEqual(out, {'ok': True, 'dismissed': [], 'undismissed': [fp], 'warnings': []})
-        self.assertEqual(json.loads(self.store_path().read_text()), {})
+        self.assertEqual((self.dismissed_fps(), self.stored()[fp]['status']), ([], 'open'))
         restored = self.run_issues(str(self.plan), '--offline')
         self.assertIn(fp, self.draft_fps(restored))
         self.assertEqual([f['dismissed'] for f in restored['findings']], [None, None])
@@ -547,16 +564,16 @@ class ForgeIssuesTests(unittest.TestCase):
         ghost = '0' * 12
         out = self.run_issues(str(self.plan), '--dismiss', f'{a},{ghost}', '--dismiss', b, '--dismiss', a)
         self.assertEqual(out['dismissed'], [a, ghost, b])
-        self.assertEqual(sorted(json.loads(self.store_path().read_text())), sorted([a, b, ghost]))
+        self.assertEqual(self.dismissed_fps(), sorted([a, b, ghost]))
         out = self.run_issues(str(self.plan), '--undismiss', ghost, '--undismiss', a)
         self.assertEqual(out, {'ok': True, 'dismissed': [], 'undismissed': [ghost, a], 'warnings': []})
-        self.assertEqual(list(json.loads(self.store_path().read_text())), [b])
+        self.assertEqual(self.dismissed_fps(), [b])
         # dismissing again without a reason keeps the earlier one; with a reason it replaces it
         self.run_issues(str(self.plan), '--dismiss', b, '--reason', 'first')
         self.run_issues(str(self.plan), '--dismiss', b)
-        self.assertEqual(json.loads(self.store_path().read_text())[b]['reason'], 'first')
+        self.assertEqual(self.stored()[b]['reason'], 'first')
         self.run_issues(str(self.plan), '--dismiss', b, '--reason', 'x' * 500)
-        self.assertEqual(json.loads(self.store_path().read_text())[b]['reason'], 'x' * 500)
+        self.assertEqual(self.stored()[b]['reason'], 'x' * 500)
 
     def test_dismiss_rejects_bad_input_before_touching_the_store(self):
         a = self.fps()[0]
@@ -573,15 +590,15 @@ class ForgeIssuesTests(unittest.TestCase):
         # --all-runs: the repository itself, or a plan dir naming it
         self.run_issues(str(self.repo), '--all-runs', '--dismiss', fp)
         self.run_issues(str(self.plan), '--all-runs', '--dismiss', fp)
-        self.assertEqual([p.name for p in self.findings_dir().glob('*.json')], [f'{repo_key(self.repo)}.json'])
-        self.assertEqual(list(json.loads(self.store_path().read_text())), [fp])
+        self.assertEqual([p.name for p in self.findings_dir().glob('*.json')], [f'{repo_key(self.repo)}.record.json'])
+        self.assertEqual(self.dismissed_fps(), [fp])
 
     def test_an_empty_xdg_state_home_means_the_default(self):
         home = self.dir / 'home'; home.mkdir()
         env = dict(self.env, XDG_STATE_HOME='', HOME=str(home))
         fp = self.fps()[0]
         self.run_issues(str(self.plan), '--dismiss', fp, env=env)
-        self.assertTrue((home / '.local/state/forge/findings' / f'{repo_key(self.repo)}.json').is_file())
+        self.assertTrue((home / '.local/state/forge/findings' / f'{repo_key(self.repo)}.record.json').is_file())
 
     def test_a_symlinked_or_special_store_is_refused(self):
         fp = self.fps()[0]
@@ -596,7 +613,7 @@ class ForgeIssuesTests(unittest.TestCase):
         self.assertIn('regular file', self.run_issues(str(self.plan), '--dismiss', fp, code=2))
         store.rmdir()
         store.write_text('[]')
-        self.assertIn('not a dismissal store', self.run_issues(str(self.plan), '--dismiss', fp, code=2))
+        self.assertIn('not a finding record', self.run_issues(str(self.plan), '--dismiss', fp, code=2))
         self.assertEqual(store.read_text(), '[]')
         # a symlinked lock file is refused too, before anything is looked up
         store.unlink(); self.lock_path().unlink()
