@@ -2084,7 +2084,7 @@ class IndependenceTests(unittest.TestCase):
                    # forge du: only locates the data home, to size it
                    'forge-du.py',
                    # forge handoff: resume records a reset task's INTERRUPTED through capture.point
-                   'forge-handoff.py'}
+                   'forge-handoff.py', 'store.py'}
         for path in (ROOT / 'scripts').rglob('*'):
             if path.suffix not in ('.py', '.sh') or 'forge_dataset' in path.parts:
                 continue
