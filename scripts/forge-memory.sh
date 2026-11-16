@@ -27,6 +27,9 @@
 #   forge-memory.sh spend  <repo> [--run <run-id>]
 #   forge-memory.sh learnings <repo> [--json]   every ledger learning and its state, as JSON
 #   forge-memory.sh forget <repo> <category:key>... [--dry-run] [--json] [--actor ui|cli]
+#   forge-memory.sh add <repo> --category <verify|trap|finding> --text TEXT [--path P]...
+#                              [--actor ui|cli] [--json]
+#   forge-memory.sh edit <repo> <category:key> --text TEXT [--path P]... [--actor ui|cli] [--json]
 #
 # Exit codes: 0 ok | 2 usage error
 set -uo pipefail
@@ -126,21 +129,31 @@ section_title() {
 # With <ledger>, that file is read instead of the repo's ledger. `forget --dry-run` passes a
 # scratch copy that already has the rows removed, and a scratch <out>, so the repo is not touched.
 rebuild() { # rebuild <repo> [<out> [<ledger>]] -> prints "kept<TAB>pruned_stale<TAB>pruned_cap"
-  local repo="$1" led mem tmp cand jev_loaded=0
+  local repo="$1" led mem tmp cand jev_loaded=0 personf tmproles
   if [ "${FORGE_MEMORY_DEEP_PRUNE:-0}" = 1 ] && [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
     source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded=1
   fi
   led="${3:-$(ledger_for "$repo")}"; mem="${2:-$(memory_for "$repo")}"
   [ -f "$led" ] || return 0
   tmp="$mem.tmp.$$"; cand="$mem.cand.$$"
+  # Learnings a person wrote are kept on the first row and trimmed last. The cand
+  # file itself stays the old four columns: sort's tie-break is the whole line, so an
+  # extra column would reshuffle two facts that share a count and a timestamp.
+  personf="$mem.person.$$"; tmproles="$mem.roles.$$"
+  rm -f "$personf" "$tmproles"
+  : > "$tmproles"
 
   # Group by (category, key). count = number of DISTINCT runs the key appeared in,
   # which is what makes a recurrence threshold meaningful: one run emitting the
-  # same learning twice is still one occurrence.
-  awk -F'\t' '
+  # same learning twice is still one occurrence. A row with role person, injectable
+  # or not, marks the learning so the finding threshold below does not apply.
+  FORGE_MEMORY_PERSON="$personf" awk -F'\t' '
+    BEGIN { personfile = ENVIRON["FORGE_MEMORY_PERSON"] }
     /^#/ || NF < 9 { next }
+    { if ($4 == "person") person[$7 "\034" $8] = 1 }
     # Column 11 is the injectable flag. Rows written before it existed have NF == 10
     # and are treated as injectable, so an existing ledger keeps behaving as it did.
+    # Column 12 (paths) is only for edit; rebuild does not read it.
     NF >= 11 && $11 == "0" { next }
     {
       ts=$1; run=$2; cat=$7; key=$8; txt=$9
@@ -149,21 +162,30 @@ rebuild() { # rebuild <repo> [<out> [<ledger>]] -> prints "kept<TAB>pruned_stale
       if (ts >= lastts[k]) { lastts[k]=ts; last[k]=txt }
       catof[k]=cat
     }
-    END { for (k in cnt) printf "%s\t%d\t%s\t%s\n", catof[k], cnt[k], lastts[k], last[k] }
+    END {
+      for (k in cnt) printf "%s\t%d\t%s\t%s\n", catof[k], cnt[k], lastts[k], last[k]
+      for (k in cnt) if (person[k]) printf "%s\t%s\t%s\n", catof[k], lastts[k], last[k] > personfile
+    }
   ' "$led" > "$cand" 2>/dev/null
 
   local kept=0 stale=0 capped=0
   : > "$tmp"
-  local sec cat count ts text anchor line
+  local sec cat count ts text anchor line person browns
   for sec in verify trap finding; do
     local body="$mem.sec.$$"; : > "$body"
+    browns="$body.roles"; : > "$browns"
     # Highest count first, then most recent — the ordering a human scans for a
     # systemic problem, and deterministic so tests can assert on it.
     while IFS=$'\t' read -r cat count ts text; do
       [ "$cat" = "$sec" ] || continue
+      person=0
+      if [ -s "$personf" ] && grep -F -x -q -- "$cat"$'\t'"$ts"$'\t'"$text" "$personf"; then
+        person=1
+      fi
       # A finding seen once is an incident, not a pattern. Promoting it would fill
       # memory with one-offs, which is exactly how this becomes a junk drawer.
-      if [ "$sec" = finding ] && [ "$count" -lt 2 ]; then continue; fi
+      # A person's own learning is kept on its first row, in every category.
+      if [ "$sec" = finding ] && [ "$count" -lt 2 ] && [ "$person" != 1 ]; then continue; fi
       anchor="$(anchor_of "$text")"
       # An entry anchored to a path that no longer exists is stale by construction:
       # the code it describes is gone, so the fact is at best useless and at worst
@@ -191,19 +213,21 @@ rebuild() { # rebuild <repo> [<out> [<ledger>]] -> prints "kept<TAB>pruned_stale
       else
         printf '%s\t- %s\n' "$count" "$text" >> "$body"
       fi
+      if [ "$person" = 1 ]; then printf 'p\n' >> "$browns"; else printf 'n\n' >> "$browns"; fi
     done < <(sort -t"$TAB" -k2,2nr -k3,3r "$cand")
 
     if [ -s "$body" ]; then
       { section_title "$sec"; cut -f2- "$body"; echo; } >> "$tmp"
+      { printf '.\n'; cat "$browns"; printf '.\n'; } >> "$tmproles"
       kept=$((kept + $(wc -l < "$body" | tr -d ' ')))
     fi
-    rm -f "$body"
+    rm -f "$body" "$browns"
   done
-  rm -f "$cand"
+  rm -f "$cand" "$personf"
 
-  if [ ! -s "$tmp" ]; then rm -f "$tmp" "$mem"; printf '0\t%s\t0\n' "$stale"; return 0; fi
+  if [ ! -s "$tmp" ]; then rm -f "$tmp" "$tmproles" "$mem"; printf '0\t%s\t0\n' "$stale"; return 0; fi
 
-  local header="$mem.hdr.$$"
+  local header="$mem.hdr.$$" roles="$mem.caproles.$$"
   {
     echo "# forge project memory"
     echo "<!-- Maintained by forge from what its own runs observed. Do not edit this file"
@@ -212,17 +236,37 @@ rebuild() { # rebuild <repo> [<out> [<ledger>]] -> prints "kept<TAB>pruned_stale
     echo
     cat "$tmp"
   } > "$header"
+  # One role per header line, in lockstep: n a run fact, p a person's fact, . the rest.
+  # The five dots are the header lines above. With no person rows every fact is n, so the
+  # trim below still deletes the last fact line and memory.md stays byte-identical.
+  {
+    printf '.\n.\n.\n.\n.\n'
+    cat "$tmproles"
+  } > "$roles"
 
   # Cap enforcement. Everything above already dropped stale entries and unpromoted
-  # findings, so what is left is real; trimming happens from the bottom, which the
-  # sort above has arranged to be the lowest-count, least-recent facts.
+  # findings, so what is left is real. A run fact is trimmed from the bottom, which the
+  # sort above has arranged to be the lowest-count, least-recent. A person's fact goes
+  # only once no run fact is left.
   while [ "$(wc -l < "$header" | tr -d ' ')" -gt "$MAX_LINES" ] || \
         [ "$(wc -c < "$header" | tr -d ' ')" -gt "$MAX_BYTES" ]; do
     local last_fact
-    last_fact="$(grep -n '^- ' "$header" | tail -1 | cut -d: -f1)"
+    last_fact="$(awk '
+      { role[NR] = $0 }
+      END {
+        last_n = 0; last_any = 0
+        for (i = 1; i <= NR; i++) {
+          if (role[i] == "n") last_n = i
+          if (role[i] == "n" || role[i] == "p") last_any = i
+        }
+        if (last_n) print last_n
+        else if (last_any) print last_any
+      }
+    ' "$roles")"
     [ -n "$last_fact" ] || break
     [ -z "$MEMORY_DROPS" ] || printf 'cap\t-\t%s\n' "$(sed -n "${last_fact}p" "$header")" >> "$MEMORY_DROPS"
     sed "${last_fact}d" "$header" > "$header.x" && mv "$header.x" "$header"
+    sed "${last_fact}d" "$roles" > "$roles.x" && mv "$roles.x" "$roles"
     capped=$((capped+1)); kept=$((kept-1))
   done
   # The cap can eat a section's last fact, leaving a heading over nothing.
@@ -230,7 +274,7 @@ rebuild() { # rebuild <repo> [<out> [<ledger>]] -> prints "kept<TAB>pruned_stale
 
   [ -n "${2:-}" ] || mkdir -p "$(dir_for "$repo")"
   mv "$header" "$mem"
-  rm -f "$tmp"
+  rm -f "$tmp" "$tmproles" "$roles"
   printf '%s\t%s\t%s\n' "$kept" "$stale" "$capped"
 }
 
@@ -594,15 +638,17 @@ do_spend() {
 # edit of that same ledger, so it runs when memory is off too. There is no early return.
 #
 # Sets FORGET_CANON to the ledger's "category:key" form (norm_key on each part), or exits 2.
-parse_forget_key() {
-  local raw="$1" cat key
+# <cmd> is the word in the error (default forget). edit uses the same parse and must not
+# tell the person they ran forget.
+parse_forget_key() { # parse_forget_key <raw> [cmd]
+  local raw="$1" cmd="${2:-forget}" cat key
   case "$raw" in
     *:*) ;;
-    *) die "forget: KEY must be category:key, got '$raw'" ;;
+    *) die "$cmd: KEY must be category:key, got '$raw'" ;;
   esac
   cat="$(norm_key "${raw%%:*}")"
   key="$(norm_key "${raw#*:}")"
-  [ -n "$cat" ] && [ -n "$key" ] || die "forget: KEY must be category:key with neither part empty, got '$raw'"
+  [ -n "$cat" ] && [ -n "$key" ] || die "$cmd: KEY must be category:key with neither part empty, got '$raw'"
   FORGET_CANON="$cat:$key"
 }
 
@@ -822,6 +868,404 @@ do_forget() { # do_forget <repo> <category:key>... [--dry-run] [--json] [--actor
   return "$status"
 }
 
+# --- add / edit ---------------------------------------------------------------
+# A person writes one ledger row (role person, run id manual-<epoch>) and rebuild runs.
+# Column 12 is paths, comma-joined, empty when there are none. Rows of 11 columns still
+# read as before; only edit reads column 12. Refusals die before either file is written.
+
+# Text is one line, 1..300 characters, with no tab. Checked before sanitize, which is what
+# do_record runs next. Dies with one forge: line.
+refuse_memory_text() { # refuse_memory_text <cmd> <text>
+  local cmd="$1" text="$2" n cleaned
+  case "$text" in
+    *$'\n'*|*$'\t'*) die "$cmd: text must be one line without a tab" ;;
+  esac
+  n=${#text}
+  if [ "$n" -lt 1 ] || [ "$n" -gt 300 ]; then
+    die "$cmd: text must be 1 to 300 characters"
+  fi
+  cleaned="$(sanitize "$text")"
+  [ -n "$cleaned" ] || die "$cmd: text must be 1 to 300 characters"
+}
+
+# 0 when a path can sit in column 12 and be parsed back out of a trailing [anchor].
+# anchor_of stops at the first '[' or ']', so a path like app/[id]/page.tsx would be
+# stored and then never go stale. Same rule as check_memory_path, without the message.
+memory_path_ok() { # memory_path_ok <path>
+  local p="$1" rest part
+  [ -n "$p" ] || return 1
+  [ "${#p}" -le 300 ] || return 1
+  case "$p" in
+    *$'\n'*|*$'\t'*|*,*|*'['*|*']'*|/*) return 1 ;;
+  esac
+  rest="$p"
+  while [ -n "$rest" ]; do
+    part="${rest%%/*}"
+    if [ "$part" = ".." ]; then return 1; fi
+    case "$rest" in
+      */*) rest="${rest#*/}" ;;
+      *) rest="" ;;
+    esac
+  done
+  return 0
+}
+
+# A path stored in column 12 or used as an anchor: relative, no .. component, at most
+# 300 characters, and none of the characters that would break the column, the line,
+# or anchor_of's bracket match.
+check_memory_path() { # check_memory_path <cmd> <path>
+  local cmd="$1" p="$2" rest part
+  [ -n "$p" ] || die "$cmd: path is empty"
+  [ "${#p}" -le 300 ] || die "$cmd: path is longer than 300 characters"
+  case "$p" in
+    *$'\n'*|*$'\t'*|*,*) die "$cmd: path must not contain a tab, newline or comma" ;;
+    *'['*|*']'*) die "$cmd: path must not contain '[' or ']'" ;;
+    /*) die "$cmd: path must be relative" ;;
+  esac
+  rest="$p"
+  while [ -n "$rest" ]; do
+    part="${rest%%/*}"
+    if [ "$part" = ".." ]; then die "$cmd: path must not contain '..'"; fi
+    case "$rest" in
+      */*) rest="${rest#*/}" ;;
+      *) rest="" ;;
+    esac
+  done
+}
+
+# First-seen order, at most 20 distinct paths that memory_path_ok accepts. A --path
+# argument is refused before it gets here. An old column-12 entry or anchor that fails
+# the same rule is omitted: it was not typed as --path, and refusing the edit would
+# leave that learning uncorrectable. Returns 1 when more than 20 remain.
+# Sets MEM_PATHS (csv) and MEM_FIRST (the anchor to append, or empty).
+collect_paths() {
+  local p f n=0
+  MEM_PATHS=""
+  MEM_FIRST=""
+  [ "$#" -gt 0 ] || return 0
+  f="$(mktemp "${TMPDIR:-/tmp}/forge-memory-paths.XXXXXX")" || die "memory: no scratch file"
+  : > "$f"
+  for p in "$@"; do
+    memory_path_ok "$p" || continue
+    if grep -F -x -q -- "$p" "$f"; then continue; fi
+    n=$((n + 1))
+    if [ "$n" -gt 20 ]; then
+      rm -f "$f"
+      MEM_PATHS=""
+      MEM_FIRST=""
+      return 1
+    fi
+    printf '%s\n' "$p" >> "$f"
+    [ -n "$MEM_FIRST" ] || MEM_FIRST="$p"
+  done
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    if [ -n "$MEM_PATHS" ]; then MEM_PATHS="$MEM_PATHS,$p"; else MEM_PATHS="$p"; fi
+  done < "$f"
+  rm -f "$f"
+}
+
+# Sanitize, append the first path as [anchor] when the text has none, then clamp and
+# key the same way do_record does. Sets MEM_TEXT and MEM_KEY.
+prepare_memory_text() { # prepare_memory_text <cmd> <text> <first-path>
+  local cmd="$1" text="$2" first="$3"
+  refuse_memory_text "$cmd" "$text"
+  text="$(sanitize "$text")"
+  if [ -n "$first" ] && [ -z "$(anchor_of "$text")" ]; then
+    text="$text [$first]"
+  fi
+  MEM_TEXT="$(clamp_fact "$text")"
+  MEM_KEY="$(norm_key "$(strip_anchor "$MEM_TEXT")")"
+  [ -n "$MEM_KEY" ] || die "$cmd: text has nothing to keep"
+}
+
+# One person row. The header matches do_record when the file is missing or empty;
+# an existing header is left as it is. The data row always has the 12th column.
+# forget_filter keeps a ledger whose last line has no newline. The append below would
+# glue this row onto that line, so a non-empty ledger is given its missing newline first.
+write_person_row() { # write_person_row <ledger> <category> <paths-csv>
+  local led="$1" cat="$2" paths="$3" ts run_id
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  run_id="manual-$(date +%s)"
+  mkdir -p "$(dirname "$led")"
+  if [ ! -s "$led" ]; then
+    printf '# ts\trun_id\ttask\trole\tmodel\tverdict\tcategory\tkey\ttext\tduration_s\tinjectable\n' > "$led" \
+      || return 1
+  else
+    ensure_trailing_newline "$led" || return 1
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$ts" "$run_id" "-" "person" "-" "-" "$cat" "$MEM_KEY" "$MEM_TEXT" "0" "1" "$paths" >> "$led"
+}
+
+ensure_trailing_newline() {
+  python3 - "$1" <<'PY'
+import sys
+path = sys.argv[1]
+with open(path, 'rb') as handle:
+    data = handle.read()
+if data and not data.endswith(b'\n'):
+    with open(path, 'ab') as handle:
+        handle.write(b'\n')
+PY
+}
+
+# Paths of one learning, in ledger order: each row's column 12, then that row's anchor.
+# Prints how many rows matched. The category:key is the form parse_forget_key stores.
+edit_old_paths() { # edit_old_paths <ledger> <canon> <out>
+  python3 - "$@" <<'PY'
+import re
+import sys
+ledger_path, canon, out_path = sys.argv[1:4]
+cat, _, key = canon.partition(':')
+anchor = re.compile(r'\[([^\[\]]+)\]\s*$')
+found = 0
+paths = []
+with open(ledger_path, 'rb') as handle:
+    data = handle.read()
+for line in data.splitlines():
+    if line.startswith(b'#') or line.count(b'\t') < 8:
+        continue
+    cols = line.split(b'\t')
+    if len(cols) < 9:
+        continue
+    if cols[6].decode('utf-8', 'surrogateescape') != cat:
+        continue
+    if cols[7].decode('utf-8', 'surrogateescape') != key:
+        continue
+    found += 1
+    if len(cols) >= 12 and cols[11]:
+        for part in cols[11].decode('utf-8', 'surrogateescape').split(','):
+            if part:
+                paths.append(part)
+    text = cols[8].decode('utf-8', 'surrogateescape')
+    match = anchor.search(text)
+    if match:
+        paths.append(match.group(1))
+with open(out_path, 'wb') as handle:
+    for path in paths:
+        handle.write(path.encode('utf-8', 'surrogateescape') + b'\n')
+sys.stdout.write('%d\n' % found)
+PY
+}
+
+# `- ` lines gained and lost between two rebuilds. forget_removed is the multiset
+# difference in the first file's order; swapping the files is the lines that were added.
+memory_line_changes() { # memory_line_changes <before> <after> <added-out> <removed-out>
+  forget_removed "$1" "$2" "$4" || return 1
+  forget_removed "$2" "$1" "$3" || return 1
+}
+
+memory_change_report() { # memory_change_report <json 0|1> <added|edited> <category:key> <added> <removed>
+  if [ "$1" = 1 ]; then
+    python3 - "$3" "$4" "$5" <<'PY'
+import json
+import sys
+key, added_path, removed_path = sys.argv[1:4]
+
+def load(path):
+    try:
+        lines = open(path, encoding='utf-8').read().splitlines()
+    except FileNotFoundError:
+        return []
+    return [line for line in lines if line]
+
+json.dump({"ok": True, "key": key, "memory_lines_added": load(added_path),
+           "memory_lines_removed": load(removed_path)}, sys.stdout)
+sys.stdout.write('\n')
+PY
+  else
+    printf '%s %s\n' "$2" "$3"
+  fi
+}
+
+do_add() { # do_add <repo> --category C --text TEXT [--path P]... [--actor ui|cli] [--json]
+  local repo="" cat="" text="" actor="cli" as_json=0 have_text=0 scratch="" led mem status=0 p
+  local -a paths=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -h|--help) memory_usage; exit 0 ;;
+      --json) as_json=1; shift ;;
+      --category)
+        [ $# -ge 2 ] || die "add: --category needs verify, trap or finding"
+        cat="$2"; shift 2
+        case "$cat" in
+          verify|trap|finding) ;;
+          *) die "add: --category must be verify, trap or finding" ;;
+        esac
+        ;;
+      --text)
+        [ $# -ge 2 ] || die "add: --text needs a value"
+        text="$2"; have_text=1; shift 2
+        ;;
+      --path)
+        [ $# -ge 2 ] || die "add: --path needs a value"
+        paths+=("$2"); shift 2
+        ;;
+      --actor)
+        [ $# -ge 2 ] || die "add: --actor needs ui or cli"
+        actor="$2"; shift 2
+        case "$actor" in
+          ui|cli) ;;
+          *) die "add: --actor must be ui or cli" ;;
+        esac
+        ;;
+      --) shift; break ;;
+      -*) die "add: unknown option '$1'" ;;
+      *)
+        [ -z "$repo" ] || die "add: unexpected argument '$1'"
+        repo="$1"; shift
+        ;;
+    esac
+  done
+  while [ $# -gt 0 ]; do
+    [ -z "$repo" ] || die "add: unexpected argument '$1'"
+    repo="$1"; shift
+  done
+  [ -n "$repo" ] && [ -n "$cat" ] && [ "$have_text" = 1 ] \
+    || die "add: usage: add <repo> --category verify|trap|finding --text TEXT [--path P]... [--actor ui|cli] [--json]"
+  [ -d "$repo" ] || die "add: '$repo' is not a directory"
+  [ "${#paths[@]}" -le 20 ] || die "add: at most 20 paths"
+  if [ "${#paths[@]}" -gt 0 ]; then
+    for p in "${paths[@]}"; do check_memory_path add "$p"; done
+    collect_paths "${paths[@]}" || die "add: at most 20 paths"
+  else
+    MEM_PATHS=""
+    MEM_FIRST=""
+  fi
+  # Text, paths and the key are settled before any file in the repo is created.
+  prepare_memory_text add "$text" "$MEM_FIRST"
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/forge-memory-add.XXXXXX")" || die "add: no scratch dir"
+  led="$(ledger_for "$repo")"
+  mem="$(memory_for "$repo")"
+  if [ -f "$led" ]; then
+    rebuild "$repo" "$scratch/before.md" "$led" >/dev/null \
+      || forget_fail "$scratch" "add: could not preview memory"
+  fi
+  mkdir -p "$(dir_for "$repo")"
+  write_person_row "$led" "$cat" "$MEM_PATHS" \
+    || forget_fail "$scratch" "add: could not write the ledger"
+  rebuild "$repo" >/dev/null || forget_fail "$scratch" "add: could not rebuild memory"
+  memory_line_changes "$scratch/before.md" "$mem" "$scratch/added" "$scratch/removed" \
+    || forget_fail "$scratch" "add: could not compare memory"
+  memory_dataset_event memory_add "$repo" "" --set "key=$cat:$MEM_KEY" --set "actor=$actor"
+  memory_change_report "$as_json" added "$cat:$MEM_KEY" "$scratch/added" "$scratch/removed" || status=$?
+  rm -rf "$scratch"
+  return "$status"
+}
+
+do_edit() { # do_edit <repo> <category:key> --text TEXT [--path P]... [--actor ui|cli] [--json]
+  local repo="" rawkey="" text="" actor="cli" as_json=0 have_text=0
+  local scratch="" led mem status=0 p count cat total tmp
+  local -a paths=() union=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -h|--help) memory_usage; exit 0 ;;
+      --json) as_json=1; shift ;;
+      --text)
+        [ $# -ge 2 ] || die "edit: --text needs a value"
+        text="$2"; have_text=1; shift 2
+        ;;
+      --path)
+        [ $# -ge 2 ] || die "edit: --path needs a value"
+        paths+=("$2"); shift 2
+        ;;
+      --actor)
+        [ $# -ge 2 ] || die "edit: --actor needs ui or cli"
+        actor="$2"; shift 2
+        case "$actor" in
+          ui|cli) ;;
+          *) die "edit: --actor must be ui or cli" ;;
+        esac
+        ;;
+      --) shift; break ;;
+      -*) die "edit: unknown option '$1'" ;;
+      *)
+        if [ -z "$repo" ]; then repo="$1"
+        elif [ -z "$rawkey" ]; then rawkey="$1"
+        else die "edit: unexpected argument '$1'"
+        fi
+        shift
+        ;;
+    esac
+  done
+  while [ $# -gt 0 ]; do
+    if [ -z "$repo" ]; then repo="$1"
+    elif [ -z "$rawkey" ]; then rawkey="$1"
+    else die "edit: unexpected argument '$1'"
+    fi
+    shift
+  done
+  [ -n "$repo" ] && [ -n "$rawkey" ] && [ "$have_text" = 1 ] \
+    || die "edit: usage: edit <repo> <category:key> --text TEXT [--path P]... [--actor ui|cli] [--json]"
+  [ -d "$repo" ] || die "edit: '$repo' is not a directory"
+  [ "${#paths[@]}" -le 20 ] || die "edit: at most 20 paths"
+  if [ "${#paths[@]}" -gt 0 ]; then
+    for p in "${paths[@]}"; do check_memory_path edit "$p"; done
+  fi
+  # Same parser forget uses, so Trap:Foo_Bar is the ledger's trap:foo bar.
+  parse_forget_key "$rawkey" edit
+  refuse_memory_text edit "$text"
+  led="$(ledger_for "$repo")"
+  [ -f "$led" ] || die "edit: no ledger row for '$FORGET_CANON'"
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/forge-memory-edit.XXXXXX")" || die "edit: no scratch dir"
+  count="$(edit_old_paths "$led" "$FORGET_CANON" "$scratch/oldpaths")" \
+    || forget_fail "$scratch" "edit: could not read '$led'"
+  case "$count" in
+    ''|*[!0-9]*) forget_fail "$scratch" "edit: could not read '$led'" ;;
+    0) forget_fail "$scratch" "edit: no ledger row for '$FORGET_CANON'" ;;
+  esac
+  if [ -s "$scratch/oldpaths" ]; then
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      union+=("$p")
+    done < "$scratch/oldpaths"
+  fi
+  if [ "${#paths[@]}" -gt 0 ]; then
+    for p in "${paths[@]}"; do union+=("$p"); done
+  fi
+  # Old paths that cannot be an anchor were dropped inside collect_paths. What remains,
+  # including every new --path, is still at most 20. Past that, write nothing.
+  if [ "${#union[@]}" -gt 0 ]; then
+    collect_paths "${union[@]}" || forget_fail "$scratch" "edit: at most 20 paths"
+  else
+    MEM_PATHS=""
+    MEM_FIRST=""
+  fi
+  prepare_memory_text edit "$text" "$MEM_FIRST"
+  # The category is the one in the key. edit has no way to file the text elsewhere.
+  cat="${FORGET_CANON%%:*}"
+  mem="$(memory_for "$repo")"
+  rebuild "$repo" "$scratch/before.md" "$led" >/dev/null \
+    || forget_fail "$scratch" "edit: could not preview memory"
+  printf '%s\n' "$FORGET_CANON" > "$scratch/keys"
+  total="$(forget_filter "$led" "$scratch/keys" "$scratch/ledger.new" "$scratch/counts")" \
+    || forget_fail "$scratch" "edit: could not read '$led'"
+  case "$total" in
+    ''|*[!0-9]*) forget_fail "$scratch" "edit: could not read '$led'" ;;
+    0) forget_fail "$scratch" "edit: no ledger row for '$FORGET_CANON'" ;;
+  esac
+  # One rewrite of the ledger, then one rebuild of memory.md. The preview above
+  # writes only the scratch copy used to name the lines that changed.
+  ensure_trailing_newline "$scratch/ledger.new" \
+    || forget_fail "$scratch" "edit: could not write the ledger"
+  write_person_row "$scratch/ledger.new" "$cat" "$MEM_PATHS" \
+    || forget_fail "$scratch" "edit: could not write the ledger"
+  tmp="$(mktemp "$(dir_for "$repo")/ledger.tsv.tmp.XXXXXX")" \
+    || forget_fail "$scratch" "edit: could not write the ledger"
+  { cp -p "$led" "$tmp" && cat "$scratch/ledger.new" > "$tmp"; } \
+    || { rm -f "$tmp"; forget_fail "$scratch" "edit: could not write the ledger"; }
+  mv -f "$tmp" "$led" \
+    || { rm -f "$tmp"; forget_fail "$scratch" "edit: could not replace the ledger"; }
+  rebuild "$repo" >/dev/null || forget_fail "$scratch" "edit: could not rebuild memory"
+  memory_line_changes "$scratch/before.md" "$mem" "$scratch/added" "$scratch/removed" \
+    || forget_fail "$scratch" "edit: could not compare memory"
+  memory_dataset_event memory_edit "$repo" "" --set "key=$cat:$MEM_KEY" --set "actor=$actor"
+  memory_change_report "$as_json" edited "$cat:$MEM_KEY" "$scratch/added" "$scratch/removed" || status=$?
+  rm -rf "$scratch"
+  return "$status"
+}
+
 # --- main ---------------------------------------------------------------------
 memory_usage() {
   cat <<'USAGE'
@@ -835,9 +1279,15 @@ usage: forge memory <command> <repo> [...]   (scripts/forge-memory.sh)
   inject <repo> <role>        the block forge prepends to a planner, dwarf or qa prompt
   forget <repo> <cat:key>...  remove those learnings from the ledger and rebuild memory.md
                               (--dry-run, --json, --actor ui|cli); a missing key is not an error
+  add <repo> --category C --text T
+                              append one learning (C is verify, trap or finding) and rebuild;
+                              a finding is kept at once (--path P, repeatable; --actor ui|cli; --json)
+  edit <repo> <cat:key> --text T
+                              replace that learning and rebuild once, keeping its paths
+                              (--path P, --actor ui|cli, --json); an unknown key is an error
 USAGE
 }
-[ $# -ge 1 ] || die "usage: forge-memory.sh <inject|note|record|show|prune|spend|learnings|forget> [repo] [...]"
+[ $# -ge 1 ] || die "usage: forge-memory.sh <inject|note|record|show|prune|spend|learnings|forget|add|edit> [repo] [...]"
 CMD="$1"; shift
 case "$CMD" in
   -h|--help|help) memory_usage; exit 0 ;;
@@ -850,5 +1300,7 @@ case "$CMD" in
   prune)  do_prune "${1:?prune needs a repo}" >/dev/null
           do_inject "${1}" dwarf ;;
   forget) do_forget "$@" ;;
+  add)    do_add "$@" ;;
+  edit)   do_edit "$@" ;;
   *) die "unknown subcommand '$CMD'" ;;
 esac
