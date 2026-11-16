@@ -13,6 +13,8 @@
   triage REPO --spec S [--timeout N] [--max-findings N] [--detach]
   triage-status REPO [N]
   proposals REPO [N]
+  apply REPO N PID --approve HASH [--plan-dir DIR]
+  reject REPO N PID [--reason TEXT]
 
 REPO is a checkout, a linked worktree, or a plan or solo run dir. FP is the
 12-hex fingerprint `show` prints. `--actor` is cli (the default), ui or triage.
@@ -33,13 +35,12 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import forge_identity  # noqa: E402
-from forge_findings import status, store, tags, triage  # noqa: E402
+from forge_findings import apply as approval, status, store, tags, triage  # noqa: E402
 
 ACTORS = ("cli", "ui", "triage")
 FP_RE = re.compile(r"[0-9a-f]{12}\Z")
 SEVERITIES = ("P0", "P1", "P2", "P3")
 
-# A later task adds apply and reject here and in build_parser.
 COMMANDS = {}
 
 
@@ -162,6 +163,18 @@ def build_parser():
     proposals = sub.add_parser("proposals", parents=[common], help="what a triage proposed (the newest by default)")
     proposals.add_argument("repo")
     proposals.add_argument("n", nargs="?", type=int, metavar="N")
+    approve = sub.add_parser("apply", parents=[common], help="approve one proposal of a triage, by its hash")
+    approve.add_argument("repo")
+    approve.add_argument("n", type=int, metavar="N", help="the triage number")
+    approve.add_argument("pid", metavar="PID", help="the proposal id, e.g. p3")
+    approve.add_argument("--approve", required=True, metavar="HASH", help="the hash `proposals` shows for it")
+    approve.add_argument("--plan-dir", metavar="DIR", help="for a plan proposal: where to write the plan dir")
+
+    refuse = sub.add_parser("reject", parents=[common], help="reject one proposal of a triage")
+    refuse.add_argument("repo")
+    refuse.add_argument("n", type=int, metavar="N", help="the triage number")
+    refuse.add_argument("pid", metavar="PID", help="the proposal id, e.g. p3")
+    refuse.add_argument("--reason", help="why, at most 500 characters")
     # The usage line and the error text list the choices; leave the internal one out of them.
     sub.metavar = "{" + ",".join(name for name in sub.choices if not name.startswith("_")) + "}"
     return parser
@@ -559,6 +572,42 @@ def cmd_proposals(args):
         for item in data["proposals"]:
             print(_proposal_line(item))
     return 0
+
+
+def _approval_call(fn):
+    try:
+        return fn()
+    except approval.Refused as exc:
+        raise Refused(str(exc)) from exc
+    except approval.Failed as exc:
+        raise Failed(str(exc)) from exc
+
+
+def _decision(args, result, verb):
+    if args.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
+    print(f"{verb} {result['proposal'].get('id')}: {len(result['changed'])} changed")
+    if result.get("plan_dir"):
+        print(f"plan dir: {result['plan_dir']}")
+        print(f"next: {result['next']}")
+    return 0
+
+
+@command("apply")
+def cmd_apply(args):
+    ident = require_ident(args.repo)
+    result = _approval_call(lambda: approval.apply(
+        ident, args.n, args.pid, args.approve, lambda: collect(args.repo, ident)[1],
+        actor=args.actor, plan_dir=args.plan_dir))
+    return _decision(args, result, "applied")
+
+
+@command("reject")
+def cmd_reject(args):
+    ident = require_ident(args.repo)
+    result = _approval_call(lambda: approval.reject(ident, args.n, args.pid, actor=args.actor, reason=args.reason))
+    return _decision(args, result, "rejected")
 
 
 def report(exc, code, args):
