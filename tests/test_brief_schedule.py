@@ -184,7 +184,8 @@ class SchedulerBriefTests(unittest.TestCase):
         self.until(lambda: 'b merged' in self.events(), 'b to merge')
         time.sleep(1.2)
         if proc.poll() is not None:   # say why: seen once on a loaded macOS runner, not reproduced
-            self.fail(f'the run ended ({proc.returncode}) while the writer runs; events: {self.events()}\n'
+            self.fail(f'the run ended ({proc.returncode}) while the writer runs; events: {self.events()}; '
+                      f'writer {writer.pid} poll={writer.poll()}, brief.pid={(self.plan / "brief.pid").read_text()!r}\n'
                       + ''.join(proc.communicate()))
         self.assertFalse(any(e.startswith('a ') for e in self.events()), self.events())
         writer.kill(); writer.wait()                               # gone, and no brief.json: the wait is over
