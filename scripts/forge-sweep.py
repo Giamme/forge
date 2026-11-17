@@ -318,11 +318,14 @@ def triage(ctx: Context, found: list, severity: str, plausible: bool) -> tuple:
         if recorded not in OPEN:
             drop('recorded', status=recorded)
             continue
-        if f['key'] in ctx.attempted:
-            drop('attempted', task=ctx.attempted[f['key']])
-            continue
+        # A repeat is one finding reported again, including one an earlier round attempted.
+        # Record that drop so the next report reaches this check instead of counting as attempted again.
         if f['key'] in seen:
             drop('duplicate', of=seen[f['key']])
+            continue
+        if f['key'] in ctx.attempted:
+            drop('attempted', task=ctx.attempted[f['key']])
+            seen[f['key']] = f['task']
             continue
         path = relative(f['file'], ctx.roots)
         if path not in tip_text:
