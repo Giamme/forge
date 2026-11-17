@@ -63,6 +63,9 @@ for name in ('FORGE_JEV_ENV_CAPTURED', 'FORGE_JEV_ENV_KILL', 'FORGE_JEV_ENV_ROUT
 # outer plan's counter. A test that needs one sets it itself.
 for name in [name for name in os.environ if name.startswith('FORGE_DECIDE_')]:
     os.environ.pop(name, None)
+# CI=true (set by GitHub Actions and most CI services) turns forge's update check off, so the
+# tests of that check would pass in a shell and fail in CI. The ones about CI set it themselves.
+os.environ.pop('CI', None)
 # The decision-model request cache answers a repeated question from the run dir, so tests that
 # ask the same thing twice and count requests would see one. They start with it off;
 # test_decide_cache turns it on.
