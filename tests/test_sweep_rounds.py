@@ -156,6 +156,17 @@ class Check(RoundsBase):
         self.add_task('b', {'b.txt': 'gamma\n'}, known('- [P3][CONFIRMED] b.txt:1 — Three.'))
         self.assertEqual(self.check(0), {'eligible': 1, 'attempted': 2, 'left': 1})
 
+    def test_a_finding_reported_twice_counts_once_once_an_earlier_round_attempted_it(self):
+        self.add_task('a', {'a.txt': 'alpha\n'}, known('- [P3][CONFIRMED] a.txt:1 — One.'))
+        self.add_task('d', {'d.txt': 'delta\n'}, known('- [P3][CONFIRMED] a.txt:1 — One.'))
+        self.sweep('--severity', 'P3')
+        # both reports are the finding round 1 swept: one attempted, the repeat a duplicate
+        self.assertEqual(self.check(1), {'eligible': 0, 'attempted': 1, 'left': 1})
+        self.add_task('b', {'b.txt': 'gamma\n'}, known('- [P3][CONFIRMED] b.txt:1 — Three.'))
+        self.sweep('--severity', 'P3')
+        self.assertEqual(self.reasons(2), [('One.', 'attempted', {'task': 'sweep-1'}),
+                                           ('One.', 'duplicate', {'of': 'a'})])
+
     def test_check_is_reachable_through_the_runners_internal_command(self):
         self.add_task('a', {'a.txt': 'alpha\n'}, known('- [P3][CONFIRMED] a.txt:1 — One.'))
         result = subprocess.run(['bash', str(ROOT / 'scripts/forge-parallel.sh'), '_sweep', str(self.plan),
