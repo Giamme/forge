@@ -8,6 +8,7 @@ source: CHANGELOG.md
 
 <h2>Planned</h2>
 <dl class="terms">
+  <dt>Long-running plans</dt><dd>Plans that keep growing over days: verification runs the lanes committed on the integration branch, <code>adopt</code> remembers earlier rounds, <code>integrate</code> accepts a tree dirty only with forge's own memory, and memory written in a linked worktree is kept. <a href="https://github.com/Giamme/forge/issues/151">#151</a> <a href="https://github.com/Giamme/forge/issues/155">#155</a> <a href="https://github.com/Giamme/forge/issues/156">#156</a> <a href="https://github.com/Giamme/forge/issues/159">#159</a></dd>
   <dt>Decomposition at every level</dt><dd>Goal to plans to tasks to subtasks with the same rules throughout, native to forge. Each split is a recorded decision within depth and size limits you approve up front, and forge-ui shows the whole tree. <a href="https://github.com/Giamme/forge/issues/153">#153</a>. It replaces the optional Fractal runtime, which will be removed. <a href="https://github.com/Giamme/forge/issues/154">#154</a></dd>
   <dt>Steering a live dwarf</dt><dd>An investigation into prompting a running dwarf from forge-ui, harness by harness. <a href="https://github.com/Giamme/forge/issues/134">#134</a></dd>
 </dl>
@@ -16,6 +17,7 @@ source: CHANGELOG.md
 <table>
   <thead><tr><th>Version</th><th>Highlights</th></tr></thead>
   <tbody>
+    <tr><td><code>0.20</code></td><td>Review findings you can trust and manage: one record per repository with issue states read from GitHub, <code>forge findings</code> and the Findings tab to mark, tag and file them, an optional triage agent whose proposals you approve; the sweep works per finding; add and edit learnings.</td></tr>
     <tr><td><code>0.19</code></td><td>Group review; brief answers for a wave or the whole plan, applied as a diff you approve; a retry budget per model; scripted tasks; chained plans; <code>forge handoff</code>; early stops when a fix belongs to another task, and for prompts edited mid-attempt; forge-ui runs its own commands.</td></tr>
     <tr><td><code>0.18</code></td><td>Brief mode, task summaries, retro notes, the task inspector; <code>forge du</code>, <code>forge runs compact</code> and the Disk screen.</td></tr>
     <tr><td><code>0.17</code></td><td>Outcomes recorded after every run; finding facts, paired reviews, task risk and tier analysis, all measured in shadow.</td></tr>
