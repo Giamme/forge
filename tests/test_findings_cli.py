@@ -135,7 +135,7 @@ class FindingsCliTests(unittest.TestCase):
         self.assertEqual(len(text), 1)
         fp, status, severity, tag, place, summary = text[0].split("  ", 5)
         self.assertEqual((fp, status, severity, tag), (row["fp"], "open", "P2", "backend"))
-        self.assertTrue(place == row["file"] or place.startswith(row["file"] + ":"))
+        self.assertEqual(place, row["file"] + ":12")
         self.assertIn("widget drops events", summary)
 
     def test_fix_hides_it_from_open_and_reopen_brings_it_back(self):
@@ -176,7 +176,11 @@ class FindingsCliTests(unittest.TestCase):
             (2, ["dismiss", str(self.repo), FP]),
             (2, ["edit", str(self.repo), FP]),
             (2, ["edit", str(self.repo), FP, "--text-file", "-"]),
+            (2, ["edit", str(self.repo), FP, "--text-file", ""]),
+            (2, ["edit", str(self.repo), FP, "--severity", "P1", "--text-file", ""]),
             (2, ["to-file", str(self.repo), FP, "--body-file", "-"]),
+            (2, ["to-file", str(self.repo), FP, "--body-file", ""]),
+            (2, ["to-file", str(self.repo), FP, "--title", "Widget", "--body-file", ""]),
             (2, ["fix", str(self.repo)]),
             (3, ["fix", str(self.repo), "xyz", "--commit", SHA]),
             (3, ["fix", str(self.repo), "A" * 12, "--commit", SHA]),
@@ -326,6 +330,18 @@ class FindingsCliTests(unittest.TestCase):
         self.assertEqual(list(choices.choices), names)
         self.assertNotIn("_triage-job", [c.dest for c in choices._choices_actions])
         self.assertNotIn("_triage-job", parser.format_help())
+
+    def test_a_mistyped_command_does_not_name_the_hidden_job(self):
+        res = self.cli("nosuch")
+        self.assertEqual(res.returncode, 2, res.stderr)
+        self.assertIn("invalid choice: 'nosuch'", res.stderr)
+        self.assertNotIn("_triage-job", res.stderr)
+        self.assertIn("'triage'", res.stderr)
+        self.assertIn("'reject'", res.stderr)
+        hidden = self.cli("_triage-job")
+        self.assertEqual(hidden.returncode, 2, hidden.stderr)
+        self.assertNotIn("invalid choice", hidden.stderr)
+        self.assertIn("forge findings _triage-job", hidden.stderr)
 
     def test_launcher_help_lists_findings_and_memory_add_reaches_the_script(self):
         def forge(*args):
