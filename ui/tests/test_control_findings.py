@@ -78,6 +78,23 @@ class FindingsActionTests(ActionCase):
             raise box['error']
         self.assertEqual(box['result'][0], 200, box['result'])
 
+    def test_a_removed_root_writes_through_a_checkout_still_on_disk_and_none_is_404(self):
+        checkout = self.base / 'linked'
+        checkout.mkdir()
+        gone = str(self.base / 'gone')
+        self.screen.found[self.PID] = {
+            'id': self.PID, 'root': gone, 'name': 'repo', 'exists': False, 'live': 0, 'last': None, 'path_only': 0,
+            'runs': [{'repo_worktree': str(self.base / 'missing')}, {'repo_worktree': str(checkout)}],
+        }
+        status, _ = self.post(self.body('tag'), self.path('tag'))
+        self.assertEqual(status, 200)
+        self.assertEqual(self.last_argv()[:3], ['findings', 'tag', str(checkout)])
+        self.assertNotIn(gone, self.last_argv())
+        before = len(self.calls())
+        self.screen.found[self.PID]['runs'] = [{'repo_worktree': str(self.base / 'missing')}]
+        self.assertEqual(self.post(self.body('tag'), self.path('tag')), (404, {'error': 'no checkout'}))
+        self.assertEqual(len(self.calls()), before)
+
     def test_each_op_calls_forge_findings_for_the_project_root(self):
         root = str(self.root)
         actor = ['--actor', 'ui', '--json']

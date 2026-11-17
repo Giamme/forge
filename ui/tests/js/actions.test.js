@@ -895,7 +895,8 @@ test.describe('findings actions on the page', { concurrency: 1 }, () => {
     click(labelled(h, 'Select finding ' + FB));
     click(button(h, 'File selected'));
     await until(() => walk(document.body).some(n => n.tagName === 'DIALOG'));
-    assert.ok(state.gets.includes('/api/runs/r1key/issues?scope=repo&offline=0&plausible=1&only=ia,ic'), state.gets.join('\n'));
+    // the record fingerprints (with the repository slug), which forge issues --only matches; never the slug-less fp
+    assert.ok(state.gets.includes(`/api/runs/r1key/issues?scope=repo&offline=0&plausible=1&only=${FA},${FC}`), state.gets.join('\n'));
     assert.equal(state.posts.length, 0);
     const dlg = walk(document.body).find(n => n.tagName === 'DIALOG');
     assert.match(dlg.textContent, /creates 1 issue/);
@@ -903,7 +904,7 @@ test.describe('findings actions on the page', { concurrency: 1 }, () => {
     state.postReply = () => ({ ok: true, status: 200, data: { created: [{ title: 'First bug', url: 'https://github.com/o/r/issues/7' }], notes: [] } });
     click(button(dlg, 'File on GitHub'));
     await until(() => dlg.textContent.includes('1 created'));
-    assert.deepEqual(state.posts, [{ path: '/api/runs/r1key/issues', body: { scope: 'repo', fingerprints: ['ia', 'ic'], include_plausible: true, labels: [] } }]);
+    assert.deepEqual(state.posts, [{ path: '/api/runs/r1key/issues', body: { scope: 'repo', fingerprints: [FA, FC], include_plausible: true, labels: [] } }]);
     assert.ok(state.gets.includes('/api/projects/proj1/findings?refresh=1'));
     click(button(dlg, 'Close'));
     assert.equal(walk(document.body).some(n => n.tagName === 'DIALOG'), false);

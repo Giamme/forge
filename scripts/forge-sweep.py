@@ -667,18 +667,15 @@ def report_round(plan: Path, record: dict, path: Path, number: 'int | None') -> 
 def cmd_report(args) -> int:
     plan = Path(args.plan).resolve()
     paths = round_paths(plan)
-    if not paths:
-        return 0
     records = {n: round_record(path) for n, path in sorted(paths.items())}
     records = {n: record for n, record in records.items() if record is not None}
-    if not records:
-        return 0
     for number, record in records.items():
         report_round(plan, record, paths[number], number if len(records) > 1 else None)
-    last = records[max(records)]
+    # Printed after the last round, or alone when round 1's check found nothing (no round was planned).
+    last_at = float(records[max(records)].get('at') or 0) if records else 0.0
     try:
         nothing = json.loads(read(plan / 'sweep' / 'nothing.json'))
-        if float(nothing['at']) > float(last.get('at') or 0):
+        if float(nothing['at']) > last_at:
             print('sweep: nothing new to sweep (%d finding(s) already swept or attempted, %d left for forge issues)\n'
                   % (int(nothing.get('attempted') or 0), int(nothing.get('left') or 0)))
     except (ValueError, KeyError, TypeError, OSError):

@@ -282,6 +282,9 @@ class Scheduler(RoundsBase):
         nothing = json.loads((self.plan / 'sweep/nothing.json').read_text())
         self.assertEqual((nothing['attempted'], nothing['left']), (0, 0))
         self.assertGreater(nothing['at'], 0)
+        # with no round at all, the summary still says why nothing was swept
+        self.assertIn('sweep: nothing new to sweep (0 finding(s) already swept or attempted, 0 left for forge issues)',
+                      self.report())
 
     def test_a_round_lost_before_its_tasks_were_queued_does_not_block_the_next(self):
         # plan.json and sweep.json landed; the tasks.tsv append did not. No status file either.

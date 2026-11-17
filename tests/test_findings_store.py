@@ -234,7 +234,7 @@ class UpdateTests(StoreCase):
     def test_tags_add_remove_and_dedupe(self):
         store.add_tags(self.ident, [FP, FP2], ['ui', 'perf', 'ui'], 'ui')
         self.assertEqual(store.get(self.ident, FP)['tags'], ['ui', 'perf'])
-        self.assertEqual(store.get(self.ident, FP2)['status'], 'open')
+        self.assertNotIn('status', store.get(self.ident, FP2), 'tags alone record no status')
         store.add_tags(self.ident, [FP], ['ui', 'docs'], 'ui')
         self.assertEqual(store.get(self.ident, FP)['tags'], ['ui', 'perf', 'docs'])
         store.remove_tags(self.ident, [FP], ['ui', 'absent'], 'cli')
@@ -242,6 +242,24 @@ class UpdateTests(StoreCase):
         store.remove_tags(self.ident, [FP], ['perf', 'docs'], 'cli')
         self.assertNotIn('tags', store.get(self.ident, FP))
         self.assertEqual(self.log_lines()[0]['op'], 'tags')
+
+    def test_tagging_noting_or_editing_a_swept_finding_keeps_it_swept(self):
+        from forge_findings import status
+        swept = {'swept': {'task': 'sweep-1', 'finding': 'S1'}}
+        store.add_tags(self.ident, [FP], ['ui'], 'ui')
+        store.set_note(self.ident, FP2, 'looked at it', 'cli')
+        store.set_edit(self.ident, FP3, 'cli', severity='P2')
+        for fp in (FP, FP2, FP3):
+            self.assertEqual(status.effective(store.get(self.ident, fp), swept, None), 'swept', fp)
+        self.assertEqual(status.effective(store.get(self.ident, FP), None, None), 'open')
+        store.set_status(self.ident, [FP], 'open', 'cli')       # an explicit reopen still hides swept
+        self.assertEqual(status.effective(store.get(self.ident, FP), swept, None), 'open')
+        self.assertEqual(store.get(self.ident, FP)['tags'], ['ui'])
+
+    def test_a_reason_without_a_status_is_refused(self):
+        with self.assertRaises(store.Invalid):
+            store.update(self.ident, [FP], 'cli', reason='why')
+        self.assertEqual(self.files(), [])
 
     def test_eight_tags_are_the_limit(self):
         store.add_tags(self.ident, [FP], [f't{i}' for i in range(8)], 'cli')

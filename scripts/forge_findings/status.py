@@ -17,7 +17,7 @@ def effective(record_entry, issues_entry, review_row) -> str:
     3. The review row (forge-ui only, may be None): a shadow review, an unlabelled one, a superseded one.
     4. open.
 
-    An entry that holds only tags or a note is stored `open`, so it counts as reopened.
+    An entry that holds only tags, a note, an edit or a draft has no status: it says nothing about the state.
     """
     recorded = record_entry.get("status") if isinstance(record_entry, dict) else None
     if recorded in _RECORD_WINS:

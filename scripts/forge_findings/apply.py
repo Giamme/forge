@@ -7,8 +7,9 @@ who asked is kept in the proposal's `decided`. A `plan` proposal becomes a plan 
 `forge-planner.py parse` has accepted; nothing is dispatched and GitHub is never contacted.
 
 The whole of one apply (checks, effect, bookkeeping) runs under a lock file in the triage dir, so two
-approvals of one proposal cannot both apply. Any failure leaves the proposal `pending` and the finding
-record as it was.
+approvals of one proposal cannot both apply. Any failure leaves the proposal `pending`. The record
+change and the `proposals.json` write happen under one store lock, and the record is put back when that
+write fails; a failure before the record changes (a refusal, a planner error) leaves it untouched.
 """
 from __future__ import annotations
 

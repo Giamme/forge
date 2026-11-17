@@ -600,7 +600,7 @@
           results.replaceChildren(el('p', `${made.filter(l => l.kind === 'created').length} created`, 'fnd-done'), ul);
           for (const n of FF.emptyNotes(res.data.created, res.data.notes)) results.append(el('p', n, 'muted fnd-result-note'));
           go.remove(); cancel.textContent = 'Close'; cancel.disabled = false;
-          for (const r of list(s.findings && s.findings.rows)) if (fps.includes(r.fp)) s.fsel.delete(r.record_fp);
+          for (const r of list(s.findings && s.findings.rows)) if (fps.includes(r.record_fp)) s.fsel.delete(r.record_fp);
           if (s.tab === 'findings') loadTab(true);
         });
         const actions = el('div', undefined, 'fnd-dialog-actions'); actions.append(cancel, go);

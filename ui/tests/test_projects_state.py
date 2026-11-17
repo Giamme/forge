@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -121,6 +122,24 @@ class OnlineStateTests(StateCase):
         self.assertTrue(any(path == os.path.realpath(self.plan) for path, _ in calls))
         self.assertFalse(found['issues_online'])        # the root's online call failed: the runs are asked offline
         self.assertIn('issue states could not be read from GitHub: filed findings may show as open', found['notes'])
+
+    def test_a_slow_github_answer_does_not_hold_up_the_other_screens(self):
+        screen, asked, release = P.Screen(), threading.Event(), threading.Event()
+
+        def issues(path, online=True):
+            asked.set()
+            release.wait(10)
+            return dict(repo='acme/app', findings=[])
+        tab = threading.Thread(target=lambda: self.screen_findings(issues=issues, screen=screen))
+        tab.start()
+        try:
+            self.assertTrue(asked.wait(10))
+            free = screen.lock.acquire(timeout=2)          # the project list, Memories and writes need this lock
+            self.assertTrue(free, 'the screen lock is held while forge issues asks GitHub')
+            screen.lock.release()
+        finally:
+            release.set()
+            tab.join(10)
 
     def test_nothing_read_at_all_keeps_the_old_note(self):
         found = self.screen_findings()

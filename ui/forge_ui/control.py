@@ -1629,10 +1629,11 @@ def _findings_action(ctx):
         fps, tokens, file = _findings_request(op, body)
     except BadBody as exc:
         return _invalid(str(exc))
-    project = projects.screen(ctx.server).projects(ctx.server.catalog).get(ctx.key)
-    root = project.get('root') if isinstance(project, dict) else None
-    if not isinstance(root, str) or not root:
-        return 404, {'error': 'not found'}
+    # the identity root when it exists, else a checkout still on disk (as the triage routes): a project whose main
+    # checkout was removed keeps a linked worktree the CLI can resolve the repository from
+    root = _triage_repo(ctx)
+    if not isinstance(root, str):
+        return root
     lock = _server_lock(ctx.server, 'findings_lock')
     if not lock.acquire(blocking=False):
         return 409, {'error': 'busy'}

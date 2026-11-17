@@ -186,7 +186,8 @@ def _shape_problem(entry):
     """Why a stored entry is not well formed (types, vocabularies and limits), None when it is."""
     if not isinstance(entry, dict):
         return "not an object"
-    if entry.get("status") not in STATUSES:
+    # no status = nothing recorded about its state (only tags, a note, an edit or a draft)
+    if "status" in entry and entry["status"] not in STATUSES:
         return "unknown status"
     if not _is_num(entry.get("at")):
         return "no time"
@@ -405,7 +406,9 @@ def _check_changes(actor, changes: dict) -> None:
 
 def _apply(fp: str, before, actor: str, now: float, changes: dict) -> dict:
     """The entry `before` becomes under `changes`. Raises Invalid; touches nothing."""
-    entry = dict(before) if before else {"status": "open"}
+    # A finding with no entry that only gets tags, a note, an edit or a draft records no status: a stored
+    # `open` means "reopened" to status.effective, which would hide what forge issues knows (swept, filed).
+    entry = dict(before) if before else {}
     if "status" in changes:
         # a new status starts its own fields: the old issue or commit does not follow a reopen or a dismissal
         for field in _STATUS_FIELDS:
@@ -452,7 +455,9 @@ def _apply(fp: str, before, actor: str, now: float, changes: dict) -> dict:
 
 
 def _require(fp: str, entry: dict) -> None:
-    status = entry["status"]
+    status = entry.get("status")
+    if status is None:
+        raise Invalid(f"{fp}: a reason, commit, issue or duplicate needs a status")
     if status == "filed" and not entry.get("issue"):
         raise Invalid(f"{fp}: filed needs the issue URL")
     if status == "fixed" and not (entry.get("commit") or entry.get("reason")):
@@ -521,9 +526,8 @@ def update(ident, fps, actor, locked=False, **changes):
             after = _apply(fp, before, actor, now, changes)
             if before is not None and _comparable(before) == _comparable(after):
                 continue
-            if before is None and "status" not in changes and set(after) == {"status"}:
-                # a change that adds nothing (clearing an absent note or tag) must not create a bare `open` entry:
-                # that entry would read as a reopen and hide the finding's swept or filed state
+            if before is None and "status" not in changes and not after:
+                # a change that adds nothing (clearing an absent note or tag) creates no entry at all
                 continue
             after["at"] = now
             after["actor"] = actor

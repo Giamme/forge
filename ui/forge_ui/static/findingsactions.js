@@ -55,17 +55,19 @@
       dup: one, note: one, edit: one, file: fileableFps(rows).length > 0 && fileRun(rows) !== null };
   }
   // The fingerprints "File selected" hands to forge issues: rows `forge issues` can file, still open, at most 25.
+  // `record_fp`, not `fp`: `fp` is the slug-less key rows collapse by, while `forge issues --only` matches the
+  // full fingerprint (with the repository slug), which is what `record_fp` holds.
   function fileableFps(rows) {
     const out = [];
     for (const r of list(rows)) {
       if (out.length >= MAX_FILE) break;
-      if (r && r.fileable && isOpen(r) && typeof r.fp === 'string' && r.fp && !out.includes(r.fp)) out.push(r.fp);
+      if (r && r.fileable && isOpen(r) && selectable(r) && !out.includes(r.record_fp)) out.push(r.record_fp);
     }
     return out;
   }
   // The run `forge issues` reads for the filing: the first fileable selected row's.
   function fileRun(rows) {
-    const row = list(rows).find(r => r && r.fileable && isOpen(r) && r.fp && r.run);
+    const row = list(rows).find(r => r && r.fileable && isOpen(r) && selectable(r) && r.run);
     return row ? row.run : null;
   }
 

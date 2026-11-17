@@ -150,12 +150,12 @@ test('tags: the ones present, the filter, and which are only derived', () => {
   assert.equal(A.derivedTags(rows[1]), true);
 });
 
-test('fileableFps takes open fileable rows, at most 25, once each', () => {
-  const rows = Array.from({ length: 30 }, (_, i) => row('r' + i, { fp: 'fp' + i }));
+test('fileableFps hands forge issues the record fingerprints of open fileable rows, at most 25, once each', () => {
+  const rows = Array.from({ length: 30 }, (_, i) => row('r' + i));
   assert.equal(A.fileableFps(rows).length, 25);
-  assert.deepEqual(A.fileableFps(rows).slice(0, 2), ['fp0', 'fp1']);
-  const mixed = [row('a', { fp: 'f1', fileable: false }), row('b', { fp: 'f2', status: 'filed' }), row('c', { fp: 'f3', status: 'to-file' }), row('d', { fp: 'f3' }), row('e', { fp: null })];
-  assert.deepEqual(A.fileableFps(mixed), ['f3']);
+  assert.deepEqual(A.fileableFps(rows).slice(0, 2), ['r0', 'r1'], 'record_fp (with the slug), never the slug-less fp');
+  const mixed = [row('a', { fileable: false }), row('b', { status: 'filed' }), row('c', { status: 'to-file' }), row('c'), row('e', { record_fp: null })];
+  assert.deepEqual(A.fileableFps(mixed), ['c']);
   assert.equal(A.fileRun(mixed), 'run1');
   assert.equal(A.fileRun([row('a', { fileable: false })]), null);
   assert.equal(A.allowed([row('a', { run: null })]).file, false, 'no run to read: File selected stays disabled');

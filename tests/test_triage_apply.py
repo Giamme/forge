@@ -253,7 +253,7 @@ class PlanTests(ApplyBase):
         self.assertEqual(self.entry(self.fp1)["note"], f"in plan {target}")
         self.assertEqual(self.entry(self.fp2)["note"], "kept note")
         self.assertEqual(out["changed"], [self.fp1])
-        self.assertEqual(self.entry(self.fp1)["status"], "open")
+        self.assertNotIn("status", self.entry(self.fp1), "a plan note records no status: a swept finding stays swept")
 
     def test_a_given_plan_dir_is_used_and_an_existing_one_is_refused(self):
         self.make([self.plan_proposal(), self.plan_proposal()])

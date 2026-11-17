@@ -460,6 +460,18 @@ class Screen:
     def _cli(self, key, call, refresh, now):
         return self._cli_at(key, call, refresh, now)[0]
 
+    def _cli_unlocked_at(self, key, call, refresh, now):
+        """`_cli_at` for a caller that does not hold the lock: the cache is read and written under it, the call runs
+        outside it, so a slow answer (GitHub, up to ONLINE_S) never holds up the other screens."""
+        with self.lock:
+            hit = self.cli.get(key)
+            if not refresh and hit is not None and now - hit[0] < CACHE_S:
+                return hit[1], hit[0]
+        value = call()
+        with self.lock:
+            self.cli[key] = (now, value)
+        return value, now
+
     def occurrences(self, run):
         hit = self.runs.get(run['path'])
         if hit is not None and hit[0] == run['updated']:
@@ -548,7 +560,8 @@ class Screen:
     def _read_issues(self, p, issues, refresh, now):
         """(listing, online, read_at) of `forge issues` for the project: asked once of the repository's root, online
         first (it knows which issues are closed), offline when that fails or takes over ONLINE_S. Only a root
-        that is no checkout, or that gave nothing, sends it through the project's runs (at most three)."""
+        that is no checkout, or that gave nothing, sends it through the project's runs (at most three).
+        Called without the lock."""
         paths = []
         if p['exists']:
             paths.append(p['root'])
@@ -557,17 +570,26 @@ class Screen:
         online_failed = False
         for path in paths:
             if not online_failed:
-                listing, at = self._cli_at(('issues', path, True), lambda: _issues_call(issues, path, True), refresh, now)
+                listing, at = self._cli_unlocked_at(('issues', path, True), lambda: _issues_call(issues, path, True),
+                                                    refresh, now)
                 if listing is not None:
                     return listing, True, at
                 online_failed = True
-            listing, at = self._cli_at(('issues', path, False), lambda: _issues_call(issues, path, False), refresh, now)
+            listing, at = self._cli_unlocked_at(('issues', path, False), lambda: _issues_call(issues, path, False),
+                                                refresh, now)
             if listing is not None:
                 return listing, False, at
         return None, False, None
 
     def findings(self, catalog, pid, history, issues, refresh=False, now=None):
         now = time.time() if now is None else now
+        with self.lock:
+            p = self.projects(catalog).get(pid)
+        if p is None:
+            return None
+        # `forge issues` asks GitHub (up to ONLINE_S): never under the lock the project list, the Memories tab and
+        # every write's invalidation wait on
+        listing, online, read_at = self._read_issues(p, issues, refresh, now)
         with self.lock:
             projects = self.projects(catalog)
             p = projects.get(pid)
@@ -582,7 +604,6 @@ class Screen:
             gone = self._dataset_runs(p, hist, projects) if hist else set()
             if hist:
                 occ += _dataset_occurrences(hist, gone)
-            listing, online, read_at = self._read_issues(p, issues, refresh, now)
             index = issue_index(listing)
             paths = {run['key']: run['path'] for run in p['runs']}
             rows = collapse(occ)
