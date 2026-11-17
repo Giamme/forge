@@ -214,7 +214,7 @@ class SubmodulesCase(unittest.TestCase):
         os.chmod(src / 'ro', 0o555)
         dest.mkdir()
         module.copy_tree(str(src), str(dest))
-        self.assertEqual(os.listdir(dest / 'ro'), ['deeper', 'readable.txt'])
+        self.assertEqual(sorted(os.listdir(dest / 'ro')), ['deeper', 'readable.txt'])  # listdir order is the filesystem's
         module.clear(str(dest))
         self.assertEqual(os.listdir(dest), [])
 
