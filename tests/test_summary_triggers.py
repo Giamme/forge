@@ -30,6 +30,7 @@ case "$cmd" in
     outcome="$(head -1 "$plan/outcomes/$name")"
     tail -n +2 "$plan/outcomes/$name" > "$plan/outcomes/$name.rest"; mv "$plan/outcomes/$name.rest" "$plan/outcomes/$name"
     echo "$n" >> "$t/attempts.tsv"           # the attempt ends
+    [ -e "$plan/fast/$name" ] || sleep 0.4   # two files: without a pause the loop may or may not see them apart
     echo "$outcome" > "$t/status"
     ;;
   _merge)
@@ -122,11 +123,11 @@ class SummaryTriggerTests(unittest.TestCase):
         result = self.run_scheduler('--retry-failed', 1)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.settle()
-        # attempt 1: RUNNING, the dwarf's reply, its review; it ends FAIL and is requeued in the same pass (one
-        # change: the retry); attempt 2: RUNNING, reply, review; MERGED when the pass merges it. Eight changes, eight
-        # triggers: the hundreds of loops between them start nothing. (What the stub saw of the status
-        # is only the moment it ran, so only the count is asserted.)
-        self.assertEqual(len(self.calls('a')), 8, self.calls('a'))
+        # attempt 1: RUNNING, the dwarf's reply, its review, the attempt's line; it ends FAIL and is requeued in
+        # the same pass (one change: the retry); attempt 2: RUNNING, reply, review, attempt line; MERGED when the
+        # pass merges it. Ten changes, ten triggers: the hundreds of loops between them start nothing. (What the
+        # stub saw of the status is only the moment it ran, so only the count is asserted.)
+        self.assertEqual(len(self.calls('a')), 10, self.calls('a'))
 
     def test_a_task_override_off_silences_that_task_only(self):
         self.on(); self.task('a', ['PASS']); self.task('b', ['PASS'])
@@ -135,7 +136,7 @@ class SummaryTriggerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.settle()
         self.assertEqual(self.calls('b'), [])
-        self.assertEqual(len(self.calls('a')), 4, self.calls('a'))   # RUNNING, the reply, its review, MERGED
+        self.assertEqual(len(self.calls('a')), 5, self.calls('a'))   # RUNNING, the reply, its review, the attempt's line, MERGED
 
     def test_a_task_override_on_summarizes_that_task_under_an_off_plan(self):
         (self.plan / 'summaries').write_text('off\n')
