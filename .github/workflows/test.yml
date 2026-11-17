@@ -1,6 +1,10 @@
 # Runs the offline test suite (tests/check.sh) on every pull request and every push to main.
 # No secrets and read-only permissions, so it is safe on pull requests from forks. The suite
 # never calls a real model: it runs against fake agent CLIs (see tests/README.md).
+#
+# The whole suite takes about 40 minutes on a 4-core runner, so each OS and Python pair splits
+# it into 4 shards (tests/run_tests.py --shard). The "Tests passed" job at the end is the one
+# check to require for merging: it fails when any shard did.
 name: Tests
 
 on:
@@ -18,18 +22,23 @@ concurrency:
 
 jobs:
   check:
-    name: ${{ matrix.os }} · Python ${{ matrix.python }}
+    name: ${{ matrix.os }} · Python ${{ matrix.python }} · ${{ matrix.shard }}/4
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        # 3.9 is the documented minimum; 3.x is the latest stable release.
+        # 3.9 is the documented minimum; 3.x is the latest stable release. setup-python has no
+        # 3.9 build for Ubuntu 26.04 (ubuntu-latest), so the Linux 3.9 jobs run on 24.04.
+        os: [ubuntu-24.04, ubuntu-latest, macos-latest]
         python: ["3.9", "3.x"]
+        shard: [1, 2, 3, 4]
+        exclude:
+          - { os: ubuntu-24.04, python: "3.x" }
+          - { os: ubuntu-latest, python: "3.9" }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
       # macOS users run forge under the system Bash 3.2, but the runner image puts Homebrew's
@@ -47,5 +56,16 @@ jobs:
           python3 --version
           git --version
           command -v node >/dev/null && node --version || true
-      - name: tests/check.sh
-        run: bash tests/check.sh
+      - name: tests/check.sh --shard ${{ matrix.shard }}/4
+        run: bash tests/check.sh --shard ${{ matrix.shard }}/4
+
+  passed:
+    name: Tests passed
+    if: always()
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every shard passed
+        run: |
+          echo "shards: ${{ needs.check.result }}"
+          [ "${{ needs.check.result }}" = success ]
