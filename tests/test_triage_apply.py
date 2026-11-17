@@ -9,14 +9,17 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
+import time
 import unittest
+from unittest.mock import patch
 
 import test_triage
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import forge_side  # noqa: E402
-from forge_findings import store, triage  # noqa: E402
+from forge_findings import apply as approval, store, triage  # noqa: E402
 
 PLAN = test_triage.PLAN
 
@@ -62,6 +65,13 @@ class ApplyBase(test_triage.Base):
         self.assertFalse(json.loads(res.stdout)["ok"])
         if text:
             self.assertIn(text, res.stderr)
+
+    def read_only_triage(self, n=1):
+        """The triage dir stays readable, and proposals.json cannot be replaced."""
+        dest = self.dest(n)
+        (dest / approval.LOCK_NAME).touch()
+        os.chmod(dest, 0o555)
+        self.addCleanup(os.chmod, dest, 0o755)
 
 
 class EffectTests(ApplyBase):
@@ -197,6 +207,19 @@ class RefusalTests(ApplyBase):
         self.assertEqual(self.stored()[1]["state"], "pending")
         self.assertNotIn("t9", self.entry(self.fp1)["tags"])
 
+    @unittest.skipIf(os.geteuid() == 0, "root can write a read-only directory")
+    def test_an_unwritable_proposals_file_leaves_the_record_unchanged(self):
+        self.assertEqual(self.cli("tag", str(self.repo), self.fp2, "--", "docs", "--add").returncode, 0)
+        self.make([{"kind": "tag", "fps": [self.fp1], "tags": ["ui"]}])
+        self.read_only_triage()
+        res = self.apply("p1")
+        self.assertEqual(res.returncode, 1, res.stderr + res.stdout)
+        self.assertIn("proposals.json", res.stderr)
+        self.assertEqual(self.stored()[0]["state"], "pending")
+        self.assertNotIn("decided", self.stored()[0])
+        self.assertIsNone(self.entry(self.fp1))
+        self.assertEqual(self.entry(self.fp2)["tags"], ["docs"])
+
 
 class PlanTests(ApplyBase):
     def plan_proposal(self, plan=None):
@@ -255,6 +278,68 @@ class PlanTests(ApplyBase):
         self.assertEqual(self.stored()[0]["state"], "pending")
         self.assertNotIn("plan_dir", self.stored()[0])
         self.assertIsNone(self.entry(self.fp1))
+
+    @unittest.skipIf(os.geteuid() == 0, "root can write a read-only directory")
+    def test_an_unwritable_proposals_file_leaves_no_plan_and_keeps_notes(self):
+        self.assertEqual(self.cli("note", str(self.repo), self.fp2, "kept note").returncode, 0)
+        self.make([self.plan_proposal()])
+        self.read_only_triage()
+        res = self.apply("p1")
+        self.assertEqual(res.returncode, 1, res.stderr + res.stdout)
+        self.assertIn("proposals.json", res.stderr)
+        self.assertFalse(self.default_dir().exists())
+        item = self.stored()[0]
+        self.assertEqual(item["state"], "pending")
+        self.assertNotIn("plan_dir", item)
+        self.assertNotIn("decided", item)
+        self.assertIsNone(self.entry(self.fp1))
+        self.assertEqual(self.entry(self.fp2)["note"], "kept note")
+
+    def test_a_note_set_while_the_plan_note_is_chosen_is_kept(self):
+        """A note that lands after the 'no note yet' read is not replaced by `in plan`."""
+        self.make([self.plan_proposal()])
+        ident = self.ident()
+        text = "from the person"
+        started = threading.Event()
+        errors = []
+        real_get = store.get
+
+        def writer():
+            try:
+                if not started.wait(30):
+                    errors.append("the plan apply never read the finding")
+                    return
+                if not store.set_note(ident, self.fp1, text, "cli"):
+                    errors.append("the note was not written")
+            except BaseException as exc:
+                errors.append(repr(exc))
+
+        def get_then_let_the_note_in(ident_, fp):
+            entry = real_get(ident_, fp)
+            if fp == self.fp1 and not started.is_set():
+                started.set()
+                deadline = time.monotonic() + 1
+                while time.monotonic() < deadline:
+                    if (real_get(ident_, fp) or {}).get("note") == text:
+                        break
+                    time.sleep(0.02)
+            return entry
+
+        proposal = self.stored()[0]
+        rows = self.rows()
+        thread = threading.Thread(target=writer)
+        thread.start()
+        try:
+            with patch.object(store, "get", get_then_let_the_note_in):
+                approval.apply(ident, 1, "p1", proposal["hash"], lambda: rows)
+        finally:
+            started.set()
+            thread.join(timeout=15)
+        self.assertFalse(thread.is_alive(), errors)
+        self.assertEqual(errors, [])
+        self.assertEqual(self.stored()[0]["state"], "applied")
+        self.assertEqual(self.entry(self.fp1)["note"], text)
+        self.assertEqual(self.entry(self.fp2)["note"], f"in plan {self.default_dir()}")
 
     def test_the_plan_dir_can_be_planned_by_the_next_command(self):
         self.make([self.plan_proposal()])

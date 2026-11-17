@@ -7,7 +7,8 @@ who asked is kept in the proposal's `decided`. A `plan` proposal becomes a plan 
 `forge-planner.py parse` has accepted; nothing is dispatched and GitHub is never contacted.
 
 The whole of one apply (checks, effect, bookkeeping) runs under a lock file in the triage dir, so two
-approvals of one proposal cannot both apply. Any failure leaves the proposal `pending`.
+approvals of one proposal cannot both apply. Any failure leaves the proposal `pending` and the finding
+record as it was.
 """
 from __future__ import annotations
 
@@ -121,30 +122,33 @@ def _cut(text):
     return text[:MAX_REASON]
 
 
-def _effect_duplicate(ident, proposal):
+def _effect_duplicate(ident, proposal, locked=False):
     fp, of = proposal["fp"], proposal["of"]
     return _call(lambda: store.update(
-        ident, [fp], ACTOR, status="duplicate", duplicate_of=of, reason=_cut(_text(proposal, "why"))))
+        ident, [fp], ACTOR, locked=locked, status="duplicate", duplicate_of=of,
+        reason=_cut(_text(proposal, "why"))))
 
 
-def _effect_fixed(ident, proposal):
+def _effect_fixed(ident, proposal, locked=False):
     fields = {"reason": _cut(_text(proposal, "evidence"))}
     commit = proposal.get("commit")
     if isinstance(commit, str) and COMMIT_RE.fullmatch(commit):
         fields["commit"] = commit
-    return _call(lambda: store.set_status(ident, [proposal["fp"]], "fixed", ACTOR, **fields))
+    return _call(lambda: store.set_status(ident, [proposal["fp"]], "fixed", ACTOR, locked=locked, **fields))
 
 
-def _effect_tag(ident, proposal):
+def _effect_tag(ident, proposal, locked=False):
     tags = proposal.get("tags")
     if not isinstance(tags, list) or not tags or not all(isinstance(tag, str) for tag in tags):
         raise Refused(f"{proposal.get('id')}: tags must be a list of tags")
-    return _call(lambda: store.add_tags(ident, _fps(proposal), tags, ACTOR))
+    # add_tags cannot be told the lock is already held
+    return _call(lambda: store.update(ident, _fps(proposal), ACTOR, locked=locked, add_tags=list(tags)))
 
 
-def _effect_issue(ident, proposal):
+def _effect_issue(ident, proposal, locked=False):
     draft = {"title": _text(proposal, "title"), "body": _text(proposal, "body")}
-    return _call(lambda: store.update(ident, _fps(proposal), ACTOR, status="to-file", draft=draft))
+    return _call(lambda: store.update(
+        ident, _fps(proposal), ACTOR, locked=locked, status="to-file", draft=draft))
 
 
 def _place(row):
@@ -235,23 +239,135 @@ def _create_dir(plan_dir):
 
 
 def _effect_plan(ident, proposal, dest, rows, n, pid, plan_dir):
-    """`(changed fps, plan dir)`. The dir this call made is removed when anything fails."""
+    """The plan dir. Removed here when the planner fails; the caller removes it when the apply does not stick."""
     target = Path(plan_dir) if plan_dir else default_plan_dir(ident, n, pid)
     if not target.is_absolute():
         target = Path(os.path.abspath(target))
     _create_dir(target)
     try:
         _make_plan(proposal, target, dest, rows)
-        note = f"in plan {target}"
-        fresh = [fp for fp in _fps(proposal) if not ((_call(lambda: store.get(ident, fp)) or {}).get("note"))]
-        changed = _call(lambda: store.update(ident, fresh, ACTOR, note=note)) if fresh else []
     except BaseException:
         shutil.rmtree(target, ignore_errors=True)
         raise
-    return changed, target
+    return target
+
+
+def _note_fresh(ident, proposal, note):
+    """Set `note` on findings that still have none. The caller holds `store.lock` across this read and write."""
+    fresh = [fp for fp in _fps(proposal) if not ((store.get(ident, fp) or {}).get("note"))]
+    if not fresh:
+        return []
+    return store.update(ident, fresh, ACTOR, locked=True, note=note)
 
 
 # --- bookkeeping ----------------------------------------------------------------------------------
+
+def _record_files(ident):
+    record = store.record_path(ident)
+    return record, record.with_name(record.name.removesuffix(".json") + ".log.jsonl")
+
+
+def _capture(ident):
+    """`(record bytes or None, log size or None)`, to put back if proposals.json cannot be written."""
+    record, log = _record_files(ident)
+    try:
+        data = record.read_bytes()
+    except FileNotFoundError:
+        data = None
+    try:
+        size = log.stat().st_size
+    except FileNotFoundError:
+        size = None
+    return data, size
+
+
+def _put_bytes(path, data):
+    path = Path(path)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        view = memoryview(data)
+        while view:
+            view = view[os.write(fd, view):]
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        os.replace(tmp, path)
+    except BaseException:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _restore(ident, captured):
+    """Put the record and its log back to `_capture`. The caller holds `store.lock`."""
+    data, size = captured
+    record, log = _record_files(ident)
+    if data is None:
+        try:
+            record.unlink()
+        except FileNotFoundError:
+            pass
+    else:
+        _put_bytes(record, data)
+    if size is None:
+        try:
+            log.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    fd = os.open(log, os.O_WRONLY | os.O_NOFOLLOW)
+    try:
+        os.ftruncate(fd, size)
+    finally:
+        os.close(fd)
+
+
+def _effect(ident, proposal, kind, target):
+    """The record change. The caller holds `store.lock`."""
+    if kind == "duplicate":
+        return _effect_duplicate(ident, proposal, locked=True)
+    if kind == "fixed":
+        return _effect_fixed(ident, proposal, locked=True)
+    if kind == "tag":
+        return _effect_tag(ident, proposal, locked=True)
+    if kind == "issue":
+        return _effect_issue(ident, proposal, locked=True)
+    return _note_fresh(ident, proposal, f"in plan {target}")
+
+
+def _commit(ident, dest, data, proposal, actor, kind, target, nxt):
+    """Write the effect and mark the proposal applied, or leave both as they were.
+
+    One store lock covers a plan's "no note yet" read and the note write, so a note set in
+    between cannot be overwritten. The record is put back when proposals.json cannot be written.
+    """
+    def run():
+        # Temporary pre-fix: choose plan notes before the store lock, and do not roll the record back.
+        preset = None
+        if kind == "plan":
+            note = f"in plan {target}"
+            preset = [fp for fp in _fps(proposal) if not ((store.get(ident, fp) or {}).get("note"))]
+        with store.lock(ident):
+            if preset is None:
+                changed = _effect(ident, proposal, kind, target)
+            else:
+                changed = store.update(ident, preset, ACTOR, locked=True, note=f"in plan {target}") if preset else []
+            out = {}
+            if target is not None:
+                out["plan_dir"] = str(target)
+                out["next"] = nxt
+            try:
+                _decide(dest, data, proposal, "applied", actor, plan_dir=out.get("plan_dir"))
+            except OSError as exc:
+                path = Path(dest) / "proposals.json"
+                raise Failed(f"cannot write {path}: {exc.strerror or exc}") from exc
+            return changed, out
+    return _call(run)
+
 
 def _decide(dest, data, proposal, state, actor, reason=None, plan_dir=None):
     decided = {"at": triage.now(), "actor": actor}
@@ -285,27 +401,19 @@ def apply(ident, n, pid, approve, rows_fn, actor="cli", plan_dir=None):
         rows = rows_fn()
         _check_known(proposal, rows)
         kind = proposal.get("kind")
-        out = {}
-        if kind == "duplicate":
-            changed = _effect_duplicate(ident, proposal)
-        elif kind == "fixed":
-            changed = _effect_fixed(ident, proposal)
-        elif kind == "tag":
-            changed = _effect_tag(ident, proposal)
-        elif kind == "issue":
-            changed = _effect_issue(ident, proposal)
-        elif kind == "plan":
-            changed, target = _effect_plan(ident, proposal, dest, rows, n, pid, plan_dir)
-            out["plan_dir"] = str(target)
-            out["next"] = f"{PARALLEL} plan {shlex.quote(str(target))} --repo {shlex.quote(_existing_checkout(ident))}"
-        else:
+        if kind not in ("duplicate", "fixed", "tag", "issue", "plan"):
             raise Refused(f"{pid}: unknown kind {kind!r}")
+        target = None
         try:
-            _decide(dest, data, proposal, "applied", actor, plan_dir=out.get("plan_dir"))
-        except OSError as exc:
-            if out.get("plan_dir"):
-                shutil.rmtree(out["plan_dir"], ignore_errors=True)
-            raise Failed(f"cannot write {Path(dest) / 'proposals.json'}: {exc.strerror or exc}") from exc
+            nxt = None
+            if kind == "plan":
+                target = _effect_plan(ident, proposal, dest, rows, n, pid, plan_dir)
+                nxt = f"{PARALLEL} plan {shlex.quote(str(target))} --repo {shlex.quote(_existing_checkout(ident))}"
+            changed, out = _commit(ident, dest, data, proposal, actor, kind, target, nxt)
+        except BaseException:
+            if target is not None:
+                shutil.rmtree(target, ignore_errors=True)
+            raise
         return {"proposal": proposal, "changed": [fp for fp, _before, _after in changed], **out}
     finally:
         gate.__exit__(None, None, None)
