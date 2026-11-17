@@ -100,8 +100,8 @@ class FindingsTests(FindingsCase):
         self.assertEqual((first['task'], first['attempt'], first['reviewer'], first['kind'], first['run']), ('reader', 1, 'opus', 'primary', self.key))
         self.assertTrue(first['href'].startswith('#/runs/%s/tasks/reader/diff/finding/' % self.key))
         shadow = rows['the refresh timer is never cle']
-        # the primary review of the same attempt passed: that is not a later review, so the shadow's finding stays open
-        self.assertEqual((shadow['kind'], shadow['reviewer'], shadow['status']), ('shadow', 'sol:xhigh', 'open'))
+        # a shadow review's finding is not worked on: it shows as `shadow`, not `open`
+        self.assertEqual((shadow['kind'], shadow['reviewer'], shadow['status']), ('shadow', 'sol:xhigh', 'shadow'))
         final = rows['the task endpoint accepts an e']
         self.assertEqual((final['task'], final['final_review'], final['kind']), (None, F.REVIEW_OLD, 'final'))
         self.assertTrue(final['href'].startswith('#/runs/%s/final-review/%s/diff/finding/' % (self.key, F.REVIEW_OLD)))

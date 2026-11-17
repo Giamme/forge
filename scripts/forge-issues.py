@@ -27,8 +27,9 @@ One the sweep did not fix is drafted as before.
 
 --json lists every finding in `findings` (fp, severity, origin, plan, task, text, `filed`, `review`, `swept`, ...). --offline never
 runs `gh` (no filed state, publication of commits judged from local refs only). --only FP[,FP] keeps those
-fingerprints. --all-runs reads <run> as a repository (or a plan dir naming one) and collects every run in its
-registry, the newest plan winning for a finding present in several. A caller filing an explicit selection
+fingerprints. --all-runs reads <run> as a repository (or a plan dir naming one) and collects every run of that
+repository, whichever checkout started it (the main working tree, a linked worktree, one that is removed), the newest
+plan winning for a finding present in several. --to-file keeps only the findings whose record status is `to-file`. A caller filing an explicit selection
 passes `--max-issues <len(selection)>`; the default is 10.
 
 --dismiss FP[,FP] / --undismiss FP[,FP] (repeatable, with an optional --reason TEXT of at most 500 characters) mark
@@ -37,7 +38,14 @@ matches no current finding. A dismissed finding stays in `findings` with `dismis
 and is left out of the drafts unless --include-dismissed is given. The marks live outside the repository, in
 `${XDG_STATE_HOME:-~/.local/state}/forge/findings/<repo_key>.json` (an empty or relative XDG_STATE_HOME counts as
 unset); the store directory and file must not be symlinks, and the file must be a regular one. The repository they
-belong to is the one <run> resolves to; --repo does not change it.
+belong to is the one <run> resolves to (its identity, shared by every checkout of it); --repo does not change it.
+The marks are written to the finding record `<identity key>.record.json` (forge_findings.store): --dismiss sets
+status `dismissed`, --undismiss `open`. The old `<checkout key>.json` stores are read, never written. Every finding in
+`findings` carries `record` (its record entry, or null) and `status` (open, to-file, filed, fixed, dismissed,
+duplicate, swept); a finding that is filed, fixed or a duplicate is never drafted, and --apply records `filed`
+with the issue url. A `to-file` record's draft title replaces the generated one and its body follows under Notes.
+A repository with no GitHub origin lists with fingerprints computed from an empty slug (and a warning); --apply
+still needs a slug (--repo).
 
 The repository is the run's own, whatever form <run> takes: a file or task dir resolves to its plan dir and that plan's
 `repo` file, a solo run dir to its own `repo` file, and --all-runs to the repository it names. Listing, filing and
@@ -83,7 +91,10 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from forge_registry import repo_key, runs_registry  # noqa: E402
+from forge_registry import repo_key  # noqa: E402
+import forge_identity  # noqa: E402
+from forge_findings import status as record_status  # noqa: E402
+from forge_findings import store as record_store  # noqa: E402
 
 FINDING_RE = re.compile(r"^\s*[-*]\s*\[(P[0-3])\]\s*\[(CONFIRMED|PLAUSIBLE)\]\s*(\S.*?)\s+[—–]+\s+(.+?)\s*$", re.M)
 # gh-proman writes `gh-proman:finding`, this command `forge:finding`; the fingerprints match.
@@ -121,6 +132,7 @@ TEXT = {
         "code": "Code",
         "unpublished": "(commit not pushed to GitHub yet)",
         "duplicate_comment": "A forge review finding that looks like this issue, in other words:",
+        "notes": "Notes",
     },
     "it": {
         "plausible": "Da verificare: ",
@@ -149,6 +161,7 @@ TEXT = {
         "code": "Codice",
         "unpublished": "(commit non ancora pubblicato su GitHub)",
         "duplicate_comment": "Una segnalazione della review di forge che sembra questa issue, con altre parole:",
+        "notes": "Note",
     },
 }
 
@@ -585,19 +598,15 @@ def collect_plan(plan_dir: Path, include_plausible):
 
 
 def collect_all(path: Path, include_plausible):
+    """Every run of the repository <path> names: the registered run dirs of all its checkouts (the main working
+    tree, linked worktrees, and checkouts that are gone), newest first."""
     plan_file = path / "repo"
     repo = Path(read(plan_file)) if plan_file.is_file() else path
-    registry = runs_registry(repo)
-    lines = read(registry).splitlines() if registry.is_file() else []
+    ident = forge_identity.identity(path)
     plans, notes = [], []
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
+    for line in forge_identity.run_dirs(ident) if ident else []:
         d = Path(line)
-        if not d.is_dir():
-            notes.append(f"{line}: run directory is missing, skipped")
-        elif not (d / "tasks").is_dir():
+        if not (d / "tasks").is_dir():
             notes.append(f"{line}: no tasks/ directory, skipped")
         elif d not in plans:
             plans.append(d)
@@ -685,13 +694,50 @@ def collect(path: Path, include_plausible, all_runs=False):
         found, [note] if note else []
 
 
-def run_repository(meta):
-    """(repo_path, warnings): the run's recorded repository, else the current directory with a warning saying so.
+def enclosing_run_dir(path):
+    """The run dir (the dir holding a `repo` file) that <path> is, or sits at most three levels inside; None when
+    it is not inside one. A checkout (a dir with `.git`) ends the walk."""
+    current = Path(path).resolve()
+    if current.is_file():
+        current = current.parent
+    for _ in range(4):
+        if (current / "repo").is_file():
+            return current
+        if (current / ".git").exists() or current.parent == current:
+            return None
+        current = current.parent
+    return None
 
-    Listing, filing and (un)dismissing all go through here, so they agree on the dismissal store.
+
+def run_identity(args, meta):
+    """The repository identity of the run, resolved once: from the run dir <run> is or sits in (a run whose
+    checkout is gone still names its repository; a task or review dir has no `repo` file of its own, so it is the
+    plan dir that is asked), else from the recorded checkout, else from the current directory."""
+    ident = None
+    if meta["repo_path"]:
+        run_dir = enclosing_run_dir(args.run)
+        ident = forge_identity.identity(run_dir) if run_dir else None
+        if ident is None:
+            ident = forge_identity.identity(meta["repo_path"])
+    if ident is None:
+        ident = forge_identity.identity(os.getcwd())
+    if ident is None:
+        raise Fail(f"{args.run}: cannot tell which repository this run belongs to")
+    return ident
+
+
+def run_repository(meta, ident=None):
+    """(repo_path, warnings): the run's recorded checkout, else the current directory with a warning saying so.
+
+    A recorded checkout that no longer exists (a removed worktree) gives way to the repository's root, with a
+    warning. Listing, filing and (un)dismissing all go through here, so they agree on the repository.
     """
     if meta["repo_path"]:
-        return meta["repo_path"], []
+        recorded = meta["repo_path"]
+        if ident is not None and ident.get("root") and not os.path.isdir(recorded):
+            return ident["root"], [f"the recorded checkout {recorded} no longer exists; using the repository "
+                                   f"root {ident['root']}"]
+        return recorded, []
     cwd = os.getcwd()
     return cwd, [f"run {meta['plan']} records no repository; using the current directory {cwd}"]
 
@@ -984,82 +1030,115 @@ def _write_store(name, noun, data):
         raise Fail(f"{path}: cannot write the {noun}: {exc.strerror}")
 
 def load_dismissed(key):
-    """The repository's dismissals, `{fp: {"at": epoch, "reason": str}}`; empty when it has none yet."""
-    data = _read_store(f"{key}.json", "dismissal store", "{fingerprint: {at, reason}}",
-                       lambda v: isinstance(v, dict) and isinstance(v.get("reason"), str)
-                       and isinstance(v.get("at"), (int, float)) and not isinstance(v["at"], bool))
-    return {fp: {"at": v["at"], "reason": v["reason"]} for fp, v in data.items()}
+    """The repository's dismissals under `key`, `{fp: {"at": epoch, "reason": str}}`; empty when it has none yet.
 
-
-def save_dismissed(key, data):
-    _write_store(f"{key}.json", "dismissal store", data)
-
-
-def load_comments(key):
-    """The repository's comment receipts, `{fp: {"issue": url, "at": epoch}}`; empty when it has none yet.
-
-    A comment's fingerprint marker is invisible to the issue-body index that guards filing, so this record is
-    what keeps one duplicate from being commented on every run. It sits next to the dismissal store.
+    Read through the record store: the record `<key>.record.json` and the old `<key>.json` dismissals, the
+    record winning (a finding reopened there is not dismissed). Read only: nothing writes `<key>.json` any more.
     """
-    data = _read_store(f"{key}.comments.json", "comment-receipt store", "{fingerprint: {issue, at}}",
-                       lambda v: isinstance(v, dict) and isinstance(v.get("issue"), str)
-                       and isinstance(v.get("at"), (int, float)) and not isinstance(v["at"], bool))
+    return {fp: {"at": int(v["at"]), "reason": v.get("reason", "")}
+            for fp, v in load_record({"key": key}).items()
+            if v.get("status") == "dismissed" and isinstance(v.get("at"), (int, float))}
+
+
+def _valid_receipt(v):
+    return (isinstance(v, dict) and isinstance(v.get("issue"), str)
+            and isinstance(v.get("at"), (int, float)) and not isinstance(v["at"], bool))
+
+
+def _comment_receipts(key):
+    data = _read_store(f"{key}.comments.json", "comment-receipt store", "{fingerprint: {issue, at}}", _valid_receipt)
     return {fp: {"issue": v["issue"], "at": v["at"]} for fp, v in data.items()}
 
 
-def save_comments(key, data):
-    _write_store(f"{key}.comments.json", "comment-receipt store", data)
+def load_comments(ident):
+    """The repository's comment receipts, `{fp: {"issue": url, "at": epoch}}`; empty when it has none yet.
+
+    A comment's fingerprint marker is invisible to the issue-body index that guards filing, so this record is
+    what keeps one duplicate from being commented on every run. They live in `<identity key>.comments.json`; the
+    old `<checkout key>.comments.json` of every checkout is read too (the newest receipt wins) and never written.
+    """
+    key = ident["key"]
+    merged = {}
+    for checkout in forge_identity.checkouts(ident):
+        try:
+            old_key = repo_key(checkout)
+        except (OSError, ValueError, RuntimeError, UnicodeError):
+            continue
+        if old_key == key:
+            continue
+        try:
+            old = _comment_receipts(old_key)
+        except Fail:
+            continue                       # an unreadable old store is skipped, as the record store skips old dismissals
+        for fp, receipt in old.items():
+            if fp not in merged or receipt["at"] > merged[fp]["at"]:
+                merged[fp] = receipt
+    merged.update(_comment_receipts(key))
+    return merged
+
+
+def save_comments(ident, data):
+    _write_store(f"{ident['key']}.comments.json", "comment-receipt store", data)
 
 
 @contextlib.contextmanager
-def repo_lock(key, label):
-    """Hold the repository's `<key>.lock` (flock, next to the store); busy for LOCK_WAIT seconds raises Busy.
+def repo_lock(ident, label):
+    """Hold the repository's `<key>.lock` (flock, next to the stores) through the record store; busy for
+    LOCK_WAIT seconds raises Busy. `ident` is the repository identity, or its key.
 
-    The lock is its own file, opened in place and never replaced, because the store is: a lock on the store
+    The lock is its own file, opened in place and never replaced, because the stores are: a lock on a store
     file would stay with the old inode after an atomic save.
     """
-    path = store_dir(create=True) / f"{key}.lock"
+    if isinstance(ident, str):
+        ident = {"key": ident}
+    waited = record_store.LOCK_WAIT
+    record_store.LOCK_WAIT = LOCK_WAIT
     try:
-        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
-    except OSError as exc:
-        raise Fail(f"{path}: cannot open the repository lock ({exc.strerror}); it must not be a symlink")
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise Fail(f"{path}: the repository lock must be a regular file")
-        deadline = time.monotonic() + LOCK_WAIT
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except OSError as exc:
-                if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
-                    raise Fail(f"{path}: cannot lock the repository: {exc.strerror}")
-            if time.monotonic() >= deadline:
-                raise Busy(f"busy: another filing or dismissal for {label} is in progress")
-            time.sleep(LOCK_POLL)
-        yield
+        with record_store.lock(ident):
+            yield
+    except record_store.Busy:
+        raise Busy(f"busy: another filing or dismissal for {label} is in progress")
+    except (record_store.Corrupt, record_store.Invalid) as exc:
+        raise Fail(str(exc))
     finally:
-        os.close(fd)  # closing the descriptor releases the flock
+        record_store.LOCK_WAIT = waited
+
+
+def load_record(ident):
+    """{fp: entry}: the finding record of the repository, old dismissals merged in. Fail when it is unusable."""
+    try:
+        return record_store.load(ident)
+    except (record_store.Corrupt, record_store.Invalid) as exc:
+        raise Fail(str(exc))
+
+
+def set_record_status(ident, fps, status, **fields):
+    try:
+        return record_store.set_status(ident, fps, status, "issues", locked=True, **fields)
+    except record_store.Busy as exc:
+        raise Busy(str(exc))
+    except (record_store.Corrupt, record_store.Invalid) as exc:
+        raise Fail(str(exc))
+
+
+NO_REASON = "dismissed with forge issues"  # a record's `dismissed` needs a reason; --dismiss without one gets this
 
 
 def dismiss(args):
-    """--dismiss / --undismiss: update the repository's store under its lock. No network: <run> is only read to
-    find the repository it resolves to."""
+    """--dismiss / --undismiss: write the repository's finding record under its lock. No network: <run> is only
+    read to find the repository it resolves to."""
     meta, _found, _notes = collect(Path(args.run), False, args.all_runs)
-    repo_path, warnings = run_repository(meta)
-    key = repo_key(repo_path)
-    with repo_lock(key, args.repo or github_slug(repo_path) or repo_path):
-        data = load_dismissed(key)
-        before = json.dumps(data, sort_keys=True)
-        now = int(time.time())
-        for fp in args.dismiss:
-            # dismissing again without a --reason keeps the earlier mark, with its reason and date
-            if fp not in data or args.reason is not None:
-                data[fp] = {"at": now, "reason": args.reason or ""}
-        for fp in args.undismiss:
-            data.pop(fp, None)
-        if json.dumps(data, sort_keys=True) != before:
-            save_dismissed(key, data)
+    ident = run_identity(args, meta)
+    repo_path, warnings = run_repository(meta, ident)
+    with repo_lock(ident, args.repo or github_slug(repo_path) or forge_identity.github_slug(ident) or repo_path):
+        data = load_record(ident)
+        # dismissing again without a --reason keeps the earlier mark, with its reason and date
+        marks = [fp for fp in args.dismiss if (data.get(fp) or {}).get("status") != "dismissed" or args.reason is not None]
+        if marks:
+            set_record_status(ident, marks, "dismissed", reason=args.reason or NO_REASON)
+        lifts = [fp for fp in args.undismiss if (data.get(fp) or {}).get("status") == "dismissed"]
+        if lifts:
+            set_record_status(ident, lifts, "open")
     return {"ok": True, "dismissed": args.dismiss, "undismissed": args.undismiss, "warnings": warnings}
 
 
@@ -1187,11 +1266,11 @@ def comment_body(f, lang):
                       f"<!-- forge:finding fp={f['fp']} source=forge:{f['plan']}/{f['task'] or 'final-review'} -->"])
 
 
-def post_comments(key, comments, by_fp, lang):
+def post_comments(ident, comments, by_fp, lang):
     """Comment on the issue each reworded duplicate restates, and record a receipt for each: the marker in a
     comment is invisible to the issue-body index, so without the receipt the next run would comment again.
     Runs under the repository lock `--apply` holds. A comment that fails is reported and gets no receipt."""
-    receipts = load_comments(key)
+    receipts = load_comments(ident)
     done = []
     for c in comments:
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as fh:
@@ -1204,7 +1283,7 @@ def post_comments(key, comments, by_fp, lang):
         finally:
             os.unlink(fh.name)
         receipts[c["fp"]] = {"issue": c["issue"], "at": int(time.time())}
-        save_comments(key, receipts)
+        save_comments(ident, receipts)
         done.append(dict(c))
     return done
 
@@ -1217,7 +1296,7 @@ def split_fps(values):
     return None if any(not FP_RE.fullmatch(x) for x in fps) else list(dict.fromkeys(fps))
 
 
-def main(argv=None):
+def build_parser():
     ap = argparse.ArgumentParser(prog="forge issues", description=__doc__.split("\n\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog="\n\n".join(__doc__.split("\n\n")[1:]))
@@ -1237,7 +1316,10 @@ def main(argv=None):
     ap.add_argument("--offline", action="store_true", help="never run `gh`: no filed state, local refs only")
     ap.add_argument("--only", action="append", default=[], metavar="FP",
                     help="keep only this 12-hex fingerprint; repeatable or comma-separated")
-    ap.add_argument("--all-runs", action="store_true", help="collect every run in the repository's run registry")
+    ap.add_argument("--to-file", action="store_true",
+                    help="keep only the findings whose record status is to-file (may be combined with --only: both must match)")
+    ap.add_argument("--all-runs", action="store_true",
+                    help="collect every run of the repository: its main checkout, linked worktrees and removed ones")
     ap.add_argument("--dismiss", action="append", default=[], metavar="FP",
                     help="mark this 12-hex fingerprint as needing no work, then exit; repeatable or comma-separated")
     ap.add_argument("--undismiss", action="append", default=[], metavar="FP",
@@ -1245,6 +1327,11 @@ def main(argv=None):
     ap.add_argument("--reason", help=f"why --dismiss marks them (at most {REASON_MAX} characters)")
     ap.add_argument("--include-dismissed", action="store_true", help="draft dismissed findings too")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
+    return ap
+
+
+def main(argv=None):
+    ap = build_parser()
     args = ap.parse_args(argv)
     if args.offline and args.apply:
         ap.error("--offline cannot be combined with --apply")
@@ -1287,14 +1374,15 @@ def main(argv=None):
     return 0
 
 
-def finding_entry(f, filed=None, dismissed=None, commented=None):
+def finding_entry(f, filed=None, dismissed=None, commented=None, record=None):
     entry = {"fp": f["fp"], "severity": f["severity"], "confidence": f["confidence"], "origin": f["origin"],
             "plan": f["plan"], "plan_dir": f["plan_dir"], "task": f["task"], "file": f["file"],
             "summary": (f["text"].splitlines() or [""])[0][:160], "text": f["text"],
             "reviewer": f["reviewer"], "commit": f.get("commit") or "",
             "review": f.get("review"), "swept": f.get("swept"),
             "filed": {"url": filed["url"], "state": filed["state"]} if filed else None,
-            "dismissed": dismissed}
+            "dismissed": dismissed, "record": record}
+    entry["status"] = record_status.effective(record, entry, None)
     if commented:
         entry["commented"] = commented    # only a finding with a receipt has the key: the rest is as before
     return entry
@@ -1303,24 +1391,47 @@ def finding_entry(f, filed=None, dismissed=None, commented=None):
 def file_findings(args):
     meta, found, notes = collect(Path(args.run), args.include_plausible, args.all_runs)
     mark_swept(found)
-    repo_path, warnings = run_repository(meta)
-    slug = args.repo or github_slug(repo_path)
+    ident = run_identity(args, meta)
+    repo_path, warnings = run_repository(meta, ident)
+    slug = args.repo or github_slug(repo_path) or forge_identity.github_slug(ident)
     if not slug:
-        raise Fail("; ".join(warnings + [f"{repo_path} has no GitHub origin remote; pass --repo owner/repo"]))
+        problem = f"{repo_path} has no GitHub origin remote; pass --repo owner/repo"
+        if args.apply:
+            raise Fail("; ".join(warnings + [problem]))
+        warnings = warnings + [f"{problem}. Listing without a repository name: fingerprints are computed with an "
+                               "empty one, so they differ from the ones a named repository gives"]
     if args.min_severity:
         cut = SEVERITIES.index(args.min_severity)
         found = [f for f in found if SEVERITIES.index(f["severity"]) <= cut]
     # Filing is list-then-create, so no other filing or dismissal for this repository may run in between: the
     # lock covers the lookup, the drafts (which ask `gh` whether commits are published) and every create.
-    with repo_lock(repo_key(repo_path), slug) if args.apply else contextlib.nullcontext():
-        return list_and_file(args, meta, found, notes, repo_path, slug, warnings)
+    with repo_lock(ident, slug or repo_path) if args.apply else contextlib.nullcontext():
+        return list_and_file(args, meta, found, notes, repo_path, slug or "", warnings, ident)
 
 
-def list_and_file(args, meta, found, notes, repo_path, slug, warnings):
-    offline = args.offline
-    store_key = repo_key(repo_path)
-    dismissed = load_dismissed(store_key)
-    receipts = load_comments(store_key)
+def listing(path, include_plausible=True, include_dismissed=True, online=False, all_runs=True):
+    """The `--json` object of a listing without `--apply`, for callers in this process (forge-findings, forge-ui).
+
+    Offline unless `online`. Raises Fail (Busy included) exactly as `main` would print it.
+    """
+    argv = [] if online else ["--offline"]
+    argv += ["--include-plausible"] if include_plausible else []
+    argv += ["--include-dismissed"] if include_dismissed else []
+    argv += ["--all-runs"] if all_runs else []
+    return file_findings(build_parser().parse_args([*argv, "--json", "--", str(path)]))
+
+
+def draft_notes(record):
+    """(title, body) a `to-file` record carries for its issue; "" for what it does not."""
+    draft = (record or {}).get("draft") if (record or {}).get("status") == "to-file" else None
+    draft = draft if isinstance(draft, dict) else {}
+    return str(draft.get("title") or ""), str(draft.get("body") or "")
+
+
+def list_and_file(args, meta, found, notes, repo_path, slug, warnings, ident):
+    offline = args.offline or not slug     # no repository name, nothing to ask GitHub about
+    record = load_record(ident)
+    receipts = load_comments(ident)
     issues = [] if offline else existing_issues(slug)
     filed = {fp: issue for issue in issues for fp in FP_MARK_RE.findall(issue.get("body") or "")}
     only = set(args.only)
@@ -1329,13 +1440,17 @@ def list_and_file(args, meta, found, notes, repo_path, slug, warnings):
     for f in found:
         f["fp"] = fingerprint(slug, f)
         known.add(f["fp"])
-        if f["fp"] in seen or (only and f["fp"] not in only):
+        rec = record.get(f["fp"])
+        if f["fp"] in seen or (only and f["fp"] not in only) \
+                or (args.to_file and (rec or {}).get("status") != "to-file"):
             continue
         seen.add(f["fp"])
         issue = filed.get(f["fp"])
-        mark = dismissed.get(f["fp"])
+        mark = {"at": int(rec["at"]), "reason": rec.get("reason", "")} \
+            if rec and rec.get("status") == "dismissed" and isinstance(rec.get("at"), (int, float)) else None
         receipt = receipts.get(f["fp"])
-        entries.append(finding_entry(f, issue, mark, receipt))
+        entry = finding_entry(f, issue, mark, receipt, rec)
+        entries.append(entry)
         if issue:
             already.append({"finding": f["raw"], "issue": issue["url"], "state": issue["state"]})
         elif receipt:                      # commented on an issue as a duplicate: as good as filed
@@ -1343,7 +1458,9 @@ def list_and_file(args, meta, found, notes, repo_path, slug, warnings):
             already.append({"finding": f["raw"], "issue": receipt["issue"], "state": state})
         elif f.get("swept"):
             continue                       # fixed in the run by its finding sweep
-        elif not mark or args.include_dismissed:
+        elif entry["status"] in ("filed", "fixed", "duplicate"):
+            continue                       # the record says it has an issue, is fixed, or is another finding's twin
+        elif entry["status"] != "dismissed" or args.include_dismissed:
             todo.append(f)
     notes = notes + [f"--only {fp}: no such open finding" for fp in args.only if fp not in known]
     entries.sort(key=lambda e: SEVERITIES.index(e["severity"]))
@@ -1382,16 +1499,25 @@ def list_and_file(args, meta, found, notes, repo_path, slug, warnings):
             else:
                 prefix = t["plausible"] if origin == "plausible" else ""
                 title = f"[{items[0]['severity']}] {prefix}{t['group_title'].format(scope=scope)}"
+        written = [draft_notes(record.get(f["fp"])) for f in items]
+        if len(items) == 1 and written[0][0]:
+            title = written[0][0]          # the title a person wrote for it in the record
+        body = body_for(slug, repo_path if meta["repo_path"] else None, items, args.lang, offline)
+        extra = [text for _title, text in written if text]
+        if extra:
+            body = "\n".join([body, "", f"## {t['notes']}", *[escape(text) for text in extra]])
         drafts.append({"title": title, "severity": items[0]["severity"], "origin": items[0]["origin"],
                        "findings": [f["raw"] for f in items], "fingerprints": [f["fp"] for f in items],
                        "same_title": None if offline else open_titles.get(norm_title(title)),
-                       "body": body_for(slug, repo_path if meta["repo_path"] else None, items, args.lang, offline)})
+                       "body": body})
         if any(f["fp"] in gates for f in items):
             drafts[-1]["gate"] = draft_gate([gates[f["fp"]] for f in items if f["fp"] in gates])
     drafts.sort(key=lambda d: SEVERITIES.index(d["severity"]))
     out = {"repo": slug, "plan": meta["plan"], "notes": notes, "warnings": warnings,
            "summary": {"findings": len(seen), "already_filed": len(already),
                        "dismissed": sum(1 for e in entries if e["dismissed"]),
+                       **{name: sum(1 for e in entries if e["status"] == status)
+                          for name, status in (("fixed", "fixed"), ("duplicate", "duplicate"), ("to_file", "to-file"))},
                        "swept": sum(1 for e in entries if e["swept"]), "drafts": len(drafts),
                        **{o: sum(1 for f in todo if f["origin"] == o)
                           for o in ("tolerated", "accepted", "review", "plausible")}},
@@ -1399,16 +1525,19 @@ def list_and_file(args, meta, found, notes, repo_path, slug, warnings):
     if comments is not None:
         out["comments"] = comments
     if args.apply:
-        out["created"] = create(slug, drafts, args)
+        def record_filed(draft, url):
+            if url.startswith("https://"):
+                set_record_status(ident, draft["fingerprints"], "filed", issue=url)
+        out["created"] = create(slug, drafts, args, record_filed)
         for d in drafts:
             d.pop("body")
         if comments:
             by_fp = {f["fp"]: f for f in found}
-            out["commented"] = post_comments(store_key, comments, by_fp, args.lang)
+            out["commented"] = post_comments(ident, comments, by_fp, args.lang)
     return out
 
 
-def create(slug, drafts, args):
+def create(slug, drafts, args, on_created=None):
     labels = []
     if args.label:
         res = run(["gh", "label", "list", "--repo", slug, "--limit", "500", "--json", "name"], check=False)
@@ -1433,6 +1562,8 @@ def create(slug, drafts, args):
             os.unlink(fh.name)
         url = next((w for w in res.stdout.split() if w.startswith("https://")), res.stdout.strip())
         created.append({"title": d["title"], "url": url})
+        if on_created:
+            on_created(d, url)
     missing = sorted(set(args.label) - set(labels))
     if missing:
         created.append({"note": f"labels not in {slug}, left off: {', '.join(missing)}"})
@@ -1443,7 +1574,7 @@ def print_human(out, applied):
     s = out["summary"]
     dismissed = f", {s['dismissed']} dismissed" if s["dismissed"] else ""
     dismissed += f", {s['swept']} fixed by the run's finding sweep" if s.get("swept") else ""
-    print(f"{out['repo']} · run {out['plan']}: {s['findings']} finding(s), {s['already_filed']} already filed{dismissed}, "
+    print(f"{out['repo'] or '(no GitHub remote)'} · run {out['plan']}: {s['findings']} finding(s), {s['already_filed']} already filed{dismissed}, "
           f"{s['drafts']} draft(s) ({s['tolerated']} tolerated, {s['accepted']} accepted, "
           f"{s['review']} review, {s['plausible']} plausible)")
     for warning in out["warnings"]:

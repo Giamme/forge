@@ -13,8 +13,9 @@ Two opt-in behaviours live here, both off by default so a plain `run` is unchang
 
 A third, ``--sweep Pn``, also per invocation: once every task has merged, the open review
 findings at Pn or worse become fix tasks (``forge-parallel.sh _sweep``, forge-sweep.py) that
-this run then dispatches like any other, once per plan. A fix task that fails leaves its
-findings for ``forge issues`` and does not fail the run.
+this run then dispatches like any other: one round per invocation, each finding swept once (a
+rerun that merged new findings starts the next round; ``forge-sweep.py plan --check`` says whether
+there is one). A fix task that fails leaves its findings for ``forge issues`` and does not fail the run.
 
 Both numbers are per invocation, but while the scheduler runs they are mirrored into the
 plan dir (retry_budget, infra_budget, tasks/<id>/retry_budget) and re-read at every
@@ -735,6 +736,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     fractal = _fractal_plan(plan)
     drain_told = False # the drained message was printed for this drain
     sweep_asked = False  # this invocation already asked for the finding sweep
+    sweep_checked = {}   # the answer of this invocation's one `plan --check`
     brief_mode = brief_level(plan)   # advisory never waits; strict was settled before the scheduler started
     brief_told = set()   # (task, qid or '') whose brief wait was already printed
     brief_waiting = set()  # tasks the last dispatch pass held for a brief answer or the brief writer
@@ -1414,12 +1416,66 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         """A finding sweep's fix task."""
         return (plan / 'tasks' / name / 'sweep.json').is_file()
 
+    def sweep_rounds() -> list:
+        """The sweep rounds this plan has, oldest first: [(number, plan.json path)]."""
+        found = {}
+        if (plan / 'sweep' / 'plan.json').exists():
+            found[1] = plan / 'sweep' / 'plan.json'
+        with contextlib.suppress(OSError):
+            for path in (plan / 'sweep' / 'rounds').iterdir():
+                if path.name.isdigit() and int(path.name) >= 2 and (path / 'plan.json').exists():
+                    found[int(path.name)] = path / 'plan.json'
+        return sorted(found.items())
+
+    def sweep_check() -> bool:
+        """Whether `forge-sweep.py plan --check` finds a finding no round swept yet; asked once per
+        invocation. Nothing new is written down for the run summary (sweep/nothing.json). A check that
+        fails (the integration branch cannot be read) is not a reason to plan."""
+        if 'answer' not in sweep_checked:
+            result = subprocess.run([sys.executable, str(Path(__file__).resolve().with_name('forge-sweep.py')), 'plan',
+                                     str(plan), '--severity', sweep, '--max', str(sweep_max), '--check']
+                                    + (['--plausible'] if sweep_plausible else []),
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            sweep_checked['code'] = result.returncode
+            sweep_checked['answer'] = result.returncode == 0
+            if result.returncode == 1:
+                try:
+                    counts = json.loads(result.stdout)
+                    note = {'at': time.time(), 'attempted': int(counts['attempted']), 'left': int(counts['left'])}
+                    (plan / 'sweep').mkdir(exist_ok=True)
+                    fd, tmp = tempfile.mkstemp(dir=str(plan / 'sweep'), prefix='.nothing.json.')
+                    with os.fdopen(fd, 'w') as handle:
+                        handle.write(json.dumps(note) + '\n')
+                    os.replace(tmp, plan / 'sweep' / 'nothing.json')
+                except (ValueError, KeyError, TypeError, OSError) as error:
+                    _warn('could not record that the sweep found nothing new: ' + str(error))
+        return sweep_checked['answer']
+
     def sweep_due() -> bool:
-        """--sweep was given, every task merged, nothing stops or holds the run, and this plan was
-        never swept (sweep/plan.json is the planner's record, and its marker)."""
-        return (bool(sweep) and not sweep_asked and not interrupted and not graceful and not paused
-                and not drained(plan) and not (plan / 'sweep' / 'plan.json').exists()
-                and all(status(name) == 'MERGED' for name in tasks))
+        """--sweep was given and nothing stops or holds the run, every task of the plan merged
+        (a fix task of an earlier round may have stopped), the last round's queued fix tasks are
+        merged or stopped, and `plan --check` finds a finding no round tried. At most one round
+        per invocation."""
+        if (not sweep or sweep_asked or interrupted or graceful or paused or drained(plan)
+                or not all(status(name) == 'MERGED' for name in tasks if not is_fix(name))):
+            return False
+        rounds = sweep_rounds()
+        if rounds:
+            try:
+                last = json.loads((rounds[-1][1]).read_text()).get('tasks') or []
+            except (OSError, ValueError, AttributeError):
+                last = []
+            # A crash between plan.json and the tasks.tsv append leaves the fix task with no row
+            # and no status. status() would say PENDING and hold every later round; that round is lost.
+            if any(status(item['id']) not in ('MERGED', 'FAIL', 'NEEDS_DECISION', 'INFRA')
+                   for item in last if isinstance(item, dict) and isinstance(item.get('id'), str)
+                   and (item['id'] in tasks or (plan / 'tasks' / item['id'] / 'status').exists())):
+                return False
+            return sweep_check()
+        # Round 1 asks too, so nothing eligible is recorded and not planned. A check that cannot
+        # be answered (the integration branch cannot be read) still starts the round.
+        sweep_check()
+        return sweep_checked.get('code') != 1
 
     def start_sweep() -> int:
         """Plan the finding sweep and queue its fix tasks; how many were queued. Whatever goes

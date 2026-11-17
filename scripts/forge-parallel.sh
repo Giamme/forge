@@ -40,8 +40,9 @@
 #                                                   (internal; merge a PASS group's members with one merge, #140)
 #   forge-parallel.sh _qa_only <plan-dir> <task-id>  (internal; exit 0 when the next entry only re-runs QA)
 #   forge-parallel.sh _waves <plan-dir>             (internal; rewrite waves.tsv after a live `forge control add`)
-#   forge-parallel.sh _sweep <plan-dir> --severity Pn [--plausible] [--max N]
-#                                                   (internal; plan the finding sweep, print its task ids)
+#   forge-parallel.sh _sweep <plan-dir> --severity Pn [--plausible] [--max N] [--check]
+#                                                   (internal; plan a finding sweep round, print its task ids;
+#                                                    --check only counts what a round would sweep)
 #
 # Routing flags (plan):
 #   --dwarf <spec>          fallback for any difficulty tier not named below
@@ -133,8 +134,9 @@
 #   --sweep Pn              once every task has merged, before verification: the open findings
 #                           at Pn or worse (tolerated, and PLAUSIBLE with --sweep-plausible) become
 #                           at most --sweep-max N fix tasks (default 5), one per file, each with a
-#                           narrow review; the sweep plan is printed and kept in sweep/. Once per
-#                           plan; what it does not fix stays for `forge issues`
+#                           narrow review; the sweep plan is printed and kept in sweep/. A rerun
+#                           that merged new findings sweeps them in a next round, never the same
+#                           finding twice; what it does not fix stays for `forge issues`
 #   --sweep-ahead           a task is also told the open findings in files it owns, to fix only
 #                           on its way (kept for the plan; --no-sweep-ahead turns it off)
 #   --attribute             when the run's combined verification fails, search the merge order for

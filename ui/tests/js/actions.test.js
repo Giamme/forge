@@ -656,3 +656,273 @@ test.describe('forget, compact and answer on the page', { concurrency: 1 }, () =
     assert.equal(walk(h).find(n => n.tagName === 'TEXTAREA').value, 'keep this answer');
   });
 });
+
+/* ---------- the Findings tab's own actions (#161) ---------- */
+global.ForgeFindings = require(path.join(root, 'findingsview.js'));
+const FA = 'aaaaaaaaaaaa', FB = 'bbbbbbbbbbbb', FC = 'cccccccccccc', FD = 'dddddddddddd';
+const finding = (name, extra) => Object.assign({ summary: name, text: name, severity: 'P2', status: 'open', kind: 'primary', source: 'run', run: 'r1key', run_id: 'r1',
+  location: 'ui/a.js:1', at: 1000, count: 1, occurrences: [], tags: ['ui'], record: null, draft: null, fileable: true }, extra);
+const findingRows = [
+  finding('First bug', { record_fp: FA, fp: 'ia' }),
+  finding('Second bug', { record_fp: FB, fp: 'ib', tags: ['backend'] }),
+  finding('Third bug', { record_fp: FC, fp: 'ic', status: 'to-file', record: { tags: ['flaky'], note: 'check it' }, tags: ['flaky'] }),
+  finding('Gone bug', { record_fp: FD, fp: 'id', status: 'dismissed', fileable: false }),
+  finding('No key', { record_fp: null, fp: null, fileable: false }),
+];
+const findingsAnswer = { id: 'proj1', rows: findingRows, notes: [], runs: 1, dataset_runs: 0, issues_online: true, issues_read_at: 1700000000 };
+function findingsGet(p) {
+  if (p === '/api/projects/proj1') return { ok: true, status: 200, data: { name: 'App', root: '/repo', exists: true, runs: [], checkouts: [] } };
+  if (p.startsWith('/api/projects/proj1/findings')) return { ok: true, status: 200, data: findingsAnswer };
+  return { ok: false, status: 404, error: 'missing', detail: p };
+}
+const tick = async n => { for (let i = 0; i < n; i++) await new Promise(r => setTimeout(r, 0)); };
+const filterOf = (node, name) => walk(node).find(n => n.dataset && n.dataset.filter === name);
+function change(node, value) { node.value = value; for (const fn of node.listeners.change || []) fn({}); }
+function typed(node, placeholder, value) {
+  const input = walk(node).find(n => n.placeholder === placeholder);
+  assert.ok(input, 'no field ' + placeholder);
+  input.value = value;
+  return input;
+}
+const countLine = node => walk(node).find(n => String(n.className || '').split(/\s+/).includes('prj-count')).textContent;
+
+test.describe('findings actions on the page', { concurrency: 1 }, () => {
+  test.beforeEach(() => {
+    state.controls = true;
+    state.gets = [];
+    state.posts = [];
+    state.getReply = findingsGet;
+    state.postReply = () => ({ ok: true, status: 200, data: { ok: true } });
+    document.activeElement = null;
+    for (const n of [...document.body.children]) n.remove();
+  });
+  async function open(opts) {
+    const h = mount();
+    const view = Projects.render(h, Object.assign({ id: 'proj1', tab: 'findings', runHref: k => '#/runs/' + k }, opts || {}));
+    await until(() => h.textContent.includes('First bug'));
+    await tick(4);
+    return { h, view };
+  }
+
+  test('open shows open and to-file; the status and tag filters narrow it', async () => {
+    const { h } = await open();
+    assert.equal(countLine(h), '4 of 5 findings');
+    assert.match(h.textContent, /issue states read from GitHub at /);
+    const status = filterOf(h, 'status');
+    assert.ok(status.children.some(o => o.value === 'to-file'));
+    assert.ok(['duplicate', 'shadow', 'unlabelled'].every(v => status.children.some(o => o.value === v)));
+    assert.equal(status.children.find(o => o.value === 'open').textContent, 'open (4)');
+    change(status, 'to-file');
+    assert.equal(countLine(h), '1 of 5 findings');
+    change(status, 'all');
+    assert.equal(countLine(h), '5 of 5 findings');
+    const tag = filterOf(h, 'tag');
+    assert.deepEqual(tag.children.map(o => o.value), ['', 'backend', 'flaky', 'ui']);
+    change(tag, 'flaky');
+    assert.equal(countLine(h), '1 of 5 findings');
+    const chip = walk(h).find(n => n.textContent === 'flaky' && String(n.className).includes('fnd-tag'));
+    assert.ok(chip && !String(chip.className).includes('fnd-tag-derived'));
+    change(tag, 'ui');
+    assert.ok(walk(h).some(n => String(n.className).includes('fnd-tag-derived') && n.title === 'derived from the path'));
+  });
+
+  test('two selected rows, Dismiss with a reason: one POST with both fingerprints, after a confirm', async () => {
+    const { h } = await open();
+    assert.equal(button(h, 'Dismiss').disabled, true);
+    assert.equal(labelled(h, 'Select finding ' + 'null'), undefined, 'a row without a record key has no checkbox');
+    click(labelled(h, 'Select finding ' + FA));
+    click(labelled(h, 'Select finding ' + FB));
+    assert.equal(walk(h).find(n => String(n.className).includes('fnd-picked')).textContent, '2 selected');
+    click(button(h, 'Dismiss'));
+    typed(h, 'why it needs no work', '');
+    click(button(h, 'Apply'));
+    assert.match(h.textContent, /reason is required/);
+    assert.equal(state.posts.length, 0);
+    typed(h, 'why it needs no work', 'noise: $(x)');
+    click(button(h, 'Apply'));
+    await until(() => confirmText(h) === 'Dismiss 2 findings: noise: $(x)?');
+    assert.equal(state.posts.length, 0, 'nothing is sent before the confirm');
+    click(button(h, 'Confirm'));
+    await until(() => state.gets.includes('/api/projects/proj1/findings?refresh=1'));
+    assert.deepEqual(state.posts, [{ path: '/api/projects/proj1/findings/dismiss', body: { fps: [FA, FB], reason: 'noise: $(x)' } }]);
+    await until(() => h.textContent.includes('2 findings dismissed'));
+    assert.equal(labelled(h, 'Select finding ' + FA).checked, false);
+  });
+
+  test('Select all takes the shown rows, and an action sees only those', async () => {
+    const { h } = await open();
+    click(labelled(h, 'Select all shown findings'));
+    assert.equal(walk(h).find(n => String(n.className).includes('fnd-picked')).textContent, '3 selected');
+    change(filterOf(h, 'tag'), 'ui');
+    assert.equal(walk(h).find(n => String(n.className).includes('fnd-picked')).textContent, '1 selected');
+    assert.equal(button(h, 'Reopen').disabled, true, 'every shown selected row is open');
+    click(button(h, 'Mark to file'));
+    click(button(h, 'Apply'));
+    await until(() => confirmText(h) === 'Mark 1 finding to file?');
+    click(button(h, 'Confirm'));
+    await until(() => state.posts.length === 1);
+    assert.deepEqual(state.posts[0].body, { fps: [FA] });
+    assert.equal(state.posts[0].path, '/api/projects/proj1/findings/to-file');
+  });
+
+  test('a refused action shows the route\'s words and leaves the buttons usable', async () => {
+    state.postReply = () => ({ ok: false, status: 409, error: 'refused', detail: 'FP aaaaaaaaaaaa is filed already' });
+    const { h } = await open();
+    click(labelled(h, 'Select finding ' + FA));
+    click(button(h, 'Reopen')); // an open row: Reopen stays disabled
+    assert.equal(state.posts.length, 0);
+    click(button(h, 'Mark fixed'));
+    typed(h, 'why (optional with a commit)', 'by hand');
+    click(button(h, 'Apply'));
+    await until(() => confirmText(h) === 'Mark 1 finding fixed: by hand?');
+    click(button(h, 'Confirm'));
+    await until(() => h.textContent.includes('FP aaaaaaaaaaaa is filed already'));
+    assert.equal(button(h, 'Mark fixed').disabled, false);
+    assert.equal(labelled(h, 'Select finding ' + FA).checked, true, 'the selection survives a refusal');
+    click(button(h, 'Read again'));
+    await until(() => state.gets.includes('/api/projects/proj1/findings?refresh=1'));
+    await tick(8);
+    assert.equal(h.textContent.includes('FP aaaaaaaaaaaa is filed already'), false, 'a refusal is not replayed on the next redraw');
+  });
+
+  test('a redraw while the confirm is open leaves the buttons usable', async () => {
+    const { h } = await open();
+    click(labelled(h, 'Select finding ' + FA));
+    click(button(h, 'Mark to file'));
+    click(button(h, 'Apply'));
+    await until(() => confirmText(h) === 'Mark 1 finding to file?');
+    assert.equal(button(h, 'Mark to file').disabled, true);
+    click(button(h, 'Read again'));
+    await until(() => confirmText(h) === '' && state.gets.includes('/api/projects/proj1/findings?refresh=1'));
+    await tick(8);
+    assert.equal(state.posts.length, 0);
+    assert.equal(button(h, 'Mark to file').disabled, false);
+    assert.equal(button(h, 'Dismiss').disabled, false);
+    assert.equal(button(h, 'File selected').disabled, false);
+    click(button(h, 'Mark to file'));
+    click(button(h, 'Apply'));
+    await until(() => confirmText(h) === 'Mark 1 finding to file?');
+    click(button(walk(h).find(n => String(n.className).split(/\s+/).includes('ui-confirm')), 'Cancel'));
+    await tick(4);
+    assert.equal(confirmText(h), '');
+    assert.equal(button(h, 'Mark to file').disabled, false);
+    assert.equal(state.posts.length, 0);
+  });
+
+  test('a redraw while the confirmed request is in flight keeps its result', async () => {
+    let land;
+    state.postReply = () => new Promise(r => { land = r; });
+    const { h } = await open();
+    click(labelled(h, 'Select finding ' + FB));
+    click(button(h, 'Dismiss'));
+    typed(h, 'why it needs no work', 'not real');
+    click(button(h, 'Apply'));
+    await until(() => confirmText(h).startsWith('Dismiss 1 finding'));
+    click(button(h, 'Confirm'));
+    await until(() => state.posts.length === 1);
+    click(button(h, 'Read again'));
+    await until(() => state.gets.includes('/api/projects/proj1/findings?refresh=1'));
+    await tick(4);
+    assert.equal(button(h, 'Dismiss').disabled, false);
+    land({ ok: true, status: 200, data: { ok: true } });
+    await until(() => h.textContent.includes('1 finding dismissed'));
+    assert.equal(labelled(h, 'Select finding ' + FB).checked, false, 'the result of the sent request cleared the selection');
+  });
+
+  test('Note and Edit open a form for their own row', async () => {
+    const { h } = await open();
+    const rowButtons = buttons(h).filter(b => b.dataset.op === 'note');
+    assert.equal(rowButtons.length, 3, 'one per selectable row');
+    click(rowButtons[2]);
+    const note = walk(h).find(n => n.tagName === 'TEXTAREA');
+    assert.equal(note.value, 'check it');
+    note.value = 'second thoughts';
+    click(button(h, 'Apply'));
+    await until(() => confirmText(h) === 'Set the note of 1 finding?');
+    click(button(h, 'Confirm'));
+    await until(() => state.posts.length === 1);
+    assert.deepEqual(state.posts[0], { path: '/api/projects/proj1/findings/note', body: { fps: [FC], text: 'second thoughts' } });
+    await until(() => h.textContent.includes('1 finding noted'));
+    const edit = buttons(h).filter(b => b.dataset.op === 'edit')[0];
+    click(edit);
+    const sev = walk(h).find(n => n.tagName === 'SELECT' && n.children.some(o => o.textContent === 'keep'));
+    sev.value = 'P0';
+    click(button(h, 'Apply'));
+    await until(() => confirmText(h) === 'Edit 1 finding: severity P0?');
+    click(button(h, 'Confirm'));
+    await until(() => state.posts.length === 2);
+    assert.deepEqual(state.posts[1].body, { fps: [FA], severity: 'P0' });
+  });
+
+  test('Tags… adds and removes, Duplicate of… needs another shown finding', async () => {
+    const { h } = await open();
+    click(labelled(h, 'Select finding ' + FA));
+    click(labelled(h, 'Select finding ' + FB));
+    click(button(h, 'Tags…'));
+    typed(h, 'tags, comma separated', 'Bad Tag');
+    click(button(h, 'Apply'));
+    assert.match(h.textContent, /"Bad" is not a tag/);
+    typed(h, 'tags, comma separated', 'flaky, ui');
+    click(button(h, 'Apply'));
+    await until(() => confirmText(h) === 'Add flaky, ui to 2 findings?');
+    click(button(h, 'Confirm'));
+    await until(() => state.posts.length === 1);
+    assert.deepEqual(state.posts[0].body, { fps: [FA, FB], tags: ['flaky', 'ui'], remove: false });
+    await tick(8);
+    assert.equal(labelled(h, 'Select finding ' + FA).checked, false, 'a done action clears its selection');
+    click(labelled(h, 'Select finding ' + FA));
+    click(labelled(h, 'Select finding ' + FB));
+    assert.equal(button(h, 'Duplicate of…').disabled, true, 'two are selected');
+    click(labelled(h, 'Select finding ' + FA));
+    click(button(h, 'Duplicate of…'));
+    const pick = walk(h).find(n => n.tagName === 'SELECT' && n.children.some(o => o.value === FA));
+    assert.ok(pick && !pick.children.some(o => o.value === FB), 'the finding itself is not offered');
+    pick.value = FA;
+    click(button(h, 'Apply'));
+    await until(() => confirmText(h) === `Mark 1 finding a duplicate of ${FA}?`);
+    click(button(h, 'Confirm'));
+    await until(() => state.posts.length === 2);
+    assert.deepEqual(state.posts[1], { path: '/api/projects/proj1/findings/dup', body: { fps: [FB], of: FA } });
+  });
+
+  test('File selected gets drafts for the selected findings, shows a dialog, and posts only after its confirm', async () => {
+    const drafts = { drafts: [{ title: 'First bug', severity: 'P2', body: 'details' }], created: [], notes: [] };
+    state.getReply = p => p.startsWith('/api/runs/') ? { ok: true, status: 200, data: drafts } : findingsGet(p);
+    const { h } = await open();
+    click(labelled(h, 'Select finding ' + FA));
+    click(labelled(h, 'Select finding ' + FC));
+    click(labelled(h, 'Select finding ' + FB));
+    click(labelled(h, 'Select finding ' + FB));
+    click(button(h, 'File selected'));
+    await until(() => walk(document.body).some(n => n.tagName === 'DIALOG'));
+    // the record fingerprints (with the repository slug), which forge issues --only matches; never the slug-less fp
+    assert.ok(state.gets.includes(`/api/runs/r1key/issues?scope=repo&offline=0&plausible=1&only=${FA},${FC}`), state.gets.join('\n'));
+    assert.equal(state.posts.length, 0);
+    const dlg = walk(document.body).find(n => n.tagName === 'DIALOG');
+    assert.match(dlg.textContent, /creates 1 issue/);
+    assert.equal(button(h, 'File selected').disabled, false);
+    state.postReply = () => ({ ok: true, status: 200, data: { created: [{ title: 'First bug', url: 'https://github.com/o/r/issues/7' }], notes: [] } });
+    click(button(dlg, 'File on GitHub'));
+    await until(() => dlg.textContent.includes('1 created'));
+    assert.deepEqual(state.posts, [{ path: '/api/runs/r1key/issues', body: { scope: 'repo', fingerprints: [FA, FC], include_plausible: true, labels: [] } }]);
+    assert.ok(state.gets.includes('/api/projects/proj1/findings?refresh=1'));
+    click(button(dlg, 'Close'));
+    assert.equal(walk(document.body).some(n => n.tagName === 'DIALOG'), false);
+  });
+
+  test('read-only shows a copyable command per action and no write control', async () => {
+    state.controls = false;
+    const { h } = await open();
+    assert.equal(walk(h).some(n => n.type === 'checkbox' && String(n.getAttribute('aria-label') || '').startsWith('Select')), false);
+    for (const label of ['Dismiss', 'Mark fixed', 'Reopen', 'Mark to file', 'Duplicate of…', 'Tags…', 'File selected', 'Note', 'Edit', 'Apply']) {
+      assert.equal(button(h, label), undefined, label);
+    }
+    const codes = walk(h).filter(n => n.tagName === 'CODE').map(n => n.textContent);
+    assert.ok(codes.includes(`forge findings dismiss /repo ${FA} --reason TEXT`));
+    assert.ok(codes.includes(`forge findings reopen /repo ${FD}`) || codes.some(c => c.startsWith('forge findings reopen /repo ' + FC)));
+    assert.equal(codes.some(c => c.includes('reopen /repo ' + FA)), false, 'an open finding is not reopened');
+    assert.ok(buttons(h).some(b => b.textContent === 'Copy' && b.getAttribute('aria-label') === `Copy: forge findings dismiss /repo ${FA} --reason TEXT`));
+    assert.match(h.textContent, /no record key/);
+    assert.equal(state.posts.length, 0);
+  });
+});

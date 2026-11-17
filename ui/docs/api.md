@@ -305,11 +305,26 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `POST /api/runs/<key>/tasks/<id>/answer` | answer a task that waits for input (`forge control retry … --answer-file -`); authenticated, see Controls |
 | `POST /api/worktrees/remove` | remove chosen worktrees (`forge worktrees rm`); authenticated, 900 s timeout |
 | `POST /api/projects/<id>/memories/forget` | forget learnings in a project's checkouts (`forge memory forget`); authenticated |
+| `POST /api/projects/<id>/memories/add` | add a learning in a project's checkouts (`forge memory add`); body `{path?, category, text, paths?}`; authenticated |
+| `POST /api/projects/<id>/memories/edit` | replace a learning's text in a project's checkouts (`forge memory edit`); body `{path?, key, text}`; authenticated |
+| `POST /api/projects/<id>/findings/fix` | mark findings fixed (`forge findings fix`); body `{fps, commit?, reason?}`; authenticated |
+| `POST /api/projects/<id>/findings/dismiss` | dismiss findings (`forge findings dismiss`); body `{fps, reason}`; authenticated |
+| `POST /api/projects/<id>/findings/reopen` | reopen findings (`forge findings reopen`); body `{fps}`; authenticated |
+| `POST /api/projects/<id>/findings/to-file` | mark findings to-file and keep a draft (`forge findings to-file`); body `{fps, title?, body?}`; authenticated |
+| `POST /api/projects/<id>/findings/dup` | mark one finding a duplicate (`forge findings dup`); body `{fps: [one], of}`; authenticated |
+| `POST /api/projects/<id>/findings/tag` | add or remove tags (`forge findings tag`); body `{fps, tags, remove?}`; authenticated |
+| `POST /api/projects/<id>/findings/note` | set or clear one finding's note (`forge findings note`); body `{fps: [one], text}`; authenticated |
+| `POST /api/projects/<id>/findings/edit` | edit one finding's severity or text (`forge findings edit`); body `{fps: [one], severity?, text?}`; authenticated |
+| `POST /api/projects/<id>/triage` | start a detached triage (`forge findings triage --spec S --detach`); body `{spec, max_findings?}`; authenticated |
+| `GET /api/projects/<id>/triage[?n=N]` | `200 {state, proposals}` from `forge findings triage-status` and `proposals`, read each time |
+| `POST /api/projects/<id>/triage/<n>/<pid>/apply` | approve one proposal (`forge findings apply --approve HASH`); body `{hash, plan_dir?}`; authenticated |
+| `POST /api/projects/<id>/triage/<n>/<pid>/reject` | reject one proposal (`forge findings reject`); body `{reason?}`; authenticated |
+| `GET /api/specs/check?spec=S` | `200 {ok: true, resolved}` or `{ok: false, error}` from `bash scripts/forge-dispatch.sh doctor --spec S --role side`; no model call; answered in read-only mode |
 | `POST /api/storage/compact` | compact one run or all (`forge runs compact --logs`); authenticated, 900 s timeout |
 | `GET /api/models/reviewers` | `200` the `forge dataset reviewers --json` report (how each reviewer's PASSed work held up); no parameters |
 | `GET /api/projects` | `200 {projects: [ProjectRow]}`: one row per repository (see Projects) |
 | `GET /api/projects/<id>` | `200 Project`, `404` for an unknown id |
-| `GET /api/projects/<id>/findings[?refresh=1]` | `200 ProjectFindings`: every review's findings with their status |
+| `GET /api/projects/<id>/findings[?refresh=1]` | `200 ProjectFindings`: every review's findings with status, tags, record and draft |
 | `GET /api/projects/<id>/memories[?refresh=1]` | `200 ProjectMemories`: what each checkout's memory gives models and every learning's state |
 | `GET /api/worktrees[?refresh=1]` | `200 Worktrees`: every worktree forge created, with its status and the commands to remove it; cached 60 s (see Worktrees) |
 | `GET /api/storage[?refresh=1]` | `200 Storage`: what forge takes on disk and the commands that take it back, measured in the background; cached 600 s (see Storage) |
@@ -1772,6 +1787,93 @@ false; when every checkout failed the first failure is the answer. A project wit
 checkout is `409`. A server-wide lock (`409 busy`); timeout 60 s per checkout. A real forget drops
 the project screen's memory answers. Refused under `--read-only` and without the token.
 
+### `POST /api/projects/<id>/memories/add` and `/memories/edit`
+
+The project is `<id>` of `GET /api/projects` (`404` when unknown). Without `path` the call runs in every
+checkout of the project that exists; `path` must be one of them (`400` otherwise). A project with no
+existing checkout is `409`.
+
+`add` body: `{"path": string, "category": "verify"|"trap"|"finding", "text": string, "paths": [string]}`.
+`text` is one line of 1 to 300 characters with no control character. `paths` is at most 20 relative
+paths (no `..`, no comma, no `[` or `]`, each at most 300 characters); omit it or pass `[]` for none.
+Runs `memory add <checkout> --category C --text T [--path P]… --actor ui --json` once per checkout.
+
+`edit` body: `{"path": string, "key": "category:key", "text": string}`, the same text rule. Runs
+`memory edit <checkout> <key> --text T --actor ui --json` once per checkout. The route takes no
+`paths` field.
+
+Both answer `200 {"ok", "checkouts": [{"path", "result"}]}`, `result` being that CLI's object. A
+checkout whose call failed has `result: null` plus `status` and `error`, and `ok` is false; when
+every checkout failed the first failure is the answer. A server-wide lock (`409 busy`); timeout 60 s
+per checkout. The project screen's memory answers are dropped after the calls. Refused under
+`--read-only` and without the token.
+
+### `POST /api/projects/<id>/findings/<op>`
+
+`<op>` is `fix`, `dismiss`, `reopen`, `to-file`, `dup`, `tag`, `note` or `edit`. The project is `<id>`
+of `GET /api/projects` (`404` when unknown, or when it has no root). Runs `findings <op> <root> … --actor
+ui --json`. `dup`, `note` and `edit` take exactly one fingerprint; the others take 1 to 200, and a
+repeated fingerprint is one finding. Every fingerprint is 12 lowercase hex characters. `200` with the
+CLI's object (`ok`, `op`, `changed`, `unchanged`). Exit 2 is `400`, exit 3 is `409` with the CLI's
+message. A server-wide findings lock (`409 {"error": "busy"}`); timeout 60 s. A successful call drops
+the project screen's findings listings and its run cache. Refused under `--read-only` and without the
+token. Unknown fields are `400`.
+
+| `<op>` | Body | What the CLI receives |
+| --- | --- | --- |
+| `fix` | `{fps, commit?, reason?}`. At least one of `commit` (7 to 40 lowercase hex) and `reason` (at most 500 characters, no NUL) | `--commit`, `--reason` |
+| `dismiss` | `{fps, reason}` (`reason` required, same limit) | `--reason` |
+| `reopen` | `{fps}` | the fingerprints only |
+| `to-file` | `{fps, title?, body?}`. `title` at most 200 characters, no NUL. `body` at most 20000 characters, written to a private file | `--title`, `--body-file` |
+| `dup` | `{fps: [one], of}` (`of` is 12 lowercase hex) | `--of` |
+| `tag` | `{fps, tags, remove?}`. `tags` is 1 to 8 values matching `^[a-z][a-z0-9-]{0,23}$`. `remove` true selects `--remove`, otherwise `--add` | `-- TAG… --add` or `-- TAG… --remove` |
+| `note` | `{fps: [one], text}` (`text` at most 2000 characters, no NUL; empty clears the note) | the text as the positional argument |
+| `edit` | `{fps: [one], severity?, text?}`. At least one. `severity` is `P0`, `P1`, `P2` or `P3`. `text` at most 4000 characters, written to a private file | `--severity`, `--text-file` |
+
+### `POST /api/projects/<id>/triage`, `GET /api/projects/<id>/triage`, apply and reject
+
+The repository is the project's root when that directory exists, otherwise the first checkout that
+still exists. An unknown project is `404 {"error": "not found"}`; a project with no directory left
+on this machine is `404 {"error": "no checkout"}`.
+
+`POST /api/projects/<id>/triage` body: `{"spec": string, "max_findings": int}`. `spec` is 1 to 120
+characters of letters, digits and `. _ : / @ + -`. `max_findings`, when present, is an integer from
+1 to 2000. Runs `findings triage <repo> --spec S [--max-findings N] --detach --actor ui --json` and
+answers `200` with the CLI's object (`triage`, `state`). `--detach` returns at once; this is the one
+route whose CLI starts a model. Exit 3 is `409` with the CLI's message. It does not take the findings
+lock. Timeout 60 s. Refused under `--read-only` and without the token.
+
+`GET /api/projects/<id>/triage[?n=N]` runs `findings triage-status <repo> [N] --json` and `findings
+proposals <repo> [N] --json` on every request, with no cache. `N` is 1 to 9 digits. No triage yet
+(the status command exits 3 with that message) is `200 {"state": null, "proposals": null}`. A triage
+with no proposals yet leaves `proposals` null and still returns the state. Any other query parameter
+is `400`. Read-only servers answer this GET. Timeout 60 s per CLI call.
+
+`POST …/triage/<n>/<pid>/apply` body: `{"hash": string, "plan_dir": string}`. `<n>` is 1 to 9 digits,
+`<pid>` matches `^p[0-9]{1,4}$`, and `hash` is 12 lowercase hex characters (the proposal's hash; a
+mismatch is the CLI's refusal). `plan_dir`, when present, is an absolute path. Runs `findings apply
+<repo> N PID --approve HASH [--plan-dir D] --actor ui --json`. `200` with the CLI's object. For a
+`plan` proposal that object carries `plan_dir` and `next` (`bash scripts/forge-parallel.sh plan DIR
+--repo CHECKOUT`); nothing is dispatched. An `issue` proposal only marks findings `to-file` with the
+draft.
+
+`POST …/triage/<n>/<pid>/reject` body: `{"reason": string}`. `reason`, when present, is at most 500
+characters (newline and tab allowed; blank is omitted). Runs `findings reject <repo> N PID [--reason
+T] --actor ui --json`.
+
+Apply and reject hold the server-wide findings lock (`409 {"error": "busy"}`). Exit 2 is `400`, exit
+3 is `409` with the CLI's message. A successful call drops the project screen's findings listings and
+its run cache. Timeout 60 s. Refused under `--read-only` and without the token.
+
+### `GET /api/specs/check?spec=S`
+
+Runs `bash scripts/forge-dispatch.sh doctor --spec S --role side` and answers `200 {"ok": true,
+"resolved": {key: value}}` from the doctor's `key=value` lines, or `200 {"ok": false, "error"}` when
+the doctor refuses. The check finished either way; no model is called. `spec` is required and uses
+the same 1-to-120-character check as triage start: a spec that fails it is `400` and the doctor is
+not run. A literal `+` in the query is a plus. Any other query parameter is `400`. Read-only servers
+answer this GET. Timeout 60 s.
+
 ### `POST /api/storage/compact`
 
 Body: `{"run": "<12-hex run key>"}` or `{"all": true}` (exactly one), and `"dry_run": bool (false)`.
@@ -1810,14 +1912,20 @@ cloud's (cloudmodel.js `hashId`: FNV-1a over the root's UTF-16 code units, 8 hex
 
 ```
 ProjectRow = {id, name, root, exists, runs, live, last, path_only (runs tied by path only), checkouts,
-              memory_lines (lines of <root>/.forge/memory.md, null when absent), open_findings (not superseded)}
+              memory_lines (lines of <root>/.forge/memory.md, null when absent),
+              open_findings (rows the record and the review rules call open or to-file; this list does not
+              ask GitHub, so a filed or swept finding can still be counted)}
 Project = {id, name, root, exists, live, last, path_only, memory_off_runs,
            checkouts: [{path, exists, branch, runs, root}], runs: [RunSummary + identity_source, dataset_uid, no_memory]}
-ProjectFindings = {id, rows: [Finding], notes: [text], runs, dataset_runs, computed, available}
+ProjectFindings = {id, rows: [Finding], notes: [text], runs, dataset_runs, computed, available,
+                   issues_online (true when that listing was the online one), issues_read_at (unix time the listing was read, or null)}
 Finding = {source: run|dataset, run (key or null), run_id, task, final_review (its dir name, 'final' from the
            dataset), attempt, kind: primary|shadow|final, reviewer, verdict, at, id, severity, confidence, location,
-           summary, text, fp (forge issues' key, null when it cannot parse the line), count, occurrences: [{run,
-           run_id, task, attempt, kind, reviewer, at, href}], status, fileable, origin, href (the diff at the finding)}
+           summary, text, fp (forge issues' key, null when it cannot parse the line), record_fp (the finding
+           record's 12-hex key, or null when the row cannot be keyed), record (that record entry, or null),
+           tags (the entry's tags, or the default for the path when none are stored), draft (the to-file
+           draft, or null), count, occurrences: [{run, run_id, task, attempt, kind, reviewer, at, href}],
+           status, fileable, origin, href (the diff at the finding)}
 ProjectMemories = {id, sources: [{path, root, branch, ok, ledger, memory, rebuilt_differs, max_lines}], differs,
                    learnings: [{category, key, text, count, states: {source path: state}, rows, last, dataset_only}],
                    notes, memory_off_runs, runs, computed}
@@ -1825,13 +1933,23 @@ ProjectMemories = {id, sources: [{path, root, branch, ok, ledger, memory, rebuil
 
 Findings come from every review of every run dir (parsed by forge-contract.py through `findings.py`), and
 from `dataset history --json` for runs whose dir is gone (their base commit ties a run whose checkout is
-gone to the project, as `repos.py` does). `status` comes from one `issues <run> --json --offline --all-runs
---include-plausible --include-dismissed` listing per project, matched by `forge issues`' own key, else
-`superseded` when a later review of the same task (or a later final review) passed, else `open`. Repeats
-within a task collapse by that key; a line it cannot parse is its own row. Memories run `memory learnings
-<checkout> --json` for the root and each checkout a run started in that still exists. A run's findings
-are cached by its `updated` time, the CLI's answers for 300 s; `refresh=1` reads everything again; any
-other parameter is a `400`.
+gone to the project, as `repos.py` does). Repeats within a task collapse by `forge issues`' own key; a
+line it cannot parse is its own row. `status` is `forge_findings.status.effective`: the record when it is
+`duplicate`, `dismissed`, `fixed`, `filed` or `to-file`; otherwise the `forge issues` entry (filed and
+`CLOSED` is `fixed`, any other filed issue is `filed`, and, unless the record reopened it, swept is
+`swept` and an old dismissal is `dismissed`); otherwise the review row (`shadow`, `unlabelled` when the
+confidence is `UNSTATED`, `superseded` when a later review of the same task or a later final review
+passed); otherwise `open`. Only `open` and `to-file` count as open. `tags` are the record's tags when it
+has any, otherwise the default for the file (`tests`, `docs`, `infra`, `ui` or `backend`; no path gives
+none). `draft` is the record entry's draft, or null. The issues listing is `issues <path> --json
+--all-runs --include-plausible --include-dismissed`, asked of the repository root first and then of up
+to three of its run dirs: online (no `--offline`, so GitHub can say an issue is closed), and with
+`--offline` when that fails or takes over 60 s. `notes` says
+when the dataset, `forge issues` or the finding record could not be read, and when issue states were not
+read from GitHub (a filed finding may then show as open). Memories run `memory learnings <checkout>
+--json` for the root and each checkout a run started in that still exists. A run's findings are cached
+by its `updated` time, the CLI's answers for 300 s; `refresh=1` reads everything again; any other
+parameter is a `400`.
 
 ### `GET /api/worktrees`
 

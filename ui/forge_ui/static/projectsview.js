@@ -3,7 +3,9 @@
    Routes: #/projects (the list) and #/projects/<id>[/runs|/findings|/memories]. The id is the run cloud's.
    Each tab reads its own endpoint when it opens, never on the page's poll; "Read again" asks the server to read
    everything again. A redraw keeps filters, scroll and a selection (#115). Finding and memory texts are untrusted
-   and only ever enter the page as text. The pure helpers are tested in ui/tests/js/projectsview.test.js.
+   and only ever enter the page as text. With writes on, Memories can edit or add a learning (confirm first);
+   read-only, the row shows the forge memory command to copy. The pure helpers are tested in
+   ui/tests/js/projectsview.test.js and ui/tests/js/memoriesedit.test.js.
    ctx = { id?, tab?, runs() (the page's run list), runHref(key), tablePrefs?(id), saveTablePrefs?(id, prefs) }. */
 (function (root, factory) {
   'use strict';
@@ -14,22 +16,29 @@
   'use strict';
 
   const list = v => Array.isArray(v) ? v : [];
+  const A = root.ForgeFindingsActions || (typeof require === 'function' ? require('./findingsactions.js') : null);
+  const T = root.ForgeTriage || (typeof require === 'function' ? require('./triageview.js') : null);
   const SEVERITIES = ['P0', 'P1', 'P2', 'P3'];
-  const STATUSES = ['open', 'filed', 'fixed', 'swept', 'dismissed', 'superseded'];
+  const STATUSES = ['open', 'to-file', 'filed', 'fixed', 'swept', 'dismissed', 'duplicate', 'shadow', 'unlabelled', 'superseded'];
+  const LAMPS = { open: 'lamp-off', 'to-file': 'lamp-route', filed: 'fnd-amber', fixed: 'st-pass', swept: 'st-pass', dismissed: 'lamp-off', duplicate: 'lamp-off',
+    shadow: 'st-outdated', unlabelled: 'st-unknown', superseded: 'st-outdated' };
+  const OPEN = ['open', 'to-file'];   // the filter `open` shows both: a finding marked to file is still open work
   const STATES = { in_memory: 'in memory', waiting: 'waiting for a second run', stale: 'dropped: stale', capped: 'dropped: trimmed by the cap',
     muted: 'not injected (curated out)', dropped: 'dropped', gone: 'from a checkout that is gone' };
   const TABS = ['runs', 'findings', 'memories'];
   const ROLES_NOTE = 'planner and dwarf get Verify, Known traps and Recurring QA findings; QA gets the last two';
 
   /* ---------- pure ---------- */
-  // filter = { severity: 'all' | P0..P3, status: 'all' | 'open' (default) | STATUSES, run: '' | run id, reviewer: '', path: '' (substring),
-  //            since: 0 (days, 0 = any), shadow: false }
+  // filter = { severity: 'all' | P0..P3, status: 'all' | 'open' (default: open and to-file) | STATUSES, tag: '' | a tag, run: '' | run id,
+  //            reviewer: '', path: '' (substring), since: 0 (days, 0 = any), shadow: false, fp: '' (one finding, by its record key; set by a triage card) }
   function filterFindings(rows, filter, now) {
     const f = filter || {}, sev = f.severity || 'all', status = f.status || 'open', path = String(f.path || '').toLowerCase();
     const since = Number(f.since) > 0 ? (now || Date.now() / 1000) - Number(f.since) * 86400 : null;
-    return list(rows).filter(r => (f.shadow || r.kind !== 'shadow')
-      && (sev === 'all' || r.severity === sev) && (status === 'all' || r.status === status)
-      && (!f.run || r.run_id === f.run) && (!f.reviewer || r.reviewer === f.reviewer)
+    return list(rows).filter(r => (f.shadow || r.kind !== 'shadow' || status === 'shadow')
+      && (sev === 'all' || r.severity === sev)
+      && (status === 'all' || (status === 'open' ? OPEN.includes(r.status) : r.status === status))
+      && (!f.tag || list(r.tags).includes(f.tag))
+      && (!f.run || r.run_id === f.run) && (!f.reviewer || r.reviewer === f.reviewer) && (!f.fp || r.record_fp === f.fp)
       && (!path || String(r.location || '').toLowerCase().includes(path))
       && (since === null || (Number.isFinite(r.at) && r.at >= since)));
   }
@@ -114,6 +123,88 @@
     if (!list(data.learnings).length && !list(data.sources).some(s => s.memory)) return 'No memories yet: forge has recorded no learning for this repository.';
     return null;
   }
+  const MEMORY_CATEGORIES = ['verify', 'trap', 'finding'];
+  const MEMORY_TEXT_MAX = 300;
+  const MEMORY_PATH_MAX = 300;
+  const MEMORY_PATHS_MAX = 20;
+  const MEMORY_KEY_MAX = 256;
+  const MEMORY_KEY_RE = /^[^:\s-][^:]*:.+$/;
+  const MEMORY_CONTROL_RE = /[\u0000-\u001f\u007f]/;
+  function memoryTextError(text) {
+    if (typeof text !== 'string' || MEMORY_CONTROL_RE.test(text) || text.length < 1 || text.length > MEMORY_TEXT_MAX)
+      return 'text must be one line of 1 to 300 characters';
+    return '';
+  }
+  function memoryPathError(path) {
+    if (typeof path !== 'string' || !path || path.length > MEMORY_PATH_MAX) return 'a path is at most 300 characters';
+    if (MEMORY_CONTROL_RE.test(path) || /[,[\]]/.test(path)) return 'a path must not contain a comma, a bracket or a control character';
+    if (path.startsWith('/') || path.startsWith('\\')) return 'a path must be relative';
+    if (path.split(/[\\/]/).includes('..')) return 'a path must not contain ..';
+    return '';
+  }
+  // `value` is a list or a comma-separated line. Empty means no paths.
+  function memoryPaths(value) {
+    if (value == null || value === '') return { paths: [] };
+    let items = value;
+    if (typeof value === 'string') items = value.split(',').map(part => part.trim()).filter(Boolean);
+    if (!Array.isArray(items)) return { error: 'paths must be a list of relative paths' };
+    if (items.length > MEMORY_PATHS_MAX) return { error: 'at most 20 paths' };
+    const paths = [];
+    for (const item of items) {
+      const path = typeof item === 'string' ? item.trim() : item;
+      const error = memoryPathError(path);
+      if (error) return { error };
+      if (!paths.includes(path)) paths.push(path);
+    }
+    return { paths };
+  }
+  // The POST body for memories/add: {body} or {error}. `input` is {category, text, paths?, path?}.
+  function memoryAddBody(input) {
+    const o = input || {};
+    const category = typeof o.category === 'string' ? o.category : '';
+    if (!MEMORY_CATEGORIES.includes(category)) return { error: 'category must be verify, trap or finding' };
+    const textError = memoryTextError(o.text);
+    if (textError) return { error: textError };
+    const parsed = memoryPaths(o.paths);
+    if (parsed.error) return { error: parsed.error };
+    const body = { category, text: o.text };
+    if (parsed.paths.length) body.paths = parsed.paths;
+    if (typeof o.path === 'string' && o.path) body.path = o.path;
+    return { body };
+  }
+  // The POST body for memories/edit: {body} or {error}. The checkout path, when there is one, is added by the page.
+  function memoryEditBody(key, text) {
+    if (typeof key !== 'string' || !key || key.length > MEMORY_KEY_MAX || MEMORY_CONTROL_RE.test(key) || !MEMORY_KEY_RE.test(key))
+      return { error: 'key must be category:key' };
+    const textError = memoryTextError(text);
+    if (textError) return { error: textError };
+    return { body: { key, text } };
+  }
+  // One argument for a POSIX shell. A safe word stays bare; quotes and `$` stay literal inside single quotes.
+  function shellQuote(value) {
+    const text = value == null ? '' : String(value);
+    if (text !== '' && /^[A-Za-z0-9_@%+=:,./-]+$/.test(text) && !text.startsWith('-')) return text;
+    return "'" + text.replace(/'/g, "'\\''") + "'";
+  }
+  // `forge memory add|edit <checkout> …`, shell-quoted, for a person to copy. Not the argv the server runs.
+  function memoryCommand(op, checkout, input) {
+    const o = input || {};
+    const head = ['forge memory', op, shellQuote(checkout == null ? '' : checkout)];
+    if (op === 'edit') {
+      head.push(shellQuote(o.key == null ? 'category:key' : o.key), '--text', shellQuote(o.text == null ? 'TEXT' : o.text));
+    } else {
+      head.push('--category', shellQuote(o.category || 'verify'), '--text', shellQuote(o.text == null ? 'TEXT' : o.text));
+      for (const path of list(o.paths)) head.push('--path', shellQuote(path));
+    }
+    return head.join(' ');
+  }
+  // `manual` is set when a person wrote a row. The projects answer keeps each row's role and may omit the flag;
+  // forge sets the flag for exactly the role `person`.
+  function learningManual(row) {
+    if (!row) return false;
+    if (row.manual === true) return true;
+    return list(row.rows).some(item => item && item.role === 'person');
+  }
   // A summary without what its own columns show: the bullet, the [P1][CONFIRMED] tags and a leading location.
   function cleanSummary(text, location) {
     let s = String(text || '').replace(/^\s*(?:[-*+•]|\d+[.)])\s*/, '').replace(/\*\*/g, '');
@@ -133,9 +224,10 @@
     const when = t => Number.isFinite(t) ? new Date(t * 1000).toLocaleString() : '—';
     const guard = (region, draw) => { if (UI.guard) UI.guard(region, draw); else draw(); };
     const s = { id: ctx.id || null, tab: TABS.includes(ctx.tab) ? ctx.tab : 'runs', list: null, detail: null, findings: null, memories: null,
-      ffilter: { severity: 'all', status: 'open', run: '', reviewer: '', path: '', since: 0, shadow: false },
+      ffilter: { severity: 'all', status: 'open', tag: '', run: '', reviewer: '', path: '', since: 0, shadow: false },
       mfilter: { category: 'all', state: 'all', text: '' }, source: null, checkout: '', error: null, seq: 0, timer: null,
-      writes: false, picked: new Set(), forgetNote: null, forgetting: false, forgetEpoch: 0, forgetHost: null };
+      writes: false, picked: new Set(), forgetNote: null, forgetting: false, forgetEpoch: 0, forgetHost: null,
+      fsel: new Set(), acting: false, actEpoch: 0, actHost: null, actResult: null, triage: {}, triagePanel: null };
     const tablePrefs = id => ctx.tablePrefs ? ctx.tablePrefs(id) : null, savePrefs = id => p => ctx.saveTablePrefs && ctx.saveTablePrefs(id, p);
 
     function table(parent, id, label, columns, rows, extra) {
@@ -161,7 +253,24 @@
         }
       }
     }
+    // The same for a finding action (a confirm, or the drafts being made for File selected).
+    function abandonAct() {
+      if (!s.acting) return;
+      const host = s.actHost;
+      s.acting = false;
+      s.actEpoch += 1;
+      s.actHost = null;
+      dismissConfirm(host);
+    }
+    // The triage panel's polling and its confirm end with the draw that made it.
+    function abandonTriage() {
+      const panel = s.triagePanel;
+      s.triagePanel = null;
+      if (panel) panel.stop();
+    }
     function abandonForget() {
+      abandonTriage();
+      abandonAct();
       if (!s.forgetting) return;
       const host = s.forgetHost;
       s.forgetting = false;
@@ -261,12 +370,27 @@
     }
 
     /* Findings */
+    function copyButton(command) {
+      const b = el('button', 'Copy', 'fnd-copy'); b.type = 'button'; b.setAttribute('aria-label', 'Copy: ' + command);
+      b.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(command); b.textContent = 'Copied'; } catch (_) { b.textContent = 'Copy failed: select it'; }
+        setTimeout(() => { b.textContent = 'Copy'; }, 2500);
+      });
+      return b;
+    }
     function drawFindings(body, note) {
       abandonForget();
       const d = s.findings;
       if (!d) { fill(note, []); body.replaceChildren(el('p', s.ferror ? `Could not read the findings (${s.ferror}).` : 'Reading every review of every run… the first read parses each reply, so it can take a few seconds.', s.ferror ? 'warn' : 'muted')); return; }
-      fill(note, list(d.notes).concat(d.dataset_runs ? [`${d.dataset_runs} run(s) whose directory is gone are read from the dataset: their findings link to no run page or diff.`] : []));
+      const lines = list(d.notes).concat(d.dataset_runs ? [`${d.dataset_runs} run(s) whose directory is gone are read from the dataset: their findings link to no run page or diff.`] : []);
+      if (d.issues_online && Number.isFinite(d.issues_read_at)) lines.push(`issue states read from GitHub at ${when(d.issues_read_at)}`);
+      else if (!d.issues_online && !lines.some(n => /GitHub/.test(String(n)))) lines.push('issue states were not read from GitHub (offline): filed findings may show as open');
+      fill(note, lines);
       const rows = list(d.rows);
+      const have = new Set(rows.map(r => r.record_fp));
+      for (const fp of [...s.fsel]) if (!have.has(fp)) s.fsel.delete(fp);
+      const tags = A.tagsIn(rows);
+      if (s.ffilter.tag && !tags.includes(s.ffilter.tag)) s.ffilter.tag = '';
       const bar = el('div', undefined, 'prj-filters');
       const select = (name, text, options) => {
         const l = el('label', undefined, 'fnd-field'), sel = el('select'); sel.dataset.filter = name;
@@ -276,7 +400,9 @@
         l.append(el('span', text, 'plate'), sel); bar.append(l);
       };
       const counts = {}; for (const r of rows) counts[r.status] = (counts[r.status] || 0) + 1;
-      select('status', 'Status', [['all', 'all']].concat(STATUSES.map(x => [x, `${x} (${counts[x] || 0})`])));
+      const countOf = x => x === 'open' ? OPEN.reduce((n, k) => n + (counts[k] || 0), 0) : counts[x] || 0;
+      select('status', 'Status', [['all', 'all']].concat(STATUSES.map(x => [x, `${x} (${countOf(x)})`])));
+      select('tag', 'Tag', [['', 'all']].concat(tags.map(t => [t, t])));
       select('severity', 'Severity', [['all', 'all']].concat(SEVERITIES.map(x => [x, x])));
       select('run', 'Run', [['', 'all']].concat(Array.from(new Set(rows.map(r => r.run_id).filter(Boolean))).sort().map(x => [x, x])));
       select('reviewer', 'Reviewer', [['', 'all']].concat(Array.from(new Set(rows.map(r => r.reviewer).filter(Boolean))).sort().map(x => [x, x])));
@@ -290,34 +416,278 @@
       const again = readAgain(() => loadTab(true));
       bar.append(again);
       const count = el('p', '', 'muted prj-count'), tableHost = el('div', undefined, 'prj-table');
-      body.replaceChildren(bar, count, tableHost);
+      const formHost = el('div', undefined, 'fnd-form'), actHost = el('div', undefined, 'fnd-confirm'), noteHost = el('div', undefined, 'fnd-result');
+      s.actHost = actHost;
+      const triageHost = el('div', undefined, 'triage-host');
+      if (T) {
+        s.triagePanel = T.render(triageHost, {
+          id: s.id, root: s.detail && s.detail.root, writes: s.writes, store: s.triage, reload: () => { if (s.tab === 'findings') loadTab(true); },
+          openCount: () => rows.filter(r => OPEN.includes(r.status) && r.kind !== 'shadow').length,
+          rows: () => rows,
+          show: fp => { s.ffilter = { severity: 'all', status: 'all', tag: '', run: '', reviewer: '', path: '', since: 0, shadow: true, fp }; drawFindings(body, note); },
+        });
+      }
+      if (s.actResult) { UI.outcome(noteHost, s.actResult.res, s.actResult.text, { silent: true }); s.actResult = null; }   // shown once
+      const shownNow = () => filterFindings(rows, s.ffilter);
+      const selectedNow = () => A.selectedRows(shownNow(), s.fsel);
+
+      /* the write controls */
+      let allBox = null, picked = null;
+      const opButtons = {};
+      function syncBar() {
+        if (!picked) return;
+        const sel = selectedNow(), ok = A.allowed(sel);
+        picked.textContent = ok.why || `${ok.count} selected`;
+        for (const [op, b] of Object.entries(opButtons)) b.disabled = s.acting || !ok[op];
+        const shown = shownNow().filter(A.selectable);
+        allBox.checked = shown.length > 0 && shown.every(r => s.fsel.has(r.record_fp));
+        allBox.disabled = !shown.length;
+      }
+      const closeForm = () => formHost.replaceChildren();
+      // Confirm, post, and show what the route said. Copies forgetSelected's guard: a redraw (Read again, another tab)
+      // drops this strip, so its epoch is retired, the controls are usable again, and a request already sent keeps its result.
+      async function perform(op, fps, request) {
+        if (s.acting) { UI.outcome(noteHost, { ok: false, status: 409, error: 'busy', detail: 'another action is waiting for its confirm' }); return; }
+        const epoch = s.actEpoch, host = actHost, current = () => epoch === s.actEpoch && host.isConnected;
+        s.acting = true; s.actResult = null; s.actHost = host; syncBar();
+        noteHost.replaceChildren();
+        for (const child of [...host.children]) child.remove();
+        try {
+          const yes = await UI.confirmInline(host, A.confirmText(op, fps.length, request), {});
+          if (!current() || !yes) return;
+          const res = await UI.post(A.pathOf(s.id, op), request);
+          s.actResult = { res, text: `${fps.length} finding${fps.length === 1 ? '' : 's'} ${A.PAST[op]}` };
+          if (res && res.ok) for (const fp of fps) s.fsel.delete(fp);
+          if (!current()) { if (s.tab === 'findings') await loadTab(true); return; }
+          if (!res || !res.ok) { s.actResult = null; UI.outcome(noteHost, res); return; }   // shown here, not again on a redraw
+          closeForm();
+          s.acting = false;
+          await loadTab(true);
+        } finally {
+          if (epoch === s.actEpoch) { s.acting = false; if (host.isConnected) syncBar(); }
+        }
+      }
+      const textInput = (ph, max) => { const i = el('input'); i.type = 'text'; i.placeholder = ph; if (max) i.maxLength = max; return i; };
+      const field = (label, input) => { const l = el('label', undefined, 'fnd-field'); l.append(el('span', label, 'plate'), input); return l; };
+      function openForm(op, row) {
+        const fpsNow = () => row ? [row.record_fp] : A.fpsOf(selectedNow());
+        if (op === 'reopen') { const fps = fpsNow(), built = A.bodyFor(op, fps, {}); if (built.error) UI.outcome(noteHost, { ok: false, error: built.error }); else perform(op, fps, built.body); return; }
+        closeForm();
+        let collect = () => ({}), first = null;
+        const parts = [], heading = el('p', undefined, 'fnd-form-title');
+        if (op === 'fix') {
+          const c = textInput('7 to 40 hex characters'), r = textInput('why (optional with a commit)', 500); first = c;
+          parts.push(field('Commit', c), field('Reason', r)); collect = () => ({ commit: c.value, reason: r.value });
+          heading.textContent = 'Mark fixed: give a commit, a reason, or both';
+        } else if (op === 'dismiss') {
+          const r = textInput('why it needs no work', 500); first = r;
+          parts.push(field('Reason (required)', r)); collect = () => ({ reason: r.value });
+          heading.textContent = 'Dismiss: say why';
+        } else if (op === 'to-file') {
+          const t = textInput('issue title (optional)', 200); first = t;
+          parts.push(field('Title', t)); collect = () => ({ title: t.value });
+          heading.textContent = 'Mark to file: keep a draft issue for these findings';
+        } else if (op === 'dup') {
+          const sel = el('select'); first = sel;
+          const mine = fpsNow()[0];
+          for (const r of shownNow().filter(x => A.selectable(x) && x.record_fp !== mine)) {
+            const o = el('option', `${r.severity || '—'} ${cleanSummary(r.summary, r.location).slice(0, 90)} · ${r.record_fp}`); o.value = r.record_fp; sel.append(o);
+          }
+          if (!sel.children.length) parts.push(el('p', 'No other finding is shown: widen the filters to pick the original.', 'muted'));
+          else { parts.push(field('Duplicate of', sel)); collect = () => ({ of: sel.value }); }
+          heading.textContent = 'Mark duplicate: pick the finding it repeats';
+        } else if (op === 'tag') {
+          const t = textInput('tags, comma separated'), m = el('select'); first = t;
+          for (const [v, x] of [['add', 'Add'], ['remove', 'Remove']]) { const o = el('option', x); o.value = v; m.append(o); }
+          parts.push(field('Tags', t), field('Action', m)); collect = () => ({ tags: t.value, remove: m.value === 'remove' });
+          heading.textContent = 'Tags: lowercase, digits and dashes, at most 8';
+        } else if (op === 'note') {
+          const t = el('textarea'); t.rows = 3; t.maxLength = 2000; t.placeholder = 'a note (empty clears it)'; t.value = row && row.record && row.record.note || ''; first = t;
+          parts.push(field('Note', t)); collect = () => ({ text: t.value });
+          heading.textContent = 'Note on ' + (row ? cleanSummary(row.summary, row.location).slice(0, 80) : 'the finding');
+        } else if (op === 'edit') {
+          const sv = el('select'), t = el('textarea'); first = sv; t.rows = 4; t.maxLength = 4000;
+          const was = row && row.record && row.record.edit && row.record.edit.text || (row && (row.text || row.summary)) || '';
+          t.value = was;
+          for (const v of [''].concat(SEVERITIES)) { const o = el('option', v || 'keep'); o.value = v; sv.append(o); }
+          sv.value = '';
+          parts.push(field('Severity', sv), field('Text', t));
+          collect = () => ({ severity: sv.value, text: t.value === was ? undefined : t.value });
+          heading.textContent = 'Edit ' + (row ? cleanSummary(row.summary, row.location).slice(0, 80) : 'the finding') + (row && row.severity ? ` (now ${row.severity})` : '');
+        }
+        const msg = el('p', undefined, 'warn fnd-form-msg');
+        const apply = () => {
+          const fps = fpsNow(), built = A.bodyFor(op, fps, collect());
+          if (built.error) { msg.textContent = built.error; return; }
+          msg.textContent = '';
+          perform(op, fps, built.body);
+        };
+        const go = el('button', 'Apply', 'primary'); go.type = 'button'; go.addEventListener('click', apply);
+        const cancel = el('button', 'Cancel'); cancel.type = 'button'; cancel.addEventListener('click', closeForm);
+        const wrap = el('div', undefined, 'fnd-form-body');
+        wrap.append(...parts, go, cancel);
+        wrap.addEventListener('keydown', e => {
+          if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeForm(); }
+          else if (e.key === 'Enter' && e.target && e.target.tagName === 'INPUT') { e.preventDefault(); apply(); }
+        });
+        formHost.append(heading, wrap, msg);
+        if (first && first.focus) first.focus();
+      }
+      // File selected: drafts for exactly the chosen findings, a dialog, and the POST only after its confirm.
+      async function fileSelected() {
+        const FF = root.ForgeFindings;
+        if (s.acting || !FF) return;
+        const sel = selectedNow(), fps = A.fileableFps(sel), key = A.fileRun(sel);
+        if (!fps.length || !key) return;
+        const epoch = s.actEpoch;
+        s.acting = true; s.actResult = null; s.actHost = actHost; noteHost.replaceChildren(); syncBar();
+        let res;
+        try { res = await UI.get(FF.issuesUrl(key, { scope: 'repo', offline: false, plausible: true, only: fps })); }
+        finally { if (epoch === s.actEpoch) { s.acting = false; if (actHost.isConnected) syncBar(); } }
+        if (!res || !res.ok) {
+          if (epoch === s.actEpoch && actHost.isConnected) UI.outcome(noteHost, res); else s.actResult = { res };
+          return;
+        }
+        fileDialog(FF, key, fps, list(res.data && res.data.drafts));
+      }
+      function fileDialog(FF, key, fps, drafts) {
+        const dlg = el('dialog', undefined, 'fnd-dialog'); dlg.setAttribute('aria-label', 'File issues on GitHub');
+        document.body.append(dlg);
+        let posting = false;
+        const cleanup = () => { dlg.remove(); };
+        const shut = () => { if (typeof dlg.close === 'function') dlg.close(); else cleanup(); };
+        dlg.addEventListener('close', cleanup);
+        dlg.addEventListener('click', e => { if (e.target === dlg && !posting) shut(); });
+        dlg.addEventListener('cancel', e => { if (posting) e.preventDefault(); });
+        dlg.append(el('h2', 'File issues on GitHub'));
+        const warn = el('p', undefined, 'fnd-warn');
+        warn.append(el('i', undefined, 'lamp st-running'), el('span', `This creates ${drafts.length} issue${drafts.length === 1 ? '' : 's'} on this repository's GitHub project, from your gh login, and cannot be undone from here.`));
+        dlg.append(warn);
+        if (!drafts.length) dlg.append(el('p', 'forge has no draft for this selection (its findings may be filed already).', 'muted'));
+        for (const dr of drafts) {
+          const art = el('article', undefined, 'fnd-draft'), h = el('h3', undefined, 'fnd-draft-title');
+          h.append(el('span', dr.severity || '—', 'chip sev-chip sev-' + (SEVERITIES.includes(dr.severity) ? dr.severity : 'none')), el('span', dr.title || 'untitled'));
+          art.append(h);
+          if (dr.same_title) {
+            const url = FF.safeUrl(dr.same_title), p = el('p', undefined, 'fnd-same');
+            p.append(el('i', undefined, 'lamp fnd-amber'), el('span', 'An open issue with this title exists already: '));
+            if (url) { const a = el('a', url); a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer'; p.append(a); } else p.append(el('span', String(dr.same_title)));
+            p.append(el('span', '. forge skips it.')); art.append(p);
+          }
+          art.append(el('pre', dr.body || '', 'fnd-body')); dlg.append(art);
+        }
+        const labels = el('input'); labels.type = 'text'; labels.placeholder = 'bug, forge (optional, comma separated)';
+        const labelNote = el('p', undefined, 'warn fnd-label-note'); labelNote.hidden = true;
+        const results = el('div', undefined, 'fnd-results');
+        const go = el('button', 'File on GitHub', 'primary'), cancel = el('button', 'Cancel'); go.type = 'button'; cancel.type = 'button';
+        go.disabled = !drafts.length;
+        cancel.addEventListener('click', shut);
+        go.addEventListener('click', async () => {
+          const parsed = FF.parseLabels(labels.value);
+          labelNote.hidden = !parsed.error; labelNote.textContent = parsed.error || '';
+          if (parsed.error) return;
+          go.disabled = true; cancel.disabled = true; labels.disabled = true; results.replaceChildren(); posting = true;
+          const res = await UI.post(FF.issuesPath(key), FF.fileBody('repo', fps, true, parsed.labels));
+          posting = false;
+          if (!res || !res.ok) { go.disabled = false; cancel.disabled = false; labels.disabled = false; UI.outcome(results, res); return; }
+          const made = FF.resultLines(res.data.created), ul = el('ul', undefined, 'fnd-created');
+          for (const ln of made) {
+            const li = el('li', undefined, 'fnd-created-' + ln.kind), url = FF.safeUrl(ln.url);
+            li.append(el('i', undefined, 'lamp ' + (ln.kind === 'created' ? 'st-pass' : 'fnd-amber')));
+            if (url) { const a = el('a', ln.text); a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer'; li.append(a); } else li.append(el('span', ln.text));
+            ul.append(li);
+          }
+          results.replaceChildren(el('p', `${made.filter(l => l.kind === 'created').length} created`, 'fnd-done'), ul);
+          for (const n of FF.emptyNotes(res.data.created, res.data.notes)) results.append(el('p', n, 'muted fnd-result-note'));
+          go.remove(); cancel.textContent = 'Close'; cancel.disabled = false;
+          for (const r of list(s.findings && s.findings.rows)) if (fps.includes(r.record_fp)) s.fsel.delete(r.record_fp);
+          if (s.tab === 'findings') loadTab(true);
+        });
+        const actions = el('div', undefined, 'fnd-dialog-actions'); actions.append(cancel, go);
+        const labelField = el('label', undefined, 'fnd-field'); labelField.append(el('span', 'Labels', 'plate'), labels);
+        dlg.append(labelField, labelNote, results, actions);
+        if (typeof dlg.showModal === 'function') dlg.showModal(); else dlg.setAttribute('open', '');
+        (drafts.length ? go : cancel).focus();
+      }
+
+      if (s.writes) {
+        const abar = el('div', undefined, 'fnd-actions prj-actions');
+        const lab = el('label', undefined, 'fnd-toggle');
+        allBox = el('input'); allBox.type = 'checkbox'; allBox.setAttribute('aria-label', 'Select all shown findings');
+        lab.append(allBox, el('span', 'Select all'));
+        picked = el('span', '0 selected', 'muted fnd-picked');
+        allBox.addEventListener('change', () => {
+          for (const r of shownNow()) { if (!A.selectable(r)) continue; if (allBox.checked) s.fsel.add(r.record_fp); else s.fsel.delete(r.record_fp); }
+          drawTable();
+        });
+        abar.append(lab, picked);
+        for (const [op, text] of [['fix', 'Mark fixed'], ['dismiss', 'Dismiss'], ['reopen', 'Reopen'], ['to-file', 'Mark to file'], ['dup', 'Duplicate of…'], ['tag', 'Tags…']]) {
+          const b = el('button', text); b.type = 'button'; b.dataset.op = op; b.disabled = true;
+          b.addEventListener('click', () => openForm(op)); opButtons[op] = b; abar.append(b);
+        }
+        const fileKey = el('button', 'File selected', 'primary'); fileKey.type = 'button'; fileKey.dataset.op = 'file'; fileKey.disabled = true;
+        fileKey.title = 'creates GitHub issues for the selected findings that forge issues can file (at most ' + A.MAX_FILE + ')';
+        fileKey.addEventListener('click', () => { fileSelected(); }); opButtons.file = fileKey; abar.append(fileKey);
+        body.replaceChildren(triageHost, bar, abar, formHost, actHost, noteHost, count, tableHost);
+      } else body.replaceChildren(triageHost, bar, count, tableHost);
+
+      /* the table */
       const summaryCell = r => {
         const wrap = el('div', undefined, 'fnd-summary'), line = el('div', undefined, 'fnd-summary-line');
         const more = el('button', undefined, 'fnd-more'); more.type = 'button'; more.setAttribute('aria-expanded', 'false'); more.setAttribute('aria-label', 'Show the full text');
         more.append(el('span', '▸', 'fnd-caret'));
         const detail = el('div', undefined, 'fnd-detail'); detail.hidden = true;
         detail.append(el('pre', r.text || r.summary || '', 'fnd-text'));
+        const rec = r.record || {};
+        for (const [k, label] of [['reason', 'reason'], ['commit', 'fixed by'], ['duplicate_of', 'duplicate of'], ['issue', 'issue'], ['note', 'note']]) {
+          if (rec[k] != null && String(rec[k]) !== '') detail.append(el('p', `${label}: ${rec[k]}`, 'fnd-rec'));
+        }
         if (list(r.occurrences).length > 1) {
           const ul = el('ul', undefined, 'prj-occ');
           for (const o of r.occurrences) { const li = el('li'); const t = `${o.run_id || '—'} · ${o.task || 'final review'} · attempt ${o.attempt == null ? '—' : o.attempt} · ${o.reviewer || '—'} · ${when(o.at)}`; if (o.href) { const a = el('a', t); a.href = o.href; li.append(a); } else li.append(el('span', t)); ul.append(li); }
           detail.append(el('p', `Seen ${r.count} times, the newest first in the row:`, 'muted'), ul);
         }
+        if (!s.writes) {
+          const cmds = A.commandsFor(s.detail && s.detail.root, r), cbox = el('div', undefined, 'fnd-cmds');
+          if (!cmds.length) cbox.append(el('p', 'This finding has no record key, so forge cannot change it.', 'muted'));
+          else {
+            cbox.append(el('p', 'This page is read-only. Change this finding from a terminal:', 'muted'));
+            for (const c of cmds) { const rowEl = el('div', undefined, 'fnd-cmd'), code = el('code', c.command, 'mono'); code.tabIndex = 0; code.title = c.label; rowEl.append(code, copyButton(c.command)); cbox.append(rowEl); }
+          }
+          detail.append(cbox);
+        }
         more.addEventListener('click', () => { const open = detail.hidden; detail.hidden = !open; more.setAttribute('aria-expanded', String(open)); more.firstChild.textContent = open ? '▾' : '▸'; });
         line.append(more, el('span', cleanSummary(r.summary, r.location) || '—', 'prj-summary'));
         if (r.count > 1) line.append(el('span', `×${r.count}`, 'chip prj-count-chip'));
-        wrap.append(line, detail); return wrap;
+        wrap.append(line);
+        if (list(r.tags).length) {
+          const chips = el('div', undefined, 'fnd-tags'), derived = A.derivedTags(r);
+          for (const t of r.tags) {
+            const c = el('span', t, 'fnd-tag' + (derived ? ' fnd-tag-derived' : '')); if (derived) c.title = 'derived from the path';
+            chips.append(c);
+          }
+          wrap.append(chips);
+        }
+        wrap.append(detail); return wrap;
       };
       const statusCell = r => {
         const b = el('span', undefined, 'fnd-status fnd-' + r.status);
-        b.append(el('i', undefined, 'lamp ' + (r.status === 'open' ? 'lamp-off' : r.status === 'filed' ? 'fnd-amber' : r.status === 'superseded' ? 'st-outdated' : r.status === 'dismissed' ? 'lamp-off' : 'st-pass')), el('span', r.status));
+        b.append(el('i', undefined, 'lamp fnd-lamp-' + r.status + ' ' + (LAMPS[r.status] || 'lamp-off')), el('span', r.status));
         if (r.status === 'superseded') b.title = 'a later review of the same task passed; that does not say this finding was fixed';
+        else if (r.status === 'to-file') b.title = 'marked to file as a GitHub issue: still open work';
+        else if (r.status === 'unlabelled') b.title = 'the finding has no usable label, so forge cannot say what it is';
         return b;
       };
       const whereCell = r => {
         if (r.source === 'dataset') { const x = el('span', 'from the dataset', 'chip st-unknown'); x.title = 'its run directory is gone: no run page or diff to open'; return x; }
         const box = el('span', undefined, 'prj-where');
         if (r.href) { const a = el('a', 'diff'); a.href = r.href; a.title = 'open the diff at this finding'; box.append(a); }
-        if (r.fileable && s.writes) { const f = el('a', 'file or dismiss'); f.href = '#/runs/' + encodeURIComponent(r.run) + '/findings'; f.title = 'on the run\'s Open findings page, through forge issues'; box.append(document.createTextNode(' · '), f); }
+        if (s.writes && A.selectable(r)) {
+          for (const op of ['note', 'edit']) {
+            const b = el('button', op === 'note' ? 'Note' : 'Edit', 'fnd-rowbtn'); b.type = 'button'; b.dataset.op = op; b.title = op === 'note' ? 'add or change a note' : 'change the severity or the text';
+            b.addEventListener('click', () => openForm(op, r)); box.append(document.createTextNode(' '), b);
+          }
+        }
         return box;
       };
       const runCell = r => { if (!r.run) return r.run_id || '—'; const a = el('a', r.run_id || r.run, 'mono'); a.href = ctx.runHref(r.run); return a; };
@@ -334,9 +704,21 @@
         { id: 'status', label: 'Status', value: r => STATUSES.indexOf(r.status), cell: statusCell },
         { id: 'open', label: 'Open', sortable: false, cell: whereCell },
       ];
+      if (s.writes) columns.unshift({ id: 'pick', label: '', title: 'Select', sortable: false, hideable: false, cell: r => {
+        if (!A.selectable(r)) { const n = el('span', '—', 'muted'); n.title = 'this finding has no record key: forge cannot change it'; return n; }
+        const cb = el('input'); cb.type = 'checkbox'; cb.checked = s.fsel.has(r.record_fp); cb.setAttribute('aria-label', 'Select finding ' + r.record_fp);
+        cb.addEventListener('change', () => { if (cb.checked) s.fsel.add(r.record_fp); else s.fsel.delete(r.record_fp); syncBar(); });
+        return cb;
+      } });
       function drawTable() {
-        const shown = filterFindings(rows, s.ffilter);
+        const shown = shownNow();
         count.textContent = `${shown.length} of ${rows.length} findings`;
+        if (s.ffilter.fp) {
+          const all = el('button', 'Show all findings'); all.type = 'button'; all.dataset.op = 'clear-fp';
+          all.addEventListener('click', () => { s.ffilter = { severity: 'all', status: 'open', tag: '', run: '', reviewer: '', path: '', since: 0, shadow: false, fp: '' }; drawFindings(body, note); });
+          count.append(document.createTextNode(` · only ${s.ffilter.fp} `), all);
+        }
+        syncBar();
         if (!shown.length) { tableHost.replaceChildren(el('p', rows.length ? 'No findings match these filters.' : 'No review of this repository wrote a finding.', 'muted')); return; }
         table(tableHost, 'project-findings', 'Findings', columns, shown, { className: 'fnd-grid prj-findings' });
       }
@@ -360,8 +742,193 @@
       }
       bar.append(readAgain(() => loadTab(true)));
       const parts = [bar];
+      const learnings = list(d.learnings);
+      const shownNow = () => filterLearnings(learnings, s.mfilter, s.source);
+      let allBox = null, forget = null, addButton = null, saveEdit = null, editButtons = [];
+      const faction = el('div'), noteHost = el('div'); faction.append(noteHost);
+      s.forgetHost = faction;
+      const editHost = el('div', undefined, 'prj-edit');
+      const lcount = el('p', '', 'muted prj-count'), lhost = el('div', undefined, 'prj-table');
+      const checkoutOf = () => s.source || (s.detail && s.detail.root) || '';
+      const writeCheckouts = () => s.source ? [s.source] : list(d.sources).map(item => item && item.path).filter(Boolean);
+      const whereText = targets => targets.length ? targets.join(', ') : 'every checkout of this project';
+      function commandLine(command) {
+        const rowEl = el('div', undefined, 'fnd-cmd'), code = el('code', command, 'mono');
+        code.tabIndex = 0; rowEl.append(code, copyButton(command)); return rowEl;
+      }
+      function terminalBox(intro, commands) {
+        const box = el('div', undefined, 'fnd-cmds');
+        box.append(el('p', intro, 'muted'));
+        for (const command of commands) box.append(commandLine(command));
+        return box;
+      }
+      function paintNote() { noteHost.replaceChildren(...list(s.forgetNote).map(line => el('p', line, 'muted'))); }
+      // Forget, Edit and Add share s.forgetting, so one confirm is the only write in flight.
+      function syncForget() {
+        const busy = s.forgetting;
+        if (forget) {
+          const keys = forgetKeys(shownNow(), s.picked);
+          forget.textContent = `Forget selected (${keys.length})`;
+          forget.disabled = busy || keys.length === 0;
+          if (allBox) {
+            const selectable = shownNow().map(learningKey).filter(Boolean);
+            allBox.checked = selectable.length > 0 && selectable.every(key => s.picked.has(key));
+            allBox.disabled = busy || selectable.length === 0;
+          }
+        }
+        if (addButton) addButton.disabled = busy;
+        if (saveEdit) saveEdit.disabled = busy;
+        for (const b of editButtons) b.disabled = busy || !b.dataset.key;
+      }
+      function memoryResultLines(op, res) {
+        const data = forgetData(res), verb = op === 'add' ? 'added' : 'edited';
+        if (!data) return [verb];
+        const lines = [];
+        for (const checkout of list(data.checkouts)) {
+          const where = checkout && checkout.path ? String(checkout.path) : 'checkout';
+          const result = checkout && checkout.result;
+          if (!result || result.ok === false) {
+            const err = checkout && checkout.error;
+            const why = typeof err === 'string' ? err : err && (err.detail || err.error);
+            lines.push(where + ': ' + (why || 'failed'));
+            continue;
+          }
+          lines.push(where + ': ' + verb + (result.key ? ' ' + result.key : ''));
+        }
+        return lines.length ? lines : [verb];
+      }
+      function memoryFailLine(op, res) {
+        return (op === 'add' ? 'Could not add: ' : 'Could not edit: ') + ((res && (res.detail || res.error)) || 'no answer');
+      }
+      // Same epoch guard as forgetSelected: a redraw retires this attempt, the new controls stay usable,
+      // and a request already sent keeps its result line.
+      async function commitMemory(op, request, sentence) {
+        if (s.forgetting) return;
+        const epoch = s.forgetEpoch, host = faction;
+        const current = () => epoch === s.forgetEpoch && host.isConnected;
+        s.forgetting = true; s.forgetNote = null; syncForget(); paintNote();
+        for (const child of [...host.children]) if (child !== noteHost) child.remove();
+        try {
+          const yes = await UI.confirmInline(host, sentence, {});
+          if (!current() || !yes) return;
+          const res = await UI.post('/api/projects/' + encodeURIComponent(s.id) + '/memories/' + op, request);
+          if (!current()) {
+            s.forgetNote = res && res.ok ? memoryResultLines(op, res) : [memoryFailLine(op, res)];
+            if (s.tab === 'memories') await loadTab(true);
+            return;
+          }
+          if (!res || !res.ok) { UI.outcome(host, res); return; }
+          s.forgetNote = memoryResultLines(op, res);
+          s.forgetting = false;
+          await loadTab(true);
+        } finally {
+          if (epoch !== s.forgetEpoch) return;
+          s.forgetting = false;
+          if (host.isConnected) syncForget();
+        }
+      }
+      function countedField(label, value, field) {
+        const input = el('input'); input.type = 'text'; input.value = value || ''; input.dataset.field = field;
+        input.setAttribute('aria-label', label);
+        const count = el('span', '', 'muted'); count.dataset.field = field + '-count';
+        const sync = () => {
+          const n = String(input.value || '').length;
+          count.textContent = n + '/300';
+          count.className = n > MEMORY_TEXT_MAX ? 'warn' : 'muted';
+        };
+        input.addEventListener('input', sync); sync();
+        const wrap = el('label', undefined, 'fnd-field');
+        wrap.append(el('span', label, 'plate'), input, count);
+        return { wrap, input };
+      }
+      function addConfirm(body, targets) {
+        const lines = ['Add this learning to ' + whereText(targets) + '?', body.category + ': ' + body.text];
+        if (body.paths && body.paths.length) lines.push('paths: ' + body.paths.join(', '));
+        return lines.join('\n');
+      }
+      function editConfirm(key, before, after, targets) {
+        return 'Change ' + key + ' in ' + whereText(targets) + '?\n' + before + ' → ' + after;
+      }
+      function buildAddForm() {
+        const form = el('div', undefined, 'prj-add');
+        form.append(el('h3', 'Add learning'));
+        const cat = el('select'); cat.dataset.field = 'add-category'; cat.setAttribute('aria-label', 'Category');
+        for (const name of MEMORY_CATEGORIES) { const o = el('option', name); o.value = name; cat.append(o); }
+        cat.value = 'verify';
+        const catLabel = el('label', undefined, 'fnd-field'); catLabel.append(el('span', 'Category', 'plate'), cat);
+        const text = countedField('Text', '', 'add-text');
+        const paths = el('input'); paths.type = 'text'; paths.placeholder = 'optional paths, comma separated';
+        paths.dataset.field = 'add-paths'; paths.setAttribute('aria-label', 'Paths');
+        const pathsLabel = el('label', undefined, 'fnd-field'); pathsLabel.append(el('span', 'Paths', 'plate'), paths);
+        const msg = el('p', '', 'warn');
+        addButton = el('button', 'Add learning', 'primary'); addButton.type = 'button';
+        const submit = () => {
+          if (s.forgetting) return;
+          const built = memoryAddBody({ category: cat.value, text: text.input.value, paths: paths.value, path: s.source || undefined });
+          if (built.error) { msg.textContent = built.error; return; }
+          msg.textContent = '';
+          commitMemory('add', built.body, addConfirm(built.body, writeCheckouts()));
+        };
+        addButton.addEventListener('click', submit);
+        const onEnter = e => { if (e.key === 'Enter') { e.preventDefault(); submit(); } };
+        text.input.addEventListener('keydown', onEnter);
+        paths.addEventListener('keydown', onEnter);
+        form.append(catLabel, text.wrap, pathsLabel, addButton, msg);
+        return form;
+      }
+      function openEdit(row) {
+        if (s.forgetting) return;
+        const key = learningKey(row);
+        if (!key) return;
+        const before = row.text == null ? '' : String(row.text);
+        editHost.replaceChildren();
+        const text = countedField('Text', before, 'edit-text');
+        const msg = el('p', '', 'warn');
+        saveEdit = el('button', 'Save', 'primary'); saveEdit.type = 'button';
+        const cancel = el('button', 'Cancel'); cancel.type = 'button'; cancel.setAttribute('aria-label', 'Cancel edit');
+        const close = () => { saveEdit = null; editHost.replaceChildren(); };
+        cancel.addEventListener('click', close);
+        const apply = () => {
+          if (s.forgetting) return;
+          const built = memoryEditBody(key, text.input.value);
+          if (built.error) { msg.textContent = built.error; return; }
+          if (s.source) built.body.path = s.source;
+          msg.textContent = '';
+          commitMemory('edit', built.body, editConfirm(key, before, built.body.text, writeCheckouts()));
+        };
+        saveEdit.addEventListener('click', apply);
+        text.input.addEventListener('keydown', e => {
+          if (e.key === 'Enter') { e.preventDefault(); apply(); }
+          else if (e.key === 'Escape') { e.preventDefault(); close(); }
+        });
+        editHost.append(el('p', 'Edit ' + key), text.wrap, saveEdit, cancel, msg);
+        if (text.input.focus) text.input.focus();
+      }
+      function rowCommands(r) {
+        const checkout = checkoutOf(), text = r.text == null ? '' : String(r.text), commands = [];
+        const key = learningKey(r);
+        if (key) commands.push(memoryCommand('edit', checkout, { key, text }));
+        if (MEMORY_CATEGORIES.includes(r.category)) commands.push(memoryCommand('add', checkout, { category: r.category, text }));
+        return commands.length ? terminalBox('This page is read-only. From a terminal:', commands) : null;
+      }
+      function learningCell(r) {
+        const box = el('div', undefined, 'prj-learning'), line = el('div');
+        line.append(el('span', r.text == null ? '' : String(r.text)));
+        if (learningManual(r)) { line.append(document.createTextNode(' '), el('span', 'added by a person', 'chip prj-manual')); }
+        box.append(line);
+        if (!s.writes) { const commands = rowCommands(r); if (commands) box.append(commands); }
+        return box;
+      }
       const empty = memoryEmpty(d);
-      if (empty) { parts.push(el('p', empty, 'muted prj-empty')); body.replaceChildren(...parts); return; }
+      if (empty) {
+        parts.push(el('p', empty, 'muted prj-empty'));
+        paintNote();
+        if (s.writes) parts.push(buildAddForm());
+        else parts.push(terminalBox('This page is read-only. Add a learning from a terminal:', [memoryCommand('add', checkoutOf(), {})]));
+        parts.push(faction);
+        body.replaceChildren(...parts);
+        return;
+      }
       if (d.differs) parts.push(el('p', 'The checkouts\' memory.md files differ: pick a checkout to see what its runs are told.', 'warn prj-differs'));
       const src = sources.find(x => x.path === s.source);
       const given = el('section', undefined, 'prj-given');
@@ -384,9 +951,6 @@
       lsel('state', 'State', [['all', 'all']].concat(Object.entries(STATES).map(([k, v]) => [k, v])));
       const tl = el('label', undefined, 'fnd-field'), tx = el('input'); tx.type = 'search'; tx.placeholder = 'text contains…'; tx.value = s.mfilter.text; tx.dataset.filter = 'm-text';
       tx.addEventListener('input', () => { s.mfilter.text = tx.value; drawLearnings(); }); tl.append(el('span', 'Text', 'plate'), tx); lbar.append(tl);
-      let allBox = null, forget = null;
-      const faction = el('div'), noteHost = el('div'); faction.append(noteHost);
-      s.forgetHost = faction;
       if (s.writes) {
         const lab = el('label', undefined, 'fnd-toggle');
         allBox = el('input'); allBox.type = 'checkbox'; allBox.setAttribute('aria-label', 'Select all shown learnings');
@@ -394,7 +958,7 @@
         forget = el('button', 'Forget selected (0)', 'ui-danger'); forget.type = 'button';
         forget.addEventListener('click', () => { forgetSelected(); });
         allBox.addEventListener('change', () => {
-          const shown = filterLearnings(learnings, s.mfilter, s.source);
+          const shown = shownNow();
           for (const row of shown) {
             const key = learningKey(row);
             if (!key) continue;
@@ -403,26 +967,10 @@
           drawLearnings();
         });
         lbar.append(lab, forget);
-      }
-      const lcount = el('p', '', 'muted prj-count'), lhost = el('div', undefined, 'prj-table');
-      all.append(lbar, faction, lcount, lhost); parts.push(all);
+        all.append(lbar, buildAddForm(), editHost, faction, lcount, lhost);
+      } else all.append(lbar, faction, lcount, lhost);
+      parts.push(all);
       body.replaceChildren(...parts);
-      const learnings = list(d.learnings);
-      const shownNow = () => filterLearnings(learnings, s.mfilter, s.source);
-      function syncForget() {
-        if (!forget) return;
-        const keys = forgetKeys(shownNow(), s.picked);
-        forget.textContent = `Forget selected (${keys.length})`;
-        forget.disabled = s.forgetting || keys.length === 0;
-        if (allBox) {
-          const selectable = shownNow().map(learningKey).filter(Boolean);
-          allBox.checked = selectable.length > 0 && selectable.every(key => s.picked.has(key));
-          allBox.disabled = s.forgetting || selectable.length === 0;
-        }
-      }
-      function paintNote() {
-        noteHost.replaceChildren(...list(s.forgetNote).map(line => el('p', line, 'muted')));
-      }
       async function forgetSelected() {
         if (s.forgetting) return;
         const keys = forgetKeys(shownNow(), s.picked);
@@ -468,11 +1016,12 @@
       function drawLearnings() {
         const shown = shownNow();
         lcount.textContent = `${shown.length} of ${learnings.length} learnings`;
-        paintNote(); syncForget();
-        if (!shown.length) { lhost.replaceChildren(el('p', 'No learnings match these filters.', 'muted')); return; }
+        paintNote();
+        editButtons = [];
+        if (!shown.length) { lhost.replaceChildren(el('p', 'No learnings match these filters.', 'muted')); syncForget(); return; }
         const columns = [
           { id: 'category', label: 'Category', value: r => r.category, cell: r => r.category },
-          { id: 'text', label: 'Learning', value: r => r.text, cell: r => el('span', r.text, 'prj-learning') },
+          { id: 'text', label: 'Learning', value: r => r.text, cell: r => learningCell(r) },
           { id: 'state', label: 'State', value: r => stateFor(r, s.source).state, cell: r => { const st = stateFor(r, s.source), b = el('span', STATES[st.state] || st.state); if (st.from && st.from !== 'dataset') b.title = 'from ' + st.from + ', not this checkout\'s ledger'; return b; } },
           { id: 'count', label: 'Runs', title: 'distinct runs that emitted it', value: r => r.count, cell: r => String(r.count || '—') },
           { id: 'run', label: 'Last run', value: r => (list(r.rows).slice(-1)[0] || {}).run_id, mono: true, cell: r => (list(r.rows).slice(-1)[0] || {}).run_id || '—' },
@@ -488,7 +1037,13 @@
           box.addEventListener('change', () => { if (!key) return; if (box.checked) s.picked.add(key); else s.picked.delete(key); syncForget(); });
           return box;
         } });
+        if (s.writes) columns.push({ id: 'edit', label: '', title: 'Edit', sortable: false, hideable: false, cell: r => {
+          const key = learningKey(r), b = el('button', 'Edit'); b.type = 'button'; b.dataset.key = key;
+          b.disabled = s.forgetting || !key; b.setAttribute('aria-label', 'Edit ' + (key || 'learning'));
+          b.addEventListener('click', () => openEdit(r)); editButtons.push(b); return b;
+        } });
         table(lhost, 'project-learnings', 'Learnings', columns, shown);
+        syncForget();
       }
       drawLearnings();
     }
@@ -533,7 +1088,7 @@
         if (id === s.id && t === s.tab) return;             // the page's own refresh: nothing changed here
         const same = id === s.id;
         s.id = id || null; s.tab = t;
-        if (!same) { s.detail = s.findings = s.memories = null; s.source = null; s.checkout = ''; s.picked = new Set(); s.forgetNote = null; }
+        if (!same) { s.detail = s.findings = s.memories = null; s.source = null; s.checkout = ''; s.picked = new Set(); s.forgetNote = null; s.fsel = new Set(); s.actResult = null; abandonTriage(); s.triage = {}; }
         if (same && s.id) { redraw = drawProject(); redraw(); if (t === 'runs') loadDetail(); else if (!(t === 'findings' ? s.findings : s.memories)) loadTab(false); }
         else open();
       },
@@ -547,5 +1102,5 @@
     };
   }
 
-  return { render, cleanSummary, filterFindings, filterLearnings, stateFor, memoryEmpty, routeOf, forgetKeys, STATUSES, STATES };
+  return { render, cleanSummary, filterFindings, filterLearnings, stateFor, memoryEmpty, routeOf, forgetKeys, memoryAddBody, memoryEditBody, memoryCommand, STATUSES, STATES };
 });
