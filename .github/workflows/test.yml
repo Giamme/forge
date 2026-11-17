@@ -1,0 +1,51 @@
+# Runs the offline test suite (tests/check.sh) on every pull request and every push to main.
+# No secrets and read-only permissions, so it is safe on pull requests from forks. The suite
+# never calls a real model: it runs against fake agent CLIs (see tests/README.md).
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: ${{ matrix.os }} · Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        # 3.9 is the documented minimum; 3.x is the latest stable release.
+        python: ["3.9", "3.x"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      # macOS users run forge under the system Bash 3.2, but the runner image puts Homebrew's
+      # Bash 5 first on PATH. Put /bin/bash first so the tests (which look bash up on PATH)
+      # exercise the Bash forge has to support.
+      - name: Use the system Bash 3.2 on macOS
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p "$RUNNER_TEMP/system-bash"
+          ln -s /bin/bash "$RUNNER_TEMP/system-bash/bash"
+          echo "$RUNNER_TEMP/system-bash" >> "$GITHUB_PATH"
+      - name: Versions
+        run: |
+          bash --version | head -1
+          python3 --version
+          git --version
+          command -v node >/dev/null && node --version || true
+      - name: tests/check.sh
+        run: bash tests/check.sh

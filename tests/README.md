@@ -42,7 +42,7 @@ test class in a process of its own, several at a time (the CPU count, at most 8;
 and `python3 tests/run_tests.py PATTERN` runs only the classes whose id contains the pattern.
 A single module still runs as usual: `cd tests && python3 -m unittest test_interrupt`. PATH is restricted to those fakes and an explicit utility
 allowlist, so installed model clients cannot be used accidentally. No provider account is needed.
-No CI workflow runs the tests (the two there build the website and publish to npm); run the suite on macOS (system Bash 3.2) and Linux yourself.
+`.github/workflows/test.yml` runs `tests/check.sh` on every pull request and every push to `main`, on Ubuntu and macOS (with the system Bash 3.2), under Python 3.9 and the latest 3.x. Windows is not covered yet ([#166](https://github.com/Giamme/forge/issues/166)).
 
 `skill-cases.json` contains invocation and approval scenarios with expected observable behavior.
 Use these for a manual or independent skill evaluation: provide each request and SKILL.md,
