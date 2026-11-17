@@ -456,6 +456,14 @@ def check_graph(tasks: list):
 
 
 MAX_JSON_DEPTH = 64   # a plan is a few levels deep; anything near this is not a plan
+MAX_INT_DIGITS = 4300  # Python's own limit from 3.11 (and late 3.9/3.10 patch releases); not in 3.9.13 or Apple's 3.9.6
+
+
+def bounded_int(text: str) -> int:
+    """int() for json.loads, refusing the very long integers that recent Pythons refuse too."""
+    if len(text.lstrip('-')) > MAX_INT_DIGITS:
+        raise ValueError(f'an integer of more than {MAX_INT_DIGITS} digits')
+    return int(text)
 
 
 def nested_deeper_than(value, limit: int) -> bool:
@@ -474,7 +482,7 @@ def parse_reply(reply: str):
     """(tasks, groups). groups is None when the reply has no groups key, else a list (maybe empty)."""
     body = extract_block(reply)
     try:
-        data = json.loads(body, object_pairs_hook=no_duplicate_keys)
+        data = json.loads(body, object_pairs_hook=no_duplicate_keys, parse_int=bounded_int)
     except (ValueError, RecursionError) as err:
         # JSONDecodeError is a ValueError; so is Python's limit on integer digits. Nesting deeper
         # than the interpreter allows raises RecursionError (up to Python 3.11; from 3.12 the
