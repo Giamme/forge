@@ -346,16 +346,9 @@ def _commit(ident, dest, data, proposal, actor, kind, target, nxt):
     between cannot be overwritten. The record is put back when proposals.json cannot be written.
     """
     def run():
-        # Temporary pre-fix: choose plan notes before the store lock, and do not roll the record back.
-        preset = None
-        if kind == "plan":
-            note = f"in plan {target}"
-            preset = [fp for fp in _fps(proposal) if not ((store.get(ident, fp) or {}).get("note"))]
         with store.lock(ident):
-            if preset is None:
-                changed = _effect(ident, proposal, kind, target)
-            else:
-                changed = store.update(ident, preset, ACTOR, locked=True, note=f"in plan {target}") if preset else []
+            captured = _capture(ident)
+            changed = _effect(ident, proposal, kind, target)
             out = {}
             if target is not None:
                 out["plan_dir"] = str(target)
@@ -363,6 +356,10 @@ def _commit(ident, dest, data, proposal, actor, kind, target, nxt):
             try:
                 _decide(dest, data, proposal, "applied", actor, plan_dir=out.get("plan_dir"))
             except OSError as exc:
+                proposal["state"] = "pending"
+                proposal.pop("decided", None)
+                proposal.pop("plan_dir", None)
+                _restore(ident, captured)
                 path = Path(dest) / "proposals.json"
                 raise Failed(f"cannot write {path}: {exc.strerror or exc}") from exc
             return changed, out
