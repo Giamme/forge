@@ -376,7 +376,7 @@ class InterruptTests(VerifyLanesCase):
 
     def test_sigterm_is_honoured_while_a_lane_floods_its_log(self):
         self.lane('flood', 'yes xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
-                           ' | head -c 300000000')
+                           ' | head -c 3000000000')   # far more than gets written: SIGTERM ends it
         self.lane('quick', 'sleep 0.2')
         proc = subprocess.Popen(self.run_args('--parallel', '2'), stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True)
