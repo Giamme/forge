@@ -1436,6 +1436,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                                      str(plan), '--severity', sweep, '--max', str(sweep_max), '--check']
                                     + (['--plausible'] if sweep_plausible else []),
                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            sweep_checked['code'] = result.returncode
             sweep_checked['answer'] = result.returncode == 0
             if result.returncode == 1:
                 try:
@@ -1452,23 +1453,29 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
 
     def sweep_due() -> bool:
         """--sweep was given and nothing stops or holds the run, every task of the plan merged
-        (a fix task of an earlier round may have stopped), the last round's fix tasks are merged or
-        stopped, and a round has something new to sweep: a plan without a round starts one, a later
-        round needs `plan --check` to find a finding no round tried. At most one round per invocation."""
+        (a fix task of an earlier round may have stopped), the last round's queued fix tasks are
+        merged or stopped, and `plan --check` finds a finding no round tried. At most one round
+        per invocation."""
         if (not sweep or sweep_asked or interrupted or graceful or paused or drained(plan)
                 or not all(status(name) == 'MERGED' for name in tasks if not is_fix(name))):
             return False
         rounds = sweep_rounds()
-        if not rounds:
-            return True
-        try:
-            last = json.loads((rounds[-1][1]).read_text()).get('tasks') or []
-        except (OSError, ValueError, AttributeError):
-            last = []
-        if any(status(item['id']) not in ('MERGED', 'FAIL', 'NEEDS_DECISION', 'INFRA')
-               for item in last if isinstance(item, dict) and isinstance(item.get('id'), str)):
-            return False
-        return sweep_check()
+        if rounds:
+            try:
+                last = json.loads((rounds[-1][1]).read_text()).get('tasks') or []
+            except (OSError, ValueError, AttributeError):
+                last = []
+            # A crash between plan.json and the tasks.tsv append leaves the fix task with no row
+            # and no status. status() would say PENDING and hold every later round; that round is lost.
+            if any(status(item['id']) not in ('MERGED', 'FAIL', 'NEEDS_DECISION', 'INFRA')
+                   for item in last if isinstance(item, dict) and isinstance(item.get('id'), str)
+                   and (item['id'] in tasks or (plan / 'tasks' / item['id'] / 'status').exists())):
+                return False
+            return sweep_check()
+        # Round 1 asks too, so nothing eligible is recorded and not planned. A check that cannot
+        # be answered (the integration branch cannot be read) still starts the round.
+        sweep_check()
+        return sweep_checked.get('code') != 1
 
     def start_sweep() -> int:
         """Plan the finding sweep and queue its fix tasks; how many were queued. Whatever goes
