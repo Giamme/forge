@@ -171,6 +171,7 @@ class Settle(RoundsBase):
         commit = self.git(self.int, 'rev-parse', 'HEAD')
         (self.plan / 'accepted.integration').write_text(commit + '\n')
         (self.plan / 'tasks/sweep-1/qa.last').write_text('- S1: FIXED\n- S2: NOT FIXED — still wrong\nFORGE_VERDICT: PASS\n')
+        (self.plan / 'tasks/sweep-1/merged').touch()  # a real run settles only after the merge
         self.sweep('sweep-1', command='settle')
         record = store.load(self.ident())
         fixed = record[self.fp('a.txt', 'Problem 1.')]
