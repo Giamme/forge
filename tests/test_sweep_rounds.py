@@ -274,6 +274,28 @@ class Scheduler(RoundsBase):
         self.assertEqual(self.schedule(code=5), ['b end FAIL'])
         self.assertFalse(self.round_file(2).exists())
 
+    def test_a_first_sweep_with_nothing_eligible_records_nothing_and_writes_no_plan(self):
+        (self.plan / 'tasks/a/known_issues.md').unlink()
+        self.assertEqual(self.schedule(), [])
+        self.assertFalse(self.round_file(1).exists())
+        self.assertFalse((self.plan / 'sweep/plan.md').exists())
+        nothing = json.loads((self.plan / 'sweep/nothing.json').read_text())
+        self.assertEqual((nothing['attempted'], nothing['left']), (0, 0))
+        self.assertGreater(nothing['at'], 0)
+
+    def test_a_round_lost_before_its_tasks_were_queued_does_not_block_the_next(self):
+        # plan.json and sweep.json landed; the tasks.tsv append did not. No status file either.
+        self.sweep('--severity', 'P3')
+        text = (self.plan / 'tasks.tsv').read_text()
+        (self.plan / 'tasks.tsv').write_text(''.join(line for line in text.splitlines(True) if not line.startswith('sweep-')))
+        self.assertTrue((self.plan / 'tasks/sweep-1/sweep.json').is_file())
+        self.assertFalse((self.plan / 'tasks/sweep-1/status').exists())
+        self.assertNotIn('sweep-1', (self.plan / 'tasks.tsv').read_text())
+        self.add_task('b', {'b.txt': 'beta\n'}, known('- [P3][CONFIRMED] b.txt:1 — Two.'))
+        self.assertEqual(self.schedule(), ['sweep --severity P3 --max 5', 'sweep-2 end PASS', 'sweep-2 merged'])
+        self.assertEqual(self.keys(2), [('sweep-2', ['Two.'])])
+        self.assertEqual(self.reasons(2), [('One.', 'attempted', {'task': 'sweep-1'})])
+
 
 if __name__ == '__main__':
     unittest.main()
