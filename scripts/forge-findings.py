@@ -85,11 +85,24 @@ def _common():
     return parent
 
 
+class _Parser(argparse.ArgumentParser):
+    """Choice errors omit commands whose names start with `_`. The command itself still runs."""
+
+    def _check_value(self, action, value):
+        if action.choices is not None and value not in action.choices:
+            shown = [choice for choice in action.choices if not str(choice).startswith("_")]
+            message = "invalid choice: %(value)r (choose from %(choices)s)" % {
+                "value": value,
+                "choices": ", ".join(map(repr, shown)),
+            }
+            raise argparse.ArgumentError(action, message)
+
+
 def build_parser():
     """The command line. Each subcommand takes --actor and --json; handlers live in COMMANDS."""
     common = _common()
-    parser = argparse.ArgumentParser(prog="forge findings", description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = _Parser(prog="forge findings", description=__doc__,
+                     formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
     show = sub.add_parser("show", parents=[common], help="every finding, with its state")
@@ -175,7 +188,7 @@ def build_parser():
     refuse.add_argument("n", type=int, metavar="N", help="the triage number")
     refuse.add_argument("pid", metavar="PID", help="the proposal id, e.g. p3")
     refuse.add_argument("--reason", help="why, at most 500 characters")
-    # The usage line and the error text list the choices; leave the internal one out of them.
+    # metavar is the usage line. _Parser leaves the same internal name out of an invalid-choice error.
     sub.metavar = "{" + ",".join(name for name in sub.choices if not name.startswith("_")) + "}"
     return parser
 
@@ -201,9 +214,10 @@ def fingerprints(values):
 
 
 def read_payload(path, label, limit):
-    """The text of a file. `-` is not a file. Longer than `limit` is refused."""
-    if path == "-":
-        raise Usage(f"{label}: '-' is not accepted; pass a file")
+    """The text of a file. `-` and an empty path are not files. Longer than `limit` is refused."""
+    if path == "-" or path == "":
+        shown = "'-'" if path == "-" else "''"
+        raise Usage(f"{label}: {shown} is not accepted; pass a file")
     try:
         with open(path, encoding="utf-8") as handle:
             data = handle.read(limit + 1)
@@ -279,19 +293,20 @@ def _severity_rank(value):
         return len(SEVERITIES)
 
 
-def _place(row):
+def _place(row, line=None):
     file = row.get("file") if isinstance(row.get("file"), str) else ""
-    line = row.get("line")
+    if line is None:
+        line = row.get("line")
     if file and isinstance(line, int) and not isinstance(line, bool):
         return f"{file}:{line}"
     return file or "-"
 
 
-def _show_line(row):
+def _show_line(row, line=None):
     found = [tag for tag in (row.get("tags") or []) if isinstance(tag, str)]
     summary = " ".join(str(row.get("summary") or "").split())
     return (f"{row.get('fp')}  {row.get('status')}  {row.get('severity') or '-'}  "
-            f"{','.join(found) if found else '-'}  {_place(row)}  {summary}")
+            f"{','.join(found) if found else '-'}  {_place(row, line)}  {summary}")
 
 
 def _rows(listed, records):
@@ -314,23 +329,48 @@ def _rows(listed, records):
     return rows
 
 
-def collect(repo, ident, online=False):
-    """`(listed, rows)`: the issues listing of a repository and one row per finding, with its record."""
+def _collect(repo, ident, online=False):
+    """`(listed, rows, lines)`. `lines` maps a fingerprint to the source line.
+
+    `finding_entry` does not keep `line`. Remember it here, and do not put it on the entry:
+    the issues listing's keys, and the rows a triage stores, stay as they are.
+    """
     records = call_store(lambda: store.load(ident))
     module = issues()
+    original = module.finding_entry
+    lines = {}
+
+    def finding_entry(f, *args, **kwargs):
+        entry = original(f, *args, **kwargs)
+        if isinstance(f, dict) and isinstance(entry, dict):
+            line = f.get("line")
+            fp = entry.get("fp")
+            if isinstance(fp, str) and isinstance(line, int) and not isinstance(line, bool):
+                lines[fp] = line
+        return entry
+
+    module.finding_entry = finding_entry
     try:
         listed = module.listing(repo, online=online)
     except module.Busy as exc:
         raise Refused(str(exc)) from exc
     except module.Fail as exc:
         raise Failed(str(exc)) from exc
-    return listed, _rows(listed, records)
+    finally:
+        module.finding_entry = original
+    return listed, _rows(listed, records), lines
+
+
+def collect(repo, ident, online=False):
+    """`(listed, rows)`: the issues listing of a repository and one row per finding, with its record."""
+    listed, rows, _lines = _collect(repo, ident, online=online)
+    return listed, rows
 
 
 @command("show")
 def cmd_show(args):
     ident = require_ident(args.repo)
-    listed, rows = collect(args.repo, ident, online=bool(args.online))
+    listed, rows, lines = _collect(args.repo, ident, online=bool(args.online))
     chosen = _wanted(args.status)
     if chosen is not None:
         rows = [row for row in rows if row.get("status") in chosen]
@@ -345,7 +385,7 @@ def cmd_show(args):
         }, indent=2, ensure_ascii=False))
     else:
         for row in rows:
-            print(_show_line(row))
+            print(_show_line(row, lines.get(row.get("fp"))))
     return 0
 
 
@@ -376,7 +416,7 @@ def cmd_reopen(args):
 def cmd_to_file(args):
     kwargs = {"status": "to-file"}
     if args.title is not None or args.body_file is not None:
-        body = read_payload(args.body_file, "--body-file", store.MAX_BODY) if args.body_file else ""
+        body = read_payload(args.body_file, "--body-file", store.MAX_BODY) if args.body_file is not None else ""
         kwargs["draft"] = {"title": args.title or "", "body": body}
     return apply(args, args.fp, lambda ident, fps, actor: store.update(ident, fps, actor, **kwargs))
 
@@ -461,7 +501,7 @@ def cmd_note(args):
 def cmd_edit(args):
     if args.severity is None and args.text_file is None:
         raise Usage("edit needs --severity or --text-file")
-    text = read_payload(args.text_file, "--text-file", store.MAX_EDIT_TEXT) if args.text_file else None
+    text = read_payload(args.text_file, "--text-file", store.MAX_EDIT_TEXT) if args.text_file is not None else None
     severity = args.severity
     return apply(args, [args.fp],
                  lambda ident, fps, actor: store.set_edit(ident, fps[0], actor, severity=severity, text=text))
