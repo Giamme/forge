@@ -1241,8 +1241,12 @@ def _optional_checkout(body):
 
 
 def _memory_text(value):
-    """One argv element: 1 to 300 characters, one line, no control character."""
-    if not isinstance(value, str) or not 1 <= len(value) <= MAX_MEMORY_TEXT or not _no_control_chars(value):
+    """One argv element: 1 to 300 characters, one line, no control character.
+
+    Spaces alone are empty after the CLI sanitizes them, so they are refused here.
+    """
+    if (not isinstance(value, str) or not 1 <= len(value) <= MAX_MEMORY_TEXT
+            or not value.strip(' ') or not _no_control_chars(value)):
         raise BadBody(f'text must be one line of 1 to {MAX_MEMORY_TEXT} characters')
     try:
         value.encode('utf-8')
