@@ -1,6 +1,43 @@
 {
   "versions": [
     {
+      "version": "0.20",
+      "date": "2026-11-17",
+      "summary": "Review findings you can trust and manage: one record per repository with issue states from GitHub, forge findings and forge-ui actions, an optional triage agent, and a sweep per finding.",
+      "entries": [
+        {
+          "type": "added",
+          "text": "You can now manage review findings. `forge findings` shows every finding of a repository and marks them fixed, dismissed, reopened, to file or a duplicate, with tags (ui, tests, infra, backend, docs by default, or your own), notes and edits. forge-ui's Findings tab does the same on selected rows and files the selected ones as issues, and its Memories tab can add and edit learnings (`forge memory add` / `edit`). An optional triage agent, run on a model you name, proposes duplicates, fixes, tags, issues and forge plans for related findings; nothing changes until you approve a proposal.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "29ae873"
+          ]
+        },
+        {
+          "type": "changed",
+          "text": "`--sweep` now works per finding instead of once per plan: a later run of the same plan sweeps the findings its new tasks left, in a new round, and never a finding an earlier round already tried. When there is nothing new, the run summary says so. A finding the sweep fixed is recorded as fixed once its fix task merges.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "29ae873"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "Review findings now show their real state. A finding that was filed as an issue, fixed in the code, dismissed or swept no longer shows as open: forge reads issue states from GitHub (closed issues count as fixed), keeps one record per repository whatever checkout or worktree a run used, and finds every run of the repository, including runs from removed worktrees. forge-ui's open count leaves out shadow and unlabelled reviews.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "29ae873"
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.19",
       "date": "2026-11-15",
       "summary": "Group review and wider brief answers; a retry budget per model, scripted tasks, chained plans and forge handoff; early stops for a fix outside the task and for a prompt edited mid-attempt; forge-ui runs its own commands; and forge's website.",
