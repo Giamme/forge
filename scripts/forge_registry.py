@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import contextlib
 import errno
-import fcntl
 import hashlib
 import os
 import stat
@@ -33,6 +32,12 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+
+_SCRIPTS = str(Path(__file__).resolve().parent)
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+import forge_flock as fcntl  # noqa: E402
+import forge_posix  # noqa: E402
 
 # register_run_dir runs before forge ui open's own timeouts: it waits this long for the lock,
 # then appends without it. unregister_run_dir is only ever called by `forge runs rm`, which
@@ -92,7 +97,11 @@ def _registry_lock(wait_s: float):
     A filesystem that cannot flock at all (ENOLCK, EOPNOTSUPP) gets no locking, as it
     would anywhere else in forge, rather than a registry nobody can change.
     """
-    fd = os.open(registry_dir() / LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    fd = forge_posix.open_nofollow(
+        registry_dir() / LOCK_NAME,
+        os.O_RDWR | os.O_CREAT | forge_posix.O_NOFOLLOW | forge_posix.O_NONBLOCK,
+        0o600,
+    )
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise OSError(errno.EINVAL, 'the registry lock is not a regular file', LOCK_NAME)
@@ -159,7 +168,7 @@ def register_run_dir(repo: Path, run_dir: Path) -> None:
                 header = [] if existing else ['# forge run dirs for ' + str(Path(repo).resolve())]
                 # O_NONBLOCK: a FIFO with no reader fails at once (ENXIO) instead of blocking the
                 # open, and anything that is not a regular file is left alone.
-                fd = os.open(registry, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK, 0o644)
+                fd = os.open(registry, os.O_WRONLY | os.O_APPEND | os.O_CREAT | forge_posix.O_NONBLOCK, 0o644)
                 with os.fdopen(fd, 'a') as handle:
                     written = os.fstat(fd)
                     if not stat.S_ISREG(written.st_mode):
@@ -190,7 +199,7 @@ def _rewrite_without(path: Path, wanted: set) -> bool:
     replace, and whatever it gained since the read is appended to the new one.
     """
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        fd = forge_posix.open_nofollow(path, os.O_RDONLY | forge_posix.O_NONBLOCK | forge_posix.O_NOFOLLOW)
     except OSError as error:
         if error.errno in (errno.ENOENT, errno.ELOOP):
             return False
@@ -229,7 +238,7 @@ def _rewrite_without(path: Path, wanted: set) -> bool:
         if extra:
             if content and not content.endswith(b'\n'):
                 extra.insert(0, b'\n')
-            out = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK)
+            out = forge_posix.open_nofollow(path, os.O_WRONLY | os.O_APPEND | forge_posix.O_NOFOLLOW | forge_posix.O_NONBLOCK)
             with os.fdopen(out, 'ab') as handle:
                 handle.write(b''.join(extra))
     return True
@@ -273,7 +282,7 @@ def _repo_of(run_dir: Path) -> Path | None:
     hold the open, and nothing but a regular file is read (a FIFO, a device or a directory
     named ``repo`` is ignored).
     """
-    fd = os.open(run_dir / 'repo', os.O_RDONLY | os.O_NONBLOCK)
+    fd = os.open(run_dir / 'repo', os.O_RDONLY | forge_posix.O_NONBLOCK)
     with os.fdopen(fd, 'rb') as handle:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             return None

@@ -28,6 +28,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import forge_identity  # noqa: E402
+import forge_posix  # noqa: E402
 import forge_side  # noqa: E402
 from forge_findings import store, triage  # noqa: E402
 
@@ -320,7 +321,7 @@ def _restore(ident, captured):
         except FileNotFoundError:
             pass
         return
-    fd = os.open(log, os.O_WRONLY | os.O_NOFOLLOW)
+    fd = forge_posix.open_nofollow(log, os.O_WRONLY | forge_posix.O_NOFOLLOW)
     try:
         os.ftruncate(fd, size)
     finally:

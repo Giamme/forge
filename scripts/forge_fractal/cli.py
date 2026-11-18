@@ -142,11 +142,16 @@ def internal(argv: list[str]) -> int:
         remember(managed_run(Path(os.environ['FORGE_FRACTAL_RUN']).name), argv[1:])
         return 0
     if argv[0] == '_lock':
-        import fcntl
+        _scripts = str(Path(__file__).resolve().parents[1])
+        if _scripts not in sys.path:
+            sys.path.insert(0, _scripts)
+        import forge_flock as fcntl
+        import forge_proc
         handle = (Path(argv[1]) / 'pipeline.lock').open('a')
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         os.set_inheritable(handle.fileno(), True)
-        os.execve('/bin/bash', ['/bin/bash', *argv[2:]], dict(os.environ, FORGE_SOLO_LOCK=argv[1]))
+        forge_proc.exec_or_exit(forge_proc.bash_cmd(*argv[2:]), env=dict(os.environ, FORGE_SOLO_LOCK=argv[1]),
+                                inherit_fds=True)
     raise ValueError('Unknown internal command')
 
 

@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -48,6 +47,7 @@ SCRIPTS = Path(__file__).resolve().parent.parent
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+import forge_flock as fcntl  # noqa: E402
 import forge_groups  # noqa: E402
 import forge_side  # noqa: E402
 

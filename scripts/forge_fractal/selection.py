@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 
 from . import DEFAULTS, SCRIPTS, command, managed_run, read_json, state_root, write_json
+import forge_proc
 from .install import doctor, install
 
 
@@ -17,7 +18,7 @@ def resolve(spec: str, role: str, yolo: bool = False, dry: bool = False) -> dict
         root = Path(tmp)
         prompt = root / 'input'
         prompt.write_text('Offline resolution')
-        argv = ['/bin/bash', SCRIPTS / 'forge-dispatch.sh']
+        argv = forge_proc.bash_cmd(SCRIPTS / 'forge-dispatch.sh')
         if dry:
             argv += [role, spec, '--run-dir', root, '--prompt-file', prompt, '--dry-run']
         else:

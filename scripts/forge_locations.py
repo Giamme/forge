@@ -34,13 +34,18 @@ from __future__ import annotations
 
 import contextlib
 import errno
-import fcntl
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import time
+
+_SCRIPTS = str(Path(__file__).resolve().parent)
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+import forge_flock as fcntl  # noqa: E402
+import forge_posix  # noqa: E402
 
 VERSION = 1
 LOCK_WAIT_S = 0.5
@@ -115,7 +120,8 @@ def _lock(wait_s):
     """The file's lock, tried for `wait_s`; yields whether it is held. Never raises."""
     fd = None
     try:
-        fd = os.open(config_dir() / 'locations.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+        fd = forge_posix.open_nofollow(config_dir() / 'locations.lock',
+                                       os.O_RDWR | os.O_CREAT, 0o644)
         deadline = time.monotonic() + wait_s
         while True:
             try:
@@ -141,7 +147,11 @@ def append(records: list[dict]) -> bool:
         config_dir().mkdir(parents=True, exist_ok=True)
         data = ''.join(json.dumps(dict(r, v=VERSION), sort_keys=True, separators=(',', ':')) + '\n' for r in records).encode()
         with _lock(LOCK_WAIT_S):
-            fd = os.open(file_path(), os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK | os.O_NOFOLLOW, 0o644)
+            fd = forge_posix.open_nofollow(
+                file_path(),
+                os.O_WRONLY | os.O_APPEND | os.O_CREAT | forge_posix.O_NONBLOCK | forge_posix.O_NOFOLLOW,
+                0o644,
+            )
             try:
                 if not os.path.isfile(file_path()):
                     return False
@@ -204,7 +214,7 @@ def gone(kind, path, by='forge') -> bool:
 
 def _first_line(path) -> str | None:
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        fd = os.open(path, os.O_RDONLY | forge_posix.O_NONBLOCK)
         with os.fdopen(fd, 'rb') as stream:
             if not os.path.isfile(path):
                 return None

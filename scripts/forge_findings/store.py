@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import contextlib
 import errno
-import fcntl
 import json
 import os
 import re
@@ -30,7 +29,9 @@ from pathlib import Path
 _SCRIPTS = str(Path(__file__).resolve().parents[1])
 if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
+import forge_flock as fcntl  # noqa: E402
 import forge_identity  # noqa: E402
+import forge_posix  # noqa: E402
 import forge_registry  # noqa: E402
 
 STATUSES = ("open", "to-file", "filed", "fixed", "dismissed", "duplicate")
@@ -131,7 +132,11 @@ def lock(ident):
     key = _key(ident)
     path = _store_dir(create=True) / f"{key}.lock"
     try:
-        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        fd = forge_posix.open_nofollow(
+            path,
+            os.O_RDWR | os.O_CREAT | forge_posix.O_NOFOLLOW | forge_posix.O_NONBLOCK,
+            0o600,
+        )
     except OSError as exc:
         raise Corrupt(f"{path}: cannot open the repository lock ({exc.strerror}); it must not be a symlink")
     try:
@@ -162,7 +167,10 @@ def _read_json(path: Path, noun: str):
         if not stat.S_ISREG(os.lstat(path).st_mode):
             raise Corrupt(not_regular)
         # NOFOLLOW again for a swap after the lstat; NONBLOCK so a FIFO cannot hold the open
-        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as fh:
+        with os.fdopen(
+            forge_posix.open_nofollow(path, os.O_RDONLY | forge_posix.O_NOFOLLOW | forge_posix.O_NONBLOCK),
+            "rb",
+        ) as fh:
             if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
                 raise Corrupt(not_regular)
             raw = fh.read(FILE_MAX + 1)
@@ -314,7 +322,11 @@ def _append_log(ident, lines: list) -> None:
     try:
         base = _store_dir(create=True)
         path = base / f"{_key(ident)}.record.log.jsonl"
-        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        fd = forge_posix.open_nofollow(
+            path,
+            os.O_WRONLY | os.O_APPEND | os.O_CREAT | forge_posix.O_NOFOLLOW | forge_posix.O_NONBLOCK,
+            0o600,
+        )
         try:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 return

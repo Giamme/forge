@@ -10,8 +10,14 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 import sys
+
+_SCRIPTS = str(Path(__file__).resolve().parent)
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+import forge_proc  # noqa: E402
 
 
 def resolve():
@@ -22,40 +28,80 @@ def resolve():
     return str(Path(binary).resolve()) if binary else None
 
 
+def _bounded_windows(process, deadline, limit):
+    output = [bytearray(), bytearray()]
+    exceeded = threading.Event()
+
+    def _drain(idx, pipe):
+        try:
+            fd = pipe.fileno()
+            while True:
+                chunk = os.read(fd, 4096)
+                if not chunk:
+                    break
+                output[idx].extend(chunk)
+                if sum(map(len, output)) > limit:
+                    exceeded.set()
+                    break
+        except OSError:
+            pass
+
+    threads = [
+        threading.Thread(target=_drain, args=(0, process.stdout), daemon=True),
+        threading.Thread(target=_drain, args=(1, process.stderr), daemon=True),
+    ]
+    for t in threads:
+        t.start()
+    while any(t.is_alive() for t in threads) or process.poll() is None:
+        if exceeded.is_set():
+            raise RuntimeError('excessive output')
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError('timeout')
+        time.sleep(min(remaining, 0.05))
+    for t in threads:
+        t.join(timeout=0.5)
+    if exceeded.is_set():
+        raise RuntimeError('excessive output')
+    return output
+
+
 def bounded(command, cwd, deadline, limit=16384):
     process = subprocess.Popen(command, cwd=cwd, stdin=subprocess.DEVNULL,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               start_new_session=True)
-    streams = selectors.DefaultSelector()
+                               **forge_proc.popen_group_kwargs())
+    streams = None if forge_proc.IS_WINDOWS else selectors.DefaultSelector()
     output = [bytearray(), bytearray()]
-    for i, pipe in enumerate((process.stdout, process.stderr)):
-        os.set_blocking(pipe.fileno(), False)
-        streams.register(pipe, selectors.EVENT_READ, i)
+    if streams is not None:
+        for i, pipe in enumerate((process.stdout, process.stderr)):
+            os.set_blocking(pipe.fileno(), False)
+            streams.register(pipe, selectors.EVENT_READ, i)
     try:
-        while streams.get_map() or process.poll() is None:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise RuntimeError('timeout')
-            for key, _ in streams.select(min(remaining, .1)):
-                chunk = os.read(key.fileobj.fileno(), 4096)
-                if not chunk:
-                    streams.unregister(key.fileobj)
-                else:
-                    output[key.data].extend(chunk)
-                    if sum(map(len, output)) > limit:
-                        raise RuntimeError('excessive output')
+        if streams is None:
+            output = _bounded_windows(process, deadline, limit)
+        else:
+            while streams.get_map() or process.poll() is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError('timeout')
+                for key, _ in streams.select(min(remaining, .1)):
+                    chunk = os.read(key.fileobj.fileno(), 4096)
+                    if not chunk:
+                        streams.unregister(key.fileobj)
+                    else:
+                        output[key.data].extend(chunk)
+                        if sum(map(len, output)) > limit:
+                            raise RuntimeError('excessive output')
         if process.returncode:
             detail = output[1].decode('utf-8', 'replace').strip().replace('\n', ' ')[:180]
             raise RuntimeError(f'exit {process.returncode}: {detail}')
         return bytes(output[0]).decode('utf-8', 'replace')
     finally:
         # Also kill descendants that closed their pipes before the parent exited.
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):   # macOS: EPERM for a group of zombies only
-            pass
+        forge_proc.kill_tree(process.pid, force=True)
         process.wait()
-        streams.close()
+        if streams is not None:
+            streams.close()
         process.stdout.close()
         process.stderr.close()
 

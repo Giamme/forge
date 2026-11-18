@@ -62,16 +62,37 @@ import subprocess
 import sys
 import time
 
+_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
+import forge_proc  # noqa: E402
+
 PS_CANDIDATES = ('/bin/ps', '/usr/bin/ps')
 TERM_WAIT_S = 2.0
 KILL_WAIT_S = 1.0
 
 
 # --- session ------------------------------------------------------------------
+def _win_session(argv: list[str]) -> int:
+    _, exec_argv = forge_proc.resolve_win_command(argv)
+    try:
+        proc = subprocess.Popen(exec_argv)
+    except FileNotFoundError:
+        print('forge-guard: cannot execute %s: not found' % argv[0], file=sys.stderr)
+        return 127
+    except OSError as error:
+        print('forge-guard: cannot execute %s: %s' % (argv[0], error), file=sys.stderr)
+        return 126
+    return proc.wait()
+
+
 def session(argv: list[str]) -> int:
     if not argv:
         print('forge-guard: session needs a command', file=sys.stderr)
         return 2
+    if forge_proc.IS_WINDOWS:
+        return _win_session(argv)
     try:
         os.setsid()
     except OSError:
@@ -91,15 +112,7 @@ def session(argv: list[str]) -> int:
 
 # --- reap ---------------------------------------------------------------------
 def group_exists(pgid: int) -> bool:
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
+    return forge_proc.group_alive(pgid)
 
 
 def list_group(pgid: int):
@@ -107,6 +120,12 @@ def list_group(pgid: int):
 
     Zombies are skipped: they are already dead and only wait for their parent.
     """
+    if forge_proc.IS_WINDOWS:
+        table = ps_table()
+        if table is None:
+            return None
+        pids = ({pgid} if pgid in table else set()) | descendants(table, {pgid})
+        return [(pid, table[pid][2]) for pid in sorted(pids) if pid != os.getpid()]
     for ps in PS_CANDIDATES:
         if not os.access(ps, os.X_OK):
             continue
@@ -148,6 +167,8 @@ def wait_gone(pgid: int, seconds: float) -> bool:
 
 def _forbidden() -> set:
     # Never signal ourselves, the process that called us, or init.
+    if forge_proc.IS_WINDOWS:
+        return {0, 1, os.getpid(), os.getppid()}
     forbidden = {0, 1, os.getpgrp()}
     try:
         forbidden.add(os.getpgid(os.getppid()))
@@ -160,7 +181,7 @@ def _reap_group(pgid: int, orphans_file: str | None) -> int:
     """TERM, then KILL, whatever is alive in the group; how many were found."""
     if pgid in _forbidden() or pgid < 0:
         return 0
-    if not group_exists(pgid):
+    if not group_exists(pgid) and not (forge_proc.IS_WINDOWS and list_group(pgid)):
         return 0
     members = list_group(pgid)
     if members is not None and not members:
@@ -174,7 +195,16 @@ def _reap_group(pgid: int, orphans_file: str | None) -> int:
                     handle.write('%s\t%s\n' % (pid or '?', ' '.join(command.split()) or '?'))
         except OSError:
             pass
-    for sig, wait in ((signal.SIGTERM, TERM_WAIT_S), (signal.SIGKILL, KILL_WAIT_S)):
+    if forge_proc.IS_WINDOWS:
+        for force, wait in ((False, TERM_WAIT_S), (True, KILL_WAIT_S)):
+            forge_proc.kill_tree(pgid, force=force)
+            for pid, _cmd in found:
+                if pid and pid not in _forbidden():
+                    forge_proc.signal_pid(pid, force=force)
+            if wait_gone(pgid, wait):
+                break
+        return len(found)
+    for sig, wait in ((signal.SIGTERM, TERM_WAIT_S), (forge_proc.SIGKILL, KILL_WAIT_S)):
         try:
             os.killpg(pgid, sig)
         except OSError:
@@ -191,6 +221,8 @@ TRACK_INTERVAL_S = 2.0
 def ps_table():
     """{pid: (ppid, start time, command)} of every live process but zombies, or None when ps is
     unavailable. The start time is `identity`'s, whitespace-normalised the same way."""
+    if forge_proc.IS_WINDOWS:
+        return forge_proc.win_ps_table()
     for ps in PS_CANDIDATES:
         if not os.access(ps, os.X_OK):
             continue
@@ -218,6 +250,8 @@ def ps_table():
 
 def descendants(table, roots):
     """Every live descendant of `roots` in a ps_table, the roots excluded."""
+    if forge_proc.IS_WINDOWS:
+        return forge_proc.win_descendants(table, {r for r in roots if r > 1})
     children = {}
     for pid, (ppid, _start, _command) in table.items():
         children.setdefault(ppid, []).append(pid)
@@ -301,7 +335,7 @@ def _reap_tracked(path: str, skip_group: int | None) -> list:
     if not known:
         return []
     found = {}
-    for sig, wait in ((signal.SIGTERM, TERM_WAIT_S), (signal.SIGKILL, KILL_WAIT_S)):
+    for force, wait in ((False, TERM_WAIT_S), (True, KILL_WAIT_S)):
         table = ps_table()
         if table is None:
             break
@@ -309,16 +343,13 @@ def _reap_tracked(path: str, skip_group: int | None) -> list:
         targets = _mine(table, known)
         targets |= descendants(table, targets)
         targets -= never
-        if skip_group is not None:
+        if skip_group is not None and not forge_proc.IS_WINDOWS:
             targets = {pid for pid in targets if _pgid(pid) != skip_group}
         if not targets:
             break
         for pid in targets:
             found.setdefault(pid, table[pid][2])
-            try:
-                os.kill(pid, sig)
-            except OSError:
-                pass
+            forge_proc.signal_pid(pid, force=force)
         deadline = time.monotonic() + wait
         while time.monotonic() < deadline:
             table = ps_table() or {}
@@ -329,6 +360,8 @@ def _reap_tracked(path: str, skip_group: int | None) -> list:
 
 
 def _pgid(pid: int):
+    if not hasattr(os, 'getpgid'):
+        return None
     try:
         return os.getpgid(pid)
     except OSError:
@@ -354,10 +387,7 @@ def stop_tree(root: int, wait: float) -> int:
     targets = (({root} if root in table else set()) | descendants(table, {root})) - _never(table)
     starts = {pid: table[pid][1] for pid in targets}
     for pid in targets:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
-            pass
+        forge_proc.signal_pid(pid, force=False)
     deadline = time.monotonic() + wait
     left = set(targets)
     while left and time.monotonic() < deadline:
@@ -365,11 +395,19 @@ def stop_tree(root: int, wait: float) -> int:
         now = ps_table() or {}
         left = {pid for pid in left if pid in now and now[pid][1] == starts[pid]}
     for pid in left:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except OSError:
-            pass
+        forge_proc.signal_pid(pid, force=True)
     print(len(targets))
+    return 0
+
+
+def kill_children(parent_pid: int, force: bool = False) -> int:
+    """Terminate descendants of ``parent_pid`` (used on platforms lacking ``pkill -P``)."""
+    table = ps_table()
+    if table is None or parent_pid <= 1:
+        return 0
+    targets = descendants(table, {parent_pid}) - _never(table)
+    for pid in sorted(targets, reverse=True):
+        forge_proc.signal_pid(pid, force=force)
     return 0
 
 
@@ -401,18 +439,16 @@ def _ps_field(pid: int, field: str) -> str | None:
 
 
 def identity(pid: int) -> str | None:
+    if forge_proc.IS_WINDOWS:
+        return forge_proc.process_start_time(pid)
     return _ps_field(pid, 'lstart')
 
 
 def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+    if not forge_proc.pid_alive(pid):
         return False
-    except PermissionError:
+    if forge_proc.IS_WINDOWS:
         return True
-    except OSError:
-        return False
     # A zombie still answers kill(0) until its parent waits for it.
     return not (_ps_field(pid, 'stat') or 'Z').startswith('Z')
 
@@ -427,6 +463,19 @@ def _wait_pid_gone(pid: int, seconds: float) -> bool:
 
 
 def _stop_live(pid: int) -> int:
+    if forge_proc.IS_WINDOWS:
+        if pid in _forbidden():
+            return 0
+        members = list_group(pid)
+        count = len(members) if members else 1
+        for force, wait in ((False, TERM_WAIT_S), (True, KILL_WAIT_S)):
+            forge_proc.kill_tree(pid, force=force)
+            for mpid, _cmd in (members or []):
+                if mpid and mpid not in _forbidden():
+                    forge_proc.signal_pid(mpid, force=force)
+            if wait_gone(pid, wait):
+                break
+        return count
     try:
         leader = os.getpgid(pid) == pid
     except OSError:
@@ -436,7 +485,7 @@ def _stop_live(pid: int) -> int:
             return 0
         members = list_group(pid)
         count = len(members) if members else 1
-        for sig, wait in ((signal.SIGTERM, TERM_WAIT_S), (signal.SIGKILL, KILL_WAIT_S)):
+        for sig, wait in ((signal.SIGTERM, TERM_WAIT_S), (forge_proc.SIGKILL, KILL_WAIT_S)):
             try:
                 os.killpg(pid, sig)
             except OSError:
@@ -445,7 +494,7 @@ def _stop_live(pid: int) -> int:
                 break
         return count
     # Recorded before setsid: the pid is still in its dispatcher's group, so only it is ours.
-    for sig, wait in ((signal.SIGTERM, TERM_WAIT_S), (signal.SIGKILL, KILL_WAIT_S)):
+    for sig, wait in ((signal.SIGTERM, TERM_WAIT_S), (forge_proc.SIGKILL, KILL_WAIT_S)):
         try:
             os.kill(pid, sig)
         except OSError:
@@ -625,6 +674,12 @@ def main(argv: list[str]) -> int:
                 print('usage: forge-guard.py stop <record-file>', file=sys.stderr)
                 return 2
             return stop(rest[0])
+        if command == 'kill-children':
+            if len(rest) not in (1, 2):
+                print('usage: forge-guard.py kill-children <pid> [TERM|KILL]', file=sys.stderr)
+                return 2
+            force = len(rest) == 2 and rest[1].upper() == 'KILL'
+            return kill_children(int(rest[0]), force=force)
         if command == 'promises':
             tail = 3000
             if '--tail-bytes' in rest:

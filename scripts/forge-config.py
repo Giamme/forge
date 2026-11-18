@@ -64,6 +64,7 @@ import sys
 SKILL = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(SKILL, 'scripts'))
 
+import forge_posix  # noqa: E402
 from forge_decide import GATES, MODES, load_repo, load_user, save_repo, save_user, user_path
 from forge_decide import profiles
 from forge_decide.migrate import run as migrate_run
@@ -153,8 +154,8 @@ def read_small(path):
     if st.st_size >= CONTENT_MAX:
         return None, 'larger than 64 KiB'
     try:
-        flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, 'O_NONBLOCK', 0)
-        with os.fdopen(os.open(path, flags), 'rb') as handle:
+        flags = os.O_RDONLY | forge_posix.O_NOFOLLOW | forge_posix.O_NONBLOCK
+        with os.fdopen(forge_posix.open_nofollow(path, flags), 'rb') as handle:
             data = handle.read(CONTENT_MAX + 1)
     except OSError as err:
         return None, 'unreadable: %s' % err.strerror
@@ -170,7 +171,7 @@ def open_forge_dir(d):
     except FileExistsError:
         pass
     try:
-        return os.open(d, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        return forge_posix.open_dir(d, nofollow=True)
     except OSError as err:
         raise Invalid('%s must be a real directory, not a symlink or file (%s)' % (d, err.strerror))
 
@@ -180,21 +181,21 @@ def atomic_write(d, target, text):
     name = os.path.basename(target)
     tmp = '.%s.%d.tmp' % (name, os.getpid())
     try:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=dfd)
+        fd = forge_posix.open_at(dfd, tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | forge_posix.O_NOFOLLOW, 0o644)
         try:
             with os.fdopen(fd, 'w') as handle:
                 handle.write(text)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)
+            forge_posix.replace_at(dfd, tmp, name)
         except BaseException:
             try:
-                os.unlink(tmp, dir_fd=dfd)
+                forge_posix.unlink_at(dfd, tmp)
             except OSError:
                 pass
             raise
     finally:
-        os.close(dfd)
+        forge_posix.close_dir(dfd)
 
 
 # ------------------------------------------------------------------------------------------ show
@@ -533,9 +534,9 @@ def cmd_unset(args):
     if d and os.path.lexists(target):
         dfd = open_forge_dir(d)
         try:
-            os.unlink(os.path.basename(target), dir_fd=dfd)
+            forge_posix.unlink_at(dfd, os.path.basename(target))
         finally:
-            os.close(dfd)
+            forge_posix.close_dir(dfd)
     emit(args, args.key, previous, None)
     return 0
 

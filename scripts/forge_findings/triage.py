@@ -12,7 +12,6 @@ done, and the dispatch's own side.last / side.resolved.
 """
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import importlib.util
 import json
@@ -27,6 +26,8 @@ SCRIPTS = Path(__file__).resolve().parent.parent
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+import forge_flock as fcntl  # noqa: E402
+import forge_proc  # noqa: E402
 import forge_side  # noqa: E402
 
 DISPATCH = SCRIPTS / "forge-dispatch.sh"
@@ -156,17 +157,7 @@ def read_json(path):
 
 
 def alive(pid) -> bool:
-    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
+    return forge_proc.pid_alive(pid)
 
 
 class _Lock:
@@ -453,7 +444,7 @@ def reason_of(error) -> str:
 
 def preflight(spec) -> None:
     """`forge-dispatch.sh doctor --spec S --role side`. Raises Refused with its message."""
-    argv = ["/bin/bash", str(DISPATCH), "doctor", "--spec", str(spec), "--role", "side"]
+    argv = forge_proc.bash_cmd(DISPATCH, "doctor", "--spec", str(spec), "--role", "side")
     try:
         result = subprocess.run(argv, capture_output=True, text=True, stdin=subprocess.DEVNULL,
                                 timeout=DOCTOR_TIMEOUT)
@@ -521,9 +512,9 @@ def detach(dest, argv):
     done = dest / "done"
     wrapper = '"${@:2}"; rc=$?; printf "%s\\n" "$rc" > "$1.tmp" && mv -f "$1.tmp" "$1"; exit "$rc"'
     with open(dest / "triage.out", "ab") as out:
-        process = subprocess.Popen(["/bin/bash", "-c", wrapper, "forge-triage", str(done), *argv],
+        process = subprocess.Popen(forge_proc.bash_cmd("-c", wrapper, "forge-triage", str(done), *argv),
                                    stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                                   start_new_session=True, close_fds=True)
+                                   close_fds=True, **forge_proc.popen_group_kwargs(detached=True))
     with _Lock(dest / "state.lock"):
         state = read_json(dest / "state.json")
         if isinstance(state, dict) and state.get("state") == "running":

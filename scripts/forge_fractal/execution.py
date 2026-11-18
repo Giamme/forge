@@ -22,6 +22,7 @@ import time
 import uuid
 
 from . import SCRIPTS, artifact, command, identifier, lock, managed_run, read_json, runtime_python, write_json
+import forge_proc
 
 PROTOCOL = '''
 Forge owns coordination and independent QA. Implement and run requested checks.
@@ -64,17 +65,17 @@ def terminate(process: subprocess.Popen) -> None:
     # Every managed invocation is its own session; never signal an arbitrary PID.
     if process.poll() is not None:
         return
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(process.pid, signal.SIGTERM)
+    forge_proc.kill_tree(process.pid, force=False)
     try:
         process.wait(timeout=2)
     except subprocess.TimeoutExpired:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(process.pid, signal.SIGKILL)
+        forge_proc.kill_tree(process.pid, force=True)
         process.wait(timeout=2)
 
 
 def process_identity(pid: int) -> str:
+    if forge_proc.IS_WINDOWS:
+        return forge_proc.process_start_time(pid) or ''
     return subprocess.run(['ps', '-p', str(pid), '-o', 'lstart=,comm='], capture_output=True, text=True).stdout.strip()
 
 
@@ -83,8 +84,7 @@ def reap_recorded(task: Path) -> None:
         recorded = read_json(path)
         pid = recorded['pid']
         if recorded['identity'] and process_identity(pid) == recorded['identity']:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(pid, signal.SIGKILL)
+            forge_proc.kill_tree(pid, force=True)
 
 
 @contextlib.contextmanager
@@ -111,9 +111,9 @@ def bridge(step: Path, prompt: Path, model: str) -> int:
     role = config.get('role', 'dwarf')
     if role not in ('dwarf', 'planner'):
         raise ValueError('Unsupported Fractal bridge role')
-    argv = ['/bin/bash', str(SCRIPTS / 'forge-dispatch.sh'), role, model,
-            '--repo', config['workspace'], '--run-dir', str(step), '--prompt-file', str(prompt),
-            '--timeout', str(max(1, math.ceil(config['remaining']))), '--output', 'summary']
+    argv = forge_proc.bash_cmd(SCRIPTS / 'forge-dispatch.sh', role, model,
+                               '--repo', config['workspace'], '--run-dir', str(step), '--prompt-file', str(prompt),
+                               '--timeout', str(max(1, math.ceil(config['remaining']))), '--output', 'summary')
     if config['yolo'] and role == 'dwarf':
         argv.append('--yolo')
     # Stay in the bridge session so its entire descendant group is reapable.
@@ -460,7 +460,7 @@ def supervise(run: Path, task: Path) -> int:
         limit = read_json(run / 'run.json')['limits']['deadline']
         elapsed = read_json(task / 'state.json').get('elapsed', 0)
         process = subprocess.Popen([str(runtime_python()), str(SCRIPTS / 'forge-fractal.py'),
-                                    '_worker', run.name, task.name], start_new_session=True)
+                                    '_worker', run.name, task.name], **forge_proc.popen_group_kwargs())
         previous = time.monotonic()
         try:
             while process.poll() is None:
@@ -575,7 +575,7 @@ def dispatch(argv: list[str]) -> int:
 
 def limited_dispatch(run: Path, argv: list[str]) -> int:
     if argv[0] == 'doctor':
-        return subprocess.call(['/bin/bash', str(SCRIPTS / 'forge-dispatch.sh'), *argv])
+        return subprocess.call(forge_proc.bash_cmd(SCRIPTS / 'forge-dispatch.sh', *argv))
     limit = read_json(run / 'run.json')['limits']['deadline']
     output = Path(argv[argv.index('--run-dir') + 1])
     review = Path(argv[argv.index('--repo') + 1])
@@ -632,13 +632,13 @@ def qa_dispatch(run: Path, task: Path, argv: list[str], limit: int) -> int:
     if record.exists():
         old = read_json(record)
         if old['identity'] and process_identity(old['pid']) == old['identity']:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(old['pid'], signal.SIGKILL)
+            forge_proc.kill_tree(old['pid'], force=True)
     while True:
         try:
             with slot(run, check):
                 check()
-                process = subprocess.Popen(['/bin/bash', str(SCRIPTS / 'forge-dispatch.sh'), *argv], start_new_session=True)
+                process = subprocess.Popen(forge_proc.bash_cmd(SCRIPTS / 'forge-dispatch.sh', *argv),
+                                           **forge_proc.popen_group_kwargs())
                 write_json(record, dict(pid=process.pid, identity=process_identity(process.pid)))
                 try:
                     while process.poll() is None:

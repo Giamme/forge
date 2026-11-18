@@ -46,6 +46,11 @@ import tempfile
 import time
 from pathlib import Path
 
+_SCRIPTS = str(Path(__file__).resolve().parent)
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+import forge_proc  # noqa: E402
+
 SCRIPTS = Path(__file__).resolve().parent
 DISPATCH = SCRIPTS / 'forge-dispatch.sh'
 ARTIFACT = SCRIPTS / 'forge-artifact.sh'
@@ -125,8 +130,9 @@ def resolution(spec: str) -> tuple | None:
         prompt = Path(tmp) / 'input'
         prompt.write_text('Offline resolution')
         try:
-            out = subprocess.run(['/bin/bash', str(DISPATCH), 'qa', spec, '--run-dir', tmp, '--prompt-file',
-                                  str(prompt), '--dry-run'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            out = subprocess.run(forge_proc.bash_cmd(DISPATCH, 'qa', spec, '--run-dir', tmp, '--prompt-file',
+                                                     prompt, '--dry-run'),
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                  timeout=60, text=True)
         except (OSError, subprocess.SubprocessError):
             return None
@@ -183,7 +189,7 @@ def fresh_dir(base: Path, attempt: str) -> Path:
 
 
 def bash(function: str, *args) -> subprocess.CompletedProcess:
-    return subprocess.run(['/bin/bash', '-c', 'source "$1"; shift; "$@"', '_', str(ARTIFACT), function, *args],
+    return subprocess.run(forge_proc.bash_cmd('-c', 'source "$1"; shift; "$@"', '_', str(ARTIFACT), function, *args),
                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=PREPARE_TIMEOUT_S)
 
 
@@ -229,7 +235,7 @@ def _stop(_signum, _frame):
 def run(args) -> int:
     # First, before anything slow: the task may signal that its review finished at any time,
     # and SIGUSR1's default action would kill a launcher that is still preparing.
-    signal.signal(signal.SIGUSR1, _primary_done)
+    forge_proc.install_signal(forge_proc.SIGUSR1, _primary_done)
     signal.signal(signal.SIGTERM, _stop)
     plan = Path(args.plan)
     parent = os.getppid()
@@ -254,10 +260,11 @@ def run(args) -> int:
         shutil.copyfile(Path(args.tdir) / 'qa.input', out / 'qa.input')
         env = dict(os.environ, FORGE_SHADOW='1', FORGE_SHADOW_ATTEMPT=args.attempt,
                    FORGE_SHADOW_REVIEWED=args.reviewed, FORGE_SHADOW_FROM=args.qa)
-        argv = ['/bin/bash', str(DISPATCH), 'qa', spec, '--repo', str(review), '--run-dir', str(out),
-                '--review-base', (out / 'review.base').read_text().strip(),
-                '--ripwire-query-file', str(Path(args.tdir) / 'prompt.md'), '--prompt-file', str(out / 'qa.input'),
-                '--output', 'summary']
+        argv = forge_proc.bash_cmd(DISPATCH, 'qa', spec, '--repo', str(review), '--run-dir', str(out),
+                                   '--review-base', (out / 'review.base').read_text().strip(),
+                                   '--ripwire-query-file', str(Path(args.tdir) / 'prompt.md'),
+                                   '--prompt-file', str(out / 'qa.input'),
+                                   '--output', 'summary')
         if args.yolo:
             argv.append('--yolo')
         argv.extend(service_tier_args(plan, 'qa'))
@@ -331,7 +338,7 @@ def preflight(args) -> int:
         flags = ['--yolo'] if (plan / 'yolo_qa').exists() else []
         flags.extend(service_tier_args(plan, 'qa'))
         try:
-            result = subprocess.run(['/bin/bash', str(DISPATCH), 'doctor', '--spec', spec, '--role', 'qa', *flags],
+            result = subprocess.run(forge_proc.bash_cmd(DISPATCH, 'doctor', '--spec', spec, '--role', 'qa', *flags),
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120, text=True)
         except (OSError, subprocess.SubprocessError):
             print('forge: shadow review spec %s is not usable here; it is skipped' % spec, file=sys.stderr)

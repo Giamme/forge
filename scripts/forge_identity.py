@@ -20,6 +20,7 @@ import stat
 import subprocess
 
 import forge_locations
+import forge_posix
 import forge_registry
 
 # A file in <run>/tasks/<id>/ sits three directories under the run dir.
@@ -254,7 +255,7 @@ def _first_line(path: str) -> str | None:
 def _read_bytes(path, limit: int) -> bytes | None:
     """The start of a regular file. A FIFO, a directory or a missing path is unknown, and never blocks."""
     try:
-        fd = os.open(os.fspath(path), os.O_RDONLY | os.O_NONBLOCK)
+        fd = os.open(os.fspath(path), os.O_RDONLY | forge_posix.O_NONBLOCK)
     except OSError:
         return None
     try:

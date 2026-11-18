@@ -53,6 +53,13 @@ import shutil
 import stat
 import subprocess
 import sys
+from pathlib import Path
+
+_SCRIPTS = str(Path(__file__).resolve().parent)
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+import forge_posix  # noqa: E402
+import forge_proc  # noqa: E402
 import tempfile
 import time
 from pathlib import Path
@@ -134,7 +141,7 @@ class Plan:
         """The text of a regular file under the run dir, or None (missing: silent; anything else warns)."""
         try:
             # O_NONBLOCK: a FIFO with no writer would block an open; it is not a regular file anyway.
-            fd = os.open(self.path / rel, os.O_RDONLY | os.O_NONBLOCK)
+            fd = os.open(self.path / rel, os.O_RDONLY | forge_posix.O_NONBLOCK)
         except FileNotFoundError:
             return None
         except (OSError, ValueError) as error:
@@ -240,17 +247,7 @@ def flags_section(plan):
 
 
 def pid_alive(pid):
-    if type(pid) is not int or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except (OSError, OverflowError):
-        return False
-    return True
+    return forge_proc.pid_alive(pid)
 
 
 def scheduler_section(plan):
@@ -790,7 +787,7 @@ def run_command(plan, flags):
         value = flags.get(key)
         return value if type(value) is int and value >= least else None
 
-    command = ['/bin/bash', parallel_script(), 'run', str(plan)]
+    command = forge_proc.bash_cmd(parallel_script(), 'run', str(plan))
     for key, option, least in (('retry_failed', '--retry-failed', 0), ('infra_retries', '--infra-retries', 0)):
         if whole(key, least) is not None:
             command += [option, str(flags[key])]
@@ -977,7 +974,7 @@ def recover_task(ctrl, plan, wt_root, run_id, task, warn):
 
 def prepare_task(plan, task):
     """forge-parallel.sh retry PLAN TASK --no-dispatch. {task, ok, message}."""
-    command = ['/bin/bash', parallel_script(), 'retry', str(plan), task, '--no-dispatch']
+    command = forge_proc.bash_cmd(parallel_script(), 'retry', str(plan), task, '--no-dispatch')
     try:
         result = subprocess.run(command, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=600)
     except (OSError, subprocess.SubprocessError) as error:
@@ -992,8 +989,9 @@ def start_run(plan, command):
     log, done = os.path.join(plan, f'resume-{stamp}.log'), os.path.join(plan, f'resume-{stamp}.done')
     wrapper = '"${@:2}"; rc=$?; printf "%s\\n" "$rc" > "$1.tmp" && mv -f "$1.tmp" "$1"; exit "$rc"'
     with open(log, 'ab') as out:
-        process = subprocess.Popen(['/bin/bash', '-c', wrapper, 'forge-resume', done, *command], stdin=subprocess.DEVNULL,
-                                   stdout=out, stderr=subprocess.STDOUT, start_new_session=True, cwd=plan)
+        process = subprocess.Popen(forge_proc.bash_cmd('-c', wrapper, 'forge-resume', done, *command),
+                                   stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                                   cwd=plan, **forge_proc.popen_group_kwargs(detached=True))
     return {'pid': process.pid, 'log': log, 'done': done}
 
 

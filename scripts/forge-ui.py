@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import errno
-import fcntl
 import http.client
 import json
 import os
@@ -36,6 +35,9 @@ SKILL = Path(__file__).resolve().parent.parent
 # `-I` keeps the script's own directory off sys.path, so both are added by hand.
 sys.path.insert(0, str(SKILL / 'scripts'))
 sys.path.insert(0, str(SKILL / 'ui'))
+import forge_flock as fcntl  # noqa: E402
+import forge_posix  # noqa: E402
+import forge_proc  # noqa: E402
 
 HOST = '127.0.0.1'
 LISTENING = re.compile(r'^forge-ui on http://127\.0\.0\.1:(\d+)/', re.M)
@@ -71,15 +73,7 @@ def _env_int(name, default):
 
 
 def pid_alive(pid) -> bool:
-    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
-        return False
-    try:
-        os.kill(pid, 0)
-    except (ProcessLookupError, OverflowError):  # OverflowError: no process can have that pid
-        return False
-    except PermissionError:
-        return True
-    return True
+    return forge_proc.pid_alive(pid, min_pid=2)
 
 
 def wait_dead(pid, seconds) -> bool:
@@ -114,7 +108,7 @@ def open_regular(path, flags):
 
     O_NONBLOCK: a FIFO or device planted at one of our paths must fail, never block.
     """
-    fd = os.open(path, flags | os.O_NONBLOCK | os.O_CLOEXEC, 0o644)
+    fd = os.open(path, flags | forge_posix.O_NONBLOCK | forge_posix.O_CLOEXEC, 0o644)
     if not stat.S_ISREG(os.fstat(fd).st_mode):
         os.close(fd)
         raise OSError(errno.EINVAL, 'not a regular file', str(path))
@@ -216,7 +210,7 @@ def _spawn(state, port, registry, idle, read_only=False, cli_env=None):
         command.append('--read-only')
     with os.fdopen(open_regular(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC), 'w') as out:
         proc = subprocess.Popen(command, cwd=str(state), stdin=subprocess.DEVNULL, stdout=out, stderr=out,
-                                start_new_session=True, close_fds=True, env=env)
+                                close_fds=True, env=env, **forge_proc.popen_group_kwargs(detached=True))
     deadline = time.monotonic() + START_WAIT_S
     while time.monotonic() < deadline:
         try:
@@ -263,7 +257,8 @@ def launch_browser(url):
     command = [sys.executable, '-I', str(Path(__file__).resolve()), '_browse', url]
     try:
         proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+                                stderr=subprocess.DEVNULL, close_fds=True,
+                                **forge_proc.popen_group_kwargs(detached=True))
         proc.wait(BROWSER_WAIT_S)
     except subprocess.TimeoutExpired:
         pass  # still starting its browser: leave it
