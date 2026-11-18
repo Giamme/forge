@@ -20,6 +20,7 @@ The README is the short overview. These pages hold the rest, one topic each.
 | [Ripwire and Jev](add-ons.md) | optional repository context and advisory judgments |
 | [Troubleshooting](troubleshooting.md) | symptoms, causes and fixes |
 | [Development](development.md) | repository layout, offline checks, runtime measurement |
+| [Contributing](../CONTRIBUTING.md) | setting up, running the tests, the rules reviewers check, pull requests |
 
 Deeper material that the skill itself reads lives in [`references/`](../references/): the
 per-harness details, the decomposition and Fractal contracts, memory internals, Jev and the
