@@ -63,6 +63,7 @@ MAX_DECIDE_VALUE = 256
 # The profile object written to `forge config profile … --file -`. The HTTP body is already capped
 # at 64 KiB by the server; this caps the stdin text itself, which a re-encode can make larger.
 MAX_PROFILE_BODY = 64 * 1024
+MAX_PROFILE_DEPTH = 64       # a profile is a few levels deep
 # A brief answer, in characters. The CLI then keeps the leading 4 KiB of what remains after it
 # strips control characters; this bound is the one the route enforces before that call.
 MAX_ANSWER = 4096
@@ -838,10 +839,26 @@ def _profile_value(value):
     return value
 
 
+def _nested_deeper_than(value, limit):
+    """Whether lists and objects nest more than `limit` levels, checked without recursion."""
+    stack = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if isinstance(item, (dict, list)):
+            if depth > limit:
+                return True
+            stack.extend((child, depth + 1) for child in (item.values() if isinstance(item, dict) else item))
+    return False
+
+
 def _profile_stdin(value):
     """The bytes `--file -` reads. A re-encode can be larger than the HTTP body, so it is capped on its own."""
     if not isinstance(value, dict):
         raise BadBody('body must be a JSON object')
+    # Up to Python 3.11 json.dumps raises RecursionError on a deep enough value; from 3.12 it
+    # goes much deeper, so the limit is explicit.
+    if _nested_deeper_than(value, MAX_PROFILE_DEPTH):
+        raise BadBody(f'body is nested more than {MAX_PROFILE_DEPTH} levels deep')
     try:
         raw = json.dumps(value, allow_nan=False).encode('utf-8')
     except (TypeError, ValueError, RecursionError):

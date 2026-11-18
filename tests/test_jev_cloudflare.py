@@ -221,7 +221,10 @@ class TransportTests(CloudflareCase):
         busy = http_error(429, b'{}', headers={'Retry-After': '0.5'})
         result, _, sleeps = self.ask(lambda b: busy, answer_all())
         self.assertIsNotNone(result)
-        self.assertGreaterEqual(sleeps[0], 0.5)
+        # max, not [0]: time.sleep is patched process-wide, so a subprocess.run(timeout=) inside
+        # ask() that waits for its child records its own polling sleeps (0.001, 0.002, …) first
+        # on a loaded machine.
+        self.assertGreaterEqual(max(sleeps), 0.5)
 
     def test_partial_or_out_of_range_answers_fail_the_call(self):
         self.configure()

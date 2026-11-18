@@ -65,10 +65,20 @@ def capability_help(cache: str, registry: str, recipe: str, command: list[str]) 
     return result.stdout.decode(errors='replace')
 
 
+def shared_clock() -> float:
+    """Seconds from a point every process on this machine shares. begin and each phase run as separate
+    processes and subtract each other's readings, which time.monotonic() does not promise: on macOS,
+    Python 3.9 starts it at zero in every process, so every phase there measured about 0s."""
+    try:
+        return time.clock_gettime(time.CLOCK_MONOTONIC)
+    except (AttributeError, OSError):   # Windows has no clock_gettime; its monotonic() is system-wide
+        return time.monotonic()
+
+
 def begin(root: str, role: str) -> Path:
     attempt = Path(root) / 'attempts' / (role + '-' + uuid.uuid4().hex)
     attempt.mkdir(parents=True)
-    now = time.monotonic()
+    now = shared_clock()
     write_json(attempt / 'metrics.json', {
         'role': role, 'started': now, 'wall_started': time.time(),
         'phase': 'preparation', 'phase_started': now,
@@ -87,7 +97,7 @@ def begin(root: str, role: str) -> Path:
 def phase(attempt: str, name: str, rc: str | None = None) -> None:
     path = Path(attempt) / 'metrics.json'
     data = json.loads(path.read_text())
-    now = time.monotonic()
+    now = shared_clock()
     previous = data['phase']
     duration = now - data['phase_started']
     data['elapsed_s'][previous] = data['elapsed_s'].get(previous, 0) + duration

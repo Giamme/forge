@@ -1,0 +1,118 @@
+# Runs the offline test suite (tests/check.sh). No secrets and read-only permissions, so it is
+# safe on pull requests from forks. The suite never calls a real model: it runs against fake
+# agent CLIs (see tests/README.md).
+#
+# Pull requests run Linux with Python 3.9, the oldest Python forge supports. Pushes to main, and
+# runs started by hand (Actions → Tests → Run workflow, on any branch), also run Linux with the
+# latest 3.x and macOS (with the system Bash 3.2) with both: macOS runners are slow and GitHub
+# runs few of them at once. A pull request that only changes documentation (DOCS_ONLY below)
+# runs no tests at all.
+#
+# The whole suite takes about 40 minutes on one runner, so each OS and Python pair splits it into
+# 4 shards (tests/run_tests.py --shard). The "Tests passed" job at the end is the one check to
+# require for merging: it fails when any shard did, and passes for a documentation-only change.
+
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Pick the jobs
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.pick.outputs.run }}
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      # A pull request is checked out as its merge into the base branch: with the merge's parents
+      # fetched, HEAD^1..HEAD is exactly what the pull request changes.
+      - uses: actions/checkout@v5
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 2
+      - id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+        # setup-python has no 3.9 build for Ubuntu 26.04 (ubuntu-latest), so Linux 3.9 runs on 24.04.
+        run: |
+          python3 - >> "$GITHUB_OUTPUT" <<'PY'
+          import fnmatch, json, os, subprocess, sys
+          # Files no test reads. SKILL.md, references/ and site/ are not here: the suite checks them.
+          DOCS_ONLY = ['docs/*', '.changelog/*', 'README.md', 'CONTRIBUTING.md', 'SECURITY.md',
+                       'CHANGELOG.md', 'LICENSE', 'tests/README.md', '.github/ISSUE_TEMPLATE/*',
+                       '.github/PULL_REQUEST_TEMPLATE.md']
+          run = True
+          if os.environ['EVENT'] == 'pull_request':
+              changed = subprocess.run(['git', 'diff', '--name-only', '-z', 'HEAD^1', 'HEAD'], check=True,
+                                       capture_output=True, text=True).stdout.split('\0')
+              changed = [path for path in changed if path]
+              print('changed files:', *changed, sep='\n  ', file=sys.stderr)
+              run = not all(any(fnmatch.fnmatchcase(path, glob) for glob in DOCS_ONLY) for path in changed)
+              pairs = [('ubuntu-24.04', '3.9')]
+          else:
+              pairs = [('ubuntu-24.04', '3.9'), ('ubuntu-latest', '3.x'),
+                       ('macos-latest', '3.9'), ('macos-latest', '3.x')]
+          include = [{'os': o, 'python': p, 'shard': s} for o, p in pairs for s in (1, 2, 3, 4)]
+          print('run=' + ('true' if run else 'false'))
+          print('matrix=' + json.dumps({'include': include}))
+          PY
+
+  check:
+    name: ${{ matrix.os }} · Python ${{ matrix.python }} · ${{ matrix.shard }}/4
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      # macOS users run forge under the system Bash 3.2, but the runner image puts Homebrew's
+      # Bash 5 first on PATH. Put /bin/bash first so the tests (which look bash up on PATH)
+      # exercise the Bash forge has to support.
+      - name: Use the system Bash 3.2 on macOS
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p "$RUNNER_TEMP/system-bash"
+          ln -s /bin/bash "$RUNNER_TEMP/system-bash/bash"
+          echo "$RUNNER_TEMP/system-bash" >> "$GITHUB_PATH"
+      - name: Versions
+        run: |
+          bash --version | head -1
+          python3 --version
+          git --version
+          command -v node >/dev/null && node --version || true
+      - name: tests/check.sh --shard ${{ matrix.shard }}/4
+        run: bash tests/check.sh --shard ${{ matrix.shard }}/4
+
+  passed:
+    name: Tests passed
+    if: always()
+    needs: [plan, check]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every shard passed
+        env:
+          PLAN: ${{ needs.plan.result }}
+          RUN: ${{ needs.plan.outputs.run }}
+          CHECK: ${{ needs.check.result }}
+        run: |
+          echo "plan: $PLAN, tests needed: $RUN, shards: $CHECK"
+          [ "$PLAN" = success ] || exit 1
+          if [ "$RUN" = false ]; then echo "documentation only: no tests to run"; exit 0; fi
+          [ "$CHECK" = success ]

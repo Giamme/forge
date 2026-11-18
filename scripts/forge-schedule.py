@@ -740,7 +740,10 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     brief_mode = brief_level(plan)   # advisory never waits; strict was settled before the scheduler started
     brief_told = set()   # (task, qid or '') whose brief wait was already printed
     brief_waiting = set()  # tasks the last dispatch pass held for a brief answer or the brief writer
-    brief_alive = [0.0, False]   # when the writer was last looked at, and what was seen
+    # When the writer was last looked at, and what was seen. -inf, not 0.0: time.monotonic() has no
+    # defined start, and where it is small (seen with Python 3.9 on a macOS runner) the first look
+    # was skipped and a task dispatched as if the writer had already gone.
+    brief_alive = [float('-inf'), False]
 
     def status(name: str) -> str:
         root = plan / 'tasks' / name

@@ -183,7 +183,10 @@ class SchedulerBriefTests(unittest.TestCase):
         proc = self.start_scheduler()
         self.until(lambda: 'b merged' in self.events(), 'b to merge')
         time.sleep(1.2)
-        self.assertIsNone(proc.poll())
+        if proc.poll() is not None:   # say why: seen once on a loaded macOS runner, not reproduced
+            self.fail(f'the run ended ({proc.returncode}) while the writer runs; events: {self.events()}; '
+                      f'writer {writer.pid} poll={writer.poll()}, brief.pid={(self.plan / "brief.pid").read_text()!r}\n'
+                      + ''.join(proc.communicate()))
         self.assertFalse(any(e.startswith('a ') for e in self.events()), self.events())
         writer.kill(); writer.wait()                               # gone, and no brief.json: the wait is over
         code, _, err = self.finish(proc)

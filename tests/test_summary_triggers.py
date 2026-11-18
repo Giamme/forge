@@ -18,20 +18,24 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKER = r'''#!/bin/bash
 cmd="$1"; plan="$2"; name="$3"; t="$plan/tasks/$name"
 mkdir -p "$t"
+# `>` empties a file before it writes it, and a loop that looks in between sees one more change.
+put() { printf '%s\n' "$2" > "$1.tmp" && mv "$1.tmp" "$1"; }
 case "$cmd" in
   _task)
     n=$(( $(cat "$t/calls" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$t/calls"
-    echo RUNNING > "$t/status"
+    put "$t/status" RUNNING
     [ -e "$plan/fast/$name" ] || sleep 0.4
-    echo "reply $n" > "$t/dwarf.last"         # the dwarf is done; the status is still RUNNING
+    put "$t/dwarf.last" "reply $n"            # the dwarf is done; the status is still RUNNING
     [ -e "$plan/fast/$name" ] || sleep 0.4
-    echo "review $n" > "$t/qa.last"          # the verdict, while the attempt is still open
+    put "$t/qa.last" "review $n"             # the verdict, while the attempt is still open
     [ -e "$plan/fast/$name" ] || sleep 0.4
     outcome="$(head -1 "$plan/outcomes/$name")"
     tail -n +2 "$plan/outcomes/$name" > "$plan/outcomes/$name.rest"; mv "$plan/outcomes/$name.rest" "$plan/outcomes/$name"
     echo "$n" >> "$t/attempts.tsv"           # the attempt ends
-    echo "$outcome" > "$t/status"
-    ;;
+    [ -e "$plan/fast/$name" ] || sleep 0.4   # two files: without a pause the loop may or may not see them apart
+    put "$t/status" "$outcome"
+    [ -e "$plan/fast/$name" ] || sleep 0.4   # and the status and the exit: a loop between them sees the
+    ;;                                        # status before the retry or merge that follows the exit
   _merge)
     if [ "$(cat "$t/status" 2>/dev/null)" = PASS ]; then touch "$t/merged"; fi
     ;;
@@ -122,11 +126,11 @@ class SummaryTriggerTests(unittest.TestCase):
         result = self.run_scheduler('--retry-failed', 1)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.settle()
-        # attempt 1: RUNNING, the dwarf's reply, its review; it ends FAIL and is requeued in the same pass (one
-        # change: the retry); attempt 2: RUNNING, reply, review; MERGED when the pass merges it. Eight changes, eight
-        # triggers: the hundreds of loops between them start nothing. (What the stub saw of the status
-        # is only the moment it ran, so only the count is asserted.)
-        self.assertEqual(len(self.calls('a')), 8, self.calls('a'))
+        # attempt 1: RUNNING, the dwarf's reply, its review, the attempt's line, FAIL, and the retry once the
+        # worker exits; attempt 2: RUNNING, reply, review, attempt line, PASS, and MERGED once it exits. Twelve
+        # changes, twelve triggers: the hundreds of loops between them start nothing. (What the stub saw of the
+        # status is only the moment it ran, so only the count is asserted.)
+        self.assertEqual(len(self.calls('a')), 12, self.calls('a'))
 
     def test_a_task_override_off_silences_that_task_only(self):
         self.on(); self.task('a', ['PASS']); self.task('b', ['PASS'])
@@ -135,7 +139,7 @@ class SummaryTriggerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.settle()
         self.assertEqual(self.calls('b'), [])
-        self.assertEqual(len(self.calls('a')), 4, self.calls('a'))   # RUNNING, the reply, its review, MERGED
+        self.assertEqual(len(self.calls('a')), 6, self.calls('a'))   # RUNNING, the reply, its review, the attempt's line, PASS, MERGED
 
     def test_a_task_override_on_summarizes_that_task_under_an_off_plan(self):
         (self.plan / 'summaries').write_text('off\n')

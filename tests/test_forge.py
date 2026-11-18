@@ -361,7 +361,8 @@ class ForgeTests(unittest.TestCase):
   self.assertEqual(qa['input_tokens'],15)
   self.assertEqual((run/'qa.last').read_text().strip(),'FORGE_VERDICT: PASS')
   self.assertIn('turn.completed',(run/'dwarf.log').read_text())
-  self.assertTrue(any(x['role']=='solo' and x['elapsed_s']['snapshot']>0 for x in records))
+  solo=[x for x in records if x['role']=='solo']
+  self.assertTrue(any(x['elapsed_s']['snapshot']>0 for x in solo), solo)
  def test_full_output_and_attempt_history(self):
   r=self.solo('--output','full'); self.assertEqual(r.returncode,0,r.stdout); self.assertIn('turn.completed',r.stdout)
   self.env['CONTENT']='second'; r=self.solo()

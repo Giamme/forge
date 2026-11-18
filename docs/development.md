@@ -57,7 +57,7 @@ forge/
 ## Offline checks
 
 Run `bash tests/check.sh` for offline regression checks. See [tests](../tests/README.md) for skill
-invocation scenarios and verification limits. Two CI workflows, neither of which runs the tests: one builds and publishes the website ([site/README.md](../site/README.md)), and `.github/workflows/npm-publish.yml` publishes the package to npm when a GitHub Release is published (npm trusted publishing, no token).
+invocation scenarios and verification limits. Three CI workflows: `.github/workflows/test.yml` runs `tests/check.sh` on every pull request (Ubuntu, Python 3.9; documentation-only changes skip it) and on every push to `main` (also the latest 3.x, and macOS with the system Bash 3.2), `.github/workflows/pages.yml` builds and publishes the website ([site/README.md](../site/README.md)), and `.github/workflows/npm-publish.yml` publishes the package to npm when a GitHub Release is published (npm trusted publishing, no token).
 
 ## Runtime efficiency and measurement
 
