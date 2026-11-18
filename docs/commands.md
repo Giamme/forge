@@ -27,8 +27,9 @@ harness (`/forge`); this command installs forge and drives its optional tools.
 | `forge worktrees rm PATH… [--branches] [--dry-run] [--json] [--actor {cli,ui}]` | remove `failed` and `finished` worktrees, and leftover folders, by forge-ui's rules (never `--force`; `--branches` is `git branch -d` on a finished worktree's merged branch). Exit 0 when no row failed, 4 when one did, 2 usage. See [below](#forge-worktrees-rm) |
 | `forge runs rerun RUN_DIR --dwarf SPEC [--qa SPEC] [--to DIR] [--max-parallel N] [--dry-run] [--run --yes]` | set up the same plan again with another implementer, from the same starting commit; spends nothing unless `--run --yes`; never merges. See [below](#forge-runs-rerun-and-compare) |
 | `forge runs compare RUN_A RUN_B [--json] [--no-record]` | two runs of one plan, side by side, per task; records the pair in the dataset |
-| `forge memory show\|learnings\|prune\|spend\|forget REPO …` | a repository's project memory; `learnings REPO --json` lists every learning in its ledger with what forge does with it (`in_memory`, `waiting` for a second run, `stale`, `capped`, `muted`), from forge-memory.sh's own rebuild, without changing the repository. `forget REPO KEY…` (`KEY` is `category:key`; `--dry-run`, `--json`, `--actor ui\|cli`) drops those ledger rows and rebuilds `memory.md`. A missing key is not an error. `--json` prints `{ok, dry_run, keys: [{key, rows, found}], memory_lines_removed}`. Exit 0 ok, 2 usage. See [below](#forge-memory-forget) and [project memory](memory.md) |
+| `forge memory show\|learnings\|prune\|spend\|forget\|add\|edit REPO …` | a repository's project memory. `learnings REPO --json` lists every learning with what forge does with it (`in_memory`, `waiting`, `stale`, `capped`, `muted`); a learning a person wrote has `manual: true` (the field is absent otherwise). `forget REPO KEY…` (`KEY` is `category:key`; `--dry-run`, `--json`, `--actor ui\|cli`) drops those ledger rows and rebuilds `memory.md`; a missing key is not an error. `add REPO --category verify\|trap\|finding --text T [--path P]…` appends one person row (kept at once). `edit REPO KEY --text T` replaces that learning and keeps its paths; a missing key is an error. `--json` on forget prints `{ok, dry_run, keys: [{key, rows, found}], memory_lines_removed}`; on add and edit `{ok, key, memory_lines_added, memory_lines_removed}`. Exit 0 ok, 2 usage. See [below](#forge-memory-forget) and [project memory](memory.md) |
 | `forge issues RUN [--apply] …` | file the review findings a run left open as GitHub issues; see [below](#forge-issues) |
+| `forge findings show\|fix\|dismiss\|reopen\|to-file\|dup\|tag\|note\|edit\|triage\|triage-status\|proposals\|apply\|reject REPO …` | every review finding of a repository and what happened to it. `REPO` is a checkout, a linked worktree, or a plan or solo run dir. `triage` is read-only and needs `--spec`. `--actor` is `cli` (default), `ui` or `triage`; `--json` is machine-readable. Exit 0 ok, 2 usage, 3 refused, 1 error. See [below](#forge-findings) |
 | `forge pr [RUN_DIR \| --repo DIR] [--texts] [--paths] [--out FILE] [--create [--base B] [--head B]]` | a draft pull-request description for a finished run, on stdout; `--create` opens it as a draft PR with `gh`; see [below](#forge-pr) |
 | `forge retro note\|report\|issues PLAN …` | retro notes on what got in a run's way (`plan --retro`): `note` records one by hand (`--type`, `--fixable-by`, `--summary`, and `--command`, `--exit`, `--error`, `--blocking`, `--tried` as needed), `report` writes `retro.md`, and `issues` drafts GitHub issues for forge's own repository and posts only with `--apply --approve HASH`. `record` is forge's own call after a dispatch. Exit 2 usage, 3 refused. See [retro notes](../references/decompose.md#retro-notes-opt-in) |
 | `forge brief write\|show\|answer\|stale\|propose\|proposals\|apply\|reject PLAN …` | each task's open questions, asked before it starts (`plan --brief`), and the diff a wider answer waits on. `write` asks the missing ones (`--task ID`, `--jobs N`; `--force` redoes a task that already has `brief.json`). `show` lists them (`--task`, `--json`), parked questions by group and tasks marked `affected by <pid>`. `answer PLAN TASK QID TEXT` records an answer (`--file F`, `--actor`). A task answer goes into the prompt before the task starts and is late after. A parked `wave` or `plan` question is answerable only when `--brief-scope` is at least that wide; the answer is stored and the command prints `forge brief propose`. `stale PLAN TASK` flags dependents' open questions after a merge. `propose PLAN TASK QID` (`--actor`) turns that parked answer into `proposals/<pid>/`, one read-only dispatch. `proposals PLAN` (`--json`) lists every proposal with its state, scope, group, summary, diff and, while `proposed`, the apply line. `apply PLAN PID --approve HASH` (`--actor`, `--no-regenerate`) writes that diff. `--no-regenerate` marks affected tasks and does not regenerate their questions. `reject PLAN PID` (`--reason TEXT`, `--actor`) marks it `rejected` and touches no plan file. Exit 2 usage or an unknown task, question or proposal; 3 when PLAN is not a plan dir, when brief is off (`write`, `show`, `propose`), or when a proposal is refused (`propose`, `apply`, `reject`). See [brief mode](../references/decompose.md#brief-mode-opt-in) |
@@ -197,6 +198,127 @@ A real forget that drops at least one row records a `memory_forget` dataset even
 
 Exit 0 ok, 2 usage (a bad key, an unknown option, a missing repo, or no key). See [project memory](memory.md#scriptsforge-memorysh).
 
+`add` and `edit` write a row a person asked for, so they run when `FORGE_MEMORY=off` too.
+
+```
+forge memory add REPO --category verify|trap|finding --text TEXT [--path P]… [--actor {ui,cli}] [--json]
+forge memory edit REPO KEY --text TEXT [--path P]… [--actor {ui,cli}] [--json]
+```
+
+`add` appends one ledger row and rebuilds `.forge/memory.md`. The row's role is `person` and its run id is `manual-<epoch>` (seconds). `--category` is `verify`, `trap` or `finding`. `--text` is one line, 1 to 300 characters, with no tab; the rebuild then clamps it like any other fact (180 characters, anchor kept). `--path` is repeatable, at most 20: each path is relative, at most 300 characters, and must not contain `..`, a comma, a tab, a newline, or `[` or `]`. The paths are stored on the row, and the first is appended as `[anchor]` when the text has none. A `finding` written this way is injected on that first row, not after a second run. The row is still dropped when its anchor path is gone, and under the cap it is trimmed only after every run fact.
+
+`edit` is a forget of that one learning plus an add, in one rewrite of the ledger and one rebuild. `KEY` is `category:key`, normalised the same way as `forget`. The new row keeps that category, and its key is computed from the new text, so the key you pass and the key it prints can differ. Paths are the old row's paths and anchors, plus any new `--path`, still at most 20; an old path that could not be an anchor is dropped rather than refusing the edit. A key that is not in the ledger is an error and nothing is written.
+
+`--json` prints one object, `{"ok": true, "key": "trap:alpha thing", "memory_lines_added": ["- alpha thing [a.py]"], "memory_lines_removed": []}`. Without it the line is `added <key>` or `edited <key>`. Each command records one dataset event, `memory_add` or `memory_edit` (`key`, `actor`). `learnings --json` sets `manual` to true on a learning that has any `person` row, and omits the field otherwise.
+
+Exit 0 ok, 2 usage (a bad category, text or path, a missing `--text`, a repo that is not a directory, or, for `edit`, a key that is not in the ledger).
+
+### `forge findings`
+
+Every review finding of a repository, and what happened to it. The record belongs to the repository, not to the checkout a run started in. `REPO` is a checkout, a linked worktree, or a plan or solo run dir. `FP` is the 12-hex fingerprint `show` prints. Every subcommand takes `--actor {cli,ui,triage}` (default `cli`) and `--json`.
+
+```
+forge findings show REPO [--status S]… [--online]
+forge findings fix REPO FP… [--commit SHA] [--reason TEXT]
+forge findings dismiss REPO FP… --reason TEXT
+forge findings reopen REPO FP…
+forge findings to-file REPO FP… [--title T] [--body-file F]
+forge findings dup REPO FP --of FP
+forge findings tag REPO FP… (--add | --remove) TAG… [--]
+forge findings note REPO FP TEXT
+forge findings edit REPO FP [--severity P0|P1|P2|P3] [--text-file F]
+forge findings triage REPO --spec S [--timeout N] [--max-findings N] [--detach]
+forge findings triage-status REPO [N]
+forge findings proposals REPO [N]
+forge findings apply REPO N PID --approve HASH [--plan-dir DIR]
+forge findings reject REPO N PID [--reason TEXT]
+```
+
+`show` lists every run of the repository (the same collection as `forge issues --all-runs --include-plausible --include-dismissed`). It is offline unless `--online`, which asks GitHub which findings are already filed. `--status S` is repeatable; `open` keeps both `open` and `to-file`. Any other name keeps that status, and an unknown name keeps nothing. Rows are worst severity first, then the newest plan. A line is `fp  status  severity  tags  file:line  summary`. Tags are the record's tags when it has any, otherwise the default for the file.
+
+`fix` marks findings `fixed`. It needs `--commit` (7 to 40 lowercase hex characters), `--reason` (at most 500 characters), or both. `dismiss` marks them `dismissed` and requires `--reason` (at most 500). `reopen` marks them `open`. `to-file` keeps a draft issue: `--title` is at most 200 characters, `--body-file` is a file (not `-`) of at most 20000 characters. `dup` marks one finding a duplicate of `--of`; a finding cannot duplicate itself. A status change clears that entry's reason, commit, issue url and `duplicate_of`, and keeps its tags, note, edit and draft.
+
+`tag` adds or removes tags. Exactly one of `--add` or `--remove`. `--` separates fingerprints from tags; without it, tags follow the flag and fingerprints precede it. A tag matches `^[a-z][a-z0-9-]{0,23}$`. A finding holds at most 8. `note` sets the note (at most 2000 characters); empty text clears it. `edit` needs `--severity`, `--text-file` (at most 4000 characters, not `-`), or both. The replacement is stored on the record as `edit` and does not rewrite the review. A repeated fingerprint counts once. One fingerprint that is not 12 hex characters refuses the whole command.
+
+A change that leaves an entry as it was is reported unchanged and is not written. `--json` on these commands prints `{ok, op, changed: [{fp, before, after}], unchanged}`. Without it the line is `<op>: N changed, M unchanged`.
+
+The record is `${XDG_STATE_HOME:-~/.local/state}/forge/findings/<identity key>.record.json` (`{"version": 1, "findings": {fp: entry}}`). An empty or relative `XDG_STATE_HOME` counts as unset. The identity key is 16 hex characters of the repository root, shared by every checkout. Beside it: `<key>.record.log.jsonl` (one JSON line per change) and a `finding_record` dataset event per change (fail-open). `<key>.lock` is the same lock `forge issues --apply` takes; a busy lock is retried for 10 seconds, then refused. Old per-checkout dismissals (`<checkout key>.json`) are merged in on read as `dismissed` and never written again.
+
+Stored statuses are `open`, `to-file`, `filed`, `fixed`, `dismissed` and `duplicate`. `open` in the record means reopened. An entry may also hold `tags`, `note`, `edit` (`severity`, `text`) and `draft` (`title`, `body`). A tag, note or edit on a finding the record has not seen stores it as `open`, and that hides a swept mark or an old dismissal the same way `reopen` does. `filed` is what `forge issues --apply` records, with the issue url; there is no findings subcommand that files.
+
+The status `show` prints is the first of these that answers:
+
+1. The record, when it is `duplicate`, `dismissed`, `fixed`, `filed` or `to-file`. A record of `open` does not stop here: a filed issue in step 2 still shows, and a swept or old dismissal does not.
+2. The issues listing: filed and `CLOSED` is `fixed`, filed is `filed`; unless the record reopened it, swept is `swept` and an old dismissal is `dismissed`.
+3. A review row, which `show` does not pass. forge-ui does: a shadow review is `shadow`, an unlabelled one (`UNSTATED`) is `unlabelled`, a superseded one is `superseded`.
+4. `open`.
+
+Only `open` and `to-file` count as open. Default tags, when the record has none, come from the path, first match: `tests` (a `tests/` or `test/` directory, or `test_*`, `*_test.*`, `*.test.*`), `docs` (`docs/`, `site/`, `*.md`), `infra` (`.github/`, `ci/`, `scripts/forge-install`, `Dockerfile`, a root `*.yml` or `*.yaml`, a name starting with `install`), `ui` (`ui/`, `web/`, `frontend/`, `static/`, or `*.js`, `*.ts`, `*.tsx`, `*.css`, `*.html`), otherwise `backend`. No path gives no tag.
+
+`triage` asks one read-only model to propose what to do. `--spec` is required, named as `forge --dwarf` names a model. `--timeout` is seconds, default 3600, and must not be negative. `--max-findings` is 1 to 2000, default 400: the open and `to-file` findings, worst then newest. The dispatch is `forge-dispatch.sh side` (kind `triage`), after `doctor --spec S --role side`. It is refused when `FORGE_TRIAGE` is off, when the repository's privacy floor says never send, when the repository has no checkout to read, when a triage is already `running`, or when 200 triage dirs already exist. Nothing in a triage edits a finding, a file, a memory or an issue.
+
+Each triage is `${XDG_STATE_HOME:-~/.local/state}/forge/triage/<identity key>/<N>/` with `state.json`, `findings.json`, `prompt.txt`, `proposals.json` and `done`, plus the dispatch's `side.last` and `side.resolved`. `state` is `running`, then `done` or `failed` (with `reason`). A `running` triage whose process is gone, or whose `done` exists, reads as `failed` with reason `lost`. The model replies once and, if the `forge-triage` block is unusable, once more; an empty proposal list is a successful `done`. `--detach` returns at once (`{"triage": N, "state": "running"}`, exit 0) and the job continues in its own session. That job is the internal `_triage-job` command, which `--help` does not list; it writes its exit code to `done`. Without `--detach` the command waits and exits 1 when the state is `failed`.
+
+`triage-status` and `proposals` read triage `N`, or the newest when `N` is omitted. `proposals` prints `proposals.json`. Each proposal has `id` (`p1`, `p2`, …), `hash` (12 hex characters), `state` (`pending`, then `applied` or `rejected`) and one kind:
+
+| Kind | Carries | Approving it |
+|---|---|---|
+| `duplicate` | `fp`, `of`, `why` | marks `fp` `duplicate` of `of`, reason `why` cut to 500 characters |
+| `fixed` | `fp`, `evidence`, `commit` | marks `fp` `fixed`, reason `evidence` cut to 500 characters; `commit` is kept when it is 7 to 40 lowercase hex characters |
+| `tag` | `fps`, `tags` | adds those tags |
+| `issue` | `fps`, `title`, `body` | marks them `to-file` with that draft. GitHub is never contacted |
+| `plan` | `fps`, `title`, `request`, `plan` | writes a plan dir and prints the command that would run it. Nothing is dispatched |
+
+`apply REPO N PID --approve HASH` applies one `pending` proposal. `HASH` is the hash `proposals` shows; it is checked against the proposal as it is now, and a mismatch is refused with nothing written. The record is written with actor `triage`. The person who asked is `decided.actor` on the proposal (`decided` is `{at, actor}` and, for a rejection, `reason`). A `plan` approval writes `request.md` and a plan `forge-planner.py parse` has accepted. `--plan-dir` chooses the directory; the default is `${XDG_STATE_HOME:-~/.local/state}/forge/plans/<identity key>/triage-<N>-<pid>`. The directory must not already exist. Findings that have no note get the note `in plan <dir>`. The command prints the plan dir and `bash scripts/forge-parallel.sh plan <dir> --repo <checkout>`. `reject` marks one `pending` proposal `rejected`. `--reason` is at most 500 characters. A proposal that is not `pending`, an unknown triage or id, or a fingerprint that is not a finding of the repository now, is refused and left as it was.
+
+`show --json`:
+
+```json
+{
+  "repo": "owner/repo",
+  "root": "/path/to/repo",
+  "key": "0123456789abcdef",
+  "findings": [
+    {
+      "fp": "a1b2c3d4e5f6",
+      "status": "open",
+      "severity": "P2",
+      "tags": ["backend"],
+      "file": "src/app.py",
+      "summary": "widget drops events on retry",
+      "record": null
+    }
+  ],
+  "notes": [],
+  "warnings": []
+}
+```
+
+Each finding is that object plus the `forge issues --json` fields (`confidence`, `origin`, `plan`, `plan_dir`, `task`, `text`, `reviewer`, `commit`, `review`, `filed`, `swept`, `dismissed`). `record` is the record entry, or null.
+
+`proposals --json` prints `proposals.json`:
+
+```json
+{
+  "triage": 1,
+  "spec": "alias:high",
+  "at": "2026-11-16T12:00:00Z",
+  "proposals": [
+    {
+      "id": "p1",
+      "hash": "0123456789ab",
+      "state": "pending",
+      "kind": "duplicate",
+      "fp": "aaaaaaaaaaaa",
+      "of": "bbbbbbbbbbbb",
+      "why": "same cache defect"
+    }
+  ]
+}
+```
+
+Exit 0 ok, 2 usage (the command line is not usable; nothing was written), 3 refused (the record or the triage refuses the change; nothing was written), 1 error. A triage that finishes `failed` exits 1 after printing its state. A usage error, a refusal or an error the command reports itself prints `forge findings: …` on stderr, and with `--json` also `{"ok": false, "error": "…"}`.
+
 ### `forge runs rerun` and `forge runs compare`
 
 `forge runs rerun <run-dir> --dwarf SPEC` answers "would this plan have gone better on another
@@ -241,17 +363,27 @@ the size of a `--only` selection).
 
 | Flag | Does |
 |---|---|
-| `--json` | machine-readable output; `findings` lists each one with its fingerprint, severity, origin (`tolerated`, `accepted`, `review` or `plausible`), task, `review`, `swept` (`{task, finding}` when the run's finding sweep fixed it; such a finding is never drafted), `filed` state and `dismissed` mark. A whole-run finding's `review` is `{name, outdated, merged_since}` (`outdated` is null when the review has no verdict or the plan has no accepted integration commit; `merged_since` is empty unless the review is outdated). Every other finding has `review` null |
+| `--json` | machine-readable output; `findings` lists each one with its fingerprint, severity, origin (`tolerated`, `accepted`, `review` or `plausible`), task, `review`, `swept` (`{task, finding}` when the run's finding sweep fixed it; such a finding is never drafted), `filed` state, `dismissed` mark, `record` (the finding-record entry, or null) and `status` (`open`, `to-file`, `filed`, `fixed`, `dismissed`, `duplicate` or `swept`). A whole-run finding's `review` is `{name, outdated, merged_since}` (`outdated` is null when the review has no verdict or the plan has no accepted integration commit; `merged_since` is empty unless the review is outdated). Every other finding has `review` null |
 | `--offline` | never run `gh`: no filed state, commit publication judged from local refs |
 | `--only FP` | keep only these 12-hex fingerprints (repeatable or comma-separated) |
-| `--all-runs` | read `RUN` as a repository (or a plan dir naming one) and collect every run in its registry; the newest plan wins for a finding in several |
-| `--dismiss FP`, `--undismiss FP`, `--reason TEXT` | mark findings as needing no work (or take it back), then exit; no network. The marks live outside the repo, in `${XDG_STATE_HOME:-~/.local/state}/forge/findings/<repo key>.json` |
+| `--all-runs` | read `RUN` as a repository (or a plan dir naming one) and collect every run of that repository: the main checkout, linked worktrees, and checkouts that are gone. The newest plan wins for a finding present in several |
+| `--to-file` | keep only findings whose record status is `to-file`. A draft title replaces the generated one and the draft body follows under Notes. May be combined with `--only`: both must match |
+| `--dismiss FP`, `--undismiss FP`, `--reason TEXT` | mark findings as needing no work (or take it back), then exit; no network. `--dismiss` writes status `dismissed` on the finding record and `--undismiss` writes `open`. A fingerprint that matches no current finding is accepted |
 | `--include-dismissed` | draft dismissed findings too |
+
+Findings, dismissals and the `filed` mark belong to the repository, not to the checkout the run
+started in. The record is `${XDG_STATE_HOME:-~/.local/state}/forge/findings/<identity key>.record.json`
+(see [forge findings](#forge-findings)). Old `<checkout key>.json` dismissal stores are read and never
+written. A finding that is `filed`, `fixed` or `duplicate` is never drafted, and `--apply` records
+`filed` with the issue url. When the run's checkout is gone, the command uses the repository root, and
+the GitHub slug is `origin` of the first checkout of that repository that still exists. That checkout
+is the only one asked: no `origin`, or an `origin` that is not a GitHub `owner/repo`, ends the search.
+`--repo` still overrides it; `--apply` needs a slug.
 
 Two filers for one repository at once would both see a finding as unfiled, so `--apply` takes a
 repository lock from the issue lookup to the last `gh issue create`, and each dismissal takes it
 around its write. A busy lock is retried for 10 s, then exit 3. Exit 0 ok, 2 usage or a `gh` or
-dismissal-store error, 3 busy.
+record-store error, 3 busy.
 
 ### `forge pr`
 

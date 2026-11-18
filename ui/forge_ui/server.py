@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import socketserver
 import sys
 import threading
 import time
@@ -460,8 +461,16 @@ class Handler(BaseHTTPRequestHandler):
             pass  # the client hung up (BrokenPipeError, ConnectionResetError, ...): nothing to tell it
 
 
+class _Server(ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer.server_bind sets server_name from socket.getfqdn(host), a reverse DNS lookup
+        # that can take many seconds on macOS. forge-ui serves loopback only and never reads it.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 def make_server(catalog, host='127.0.0.1', port=0, static_dir=None, quiet=False, read_only=False):
-    server = ThreadingHTTPServer((host, port), Handler)
+    server = _Server((host, port), Handler)
     server.catalog = catalog
     server.read_only = read_only
     server.token = secrets.token_urlsafe(32)  # per process; only the page this process serves carries it

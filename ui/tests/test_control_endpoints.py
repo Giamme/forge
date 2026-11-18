@@ -283,12 +283,12 @@ class ProjectsTests(EndpointCase):
         self.assertEqual(self.get('/api/projects?x=1')[0], 400)
         self.assertEqual(self.calls(), [])
 
-    def test_findings_ask_the_dataset_and_forge_issues_offline_then_answer_from_the_cache(self):
+    def test_findings_ask_the_dataset_and_forge_issues_online_then_answer_from_the_cache(self):
         status, body = self.get(f'/api/projects/{self.pid()}/findings')
         self.assertEqual(status, 200)
         self.assertEqual(sorted(c['argv'] for c in self.calls()), [
             ['dataset', 'history', '--json'],
-            ['issues', self.rplan, '--json', '--offline', '--all-runs', '--include-plausible', '--include-dismissed']])
+            ['issues', self.rrepo, '--json', '--all-runs', '--include-plausible', '--include-dismissed']])
         self.get(f'/api/projects/{self.pid()}/findings')
         self.assertEqual(len(self.calls()), 2)
         self.get(f'/api/projects/{self.pid()}/findings?refresh=1')

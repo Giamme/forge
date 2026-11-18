@@ -107,10 +107,14 @@ on a task with a real trap, they emit it.
 | `verify`, `trap` | on first sighting — these are facts, true the first time |
 | `finding` | only after **two distinct runs** |
 
+A row a person wrote (`forge memory add` or `edit`: role `person`, run id `manual-<epoch>`) is
+kept on its first row, in every category, including `finding`. It is injected at once.
+
 Everything reaches the ledger immediately regardless; promotion governs only what gets
 injected. The threshold is the main guard against a junk drawer: one QA noticing one bug is
 an incident, and putting it in every future prompt would be noise. Two separate runs finding
-the same thing is a pattern worth telling the next dwarf about.
+the same thing is a pattern worth telling the next dwarf about. A person's row does not wait
+for that second run.
 
 Recurrence counts **distinct runs**, not lines — one run emitting the same learning twice is
 still one occurrence. Promoted findings display their count (`3x:`), which is also how a
@@ -140,7 +144,9 @@ misleading. This is what keeps memory true as the codebase moves, and it is why 
 for an anchor wherever one makes sense.
 
 Caps are 40 lines and 4 KB (`FORGE_MEMORY_MAX_LINES`, `FORGE_MEMORY_MAX_BYTES`). Over cap,
-entries are trimmed from the bottom — lowest recurrence count first, then least recent.
+run facts are trimmed from the bottom — lowest recurrence count first, then least recent.
+A person's fact is trimmed only once no run fact is left. A person row is still dropped when
+its anchor path is gone, on the same rule as any other anchored entry.
 A single entry is clamped to 180 characters (`FORGE_MEMORY_MAX_FACT_CHARS`), truncated at a
 word boundary with its anchor preserved, so one discursive model cannot spend the whole
 budget on one line.
@@ -208,10 +214,28 @@ forge-memory.sh record <repo> --last <file> --role <r> [--run-id X] [--task T]
 forge-memory.sh show <repo>
 forge-memory.sh prune <repo>                       # re-apply staleness and cap now
 forge-memory.sh spend <repo> [--run <run-id>]      # time and dispatch counts
+forge-memory.sh add <repo> --category <verify|trap|finding> --text TEXT [--path P]...
+                            [--actor ui|cli] [--json]
+forge-memory.sh edit <repo> <category:key> --text TEXT [--path P]...
+                            [--actor ui|cli] [--json]
 ```
 
-`--no-memory`, or `FORGE_MEMORY=off` in the environment, disables all of it: nothing is
-injected, nothing is recorded, and no `.forge/` is created.
+`add` appends one ledger row (role `person`, run id `manual-<epoch>`) and rebuilds `memory.md`.
+`--category` is `verify`, `trap` or `finding`. `--text` is one line of 1 to 300 characters with
+no tab, then clamped like any other fact. `--path` is repeatable, at most 20, each a relative
+path of at most 300 characters with no `..`, comma or brackets; the first is appended as
+`[anchor]` when the text has none. The row is kept at once, including a `finding`, trimmed last
+by the cap, and still dropped when that path is gone. `edit` forgets that one `category:key` and
+adds the new text in its place, keeping the category and the old paths plus any new `--path`. The
+new row's key comes from the new text. A key that is not in the ledger is refused and nothing is
+written. Both record a dataset event, `memory_add` or
+`memory_edit`. `learnings --json` sets `manual` to true when any row of the learning has role
+`person`, and omits the field otherwise. `add` and `edit` run when memory is off: they are an
+edit you asked for.
+
+`--no-memory`, or `FORGE_MEMORY=off` in the environment, disables injection and automatic
+recording: nothing is injected, a run records nothing, and that run creates no `.forge/`.
+`show`, `learnings`, `prune`, `spend`, `forget`, `add` and `edit` still do what you asked.
 
 ## Failure modes
 
@@ -220,7 +244,8 @@ injected, nothing is recorded, and no `.forge/` is created.
 | memory stays empty | nothing durable was learned — the common and correct case. Check the ledger: rows with `-` categories mean dispatches ran and emitted nothing |
 | a fact you wanted is missing | it was a `finding` seen once; it is in the ledger and will promote on its second run |
 | the same fact appears twice, worded differently | dedup is exact-after-normalization; delete the weaker line from `memory.md`, or let the cap evict it |
-| a fact is wrong and keeps coming back | it is in the ledger. Editing `memory.md` alone will not hold — the next rebuild regenerates from the ledger; remove the ledger rows |
+| a fact is wrong and keeps coming back | it is in the ledger. Editing `memory.md` alone will not hold — the next rebuild regenerates from the ledger; remove the ledger rows, or `forge memory edit` that key |
+| `edit` says there is no ledger row | that `category:key` is not in the ledger. `edit` refuses it and writes nothing. `forget` treats a missing key as a no-op |
 | memory vanished after a refactor | its entries were anchored to paths that no longer exist and were dropped as stale. Working as intended |
 | `.forge/` shows up in a review | a diff capture is missing the exclude pathspec |
 | memory in a worktree is stale | inject reads the **main repo**, not the worktree; on a repo's first run `.forge/` is not committed, so a worktree branched from the base commit does not have it |

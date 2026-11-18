@@ -190,7 +190,9 @@ class AskTests(RecoveryBase):
         time.sleep(0.3)
         self.assertTrue(self.paused_scopes()[0]['exhausted'])      # the budget of 1 does not restart it
         (self.plan / 'infra_budget').write_text('2')               # what `forge control set infra-retries` does
-        scopes = self.paused_scopes(lambda found: not found or found[0]['until'] is not None)
+        # Wait for the restarted pause itself: the file can read as empty for a moment while the
+        # scheduler rewrites it, and a loaded runner caught it then.
+        scopes = self.paused_scopes(lambda found: bool(found) and found[0]['until'] is not None)
         self.assertEqual((scopes[0]['exhausted'], scopes[0]['needs_you'], scopes[0]['hint']), (False, False, None))
         code, err = self.release(scheduler)
         self.assertEqual(code, 0, err)

@@ -23,6 +23,7 @@ mkdir -p "$t"
 case "$cmd" in
   _task)
     n=$(( $(cat "$t/calls" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$t/calls"
+    echo $$ > "$t/pid"
     echo "$name start $n" >> "$plan/events.log"
     # a's second run opens the gate that keeps task c alive until the retry has begun.
     if [ "$name" = a ] && [ "$n" = 2 ]; then touch "$plan/gate"; fi
@@ -83,6 +84,12 @@ class SchedulerTests(unittest.TestCase):
         if (root / 'merged').exists(): return 'MERGED'
         f = root / 'status'
         return f.read_text().strip() if f.exists() else 'PENDING'
+
+    @staticmethod
+    def exited(pid):
+        """Gone, or a zombie its parent has not reaped yet."""
+        state = subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)], capture_output=True, text=True).stdout.strip()
+        return not state or state.startswith('Z')
 
     def events(self):
         f = self.plan / 'events.log'
@@ -417,6 +424,10 @@ exit 1
         proc = self.start('--retry-failed', 1, capacity=2)
         self.wait_for(lambda: 'a end FAIL' in self.events() and 'git-entered' in self.events(),
                       'a to finish while the next task looks up its baseline')
+        # 'a end FAIL' is logged just before a's process exits. On a loaded machine the lookup could
+        # fail while a is still alive, and the scheduler would rightly stop it as INTERRUPTED.
+        self.wait_for(lambda: self.exited(int((self.plan / 'tasks' / 'a' / 'pid').read_text())),
+                      "a's process to exit")
         self.assertEqual(self.raw_status('a'), 'FAIL')
         self.assertNotIn('a prepared', self.events())
         (self.plan / 'git-release').write_text('')

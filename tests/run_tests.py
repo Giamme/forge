@@ -2,12 +2,14 @@
 """Run forge's offline test suites in parallel: every test class of tests/ and ui/tests/ in a
 process of its own, several at a time, the slowest first.
 
-    python3 tests/run_tests.py [-j N] [--slowest K] [PATTERN ...]
+    python3 tests/run_tests.py [-j N] [--slowest K] [--shard I/N] [PATTERN ...]
 
 -j defaults to FORGE_TEST_JOBS, else the CPU count capped at 8; 1 runs the classes one after
 another. A PATTERN keeps the classes whose id (`suite:module.Class`) contains it. One line is
 printed per class as it ends; then the output of every class that failed, the K slowest tests
-(default 15) and a summary. Exit 1 when a test failed or a class could not run.
+(default 15) and a summary. Exit 1 when a test failed or a class could not run. --shard I/N
+runs only the I-th of N interleaved slices of the classes (sorted by id, so every machine cuts
+the same slices), which is how CI splits the suite across jobs.
 
 Most of forge's tests are end to end: they start real forge-parallel.sh runs with fake model
 CLIs, so a test spends its time waiting on processes, not on a CPU. Each test already works in
@@ -83,6 +85,26 @@ def units(suite: str, classes: dict[str, list[str]], known: dict) -> list[tuple[
         split = len(tests) > 1 and known.get(f'{suite}:{cls}', 0) > SPLIT_OVER
         out.extend((suite, unit) for unit in (tests if split else [cls]))
     return out
+
+
+def class_of(unit: str) -> str:
+    """module.Class for a unit that is a class or one test of a class."""
+    return '.'.join(unit.split('.')[:2])
+
+
+def units_unsplit(classes: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    return [(suite, class_of(unit)) for suite, unit in classes]
+
+
+def shard(text: str) -> tuple[int, int]:
+    """'I/N' with 1 <= I <= N."""
+    try:
+        index, count = (int(part) for part in text.split('/'))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f'{text!r} is not I/N')
+    if not 1 <= index <= count:
+        raise argparse.ArgumentTypeError(f'{text!r}: I must be between 1 and N')
+    return index, count
 
 
 def cost(suite: str, unit: str, known: dict) -> float:
@@ -222,6 +244,7 @@ def main() -> int:
     default_jobs = os.environ.get('FORGE_TEST_JOBS') or str(min(os.cpu_count() or 1, 8))
     parser.add_argument('-j', '--jobs', type=int, default=int(default_jobs))
     parser.add_argument('--slowest', type=int, default=15)
+    parser.add_argument('--shard', type=shard, metavar='I/N', help='run only the I-th of N slices of the classes')
     parser.add_argument('patterns', nargs='*')
     args = parser.parse_args()
     jobs = max(1, args.jobs)
@@ -230,6 +253,13 @@ def main() -> int:
     classes = [u for name, where, extra in SUITES for u in units(name, discover(name, where, extra), known)]
     if args.patterns:
         classes = [c for c in classes if any(p in f'{c[0]}:{c[1]}' for p in args.patterns)]
+    if args.shard:
+        # Whole classes only, never the per-test split above, so a class stays in one slice
+        # whatever durations the machine remembers.
+        index, count = args.shard
+        ids = sorted({f'{suite}:{unit}' for suite, unit in units_unsplit(classes)})
+        mine = set(ids[index - 1::count])
+        classes = [c for c in classes if f'{c[0]}:{class_of(c[1])}' in mine]
     if not classes:
         sys.exit('run_tests: no test class matches')
     # the slowest first, so a long one does not start last; unknown ones count as slow

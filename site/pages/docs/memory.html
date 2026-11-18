@@ -53,7 +53,9 @@ side: project memory
 <pre>forge memory show ~/dev/api        <span class="c"># what a dwarf would be told</span>
 forge memory learnings ~/dev/api   <span class="c"># every learning and whether it's in memory yet</span>
 forge memory spend ~/dev/api       <span class="c"># what forge has spent in this repo</span></pre>
-<p>Editing <code>memory.md</code> by hand doesn't stick. To drop a learning, forget it: its ledger rows go and memory is rebuilt.</p>
+<p>Editing <code>memory.md</code> by hand doesn't stick. To drop a learning, forget it: its ledger rows go and memory is rebuilt. To write one yourself, add it; to change one's text, edit it.</p>
 <pre>forge memory forget ~/dev/api trap:"b is generated" --dry-run
-forge memory forget ~/dev/api trap:"b is generated"</pre>
-<p>forge-ui's Projects screen shows each repository's memory, and with controls on, forgets the learnings you select.</p>
+forge memory forget ~/dev/api trap:"b is generated"
+forge memory add ~/dev/api --category trap --text "b is generated" --path src/b.py
+forge memory edit ~/dev/api trap:"b is generated" --text "b is generated from the schema"</pre>
+<p>forge-ui's Projects screen shows each repository's memory, and with controls on, forgets the learnings you select and can add and edit them too.</p>

@@ -34,6 +34,25 @@ class RuntimeTests(unittest.TestCase):
         self.assertIsNone(runtime.extract('plain log', 'opencode')[1]['input_tokens'])
         self.assertIsNone(runtime.extract('{"type":"turn.completed","usage":[]}', 'codex')[1]['input_tokens'])
 
+    def test_phases_are_timed_across_processes(self):
+        # forge-metrics.sh runs begin and every phase as a process of its own, so their clock readings must
+        # subtract across processes. On macOS, Python 3.9's time.monotonic() restarts at zero in each one.
+        script, env = str(ROOT / 'scripts/forge-runtime.py'), dict(os.environ, FORGE_DATASET='off')
+
+        def runtime(*args):
+            return subprocess.run([sys.executable, script, *args], stdout=subprocess.PIPE, text=True,
+                                  check=True, env=env, timeout=30).stdout.strip()
+        with tempfile.TemporaryDirectory() as tmp:
+            attempt = runtime('begin', tmp, 'solo')
+            time.sleep(0.5)
+            runtime('phase', attempt, 'snapshot')
+            time.sleep(0.5)
+            runtime('phase', attempt, 'complete', '0')
+            elapsed = json.loads((Path(attempt) / 'metrics.json').read_text())['elapsed_s']
+        self.assertGreaterEqual(elapsed['preparation'], 0.45, elapsed)
+        self.assertGreaterEqual(elapsed['snapshot'], 0.45, elapsed)
+        self.assertGreaterEqual(elapsed['total'], 0.9, elapsed)
+
     def test_registry_recipe_and_mode_invalidate_help(self):
         runtime = module('forge-runtime')
         with tempfile.TemporaryDirectory() as tmp:

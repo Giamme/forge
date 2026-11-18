@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -944,6 +945,11 @@ class EndToEndTests(StoreCase):
         self.wait_for(lambda: (shadow / 'shadow.status').exists(), 30)
         self.assertEqual((shadow / 'shadow.status').read_text().strip(), 'orphaned')
         self.wait_for(lambda: not subprocess.run(['pgrep', '-f', str(shadow)], capture_output=True).stdout, 15)
+        # The run's qa is still asleep. Stop the run the way a user would, so it stops its own
+        # processes before the temporary directory is removed: one still writing into the plan
+        # made that removal fail with "Directory not empty".
+        run.send_signal(signal.SIGTERM)
+        run.wait(timeout=60)
 
     def wait_for(self, condition, seconds):
         deadline = time.time() + seconds
@@ -2084,7 +2090,7 @@ class IndependenceTests(unittest.TestCase):
                    # forge du: only locates the data home, to size it
                    'forge-du.py',
                    # forge handoff: resume records a reset task's INTERRUPTED through capture.point
-                   'forge-handoff.py'}
+                   'forge-handoff.py', 'store.py'}
         for path in (ROOT / 'scripts').rglob('*'):
             if path.suffix not in ('.py', '.sh') or 'forge_dataset' in path.parts:
                 continue

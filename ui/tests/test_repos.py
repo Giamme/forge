@@ -11,7 +11,11 @@ from forge_ui import repos
 
 
 GIT_ENV = dict(os.environ, GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@t', GIT_COMMITTER_NAME='t',
-               GIT_COMMITTER_EMAIL='t@t', GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull)
+               GIT_COMMITTER_EMAIL='t@t', GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull,
+               # No background maintenance after a commit: its objects/maintenance.lock would come
+               # and go under test_resolving_writes_nothing's snapshot of .git.
+               GIT_CONFIG_COUNT='2', GIT_CONFIG_KEY_0='maintenance.auto', GIT_CONFIG_VALUE_0='false',
+               GIT_CONFIG_KEY_1='gc.auto', GIT_CONFIG_VALUE_1='0')
 
 
 def git(cwd, *args):

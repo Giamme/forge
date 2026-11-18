@@ -806,3 +806,216 @@
 2026-11-12T00:04:10Z	i-plan	sweep-1	dwarf	haiku:xhigh	-	-	-	-	185
 2026-11-12T00:04:31Z	i-plan	sweep-4	qa	opus:medium	PASS	-	-	-	125
 2026-11-12T00:04:55Z	i-plan	sweep-1	qa	opus:medium	PASS	-	-	-	37
+2026-11-13T14:36:59Z	j-plan	groups-core	dwarf	sonnet:high	-	-	-	-	125
+2026-11-13T14:38:08Z	j-plan	groups-core	qa	opus:medium	PASS	-	-	-	48
+2026-11-13T14:51:11Z	j-plan	groups-plan	dwarf	sonnet:high	-	-	-	-	777
+2026-11-13T14:55:03Z	j-plan	groups-planner	dwarf	grok:xhigh	-	-	-	-	1009
+2026-11-13T14:55:50Z	j-plan	groups-planner	qa	sonnet:high	PASS	-	-	-	41
+2026-11-13T14:55:53Z	j-plan	groups-plan	qa	opus:medium	PASS	-	-	-	275
+2026-11-13T15:04:19Z	j-plan	group-contract	dwarf	grok:xhigh	-	-	-	-	1564
+2026-11-13T15:05:17Z	j-plan	group-contract	qa	sonnet:high	FAIL	-	-	-	51
+2026-11-13T15:09:10Z	j-plan	group-member	dwarf	sonnet:high	-	-	-	-	791
+2026-11-13T15:12:11Z	j-plan	group-member	qa	opus:medium	PASS	-	-	-	168
+2026-11-13T15:14:16Z	j-plan	group-contract	dwarf	grok:xhigh	-	-	-	-	535
+2026-11-13T15:14:51Z	j-plan	group-contract	qa	sonnet:high	FAIL	-	-	-	28
+2026-11-13T15:17:19Z	j-plan	brief-groups	dwarf	grok:xhigh	-	-	-	-	1281
+2026-11-13T15:19:21Z	j-plan	brief-groups	qa	sonnet:high	PASS	-	-	-	114
+2026-11-13T15:19:40Z	j-plan	group-contract	dwarf	grok:xhigh	-	-	-	-	285
+2026-11-13T15:20:11Z	j-plan	group-contract	qa	sonnet:high	PASS	-	-	-	23
+2026-11-13T15:32:32Z	j-plan	brief-proposals	dwarf	sonnet:high	-	-	-	-	785
+2026-11-13T15:34:01Z	j-plan	group-review	dwarf	sonnet:high	-	-	-	-	825
+2026-11-13T15:34:49Z	j-plan	brief-proposals	qa	opus:medium	PASS	-	-	-	130
+2026-11-13T15:39:31Z	j-plan	group-review	qa	opus:medium	PASS	-	-	-	323
+2026-11-13T15:44:55Z	j-plan	brief-plan-diff	dwarf	sonnet:high	-	trap	forge control add refuses dwarf qa and takes control lock itself so any caller must release its own control lock first and copy explicit specs	`forge control add` refuses `-` dwarf/qa and takes `control.lock` itself, so any caller must release its own control lock first and copy explicit specs… [scripts/forge-control.py]	599	1
+2026-11-13T15:48:41Z	j-plan	brief-plan-diff	qa	opus:medium	FAIL	trap	groups frozen fingerprints only groups tsv and the rows of group members so run s frozen check misses plan edits to ungrouped tasks	`groups.frozen` fingerprints only `groups.tsv` and the rows of group members, so `run`'s frozen check misses plan edits to ungrouped tasks [scripts/forge_groups/__init__.py]	179	1
+2026-11-13T15:53:59Z	j-plan	brief-plan-diff	dwarf	sonnet:high	-	trap	groups frozen fingerprints only groups tsv and the rows of group members so run s frozen check misses plan edits to ungrouped tasks a	`groups.frozen` fingerprints only `groups.tsv` and the rows of group members, so `run`'s frozen check misses plan edits to ungrouped tasks; a… [scripts/forge_groups/__init__.py]	311	1
+2026-11-13T15:55:39Z	j-plan	brief-plan-diff	qa	opus:medium	PASS	trap	a groups frozen with no groups tsv makes forge parallel sh plan run the groups validate resolve freeze path and resolve writes a groups tsv	a `groups.frozen` with no `groups.tsv` makes `forge-parallel.sh plan` run the groups validate/resolve/freeze path, and resolve writes a `groups.tsv`… [scripts/forge-parallel.sh]	93	1
+2026-11-13T16:08:08Z	j-plan	group-settle	dwarf	sonnet:high	-	trap	a dataset event s task is a column of the events table not a key of its data json so tests that read merge events per task must query task	a dataset event's `task` is a column of the events table, not a key of its `data` JSON, so tests that read merge events per task must query `task`… [tests/test_group_settle.py]	1711	1
+2026-11-13T16:15:02Z	j-plan	group-settle	qa	opus:medium	PASS	-	-	-	286
+2026-11-13T16:32:02Z	j-plan	brief-affected	dwarf	grok:high	-	-	-	-	2177
+2026-11-13T16:37:42Z	j-plan	brief-affected	qa	sonnet:high	PASS	-	-	-	333
+2026-11-13T16:46:46Z	j-plan	group-schedule	dwarf	sonnet:high	-	-	-	-	1898
+2026-11-13T16:48:19Z	j-plan	group-ui-data	dwarf	grok:xhigh	-	trap	ui forge ui export py skips scripts entries whose file is absent if static name is file so a script can be listed before the file exists	ui/forge_ui/export.py skips SCRIPTS entries whose file is absent (`if (STATIC / name).is_file())`), so a script can be listed before the file exists [ui/forge_ui/export.py]	1991	1
+2026-11-13T16:52:24Z	j-plan	group-schedule	qa	opus:medium	PASS	trap	macos has no timeout command so wrapping a test run in timeout n fails with exit 127 before any test starts	macOS has no `timeout` command, so wrapping a test run in `timeout N` fails with exit 127 before any test starts [tests/run_tests.py]	332	1
+2026-11-13T16:52:32Z	j-plan	group-ui-data	qa	sonnet:high	FAIL	-	-	-	244
+2026-11-13T16:52:47Z	j-plan	group-dataset	dwarf	grok:xhigh	-	-	-	-	2259
+2026-11-13T17:06:16Z	j-plan	group-dataset	qa	sonnet:high	PASS	-	-	-	803
+2026-11-13T17:07:02Z	j-plan	group-ui-data	dwarf	grok:xhigh	-	trap	ui forge ui export py blanks a key in text keys under only when clean is given that parent a route whose json is the object itself is not nested so	ui/forge_ui/export.py blanks a key in _TEXT_KEYS_UNDER only when clean() is given that parent; a route whose JSON is the object itself is not nested, so… [ui/forge_ui/export.py]	865	1
+2026-11-13T17:07:48Z	j-plan	group-ui-data	qa	sonnet:high	PASS	-	-	-	38
+2026-11-13T17:13:29Z	j-plan	group-cli	dwarf	grok:xhigh	-	-	-	-	1258
+2026-11-13T17:14:45Z	j-plan	group-cli	qa	sonnet:high	PASS	-	-	-	70
+2026-11-13T20:09:38Z	j-plan	group-ui-page	dwarf	grok:high	-	trap	module display flex beats the hidden attribute so a module that should disappear needs an author display none rule	.module { display: flex } beats the hidden attribute, so a module that should disappear needs an author display:none rule [ui/forge_ui/static/style.css]	10904	0
+2026-11-13T20:11:36Z	j-plan	group-ui-page	qa	sonnet:high	FAIL	-	-	-	112
+2026-11-13T20:39:13Z	j-plan	group-ui-page	dwarf	grok:high	-	-	-	-	1652
+2026-11-13T20:39:46Z	j-plan	group-ui-page	qa	sonnet:high	PASS	-	-	-	26
+2026-11-13T21:43:21Z	j-plan	group-docs	dwarf	grok:xhigh	-	-	-	-	3810
+2026-11-13T21:46:04Z	j-plan	group-docs	qa	sonnet:high	PASS	-	-	-	153
+2026-11-13T22:12:45Z	j-plan	brief-ui	dwarf	grok:xhigh	-	-	-	-	5574
+2026-11-13T22:15:30Z	j-plan	brief-ui	qa	sonnet:high	FAIL	-	-	-	157
+2026-11-13T22:31:08Z	j-plan	brief-ui	dwarf	grok:xhigh	-	-	-	-	934
+2026-11-13T22:32:39Z	j-plan	brief-ui	qa	sonnet:high	PASS	-	-	-	85
+2026-11-13T22:45:26Z	j-plan	brief-docs	dwarf	grok:high	-	trap	forge brief write task skips a task that already has brief json only force regenerates it despite the apply no regenerate note in	`forge brief write --task` skips a task that already has `brief.json`; only `--force` regenerates it, despite the `apply --no-regenerate` note in… [scripts/forge_brief/__init__.py]	762	1
+2026-11-13T22:47:17Z	j-plan	brief-docs	qa	sonnet:medium	PASS	-	-	-	34
+2026-11-13T22:50:29Z	j-plan	sweep-3	dwarf	grok:high	-	-	-	-	180
+2026-11-13T22:50:56Z	j-plan	sweep-3	qa	opus:medium	PASS	-	-	-	20
+2026-11-13T22:55:44Z	j-plan	sweep-4	dwarf	grok:high	-	-	-	-	494
+2026-11-13T22:59:13Z	j-plan	sweep-5	dwarf	grok:high	-	-	-	-	704
+2026-11-13T23:00:59Z	j-plan	sweep-4	qa	opus:medium	PASS	-	-	-	308
+2026-11-13T23:02:05Z	j-plan	sweep-5	qa	opus:medium	PASS	-	-	-	166
+2026-11-13T23:05:32Z	j-plan	sweep-2	dwarf	grok:high	-	-	-	-	1083
+2026-11-13T23:09:44Z	j-plan	sweep-2	qa	sonnet:high	PASS	-	-	-	244
+2026-11-13T23:09:58Z	j-plan	sweep-1	dwarf	grok:high	-	-	-	-	1349
+2026-11-13T23:10:39Z	j-plan	sweep-1	qa	opus:medium	FAIL	-	-	-	35
+2026-11-13T23:59:04Z	j-plan	sweep-1	dwarf	grok:high	-	-	-	-	2901
+2026-11-14T00:03:28Z	j-plan	sweep-1	qa	opus:medium	FAIL	-	-	-	259
+2026-11-14T00:11:08Z	j-plan	sweep-1	dwarf	grok:high	-	-	-	-	454
+2026-11-14T00:19:27Z	j-plan	sweep-1	qa	opus:medium	PASS	-	-	-	492
+2026-11-14T22:05:28Z	k-plan	owner-helper	dwarf	grok:xhigh	-	-	-	-	787
+2026-11-14T22:14:55Z	k-plan	outside-contract	dwarf	grok:xhigh	-	-	-	-	1355
+2026-11-14T22:30:05Z	k-plan	outside-stop	dwarf	sonnet:high	-	-	-	-	705
+2026-11-14T23:20:15Z	k-plan	outside-stop	qa	opus:medium	PASS	-	-	-	481
+2026-11-14T23:37:25Z	k-plan	drift-detect	dwarf	sonnet:high	-	-	-	-	1023
+2026-11-14T23:55:08Z	k-plan	drift-detect	qa	opus:medium	PASS	-	-	-	1057
+2026-11-15T00:04:26Z	k-plan	permodel-route	dwarf	sonnet:high	-	-	-	-	542
+2026-11-15T00:08:17Z	k-plan	drift-dataset	dwarf	grok:xhigh	-	-	-	-	773
+2026-11-15T00:13:15Z	k-plan	permodel-route	qa	opus:medium	PASS	-	-	-	501
+2026-11-15T00:14:59Z	k-plan	drift-dataset	qa	sonnet:high	PASS	finding	dataset statistics must filter attempt events through export attempts risk py reads runs attempts raw and bypasses any new skip flag	dataset statistics must filter attempt events through export._attempts; risk.py reads runs.attempts raw and bypasses any new skip flag [scripts/forge_dataset/risk.py]	384	1
+2026-11-15T00:19:54Z	k-plan	drift-schedule	dwarf	sonnet:high	-	-	-	-	1470
+2026-11-15T00:25:13Z	k-plan	drift-schedule	qa	opus:medium	FAIL	trap	forge parallel sh fails a retry whose diff is byte identical to the previous attempt unless retry findings source is bounce any new unreviewed retry	forge-parallel.sh fails a retry whose diff is byte-identical to the previous attempt unless retry_findings.source is `bounce`; any new unreviewed-retry… [scripts/forge-parallel.sh]	292	1
+2026-11-15T00:31:59Z	k-plan	drift-schedule	dwarf	sonnet:high	-	trap	forge parallel sh fails a retry whose diff is byte identical to the previous attempt unless retry findings source is bounce any new unreviewed retry	forge-parallel.sh fails a retry whose diff is byte-identical to the previous attempt unless retry_findings.source is `bounce`; any new unreviewed-retry… [scripts/forge-parallel.sh]	380	1
+2026-11-15T00:36:14Z	k-plan	drift-schedule	qa	opus:medium	PASS	trap	forge parallel sh fails a retry whose diff is byte identical to the previous attempt unless retry findings source is bounce any new unreviewed retry	forge-parallel.sh fails a retry whose diff is byte-identical to the previous attempt unless retry_findings.source is `bounce`; any new unreviewed-retry… [scripts/forge-parallel.sh]	206	1
+2026-11-15T01:11:44Z	k-plan	permodel-plan	dwarf	grok:xhigh	-	-	-	-	2114
+2026-11-15T01:15:03Z	k-plan	permodel-plan	qa	sonnet:high	PASS	-	-	-	172
+2026-11-15T01:34:04Z	k-plan	docs-retry	dwarf	grok:high	-	-	-	-	1124
+2026-11-15T01:37:05Z	k-plan	docs-retry	qa	sonnet:medium	PASS	-	-	-	27
+2026-11-15T01:40:03Z	k-plan	script-plan	dwarf	grok:xhigh	-	trap	run dry run returns before preflight plan so a dry run never calls doctor	`run --dry-run` returns before `preflight_plan`, so a dry run never calls doctor [scripts/forge-parallel.sh]	1483	1
+2026-11-15T01:44:43Z	k-plan	script-plan	qa	sonnet:high	PASS	-	-	-	271
+2026-11-15T02:00:09Z	k-plan	script-run	dwarf	sonnet:high	-	-	-	-	918
+2026-11-15T02:02:20Z	k-plan	script-run	qa	opus:medium	PASS	-	-	-	125
+2026-11-15T02:31:38Z	k-plan	chain-plan	dwarf	sonnet:high	-	-	-	-	1751
+2026-11-15T02:35:54Z	k-plan	chain-plan	qa	opus:medium	PASS	-	-	-	250
+2026-11-15T02:38:59Z	k-plan	script-consumers	dwarf	grok:high	-	-	-	-	2192
+2026-11-15T02:46:59Z	k-plan	script-consumers	qa	sonnet:high	PASS	-	-	-	474
+2026-11-15T02:52:54Z	k-plan	control-answer	dwarf	sonnet:high	-	-	-	-	349
+2026-11-15T02:55:22Z	k-plan	control-answer	qa	opus:medium	PASS	trap	macos has no timeout command so wrapping a test run in timeout n fails with exit 127	macOS has no `timeout` command, so wrapping a test run in `timeout N` fails with exit 127 [tests/run_tests.py]	141	1
+2026-11-15T02:58:42Z	k-plan	handoff-flags	dwarf	grok:xhigh	-	-	-	-	1362
+2026-11-15T03:00:57Z	k-plan	handoff-flags	qa	sonnet:high	PASS	-	-	-	128
+2026-11-15T03:04:02Z	k-plan	handoff-show	dwarf	sonnet:high	-	-	-	-	180
+2026-11-15T03:04:21Z	k-plan	chain-show	dwarf	grok:xhigh	-	trap	test read only and summary does not read details allowlists path open names during summarize a missing file read via reader line only stats and is not	test_read_only_and_summary_does_not_read_details allowlists Path.open names during summarize(); a missing file read via reader.line only stats and is not… [ui/tests/test_reader.py]	1036	0
+2026-11-15T03:05:26Z	k-plan	chain-show	qa	sonnet:high	PASS	-	-	-	57
+2026-11-15T03:05:33Z	k-plan	handoff-show	qa	opus:medium	FAIL	-	-	-	81
+2026-11-15T03:06:02Z	k-plan	handoff-show	dwarf	sonnet:high	-	-	-	-	24
+2026-11-15T03:06:34Z	k-plan	handoff-show	qa	opus:medium	PASS	-	-	-	26
+2026-11-15T03:14:45Z	k-plan	wt-cli	dwarf	sonnet:high	-	-	-	-	485
+2026-11-15T03:16:09Z	k-plan	wt-cli	qa	opus:medium	PASS	-	-	-	77
+2026-11-15T03:18:11Z	k-plan	docs-script-chain	dwarf	grok:high	-	-	-	-	759
+2026-11-15T03:18:34Z	k-plan	docs-script-chain	qa	sonnet:medium	PASS	-	-	-	16
+2026-11-15T03:23:47Z	k-plan	mem-forget	dwarf	grok:xhigh	-	-	-	-	453
+2026-11-15T03:26:10Z	k-plan	handoff-driver	dwarf	grok:xhigh	-	-	-	-	1170
+2026-11-15T03:26:50Z	k-plan	handoff-driver	qa	sonnet:high	FAIL	-	-	-	33
+2026-11-15T03:33:02Z	k-plan	handoff-driver	dwarf	grok:xhigh	-	-	-	-	368
+2026-11-15T03:33:29Z	k-plan	handoff-driver	qa	sonnet:high	PASS	-	-	-	19
+2026-11-15T03:36:35Z	k-plan	handoff-resume	dwarf	sonnet:high	-	-	-	-	180
+2026-11-15T03:38:36Z	k-plan	handoff-resume	qa	opus:medium	FAIL	finding	a new path that sets a task to interrupted outside forge schedule py skips stop harnesses which only stops harnesses of tasks still running	a new path that sets a task to INTERRUPTED outside forge-schedule.py skips stop_harnesses, which only stops harnesses of tasks still RUNNING [scripts/forge-schedule.py]	115	1
+2026-11-15T03:39:50Z	k-plan	handoff-resume	dwarf	sonnet:high	-	trap	a path that sets a task interrupted outside forge schedule py must run forge guard py stop on tasks id dwarf qa harness first because the	a path that sets a task INTERRUPTED outside forge-schedule.py must run forge-guard.py stop on tasks/<id>/{dwarf,qa}.harness first, because the… [scripts/forge-schedule.py]	69	1
+2026-11-15T03:40:41Z	k-plan	handoff-resume	qa	opus:medium	PASS	-	-	-	42
+2026-11-15T03:49:15Z	k-plan	docs-handoff	dwarf	grok:xhigh	-	-	-	-	508
+2026-11-15T03:50:11Z	k-plan	docs-handoff	qa	sonnet:high	PASS	-	-	-	49
+2026-11-15T11:16:14Z	k-plan	mem-forget	dwarf	grok:xhigh	-	-	-	-	1363
+2026-11-15T11:17:32Z	k-plan	mem-forget	qa	sonnet:high	FAIL	-	-	-	71
+2026-11-15T11:33:26Z	k-plan	mem-forget	dwarf	grok:xhigh	-	-	-	-	949
+2026-11-15T11:34:06Z	k-plan	mem-forget	qa	sonnet:high	PASS	-	-	-	33
+2026-11-15T11:37:46Z	k-plan	ui-server	dwarf	sonnet:high	-	-	-	-	212
+2026-11-15T11:39:06Z	k-plan	ui-server	qa	opus:medium	PASS	-	-	-	73
+2026-11-15T12:08:46Z	k-plan	ui-worktrees	dwarf	grok:xhigh	-	-	-	-	1773
+2026-11-15T12:10:14Z	k-plan	ui-worktrees	qa	sonnet:high	FAIL	trap	forgetable datatable js rebuilds its whole table on sort column move and hide without notifying the caller so anything mounted into a header	ForgeTable (datatable.js) rebuilds its whole table on sort, column move and hide without notifying the caller, so anything mounted into a header… [ui/forge_ui/static/datatable.js]	62	1
+2026-11-15T12:19:17Z	k-plan	ui-memdisk	dwarf	grok:xhigh	-	-	-	-	2404
+2026-11-15T12:20:22Z	k-plan	ui-worktrees	dwarf	grok:xhigh	-	-	-	-	581
+2026-11-15T12:20:47Z	k-plan	ui-memdisk	qa	sonnet:high	FAIL	-	-	-	63
+2026-11-15T12:21:18Z	k-plan	ui-worktrees	qa	sonnet:high	PASS	-	-	-	30
+2026-11-15T12:41:11Z	k-plan	ui-memdisk	dwarf	grok:xhigh	-	-	-	-	1208
+2026-11-15T12:42:22Z	k-plan	ui-memdisk	qa	sonnet:high	PASS	-	-	-	55
+2026-11-15T12:53:48Z	k-plan	docs-ui	dwarf	grok:high	-	-	-	-	669
+2026-11-15T12:54:37Z	k-plan	docs-ui	qa	sonnet:medium	PASS	-	-	-	21
+2026-11-15T12:58:26Z	k-plan	sweep-5	dwarf	grok:high	-	-	-	-	198
+2026-11-15T13:04:27Z	k-plan	sweep-3	dwarf	grok:high	-	-	-	-	559
+2026-11-15T13:05:37Z	k-plan	sweep-3	qa	opus:medium	PASS	-	-	-	63
+2026-11-15T13:09:41Z	k-plan	sweep-2	dwarf	grok:high	-	-	-	-	873
+2026-11-15T13:12:02Z	k-plan	sweep-4	dwarf	grok:high	-	-	-	-	1014
+2026-11-15T13:13:33Z	k-plan	sweep-2	qa	opus:medium	FAIL	-	-	-	226
+2026-11-15T13:13:34Z	k-plan	sweep-4	qa	opus:medium	FAIL	-	-	-	85
+2026-11-15T13:17:13Z	k-plan	sweep-1	dwarf	grok:high	-	-	-	-	1325
+2026-11-15T13:17:59Z	k-plan	sweep-4	dwarf	grok:high	-	-	-	-	260
+2026-11-15T13:19:00Z	k-plan	sweep-1	qa	opus:medium	FAIL	-	-	-	100
+2026-11-15T13:20:37Z	k-plan	sweep-4	qa	opus:medium	PASS	-	-	-	150
+2026-11-15T13:21:24Z	k-plan	sweep-1	dwarf	grok:high	-	-	-	-	138
+2026-11-15T13:21:39Z	k-plan	sweep-2	dwarf	grok:high	-	-	-	-	480
+2026-11-15T13:24:10Z	k-plan	sweep-2	qa	opus:medium	FAIL	-	-	-	145
+2026-11-15T13:39:31Z	k-plan	sweep-2	dwarf	grok:high	-	-	-	-	916
+2026-11-15T13:47:20Z	k-plan	sweep-2	qa	opus:medium	PASS	-	-	-	212
+2026-11-16T15:43:54Z	l-plan	side-triage	dwarf	grok:high	-	-	-	-	1187
+2026-11-16T15:45:31Z	l-plan	identity	dwarf	grok:xhigh	-	-	-	-	1285
+2026-11-16T15:46:41Z	l-plan	side-triage	qa	sonnet:high	PASS	-	-	-	162
+2026-11-16T15:46:55Z	l-plan	identity	qa	sonnet:high	PASS	-	-	-	78
+2026-11-16T15:50:51Z	l-plan	record-store	dwarf	sonnet:high	-	-	-	-	231
+2026-11-16T15:52:21Z	l-plan	record-store	qa	opus:medium	FAIL	-	-	-	83
+2026-11-16T15:52:58Z	l-plan	record-store	dwarf	sonnet:high	-	-	-	-	33
+2026-11-16T15:53:49Z	l-plan	record-store	qa	opus:medium	PASS	-	-	-	31
+2026-11-16T16:00:14Z	l-plan	sweep-rounds	dwarf	sonnet:high	-	-	-	-	380
+2026-11-16T16:03:19Z	l-plan	sweep-rounds	qa	opus:medium	PASS	-	-	-	178
+2026-11-16T16:03:35Z	l-plan	memory-add-edit	dwarf	grok:xhigh	-	trap	rebuild s cap role file must not be the same path as the section role file cat tmproles roles appends to the file it is reading and grows	rebuild's cap role file must not be the same path as the section role file: `{ cat "$tmproles"; } > "$roles"` appends to the file it is reading and grows… [scripts/forge-memory.sh]	2369	1
+2026-11-16T16:03:46Z	l-plan	issues-identity	dwarf	sonnet:high	-	trap	tests test issues py asserts repo key json dismissal stores and the exact finding entry key set so it breaks whenever dismissals move to the record or	tests/test_issues.py asserts `<repo_key>.json` dismissal stores and the exact finding-entry key set, so it breaks whenever dismissals move to the record or… [tests/test_issues.py]	591	1
+2026-11-16T16:05:30Z	l-plan	memory-add-edit	qa	sonnet:high	FAIL	-	-	-	109
+2026-11-16T16:06:58Z	l-plan	issues-identity	qa	opus:medium	FAIL	finding	forge identity identity dir treats any existing dir with no repo file as a checkout of its own so a task or review dir passed to it gets a bogus	`forge_identity.identity(dir)` treats any existing dir with no `repo` file as a checkout of its own, so a task or review dir passed to it gets a bogus… [scripts/forge_identity.py]	186	1
+2026-11-16T16:09:58Z	l-plan	issues-identity	dwarf	sonnet:high	-	trap	forge identity identity dir treats any existing dir without a repo file as a checkout of its own so a task or review dir gets a bogus key	`forge_identity.identity(dir)` treats any existing dir without a `repo` file as a checkout of its own, so a task or review dir gets a bogus key;… [scripts/forge_identity.py]	175	1
+2026-11-16T16:11:38Z	l-plan	issues-identity	qa	opus:medium	FAIL	-	-	-	92
+2026-11-16T16:14:46Z	l-plan	memory-add-edit	dwarf	grok:xhigh	-	-	-	-	551
+2026-11-16T16:15:22Z	l-plan	memory-add-edit	qa	sonnet:high	PASS	-	-	-	28
+2026-11-16T17:25:58Z	l-plan	issues-identity	dwarf	sonnet:high	-	-	-	-	332
+2026-11-16T17:29:05Z	l-plan	issues-identity	qa	opus:medium	PASS	-	-	-	127
+2026-11-16T17:33:42Z	l-plan	ui-findings-state	dwarf	sonnet:high	-	trap	from ui python3 m unittest discover s tests p test reader py runs one forge ui module cd ui tests fails on the forge ui import	`ui/tests` modules import `forge_ui` and each other by bare name, so run them from `ui/` with `python3 -m unittest discover -s tests -p '<module>.py'`,… [ui/tests/test_projects.py]	251	1
+2026-11-16T19:48:05Z	l-plan	ui-findings-state	dwarf	sonnet:high	-	-	-	-	240
+2026-11-16T20:14:05Z	l-plan	findings-cli	dwarf	grok:xhigh	-	trap	tests test memory forget py asserts the launcher s unknown command text contains show learnings prune spend inject or forget so that phrase	tests/test_memory_forget.py asserts the launcher's unknown-command text contains 'show, learnings, prune, spend, inject or forget', so that phrase… [tests/test_memory_forget.py]	1801	1
+2026-11-16T20:16:26Z	l-plan	findings-cli	qa	sonnet:high	PASS	-	-	-	96
+2026-11-16T20:24:04Z	l-plan	triage-run	dwarf	sonnet:high	-	-	-	-	433
+2026-11-16T20:25:39Z	l-plan	triage-run	qa	opus:medium	FAIL	trap	tests test findings cli py asserts the exact commands list and the help choice string so it breaks whenever forge findings py gains a subcommand	tests/test_findings_cli.py asserts the exact `COMMANDS` list and the help choice string, so it breaks whenever forge-findings.py gains a subcommand [tests/test_findings_cli.py]	68	1
+2026-11-16T21:05:19Z	l-plan	triage-run	dwarf	sonnet:high	-	-	-	-	41
+2026-11-16T21:06:22Z	l-plan	triage-run	qa	opus:medium	PASS	-	-	-	46
+2026-11-16T21:06:45Z	l-plan	ui-findings-state	dwarf	sonnet:high	-	-	-	-	118
+2026-11-16T21:09:31Z	l-plan	ui-findings-state	qa	opus:medium	PASS	-	-	-	138
+2026-11-16T21:10:00Z	l-plan	triage-apply	dwarf	sonnet:high	-	-	-	-	201
+2026-11-16T21:10:53Z	l-plan	sweep-fixed-merged	dwarf	grok:high	-	-	-	-	365
+2026-11-16T21:11:52Z	l-plan	triage-apply	qa	opus:medium	PASS	-	-	-	86
+2026-11-16T21:12:37Z	l-plan	sweep-fixed-merged	qa	sonnet:medium	FAIL	-	-	-	76
+2026-11-16T21:24:44Z	l-plan	docs-cli	dwarf	grok:high	-	-	-	-	755
+2026-11-16T21:25:54Z	l-plan	docs-cli	qa	sonnet:medium	PASS	-	-	-	43
+2026-11-16T21:36:49Z	l-plan	ui-findings-routes	dwarf	grok:xhigh	-	-	-	-	1621
+2026-11-16T21:39:26Z	l-plan	ui-findings-routes	qa	sonnet:high	PASS	-	-	-	130
+2026-11-16T21:47:45Z	l-plan	ui-findings-page	dwarf	sonnet:high	-	trap	python3 m unittest test export from ui fails with an import error use python3 m unittest discover s tests p test export py	`python3 -m unittest test_export` from ui/ fails with an import error; use `python3 -m unittest discover -s tests -p 'test_export.py'` [ui/tests/test_export.py]	483	1
+2026-11-16T21:51:40Z	l-plan	ui-findings-page	qa	opus:medium	FAIL	trap	forge findings tag needs between fingerprints and tags when the tags come before add remove without it every token is read as a	`forge findings tag` needs `--` between fingerprints and tags when the tags come before `--add`/`--remove`; without it every token is read as a… [scripts/forge-findings.py]	126	1
+2026-11-16T21:53:00Z	l-plan	ui-findings-page	dwarf	sonnet:high	-	-	-	-	54
+2026-11-16T21:53:42Z	l-plan	ui-findings-page	qa	opus:medium	PASS	-	-	-	24
+2026-11-16T22:24:45Z	l-plan	ui-memories-edit	dwarf	grok:xhigh	-	-	-	-	1847
+2026-11-16T22:27:37Z	l-plan	ui-memories-edit	qa	sonnet:high	PASS	-	-	-	137
+2026-11-16T22:51:07Z	l-plan	ui-triage-routes	dwarf	grok:xhigh	-	-	-	-	1393
+2026-11-16T22:54:05Z	l-plan	ui-triage-routes	qa	sonnet:high	PASS	-	-	-	139
+2026-11-16T22:59:56Z	l-plan	ui-triage-page	dwarf	sonnet:high	-	-	-	-	334
+2026-11-16T23:02:32Z	l-plan	ui-triage-page	qa	opus:medium	FAIL	finding	panels rendered into a host that is not yet on the page see isconnected false so a stop when the host leaves the page guard run during	panels rendered into a host that is not yet on the page see isConnected false, so a "stop when the host leaves the page" guard run during… [ui/forge_ui/static/projectsview.js]	127	1
+2026-11-16T23:03:33Z	l-plan	ui-triage-page	dwarf	sonnet:high	-	trap	a panel rendered into a host that is not yet attached sees isconnected false so judge the host left the page only when a timer fires never	a panel rendered into a host that is not yet attached sees isConnected false, so judge "the host left the page" only when a timer fires, never… [ui/forge_ui/static/triageview.js]	44	1
+2026-11-16T23:05:10Z	l-plan	ui-triage-page	qa	opus:medium	PASS	-	-	-	49
+2026-11-16T23:18:34Z	l-plan	docs-ui	dwarf	grok:high	-	-	-	-	787
+2026-11-16T23:19:35Z	l-plan	docs-ui	qa	sonnet:medium	PASS	-	-	-	30
+2026-11-17T09:26:05Z	l-plan	sweep-fixed-merged	dwarf	grok:high	-	-	-	-	169
+2026-11-17T09:27:17Z	l-plan	sweep-fixed-merged	qa	sonnet:medium	PASS	-	-	-	65
+2026-11-17T09:33:05Z	l-plan	sweep-5	dwarf	grok:high	-	-	-	-	334
+2026-11-17T09:33:38Z	l-plan	sweep-5	qa	sonnet:high	PASS	-	-	-	25
+2026-11-17T09:34:49Z	l-plan	sweep-4	dwarf	grok:high	-	-	-	-	437
+2026-11-17T09:35:34Z	l-plan	sweep-4	qa	opus:medium	PASS	-	-	-	37
+2026-11-17T09:36:16Z	l-plan	sweep-2	dwarf	grok:high	-	-	-	-	525
+2026-11-17T09:36:54Z	l-plan	sweep-2	qa	opus:medium	FAIL	-	-	-	22
+2026-11-17T09:39:26Z	l-plan	sweep-1	dwarf	grok:high	-	-	-	-	715
+2026-11-17T09:39:59Z	l-plan	sweep-1	qa	sonnet:high	PASS	-	-	-	25
+2026-11-17T09:47:15Z	l-plan	sweep-3	dwarf	grok:high	-	-	-	-	1184
+2026-11-17T09:48:02Z	l-plan	sweep-2	dwarf	grok:high	-	-	-	-	663
+2026-11-17T09:48:36Z	l-plan	sweep-3	qa	opus:medium	FAIL	-	-	-	74
+2026-11-17T09:49:21Z	l-plan	sweep-2	qa	opus:medium	PASS	-	-	-	72

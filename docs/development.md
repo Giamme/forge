@@ -2,8 +2,7 @@
 
 [← README](../README.md) · [All docs](README.md)
 
-The repository layout, the offline checks, and how forge measures its own runtime cost. To
-contribute a change, start with [CONTRIBUTING.md](../CONTRIBUTING.md).
+The repository layout, the offline checks, and how forge measures its own runtime cost.
 
 ## Repository layout
 
@@ -58,7 +57,7 @@ forge/
 ## Offline checks
 
 Run `bash tests/check.sh` for offline regression checks. See [tests](../tests/README.md) for skill
-invocation scenarios and verification limits. No CI runs the tests on pull requests yet ([#165](https://github.com/Giamme/forge/issues/165), [#166](https://github.com/Giamme/forge/issues/166)). The two CI workflows that exist do other things: one builds and publishes the website ([site/README.md](../site/README.md)), and `.github/workflows/npm-publish.yml` publishes the package to npm when a GitHub Release is published (npm trusted publishing, no token).
+invocation scenarios and verification limits. Three CI workflows: `.github/workflows/test.yml` runs `tests/check.sh` on every pull request (Ubuntu, Python 3.9; documentation-only changes skip it) and on every push to `main` (also the latest 3.x, and macOS with the system Bash 3.2), `.github/workflows/pages.yml` builds and publishes the website ([site/README.md](../site/README.md)), and `.github/workflows/npm-publish.yml` publishes the package to npm when a GitHub Release is published (npm trusted publishing, no token).
 
 ## Runtime efficiency and measurement
 

@@ -455,15 +455,41 @@ def check_graph(tasks: list):
             visit(t['id'], [t['id']])
 
 
+MAX_JSON_DEPTH = 64   # a plan is a few levels deep; anything near this is not a plan
+MAX_INT_DIGITS = 4300  # Python's own limit from 3.11 (and late 3.9/3.10 patch releases); not in 3.9.13 or Apple's 3.9.6
+
+
+def bounded_int(text: str) -> int:
+    """int() for json.loads, refusing the very long integers that recent Pythons refuse too."""
+    if len(text.lstrip('-')) > MAX_INT_DIGITS:
+        raise ValueError(f'an integer of more than {MAX_INT_DIGITS} digits')
+    return int(text)
+
+
+def nested_deeper_than(value, limit: int) -> bool:
+    """Whether lists and objects nest more than `limit` levels, checked without recursion."""
+    stack = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if isinstance(item, (dict, list)):
+            if depth > limit:
+                return True
+            stack.extend((child, depth + 1) for child in (item.values() if isinstance(item, dict) else item))
+    return False
+
+
 def parse_reply(reply: str):
     """(tasks, groups). groups is None when the reply has no groups key, else a list (maybe empty)."""
     body = extract_block(reply)
     try:
-        data = json.loads(body, object_pairs_hook=no_duplicate_keys)
+        data = json.loads(body, object_pairs_hook=no_duplicate_keys, parse_int=bounded_int)
     except (ValueError, RecursionError) as err:
         # JSONDecodeError is a ValueError; so is Python's limit on integer digits. Nesting deeper
-        # than the interpreter allows raises RecursionError.
+        # than the interpreter allows raises RecursionError (up to Python 3.11; from 3.12 the
+        # parser goes much deeper, hence the explicit limit below).
         raise Refusal(f'the forge-plan body is not valid JSON: {type(err).__name__}: {str(err)[:200]}')
+    if nested_deeper_than(data, MAX_JSON_DEPTH):
+        raise Refusal(f'the forge-plan body is not valid JSON: nested more than {MAX_JSON_DEPTH} levels deep')
     check_keys(data, ('tasks',), 'the forge-plan body', ('groups',))
     tasks = data['tasks']
     if not isinstance(tasks, list) or not 1 <= len(tasks) <= MAX_TASKS:

@@ -6,15 +6,18 @@ this module holds the route table, the body validation, the call and the mapping
 exit code to an HTTP answer. server.py does the authentication and hands each authenticated POST
 to `dispatch`. Profile create and edit write a JSON body to the CLI's stdin (`--file -`);
 a brief answer writes the answer text the same way. Approving, rejecting and proposing a brief
-change print text and take no stdin. Every other call has no stdin.
+change print text and take no stdin. A finding's draft body and replacement text go through a
+private temp file (`--body-file`, `--text-file`), never argv. Every other call has no stdin.
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -49,11 +52,18 @@ MAX_FPS = 25
 MAX_LABELS = 5
 MAX_LABEL = 50
 MAX_REASON = 500
+MAX_FINDING_FPS = 200         # fingerprints in one finding-record write
+MAX_NOTE = 2000
+MAX_EDIT_TEXT = 4000
+MAX_DRAFT_TITLE = 200
+MAX_DRAFT_BODY = 20000
+MAX_TAGS = 8
 MAX_CONFIG_VALUE = 4096
 MAX_DECIDE_VALUE = 256
 # The profile object written to `forge config profile … --file -`. The HTTP body is already capped
 # at 64 KiB by the server; this caps the stdin text itself, which a re-encode can make larger.
 MAX_PROFILE_BODY = 64 * 1024
+MAX_PROFILE_DEPTH = 64       # a profile is a few levels deep
 # A brief answer, in characters. The CLI then keeps the leading 4 KiB of what remains after it
 # strips control characters; this bound is the one the route enforces before that call.
 MAX_ANSWER = 4096
@@ -65,6 +75,9 @@ _PROFILE_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$')
 _PROFILE_KEY = re.compile(r'^(routing|policy)\.[a-z_.]+$')
 _PROFILE_ACTIONS = ('create', 'edit', 'set', 'unset', 'rm', 'use')
 FP_RE = re.compile(r'[0-9a-f]{12}')
+_COMMIT_RE = re.compile(r'[0-9a-f]{7,40}')
+_TAG_RE = re.compile(r'[a-z][a-z0-9-]{0,23}')
+_FINDING_SEVERITIES = ('P0', 'P1', 'P2', 'P3')
 # Mirrored from forge_decide.GATES and MODES. The ui tests do not put scripts/ on the path, so this
 # module does not import forge_decide; ConfigTests.test_decide_names_match_forge_decide keeps them equal.
 DECIDE_GATES = ('drift', 'forward', 'prompt', 'memory-curate', 'memory-slice', 'memory-stale',
@@ -826,10 +839,26 @@ def _profile_value(value):
     return value
 
 
+def _nested_deeper_than(value, limit):
+    """Whether lists and objects nest more than `limit` levels, checked without recursion."""
+    stack = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if isinstance(item, (dict, list)):
+            if depth > limit:
+                return True
+            stack.extend((child, depth + 1) for child in (item.values() if isinstance(item, dict) else item))
+    return False
+
+
 def _profile_stdin(value):
     """The bytes `--file -` reads. A re-encode can be larger than the HTTP body, so it is capped on its own."""
     if not isinstance(value, dict):
         raise BadBody('body must be a JSON object')
+    # Up to Python 3.11 json.dumps raises RecursionError on a deep enough value; from 3.12 it
+    # goes much deeper, so the limit is explicit.
+    if _nested_deeper_than(value, MAX_PROFILE_DEPTH):
+        raise BadBody(f'body is nested more than {MAX_PROFILE_DEPTH} levels deep')
     try:
         raw = json.dumps(value, allow_nan=False).encode('utf-8')
     except (TypeError, ValueError, RecursionError):
@@ -1001,11 +1030,18 @@ def _project_findings(ctx):
         refresh = _bit(_query_params(ctx.query, ('refresh',)), 'refresh')
     except BadBody as exc:
         return _invalid(str(exc))
-    # --offline: no gh call; the listing says which findings are dismissed, filed (as recorded) or swept.
+    # The listing is read online (GitHub says which issues are closed), for at most 60 s; projects.py asks again
+    # with --offline when that fails.
+    def listing(path, online=True):
+        args = ('issues', path, '--json', '--all-runs', '--include-plausible', '--include-dismissed')
+        if online:
+            status, body = ctx.call(*args, limit=projects.ONLINE_S)
+            return body if status == 200 else None
+        return _project_call(ctx, *args[:3], '--offline', *args[3:])
+
     found = projects.screen(ctx.server).findings(
-        ctx.server.catalog, ctx.key, lambda: _project_call(ctx, 'dataset', 'history', '--json'),
-        lambda path: _project_call(ctx, 'issues', path, '--json', '--offline', '--all-runs', '--include-plausible',
-                                   '--include-dismissed'), refresh=refresh)
+        ctx.server.catalog, ctx.key, lambda: _project_call(ctx, 'dataset', 'history', '--json'), listing,
+        refresh=refresh)
     return (404, {'error': 'not found'}) if found is None else (200, found)
 
 
@@ -1094,6 +1130,16 @@ def invalidate_memories(server):
     with screen.lock:
         for key in [k for k in screen.cli if isinstance(k, tuple) and k and k[0] == 'memory']:
             del screen.cli[key]
+
+
+def invalidate_findings(server):
+    """The next GET of a project's findings reads `forge issues` again, and re-reads the run cache."""
+    from forge_ui import projects
+    screen = projects.screen(server)
+    with screen.lock:
+        for key in [k for k in screen.cli if isinstance(k, tuple) and k and k[0] == 'issues']:
+            del screen.cli[key]
+        screen.runs.clear()
 
 
 def _worktrees_remove(ctx):
@@ -1198,6 +1244,153 @@ def _memories_forget(ctx):
         lock.release()
 
 
+MAX_MEMORY_TEXT = 300
+MAX_MEMORY_PATHS = 20         # --path arguments on one memory add
+MAX_MEMORY_PATH = 300
+_MEMORY_CATEGORIES = ('verify', 'trap', 'finding')
+
+
+def _optional_checkout(body):
+    path = body.get('path')
+    if path is not None and (not isinstance(path, str) or not path):
+        raise BadBody('path must be a checkout path')
+    return path
+
+
+def _memory_text(value):
+    """One argv element: 1 to 300 characters, one line, no control character.
+
+    Spaces alone are empty after the CLI sanitizes them, so they are refused here.
+    """
+    if (not isinstance(value, str) or not 1 <= len(value) <= MAX_MEMORY_TEXT
+            or not value.strip(' ') or not _no_control_chars(value)):
+        raise BadBody(f'text must be one line of 1 to {MAX_MEMORY_TEXT} characters')
+    try:
+        value.encode('utf-8')
+    except UnicodeEncodeError:
+        raise BadBody('text must be valid text')
+    return value
+
+
+def _memory_paths(value):
+    """Relative paths for `--path`, at most 20, in first-seen order. Empty is no paths."""
+    if not isinstance(value, list) or len(value) > MAX_MEMORY_PATHS:
+        raise BadBody(f'paths must be a list of at most {MAX_MEMORY_PATHS} relative paths')
+    out = []
+    for item in value:
+        if not isinstance(item, str) or not item or len(item) > MAX_MEMORY_PATH or not _no_control_chars(item):
+            raise BadBody('paths holds a value that is not acceptable')
+        if os.path.isabs(item) or item.startswith(('/', '\\')):
+            raise BadBody('paths holds a value that is not acceptable')
+        if any(part == '..' for part in re.split(r'[\\/]', item)):
+            raise BadBody('paths holds a value that is not acceptable')
+        if any(ch in item for ch in ',[]'):
+            raise BadBody('paths holds a value that is not acceptable')
+        if item not in out:
+            out.append(item)
+    return out
+
+
+def _memory_key(value):
+    if (not isinstance(value, str) or not value or len(value) > MAX_FIELD or not _no_control_chars(value)
+            or not _MEMORY_KEY.match(value)):
+        raise BadBody('key must be category:key')
+    return value
+
+
+def _memory_category(value):
+    if value not in _MEMORY_CATEGORIES:
+        raise BadBody('category must be verify, trap or finding')
+    return value
+
+
+def _memory_checkouts(ctx, path):
+    """The checkouts a memory write runs in, or an error response.
+
+    One checkout when `path` names an existing one, else each existing checkout of the project.
+    404 unknown project, 400 when path is not one of them, 409 when none exists.
+    """
+    from forge_ui import projects
+    project = projects.screen(ctx.server).projects(ctx.server.catalog).get(ctx.key)
+    if project is None:
+        return 404, {'error': 'not found'}
+    existing = [c['path'] for c in projects.checkouts(project) if c['exists']]
+    if path is not None:
+        if path not in existing:
+            return _invalid('path is not a checkout of this project')
+        existing = [path]
+    if not existing:
+        return 409, {'error': 'refused', 'detail': 'no checkout of this project exists'}
+    return existing
+
+
+def _memory_each(ctx, checkouts, argv_of):
+    """argv_of(checkout) once per checkout under memory_lock. The memories cache drops after the calls."""
+    lock = _server_lock(ctx.server, 'memory_lock')
+    if not lock.acquire(blocking=False):
+        return 409, {'error': 'busy'}
+    try:
+        results, failed = [], []
+        for checkout in checkouts:
+            status, answer = ctx.call(*argv_of(checkout))
+            if status == 200:
+                results.append({'path': checkout, 'result': answer})
+            else:
+                failed.append((status, answer))
+                results.append({'path': checkout, 'result': None, 'status': status, 'error': answer})
+        invalidate_memories(ctx.server)
+        if failed and len(failed) == len(results):
+            return failed[0]
+        return 200, {'ok': not failed, 'checkouts': results}
+    finally:
+        lock.release()
+
+
+def _memories_add(ctx):
+    """POST `{path?, category, text, paths?}`: `forge memory add <checkout> --category C --text T [--path P]…
+    --actor ui --json`, once per checkout. Text is one argv element, never a shell string."""
+    ctx.route = 'memories add'
+    try:
+        body = _body_object(ctx, ('path', 'category', 'text', 'paths'))
+        path = _optional_checkout(body)
+        category = _memory_category(body.get('category'))
+        text = _memory_text(body.get('text'))
+        paths = _memory_paths(body.get('paths', []))
+    except BadBody as exc:
+        return _invalid(str(exc))
+    checkouts = _memory_checkouts(ctx, path)
+    if not isinstance(checkouts, list):
+        return checkouts
+
+    def argv(checkout):
+        command = ['memory', 'add', checkout, '--category', category, '--text', text]
+        for item in paths:
+            command.extend(('--path', item))
+        command.extend(('--actor', 'ui', '--json'))
+        return command
+    return _memory_each(ctx, checkouts, argv)
+
+
+def _memories_edit(ctx):
+    """POST `{path?, key, text}`: `forge memory edit <checkout> <key> --text T --actor ui --json`, once per checkout.
+    Text is one argv element, never a shell string."""
+    ctx.route = 'memories edit'
+    try:
+        body = _body_object(ctx, ('path', 'key', 'text'))
+        path = _optional_checkout(body)
+        key = _memory_key(body.get('key'))
+        text = _memory_text(body.get('text'))
+    except BadBody as exc:
+        return _invalid(str(exc))
+    checkouts = _memory_checkouts(ctx, path)
+    if not isinstance(checkouts, list):
+        return checkouts
+
+    def argv(checkout):
+        return ['memory', 'edit', checkout, key, '--text', text, '--actor', 'ui', '--json']
+    return _memory_each(ctx, checkouts, argv)
+
+
 def _storage_compact(ctx):
     """POST `{run | all, dry_run?}`: `forge runs compact <run dir>|--all --logs --json [--dry-run]`."""
     ctx.route = 'compact'
@@ -1285,6 +1478,475 @@ def _task_answer(ctx):
     return ctx.locked(work)
 
 
+# ------------------------------------------------------- finding-record writes (#161)
+
+# One pattern for every write. `dispatch` full-matches, so this does not swallow GET …/findings.
+_FINDINGS_FIELDS = {
+    'fix': ('fps', 'commit', 'reason'),
+    'dismiss': ('fps', 'reason'),
+    'reopen': ('fps',),
+    'to-file': ('fps', 'title', 'body'),
+    'dup': ('fps', 'of'),
+    'tag': ('fps', 'tags', 'remove'),
+    'note': ('fps', 'text'),
+    'edit': ('fps', 'severity', 'text'),
+}
+_FINDINGS_PATH = re.compile(
+    r'/api/projects/([0-9a-f]{8})/findings/(' + '|'.join(_FINDINGS_FIELDS) + ')')
+_SINGLE_FINDING = frozenset(('dup', 'note', 'edit'))
+
+
+def _argv_text(value, name, limit):
+    """A string that will be one argv element: at most `limit` characters, no NUL, UTF-8."""
+    if not isinstance(value, str) or len(value) > limit:
+        raise BadBody(f'{name} must be a string of at most {limit} characters')
+    if '\x00' in value:
+        raise BadBody(f'{name} must not contain a NUL')
+    try:
+        value.encode('utf-8')
+    except UnicodeEncodeError:
+        raise BadBody(f'{name} must be valid text')
+    return value
+
+
+def _file_text(value, name, limit):
+    """A string written to a temp file. A NUL is fine here; it cannot be an argv element."""
+    if not isinstance(value, str) or len(value) > limit:
+        raise BadBody(f'{name} must be a string of at most {limit} characters')
+    try:
+        value.encode('utf-8')
+    except UnicodeEncodeError:
+        raise BadBody(f'{name} must be valid text')
+    return value
+
+
+def _optional_text(body, name, limit, loader):
+    if name not in body:
+        return None
+    return loader(body[name], name, limit)
+
+
+def _finding_fps(value, single):
+    limit = 1 if single else MAX_FINDING_FPS
+    if not isinstance(value, list) or not 1 <= len(value) <= limit:
+        if single:
+            raise BadBody('fps must be a list of exactly one fingerprint')
+        raise BadBody(f'fps must be a list of 1 to {MAX_FINDING_FPS} fingerprints')
+    for item in value:
+        if not isinstance(item, str) or not FP_RE.fullmatch(item):
+            raise BadBody('fps holds a value that is not a 12-hex fingerprint')
+    return list(dict.fromkeys(value))  # a repeated fingerprint is one finding
+
+
+def _finding_tags(value):
+    if not isinstance(value, list) or not 1 <= len(value) <= MAX_TAGS:
+        raise BadBody(f'tags must be a list of 1 to {MAX_TAGS} tags')
+    for item in value:
+        if not isinstance(item, str) or not _TAG_RE.fullmatch(item):
+            raise BadBody('a tag is a lowercase letter, then lowercase letters, digits or dashes, at most 24 characters')
+    return list(dict.fromkeys(value))
+
+
+def _append_option(argv, name, value):
+    """`--name value`. A value that starts with '-' is `--name=value`, so the CLI does not read it as a flag."""
+    if value.startswith('-'):
+        argv.append(f'--{name}={value}')
+    else:
+        argv.extend((f'--{name}', value))
+
+
+def _findings_request(op, body):
+    """`(fps, tokens, file)` for a validated body. BadBody otherwise.
+
+    `tokens` follow the fingerprints. `file` is `('--body-file'|'--text-file', text)` or None.
+    For `note`, `tokens` is the one positional text and `file` is None.
+    """
+    fps = _finding_fps(body.get('fps'), op in _SINGLE_FINDING)
+    tokens, file = [], None
+    if op == 'fix':
+        commit = body['commit'] if 'commit' in body else None
+        if commit is not None and (not isinstance(commit, str) or not _COMMIT_RE.fullmatch(commit)):
+            raise BadBody('commit must be 7 to 40 lowercase hex characters')
+        reason = _optional_text(body, 'reason', MAX_REASON, _argv_text)
+        if commit is None and reason is None:
+            raise BadBody('fix needs a commit or a reason')
+        if commit is not None:
+            tokens.extend(('--commit', commit))
+        if reason is not None:
+            _append_option(tokens, 'reason', reason)
+    elif op == 'dismiss':
+        if 'reason' not in body:
+            raise BadBody('reason is required')
+        _append_option(tokens, 'reason', _argv_text(body['reason'], 'reason', MAX_REASON))
+    elif op == 'to-file':
+        title = _optional_text(body, 'title', MAX_DRAFT_TITLE, _argv_text)
+        text = _optional_text(body, 'body', MAX_DRAFT_BODY, _file_text)
+        if title is not None:
+            _append_option(tokens, 'title', title)
+        if text is not None:
+            file = ('--body-file', text)
+    elif op == 'dup':
+        other = body.get('of')
+        if not isinstance(other, str) or not FP_RE.fullmatch(other):
+            raise BadBody('of must be a 12-hex fingerprint')
+        tokens.extend(('--of', other))
+    elif op == 'tag':
+        tags = _finding_tags(body.get('tags'))
+        remove = _flag(body, 'remove')
+        tokens.extend(('--', *tags, '--remove' if remove else '--add'))
+    elif op == 'note':
+        if 'text' not in body:
+            raise BadBody('text is required')
+        tokens.append(_argv_text(body['text'], 'text', MAX_NOTE))
+    elif op == 'edit':
+        severity = body['severity'] if 'severity' in body else None
+        if severity is not None and severity not in _FINDING_SEVERITIES:
+            raise BadBody('severity must be P0, P1, P2 or P3')
+        text = _optional_text(body, 'text', MAX_EDIT_TEXT, _file_text)
+        if severity is None and text is None:
+            raise BadBody('edit needs a severity or text')
+        if severity is not None:
+            tokens.extend(('--severity', severity))
+        if text is not None:
+            file = ('--text-file', text)
+    return fps, tokens, file
+
+
+def _note_argv(root, fp, text):
+    """`note REPO FP TEXT`. Text that starts with '-' sits after `--`, with the options in front of that."""
+    if text.startswith('-'):
+        return ['findings', 'note', '--actor', 'ui', '--json', root, fp, '--', text]
+    return ['findings', 'note', root, fp, text, '--actor', 'ui', '--json']
+
+
+def _write_payload(directory, flag, text):
+    """`[flag, path]` for `text` in `directory` (mode 0600). The caller creates and removes the directory."""
+    path = os.path.join(directory, 'payload')
+    handle = os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w', encoding='utf-8')
+    try:
+        handle.write(text)
+    finally:
+        handle.close()
+    return [flag, path]
+
+
+def _findings_action(ctx):
+    """POST `{fps, …}`: `forge findings <op> <project root> … --actor ui --json`.
+
+    The path's last segment is the op (fix, dismiss, reopen, to-file, dup, tag, note, edit).
+    A draft body and an edit's replacement text go to a private temp file (`--body-file`,
+    `--text-file`). `findings_lock` makes a second write 409 `busy`. Exit 3 is 409 with the CLI's
+    message. A successful call drops the project screen's issues listings and its run cache.
+    """
+    from forge_ui import projects
+    op = ctx.parts[0]
+    ctx.route = 'findings ' + op
+    try:
+        body = _body_object(ctx, _FINDINGS_FIELDS[op])
+        fps, tokens, file = _findings_request(op, body)
+    except BadBody as exc:
+        return _invalid(str(exc))
+    # the identity root when it exists, else a checkout still on disk (as the triage routes): a project whose main
+    # checkout was removed keeps a linked worktree the CLI can resolve the repository from
+    root = _triage_repo(ctx)
+    if not isinstance(root, str):
+        return root
+    lock = _server_lock(ctx.server, 'findings_lock')
+    if not lock.acquire(blocking=False):
+        return 409, {'error': 'busy'}
+    directory = None
+    try:
+        file_argv = []
+        if file is not None:
+            directory = tempfile.mkdtemp(prefix='forge-ui-findings-')
+            file_argv = _write_payload(directory, *file)
+        if op == 'note':
+            argv = _note_argv(root, fps[0], tokens[0])
+        else:
+            argv = ['findings', op, root, *fps, *tokens, *file_argv, '--actor', 'ui', '--json']
+        status, answer = ctx.call(*argv)
+        if status == 200:
+            invalidate_findings(ctx.server)
+        return status, answer
+    finally:
+        if directory is not None:
+            shutil.rmtree(directory, ignore_errors=True)
+        lock.release()
+
+
+# ------------------------------------------------------- triage routes and spec check (#161)
+
+_SPEC_RE = re.compile(r'^[A-Za-z0-9._:/@+-]+$')
+# A triage number. Nine digits is past the directory cap; a longer digit string is not an id.
+_TRIAGE_N = re.compile(r'^[0-9]{1,9}$')
+_PROPOSAL_ID = re.compile(r'^p[0-9]{1,4}$')
+_RESOLVED_KEY = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+_MAX_SPEC = 120
+_MAX_TRIAGE_FINDINGS = 2000
+# control.py is ui/forge_ui/control.py; the skill root is three directories up, as forge-control.py's
+# SKILL is two up from scripts/. Doctor is that script, never a model and never a shell string.
+_DISPATCH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))),
+                         'scripts', 'forge-dispatch.sh')
+
+
+def _triage_spec(value):
+    """A triage or doctor spec: 1 to 120 characters of the dispatch spec alphabet."""
+    if not isinstance(value, str) or not 1 <= len(value) <= _MAX_SPEC or not _SPEC_RE.fullmatch(value):
+        raise BadBody('spec must be 1 to 120 characters of letters, digits and . _ : / @ + -')
+    return value
+
+
+def _max_findings(body):
+    """None when the body omits it. JSON true is a bool, and a bool is an int, so the type is exact."""
+    if 'max_findings' not in body:
+        return None
+    value = body['max_findings']
+    if type(value) is not int or not 1 <= value <= _MAX_TRIAGE_FINDINGS:
+        raise BadBody(f'max_findings must be an integer from 1 to {_MAX_TRIAGE_FINDINGS}')
+    return value
+
+
+def _triage_n(value):
+    if not isinstance(value, str) or not _TRIAGE_N.fullmatch(value):
+        raise BadBody('n must be a decimal integer')
+    return value
+
+
+def _proposal_id(value):
+    if not isinstance(value, str) or not _PROPOSAL_ID.fullmatch(value):
+        raise BadBody('pid must match ^p[0-9]{1,4}$')
+    return value
+
+
+def _proposal_hash(value):
+    if not isinstance(value, str) or not FP_RE.fullmatch(value):
+        raise BadBody('hash must be 12 lowercase hex characters')
+    return value
+
+
+def _plan_dir(body):
+    """None when the field is absent. Present means an absolute path, whether or not it exists yet."""
+    if 'plan_dir' not in body:
+        return None
+    value = body['plan_dir']
+    if not isinstance(value, str) or not os.path.isabs(value) or not _no_control_chars(value):
+        raise BadBody('plan_dir must be an absolute path')
+    return value
+
+
+def _triage_target(ctx):
+    """`(n, pid)` from the path. BadBody when either segment is not the shape the CLI takes."""
+    n, pid = ctx.parts[:2]
+    return _triage_n(n), _proposal_id(pid)
+
+
+def _triage_repo(ctx):
+    """The project's identity root when that folder exists, else the first existing checkout.
+
+    `checkouts` lists the root first, then the other paths. A string is the repo to pass to the CLI.
+    A tuple is the error response: 404 `not found` for an unknown project, 404 `no checkout` when
+    the project has no directory left on this machine.
+    """
+    from forge_ui import projects
+    found = projects.screen(ctx.server).projects(ctx.server.catalog).get(ctx.key)
+    if not isinstance(found, dict):
+        return 404, {'error': 'not found'}
+    root = found.get('root')
+    if isinstance(root, str) and root and os.path.isdir(root):
+        return root
+    if not isinstance(root, str) or not isinstance(found.get('runs'), list):
+        return 404, {'error': 'no checkout'}
+    existing = [c['path'] for c in projects.checkouts(found) if c['exists']]
+    if not existing:
+        return 404, {'error': 'no checkout'}
+    return existing[0]
+
+
+def _triage_repo_or_response(ctx):
+    repo = _triage_repo(ctx)
+    return (None, repo) if isinstance(repo, str) else (repo, None)
+
+
+def _no_triage(body):
+    """True when triage-status refused because no triage has run (or this number does not exist)."""
+    if not isinstance(body, dict):
+        return False
+    parts = [str(body.get('detail') or '')]
+    result = body.get('result')
+    if isinstance(result, dict):
+        parts.append(str(result.get('error') or ''))
+    return 'no triage' in '\n'.join(parts).lower()
+
+
+def _findings_write(ctx, argv):
+    """One `forge findings` write under `findings_lock`. 409 `busy` when a write already holds it.
+
+    A 200 drops the project screen's findings cache, as a finding-record write does. A refusal
+    wrote nothing, so the cache stays.
+    """
+    lock = _server_lock(ctx.server, 'findings_lock')
+    if not lock.acquire(blocking=False):
+        return 409, {'error': 'busy'}
+    try:
+        status, answer = ctx.call(*argv)
+        if status == 200:
+            invalidate_findings(ctx.server)
+        return status, answer
+    finally:
+        lock.release()
+
+
+def _triage_start(ctx):
+    """POST `{spec, max_findings?}`: `forge findings triage <root> --spec S [--max-findings N]
+    --detach --actor ui --json`.
+
+    `--detach` makes the CLI print `{triage, state}` and return at once. Exit 3 is 409 with the
+    CLI's message. This is the one route whose CLI starts a model; the route itself does not.
+    """
+    ctx.route = 'triage'
+    try:
+        body = _body_object(ctx, ('spec', 'max_findings'))
+        spec = _triage_spec(body.get('spec'))
+        limit = _max_findings(body)
+    except BadBody as exc:
+        return _invalid(str(exc))
+    error, repo = _triage_repo_or_response(ctx)
+    if error:
+        return error
+    argv = ['findings', 'triage', repo]
+    _append_option(argv, 'spec', spec)
+    if limit is not None:
+        argv += ['--max-findings', str(limit)]
+    argv += ['--detach', '--actor', 'ui', '--json']
+    return ctx.call(*argv)
+
+
+def _triage_get(ctx):
+    """GET `[?n=N]`: `{state, proposals}` from `triage-status` and `proposals`, each time, uncached.
+
+    No triage yet (the status command exits 3 with that message) is 200 `{state: null, proposals: null}`.
+    A triage with no proposals yet leaves `proposals` null and still returns the state. A read: no lock.
+    """
+    ctx.route = 'triage'
+    try:
+        params = _query_params(ctx.query, ('n',))
+        n = _triage_n(params['n']) if 'n' in params else None
+    except BadBody as exc:
+        return _invalid(str(exc))
+    error, repo = _triage_repo_or_response(ctx)
+    if error:
+        return error
+    number = [n] if n else []
+    status, state = ctx.call('findings', 'triage-status', repo, *number, '--json')
+    if status != 200:
+        if status == 409 and _no_triage(state):
+            return 200, {'state': None, 'proposals': None}
+        return status, state
+    pstatus, proposals = ctx.call('findings', 'proposals', repo, *number, '--json')
+    if pstatus == 409:
+        proposals = None
+    elif pstatus != 200:
+        return pstatus, proposals
+    return 200, {'state': state, 'proposals': proposals}
+
+
+def _triage_apply(ctx):
+    """POST `{hash, plan_dir?}`: `forge findings apply <root> N PID --approve HASH [--plan-dir D]
+    --actor ui --json`. Exit 3 is 409 with the CLI's message."""
+    ctx.route = 'triage apply'
+    try:
+        n, pid = _triage_target(ctx)
+        body = _body_object(ctx, ('hash', 'plan_dir'))
+        digest = _proposal_hash(body.get('hash'))
+        plan_dir = _plan_dir(body)
+    except BadBody as exc:
+        return _invalid(str(exc))
+    error, repo = _triage_repo_or_response(ctx)
+    if error:
+        return error
+    argv = ['findings', 'apply', repo, n, pid, '--approve', digest]
+    if plan_dir is not None:
+        argv += ['--plan-dir', plan_dir]
+    argv += ['--actor', 'ui', '--json']
+    return _findings_write(ctx, argv)
+
+
+def _triage_reject(ctx):
+    """POST `{reason?}`: `forge findings reject <root> N PID [--reason T] --actor ui --json`.
+
+    The reason is at most 500 characters. Exit 3 is 409 with the CLI's message."""
+    ctx.route = 'triage reject'
+    try:
+        n, pid = _triage_target(ctx)
+        body = _body_object(ctx, ('reason',))
+        reason = _optional_reason(body.get('reason'))
+    except BadBody as exc:
+        return _invalid(str(exc))
+    error, repo = _triage_repo_or_response(ctx)
+    if error:
+        return error
+    argv = ['findings', 'reject', repo, n, pid]
+    if reason:
+        _append_option(argv, 'reason', reason)
+    argv += ['--actor', 'ui', '--json']
+    return _findings_write(ctx, argv)
+
+
+def _spec_query(raw):
+    """The query of GET /api/specs/check. A spec may contain `+`, which form decoding would turn into
+    a space, and a spec has no spaces, so a literal `+` here is a plus."""
+    return _query_params((raw or '').replace('+', '%2B'), ('spec',))
+
+
+def _resolved_pairs(text):
+    """The `key=value` lines of a doctor's stdout. The prose line after them is not one of them."""
+    resolved = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        if _RESOLVED_KEY.fullmatch(key.strip()):
+            resolved[key.strip()] = value.strip()
+    return resolved
+
+
+def _doctor_error(result):
+    """The refusal line. Doctor prints it on stderr (`forge: …`); stdout may hold a partial block."""
+    for text in (result.stderr, result.stdout):
+        for line in text.splitlines():
+            line = line.strip()
+            if line:
+                return line[:REFUSAL_MAX]
+    return f'the doctor exited {result.code}'
+
+
+def _specs_check(ctx):
+    """GET `?spec=S`: `{ok: true, resolved}` or `{ok: false, error}` from
+    `bash scripts/forge-dispatch.sh doctor --spec S --role side`.
+
+    The same argv forge-control's doctor uses, with the role `side`. An argv list, not a shell.
+    A spec that fails the same check as triage start is 400 and the doctor is not run. A doctor
+    refusal is 200 with `ok: false`: the check finished. Read-only servers answer this GET.
+    """
+    ctx.route = 'specs check'
+    try:
+        params = _spec_query(ctx.query)
+        if 'spec' not in params:
+            raise BadBody('spec is required')
+        spec = _triage_spec(params['spec'])
+    except BadBody as exc:
+        return _invalid(str(exc))
+    result = run_cli(['bash', _DISPATCH, 'doctor', '--spec', spec, '--role', 'side'], ctx.timeout or TIMEOUT_S)
+    if result.timed_out:
+        return 504, {'error': 'timeout', 'detail': TIMEOUT_DETAIL}
+    if result.error:
+        return 502, {'error': 'bad gateway', 'detail': result.error[:DETAIL_MAX]}
+    if result.code == 0:
+        return 200, {'ok': True, 'resolved': _resolved_pairs(result.stdout)}
+    return 200, {'ok': False, 'error': _doctor_error(result)}
+
+
 ROUTES = [
     ('GET', re.compile(r'/api/runs/([0-9a-f]{12})/controls'), _show),
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/controls'), _change),
@@ -1301,6 +1963,11 @@ ROUTES = [
     ('POST', re.compile(r'/api/worktrees/remove()'), _worktrees_remove),
     ('POST', re.compile(r'/api/storage/compact()'), _storage_compact),
     ('POST', re.compile(r'/api/projects/([0-9a-f]{8})/memories/forget'), _memories_forget),
+    ('POST', re.compile(r'/api/projects/([0-9a-f]{8})/memories/add'), _memories_add),
+    ('POST', re.compile(r'/api/projects/([0-9a-f]{8})/memories/edit'), _memories_edit),
+    ('POST', re.compile(r'/api/projects/([0-9a-f]{8})/triage/([^/]+)/([^/]+)/apply'), _triage_apply),
+    ('POST', re.compile(r'/api/projects/([0-9a-f]{8})/triage/([^/]+)/([^/]+)/reject'), _triage_reject),
+    ('POST', re.compile(r'/api/projects/([0-9a-f]{8})/triage'), _triage_start),
     ('GET', re.compile(r'/api/config/profiles()'), _config_profiles_get),
     ('POST', re.compile(r'/api/config/profiles()'), _config_profiles_set),
     ('GET', re.compile(r'/api/config()'), _config_get),
@@ -1310,8 +1977,11 @@ ROUTES = [
     ('GET', re.compile(r'/api/storage()'), _storage),
     ('GET', re.compile(r'/api/projects()'), _projects),
     ('GET', re.compile(r'/api/projects/([0-9a-f]{8})'), _project),
+    ('POST', _FINDINGS_PATH, _findings_action),
     ('GET', re.compile(r'/api/projects/([0-9a-f]{8})/findings'), _project_findings),
     ('GET', re.compile(r'/api/projects/([0-9a-f]{8})/memories'), _project_memories),
+    ('GET', re.compile(r'/api/projects/([0-9a-f]{8})/triage'), _triage_get),
+    ('GET', re.compile(r'/api/specs/check()'), _specs_check),
 ]
 
 

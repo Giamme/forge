@@ -123,6 +123,9 @@ For explanation requests, explain the workflow without spending model quota.
   - CONFIRMED findings the threshold tolerated, from a PASS or a FAIL (`tasks/<id>/known_issues.md`);
   - PLAUSIBLE findings in a passed task's `qa.last`;
   - whatever a whole-run review left open.
+  - Triage (`forge findings triage REPO --spec S`) needs a model the user names, never one you choose. Offer it, never start it unprompted. Relay its proposals, and run `forge findings apply` only on the user's explicit word for each one.
+
+  `forge findings` holds what happened to each finding (fixed, dismissed, duplicate, to file), and a finding marked `to-file` is offered with the others.
 
   When there are any, act on the user's `--file-issues` choice with one filer:
   - **gh-proman**, only when it is installed and set up for the repository: `gh-proman -C <repo> config show` exits 0. It also puts the issues on the team's board with a priority. Run `gh-proman findings --from <plan or run dir> --include-plausible --json`, then follow the gh-proman skill's review-findings steps.

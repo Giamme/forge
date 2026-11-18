@@ -1,0 +1,675 @@
+#!/usr/bin/env python3
+"""Every review finding of a repository, and what happened to it.
+
+  show REPO [--status S] [--online]
+  fix REPO FP… [--commit SHA] [--reason TEXT]
+  dismiss REPO FP… --reason TEXT
+  reopen REPO FP…
+  to-file REPO FP… [--title T] [--body-file F]
+  dup REPO FP --of FP
+  tag REPO FP… -- TAG… (--add | --remove)
+  note REPO FP TEXT
+  edit REPO FP [--severity Pn] [--text-file F]
+  triage REPO --spec S [--timeout N] [--max-findings N] [--detach]
+  triage-status REPO [N]
+  proposals REPO [N]
+  apply REPO N PID --approve HASH [--plan-dir DIR]
+  reject REPO N PID [--reason TEXT]
+
+REPO is a checkout, a linked worktree, or a plan or solo run dir. FP is the
+12-hex fingerprint `show` prints. `--actor` is cli (the default), ui or triage.
+Exit 0 ok, 2 usage, 3 refused, 1 error.
+"""
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+SCRIPTS = Path(__file__).resolve().parent
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+import forge_identity  # noqa: E402
+from forge_findings import apply as approval, status, store, tags, triage  # noqa: E402
+
+ACTORS = ("cli", "ui", "triage")
+FP_RE = re.compile(r"[0-9a-f]{12}\Z")
+SEVERITIES = ("P0", "P1", "P2", "P3")
+
+COMMANDS = {}
+
+
+class Usage(Exception):
+    """Exit 2. The command line is not usable. Nothing was written."""
+
+
+class Refused(Exception):
+    """Exit 3. The record refuses the change. Nothing was written."""
+
+
+class Failed(Exception):
+    """Exit 1. The command could not be carried out."""
+
+
+def command(name):
+    def wrap(fn):
+        COMMANDS[name] = fn
+        return fn
+    return wrap
+
+
+_issues = None
+
+
+def issues():
+    """forge-issues.py, loaded by path: its file name is not importable."""
+    global _issues
+    if _issues is None:
+        spec = importlib.util.spec_from_file_location("forge_issues", SCRIPTS / "forge-issues.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _issues = module
+    return _issues
+
+
+def _common():
+    parent = argparse.ArgumentParser(add_help=False)
+    parent.add_argument("--actor", choices=ACTORS, default="cli",
+                        help="who is recording this: cli (default), ui or triage")
+    parent.add_argument("--json", action="store_true", help="machine-readable output")
+    return parent
+
+
+class _Parser(argparse.ArgumentParser):
+    """Choice errors omit commands whose names start with `_`. The command itself still runs."""
+
+    def _check_value(self, action, value):
+        if action.choices is not None and value not in action.choices:
+            shown = [choice for choice in action.choices if not str(choice).startswith("_")]
+            message = "invalid choice: %(value)r (choose from %(choices)s)" % {
+                "value": value,
+                "choices": ", ".join(map(repr, shown)),
+            }
+            raise argparse.ArgumentError(action, message)
+
+
+def build_parser():
+    """The command line. Each subcommand takes --actor and --json; handlers live in COMMANDS."""
+    common = _common()
+    parser = _Parser(prog="forge findings", description=__doc__,
+                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    show = sub.add_parser("show", parents=[common], help="every finding, with its state")
+    show.add_argument("repo", help="checkout, linked worktree, plan dir or solo run dir")
+    show.add_argument("--status", action="append", default=None, metavar="S",
+                      help="keep this status; repeatable; open means open and to-file")
+    show.add_argument("--online", action="store_true", help="ask GitHub which findings are already filed")
+
+    fix = sub.add_parser("fix", parents=[common], help="mark findings fixed")
+    fix.add_argument("repo")
+    fix.add_argument("fp", nargs="+", metavar="FP")
+    fix.add_argument("--commit", help="7 to 40 lowercase hex characters")
+    fix.add_argument("--reason", help="at most 500 characters")
+
+    dismiss = sub.add_parser("dismiss", parents=[common], help="mark findings as needing no work")
+    dismiss.add_argument("repo")
+    dismiss.add_argument("fp", nargs="+", metavar="FP")
+    dismiss.add_argument("--reason", required=True, help="why, at most 500 characters")
+
+    reopen = sub.add_parser("reopen", parents=[common], help="mark findings open again")
+    reopen.add_argument("repo")
+    reopen.add_argument("fp", nargs="+", metavar="FP")
+
+    to_file = sub.add_parser("to-file", parents=[common], help="keep a draft issue for findings")
+    to_file.add_argument("repo")
+    to_file.add_argument("fp", nargs="+", metavar="FP")
+    to_file.add_argument("--title", help="issue title, at most 200 characters")
+    to_file.add_argument("--body-file", metavar="F", help="read the issue body from this file")
+
+    dup = sub.add_parser("dup", parents=[common], help="mark a finding a duplicate of another")
+    dup.add_argument("repo")
+    dup.add_argument("fp", metavar="FP")
+    dup.add_argument("--of", required=True, metavar="FP", help="the finding this one repeats")
+
+    tag = sub.add_parser("tag", parents=[common],
+                         help="add or remove tags (-- separates fingerprints from tags)")
+    tag.add_argument("repo")
+    tag.add_argument("rest", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
+
+    note = sub.add_parser("note", parents=[common], help="set a finding's note; empty text clears it")
+    note.add_argument("repo")
+    note.add_argument("fp", metavar="FP")
+    note.add_argument("text", help="the note, or empty to clear it")
+
+    edit = sub.add_parser("edit", parents=[common], help="edit a finding's severity or text")
+    edit.add_argument("repo")
+    edit.add_argument("fp", metavar="FP")
+    edit.add_argument("--severity", choices=SEVERITIES, help="P0, P1, P2 or P3")
+    edit.add_argument("--text-file", metavar="F", help="read the replacement text from this file")
+
+    run = sub.add_parser("triage", parents=[common],
+                         help="have a read-only model propose duplicates, fixes, tags, issues and plans")
+    run.add_argument("repo")
+    run.add_argument("--spec", required=True, metavar="S", help="the model, as forge --dwarf names one")
+    run.add_argument("--timeout", type=int, default=triage.DEFAULT_TIMEOUT, metavar="N",
+                     help=f"seconds the model may take (default {triage.DEFAULT_TIMEOUT})")
+    run.add_argument("--max-findings", type=int, default=triage.DEFAULT_MAX_FINDINGS, metavar="N",
+                     help=f"1 to {triage.MAX_FINDINGS_LIMIT}, default {triage.DEFAULT_MAX_FINDINGS}")
+    run.add_argument("--detach", action="store_true", help="return at once; the triage goes on in its own session")
+
+    # No help= keeps it out of the command list; help=SUPPRESS would print "==SUPPRESS==" there.
+    job = sub.add_parser("_triage-job", parents=[common])
+    job.add_argument("repo")
+    job.add_argument("n", type=int)
+    job.add_argument("--timeout", type=int, default=triage.DEFAULT_TIMEOUT)
+
+    state = sub.add_parser("triage-status", parents=[common], help="the state of a triage (the newest by default)")
+    state.add_argument("repo")
+    state.add_argument("n", nargs="?", type=int, metavar="N")
+
+    proposals = sub.add_parser("proposals", parents=[common], help="what a triage proposed (the newest by default)")
+    proposals.add_argument("repo")
+    proposals.add_argument("n", nargs="?", type=int, metavar="N")
+    approve = sub.add_parser("apply", parents=[common], help="approve one proposal of a triage, by its hash")
+    approve.add_argument("repo")
+    approve.add_argument("n", type=int, metavar="N", help="the triage number")
+    approve.add_argument("pid", metavar="PID", help="the proposal id, e.g. p3")
+    approve.add_argument("--approve", required=True, metavar="HASH", help="the hash `proposals` shows for it")
+    approve.add_argument("--plan-dir", metavar="DIR", help="for a plan proposal: where to write the plan dir")
+
+    refuse = sub.add_parser("reject", parents=[common], help="reject one proposal of a triage")
+    refuse.add_argument("repo")
+    refuse.add_argument("n", type=int, metavar="N", help="the triage number")
+    refuse.add_argument("pid", metavar="PID", help="the proposal id, e.g. p3")
+    refuse.add_argument("--reason", help="why, at most 500 characters")
+    # metavar is the usage line. _Parser leaves the same internal name out of an invalid-choice error.
+    sub.metavar = "{" + ",".join(name for name in sub.choices if not name.startswith("_")) + "}"
+    return parser
+
+
+def require_ident(path):
+    ident = forge_identity.identity(path)
+    if ident is None:
+        raise Usage(f"{path}: not a repository or run dir")
+    return ident
+
+
+def fingerprints(values):
+    """The fingerprints of one command, in order, each once. A bad one refuses the whole command."""
+    found = []
+    for fp in values:
+        if not isinstance(fp, str) or FP_RE.fullmatch(fp) is None:
+            raise Refused(f"{fp!r} is not a 12-character fingerprint")
+        if fp not in found:
+            found.append(fp)
+    if not found:
+        raise Usage("at least one fingerprint")
+    return found
+
+
+def read_payload(path, label, limit):
+    """The text of a file. `-` and an empty path are not files. Longer than `limit` is refused."""
+    if path == "-" or path == "":
+        shown = "'-'" if path == "-" else "''"
+        raise Usage(f"{label}: {shown} is not accepted; pass a file")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = handle.read(limit + 1)
+    except UnicodeDecodeError as exc:
+        raise Failed(f"{label}: {path}: {exc}") from exc
+    except OSError as exc:
+        raise Failed(f"{label}: {path}: {exc.strerror or exc}") from exc
+    if len(data) > limit:
+        raise Refused(f"{label} must be at most {limit} characters")
+    return data
+
+
+def call_store(fn):
+    try:
+        return fn()
+    except store.Invalid as exc:
+        raise Refused(str(exc)) from exc
+    except store.Busy as exc:
+        raise Refused(str(exc)) from exc
+    except store.Corrupt as exc:
+        raise Failed(str(exc)) from exc
+
+
+def emit(args, fps, changed):
+    changed_fps = {fp for fp, _before, _after in changed}
+    unchanged = [fp for fp in fps if fp not in changed_fps]
+    if args.json:
+        print(json.dumps({
+            "ok": True,
+            "op": args.command,
+            "changed": [{"fp": fp, "before": before, "after": after} for fp, before, after in changed],
+            "unchanged": unchanged,
+        }, indent=2, ensure_ascii=False))
+    else:
+        print(f"{args.command}: {len(changed)} changed, {len(unchanged)} unchanged")
+    return 0
+
+
+def apply(args, fps, fn):
+    """One store call for the whole command. `fn(ident, fps, actor)` returns the store's changed list."""
+    ident = require_ident(args.repo)
+    fps = fingerprints(fps)
+    return emit(args, fps, call_store(lambda: fn(ident, fps, args.actor)))
+
+
+def _wanted(names):
+    """Statuses `--status` keeps. `open` is every status that still needs work."""
+    if not names:
+        return None
+    chosen = set()
+    for name in names:
+        if name == "open":
+            chosen.update(status.OPEN)
+        else:
+            chosen.add(name)
+    return chosen
+
+
+def _recency(row):
+    plan_dir = row.get("plan_dir")
+    if isinstance(plan_dir, str) and plan_dir:
+        try:
+            return os.stat(plan_dir).st_mtime
+        except OSError:
+            return 0.0
+    return 0.0
+
+
+def _severity_rank(value):
+    try:
+        return SEVERITIES.index(value)
+    except ValueError:
+        return len(SEVERITIES)
+
+
+def _place(row, line=None):
+    file = row.get("file") if isinstance(row.get("file"), str) else ""
+    if line is None:
+        line = row.get("line")
+    if file and isinstance(line, int) and not isinstance(line, bool):
+        return f"{file}:{line}"
+    return file or "-"
+
+
+def _show_line(row, line=None):
+    found = [tag for tag in (row.get("tags") or []) if isinstance(tag, str)]
+    summary = " ".join(str(row.get("summary") or "").split())
+    return (f"{row.get('fp')}  {row.get('status')}  {row.get('severity') or '-'}  "
+            f"{','.join(found) if found else '-'}  {_place(row, line)}  {summary}")
+
+
+def _rows(listed, records):
+    rows = []
+    seen = set()
+    for entry in listed.get("findings") or []:
+        if not isinstance(entry, dict):
+            continue
+        fp = entry.get("fp")
+        if fp in seen:
+            continue
+        seen.add(fp)
+        record = records.get(fp)
+        row = dict(entry)
+        row["record"] = record
+        row["tags"] = tags.tags_for(record, entry.get("file"))
+        row["status"] = status.effective(record, entry, None)
+        rows.append(row)
+    rows.sort(key=lambda row: (_severity_rank(row.get("severity")), -_recency(row)))
+    return rows
+
+
+def _collect(repo, ident, online=False):
+    """`(listed, rows, lines)`. `lines` maps a fingerprint to the source line.
+
+    `finding_entry` does not keep `line`. Remember it here, and do not put it on the entry:
+    the issues listing's keys, and the rows a triage stores, stay as they are.
+    """
+    records = call_store(lambda: store.load(ident))
+    module = issues()
+    original = module.finding_entry
+    lines = {}
+
+    def finding_entry(f, *args, **kwargs):
+        entry = original(f, *args, **kwargs)
+        if isinstance(f, dict) and isinstance(entry, dict):
+            line = f.get("line")
+            fp = entry.get("fp")
+            if isinstance(fp, str) and isinstance(line, int) and not isinstance(line, bool):
+                lines[fp] = line
+        return entry
+
+    module.finding_entry = finding_entry
+    try:
+        listed = module.listing(repo, online=online)
+    except module.Busy as exc:
+        raise Refused(str(exc)) from exc
+    except module.Fail as exc:
+        raise Failed(str(exc)) from exc
+    finally:
+        module.finding_entry = original
+    return listed, _rows(listed, records), lines
+
+
+def collect(repo, ident, online=False):
+    """`(listed, rows)`: the issues listing of a repository and one row per finding, with its record."""
+    listed, rows, _lines = _collect(repo, ident, online=online)
+    return listed, rows
+
+
+@command("show")
+def cmd_show(args):
+    ident = require_ident(args.repo)
+    listed, rows, lines = _collect(args.repo, ident, online=bool(args.online))
+    chosen = _wanted(args.status)
+    if chosen is not None:
+        rows = [row for row in rows if row.get("status") in chosen]
+    if args.json:
+        print(json.dumps({
+            "repo": listed.get("repo") or "",
+            "root": ident.get("root"),
+            "key": ident.get("key"),
+            "findings": rows,
+            "notes": list(listed.get("notes") or []),
+            "warnings": list(listed.get("warnings") or []),
+        }, indent=2, ensure_ascii=False))
+    else:
+        for row in rows:
+            print(_show_line(row, lines.get(row.get("fp"))))
+    return 0
+
+
+@command("fix")
+def cmd_fix(args):
+    if args.commit is None and args.reason is None:
+        raise Refused("fixed needs a commit and/or a reason")
+    fields = {}
+    if args.commit is not None:
+        fields["commit"] = args.commit
+    if args.reason is not None:
+        fields["reason"] = args.reason
+    return apply(args, args.fp, lambda ident, fps, actor: store.set_status(ident, fps, "fixed", actor, **fields))
+
+
+@command("dismiss")
+def cmd_dismiss(args):
+    return apply(args, args.fp,
+                 lambda ident, fps, actor: store.set_status(ident, fps, "dismissed", actor, reason=args.reason))
+
+
+@command("reopen")
+def cmd_reopen(args):
+    return apply(args, args.fp, lambda ident, fps, actor: store.set_status(ident, fps, "open", actor))
+
+
+@command("to-file")
+def cmd_to_file(args):
+    kwargs = {"status": "to-file"}
+    if args.title is not None or args.body_file is not None:
+        body = read_payload(args.body_file, "--body-file", store.MAX_BODY) if args.body_file is not None else ""
+        kwargs["draft"] = {"title": args.title or "", "body": body}
+    return apply(args, args.fp, lambda ident, fps, actor: store.update(ident, fps, actor, **kwargs))
+
+
+@command("dup")
+def cmd_dup(args):
+    fps = fingerprints([args.fp])
+    of = fingerprints([args.of])[0]
+    if fps[0] == of:
+        raise Refused(f"{fps[0]}: a finding cannot be a duplicate of itself")
+    return apply(args, fps, lambda ident, found, actor: store.mark_duplicate(ident, found[0], of, actor))
+
+
+def _take_common(args, tokens):
+    """`--json` and `--actor` inside a remainder, which argparse does not parse."""
+    kept = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--json":
+            args.json = True
+            index += 1
+            continue
+        if token == "--actor" or token.startswith("--actor="):
+            if token == "--actor":
+                if index + 1 >= len(tokens):
+                    raise Usage("--actor needs one of cli, ui, triage")
+                value = tokens[index + 1]
+                index += 2
+            else:
+                value = token.split("=", 1)[1]
+                index += 1
+            if value not in ACTORS:
+                raise Usage(f"--actor must be one of {', '.join(ACTORS)}")
+            args.actor = value
+            continue
+        kept.append(token)
+        index += 1
+    return kept
+
+
+def _parse_tag(tokens):
+    """(fps, tags, 'add'|'remove'). `--` separates fingerprints from tags; tags may follow the flag."""
+    modes = [token for token in tokens if token in ("--add", "--remove")]
+    if not modes:
+        raise Usage("tag needs --add or --remove")
+    if len(modes) != 1:
+        raise Usage("tag takes one of --add or --remove")
+    mode = modes[0][2:]
+    if "--" in tokens:
+        dash = tokens.index("--")
+        before, after = tokens[:dash], tokens[dash + 1:]
+        fps = [token for token in before if token != modes[0]]
+        found = [token for token in after if token != modes[0]]
+    else:
+        flag = tokens.index(modes[0])
+        fps, found = tokens[:flag], tokens[flag + 1:]
+    for token in fps + found:
+        if token.startswith("-"):
+            raise Usage(f"tag: unknown option {token}")
+    if not fps:
+        raise Usage("tag needs a fingerprint")
+    if not found:
+        raise Usage("tag needs a tag")
+    return fps, found, mode
+
+
+@command("tag")
+def cmd_tag(args):
+    fps, found, mode = _parse_tag(_take_common(args, list(args.rest or [])))
+    if mode == "add":
+        return apply(args, fps, lambda ident, items, actor: store.add_tags(ident, items, found, actor))
+    return apply(args, fps, lambda ident, items, actor: store.remove_tags(ident, items, found, actor))
+
+
+@command("note")
+def cmd_note(args):
+    return apply(args, [args.fp], lambda ident, fps, actor: store.set_note(ident, fps[0], args.text, actor))
+
+
+@command("edit")
+def cmd_edit(args):
+    if args.severity is None and args.text_file is None:
+        raise Usage("edit needs --severity or --text-file")
+    text = read_payload(args.text_file, "--text-file", store.MAX_EDIT_TEXT) if args.text_file is not None else None
+    severity = args.severity
+    return apply(args, [args.fp],
+                 lambda ident, fps, actor: store.set_edit(ident, fps[0], actor, severity=severity, text=text))
+
+
+def _checkout(ident):
+    checkout = ident.get("checkout")
+    return checkout if isinstance(checkout, str) else ""
+
+
+def _triage_call(fn):
+    try:
+        return fn()
+    except triage.Refused as exc:
+        raise Refused(str(exc)) from exc
+    except triage.Failed as exc:
+        raise Failed(str(exc)) from exc
+
+
+def _job_argv(args, n):
+    """The hidden job's command line: this script again, as a process of its own."""
+    return [sys.executable, str(Path(__file__).resolve()), "_triage-job", os.path.abspath(args.repo), str(n),
+            "--timeout", str(args.timeout)]
+
+
+@command("triage")
+def cmd_triage(args):
+    if args.timeout < 0:
+        raise Usage("--timeout must not be negative")
+    if not 1 <= args.max_findings <= triage.MAX_FINDINGS_LIMIT:
+        raise Usage(f"--max-findings must be 1 to {triage.MAX_FINDINGS_LIMIT}")
+    ident = require_ident(args.repo)
+    checkout = _checkout(ident)
+    _listed, rows = collect(args.repo, ident)
+    n, dest = _triage_call(lambda: triage.start(
+        ident, rows, args.spec, checkout, max_findings=args.max_findings, actor=args.actor))
+    if args.detach:
+        triage.detach(dest, _job_argv(args, n))
+        out = {"triage": n, "state": "running"}
+    else:
+        final = triage.run_job(dest, checkout, n, timeout=args.timeout)
+        triage.write_done(dest, 0 if final.get("state") == "done" else 1)
+        out = {"triage": n, **{k: final[k] for k in ("state", "reason", "proposals") if k in final}}
+    if args.json:
+        print(json.dumps(out, ensure_ascii=False))
+    else:
+        extra = out.get("reason") or (f"{out['proposals']} proposals" if "proposals" in out else "")
+        print(f"triage {n}: {out['state']}" + (f" ({extra})" if extra else ""))
+    return 1 if out["state"] == "failed" else 0
+
+
+@command("_triage-job")
+def cmd_triage_job(args):
+    ident = require_ident(args.repo)
+    found = triage.triage_dir(ident["key"], args.n)
+    if found is None:
+        raise Refused(f"no triage {args.n}")
+    final = triage.run_job(found[1], _checkout(ident), args.n, timeout=args.timeout)
+    return 0 if final.get("state") == "done" else 1
+
+
+def _find_triage(args):
+    """`(n, dir)` of the triage asked for, or the newest. Refused when there is none."""
+    ident = require_ident(args.repo)
+    found = triage.triage_dir(ident["key"], args.n)
+    if found is None:
+        raise Refused(f"no triage {args.n}" if args.n is not None else "no triage has run for this repository")
+    return found
+
+
+@command("triage-status")
+def cmd_triage_status(args):
+    n, dest = _find_triage(args)
+    state = triage.read_state(dest)
+    if state is None:
+        raise Refused(f"triage {n} has no state")
+    if args.json:
+        print(json.dumps({"triage": n, "dir": str(dest), **state}, indent=2, ensure_ascii=False))
+    else:
+        extra = state.get("reason") or (f"{state['proposals']} proposals" if "proposals" in state else "")
+        print(f"triage {n}: {state.get('state')}" + (f" ({extra})" if extra else "")
+              + f"  {state.get('findings', 0)} findings  {state.get('spec', '-')}")
+    return 0
+
+
+def _proposal_line(item):
+    kind = item.get("kind")
+    if kind in ("duplicate", "fixed"):
+        target = f"{item.get('fp')}" + (f" of {item.get('of')}" if kind == "duplicate" else "")
+    else:
+        target = ",".join(item.get("fps") or [])
+    label = " ".join(str(item.get("title") or "").split())
+    if kind == "tag":
+        label = ",".join(item.get("tags") or [])
+    return f"{item.get('id')}  {item.get('hash')}  {item.get('state')}  {kind}  {target}" + (f"  {label}" if label else "")
+
+
+@command("proposals")
+def cmd_proposals(args):
+    n, dest = _find_triage(args)
+    data = triage.read_json(dest / "proposals.json")
+    if not isinstance(data, dict) or not isinstance(data.get("proposals"), list):
+        state = triage.read_state(dest) or {}
+        raise Refused(f"triage {n} has no proposals ({state.get('state', 'no state')})")
+    if args.json:
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+    else:
+        for item in data["proposals"]:
+            print(_proposal_line(item))
+    return 0
+
+
+def _approval_call(fn):
+    try:
+        return fn()
+    except approval.Refused as exc:
+        raise Refused(str(exc)) from exc
+    except approval.Failed as exc:
+        raise Failed(str(exc)) from exc
+
+
+def _decision(args, result, verb):
+    if args.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
+    print(f"{verb} {result['proposal'].get('id')}: {len(result['changed'])} changed")
+    if result.get("plan_dir"):
+        print(f"plan dir: {result['plan_dir']}")
+        print(f"next: {result['next']}")
+    return 0
+
+
+@command("apply")
+def cmd_apply(args):
+    ident = require_ident(args.repo)
+    result = _approval_call(lambda: approval.apply(
+        ident, args.n, args.pid, args.approve, lambda: collect(args.repo, ident)[1],
+        actor=args.actor, plan_dir=args.plan_dir))
+    return _decision(args, result, "applied")
+
+
+@command("reject")
+def cmd_reject(args):
+    ident = require_ident(args.repo)
+    result = _approval_call(lambda: approval.reject(ident, args.n, args.pid, actor=args.actor, reason=args.reason))
+    return _decision(args, result, "rejected")
+
+
+def report(exc, code, args):
+    message = " ".join(str(exc).split())
+    print(f"forge findings: {message}", file=sys.stderr)
+    if getattr(args, "json", False):
+        print(json.dumps({"ok": False, "error": message}, ensure_ascii=False))
+    return code
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return COMMANDS[args.command](args)
+    except Usage as exc:
+        return report(exc, 2, args)
+    except Refused as exc:
+        return report(exc, 3, args)
+    except Failed as exc:
+        return report(exc, 1, args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

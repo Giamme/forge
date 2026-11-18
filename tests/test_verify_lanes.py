@@ -376,7 +376,7 @@ class InterruptTests(VerifyLanesCase):
 
     def test_sigterm_is_honoured_while_a_lane_floods_its_log(self):
         self.lane('flood', 'yes xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
-                           ' | head -c 300000000')
+                           ' | head -c 3000000000')   # far more than gets written: SIGTERM ends it
         self.lane('quick', 'sleep 0.2')
         proc = subprocess.Popen(self.run_args('--parallel', '2'), stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True)
@@ -386,7 +386,12 @@ class InterruptTests(VerifyLanesCase):
         while not log.exists() or log.stat().st_size < 200_000_000:
             self.assertLess(time.monotonic(), deadline, 'the flood never got going')
             time.sleep(0.05)
-        self.assertEqual(self.lane_doc('quick')['state'], 'pass')  # reaped while the flood runs
+        # The quick lane is reaped while the flood runs. Wait for it rather than assume it is done
+        # by the time the log passes 200 MB: on a loaded machine its 0.2s sleep can end later.
+        while self.lane_doc('quick')['state'] != 'pass':
+            self.assertLess(time.monotonic(), deadline, 'the quick lane was never reaped')
+            time.sleep(0.05)
+        self.assertEqual(self.lane_doc('flood')['state'], 'running')
         proc.send_signal(signal.SIGTERM)
         proc.communicate(timeout=5)
         self.assertEqual(proc.returncode, 130)
