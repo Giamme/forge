@@ -57,7 +57,8 @@ bash tests/check.sh
 
 This syntax-checks every shell script, runs the forge suite and the forge-ui suite with every
 test class in a process of its own, several at a time, and, when `node` is available,
-`node --check`s the forge-ui scripts. The full run takes 10 to 15 minutes.
+`node --check`s the forge-ui scripts. The full run takes about 40 minutes on 4 CPU cores, and less
+with more (it runs up to 8 test classes at once).
 
 While you work, run only what you touched:
 
@@ -77,14 +78,14 @@ along with the fake model CLIs and the `SCENARIO` file that steers them.
 ### Platforms
 
 forge supports **macOS and Linux**. macOS ships Bash 3.2, so a change can pass on Linux and
-still break there. Run the suite on both if you can. If you can only run it on one, say so in
-the pull request and the maintainer will run the other before merging.
+still break there.
 
-**There is no CI on pull requests yet.** Running the suite on every pull request is tracked in
-[#165](https://github.com/Giamme/forge/issues/165) (macOS and Linux) and
-[#166](https://github.com/Giamme/forge/issues/166) (Windows, inside MSYS2). Until those land,
-the pull request template asks which platforms you ran the suite on, and the maintainer runs
-the rest by hand.
+CI ([`.github/workflows/test.yml`](.github/workflows/test.yml)) runs `bash tests/check.sh` on
+every pull request, on Linux with Python 3.9, and its **Tests passed** check has to pass before
+merging. To keep pull requests quick, macOS and Linux with the latest Python 3 run only after a
+merge to `main`. So if your change touches shell scripts, run the suite on macOS too if you can,
+and say in the pull request if you couldn't. A pull request that only changes documentation
+skips the tests. Windows is not covered yet ([#166](https://github.com/Giamme/forge/issues/166)).
 
 ## Rules the code follows
 
