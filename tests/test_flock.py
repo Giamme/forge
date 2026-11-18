@@ -39,7 +39,8 @@ class ForgeFlockTests(unittest.TestCase):
             os.close(fd)
 
     def test_ordinary_reader_is_not_blocked_while_lock_is_held(self):
-        self.lock_path.write_text('payload\n', encoding='utf-8', newline='\n')
+        with open(self.lock_path, 'w', encoding='utf-8', newline='\n') as handle:
+            handle.write('payload\n')
         fd = os.open(self.lock_path, os.O_RDWR)
         try:
             forge_flock.flock(fd, forge_flock.LOCK_EX | forge_flock.LOCK_NB)
