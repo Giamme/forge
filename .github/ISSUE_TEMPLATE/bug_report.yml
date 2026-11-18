@@ -40,7 +40,7 @@ body:
       options:
         - macOS
         - Linux
-        - Windows (MSYS2)
+        - Windows
         - Other
     validations:
       required: true

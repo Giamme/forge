@@ -11,10 +11,9 @@ Closes #
 <!-- Tests you added or changed, and anything you checked by hand. -->
 
 CI runs `bash tests/check.sh` on Linux for this pull request. macOS only runs after the merge,
-so tick the platforms you ran the suite on yourself.
+so tick this if you ran the suite there yourself.
 
 - [ ] macOS
-- [ ] Windows (MSYS2)
 
 ## Checklist
 
