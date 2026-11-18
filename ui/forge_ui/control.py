@@ -24,9 +24,14 @@ import time
 import urllib.parse
 
 _SCRIPTS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'scripts')
-if _SCRIPTS not in sys.path:
+_inserted = _SCRIPTS not in sys.path
+if _inserted:
     sys.path.insert(0, _SCRIPTS)
-import forge_proc  # noqa: E402
+try:
+    import forge_proc  # noqa: E402
+finally:
+    if _inserted and _SCRIPTS in sys.path:
+        sys.path.remove(_SCRIPTS)
 
 
 TIMEOUT_S = 60       # one CLI call; a test sets a shorter one

@@ -15,10 +15,15 @@ import time
 import urllib.parse
 
 _SCRIPTS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'scripts')
-if _SCRIPTS not in sys.path:
+_inserted = _SCRIPTS not in sys.path
+if _inserted:
     sys.path.insert(0, _SCRIPTS)
-import forge_posix  # noqa: E402
-import forge_proc  # noqa: E402
+try:
+    import forge_posix  # noqa: E402
+    import forge_proc  # noqa: E402
+finally:
+    if _inserted and _SCRIPTS in sys.path:
+        sys.path.remove(_SCRIPTS)
 
 from forge_ui import checks, diffs, executions, findings, fractal, groups, links, repos, transcripts
 from forge_ui.findings import verdict as _verdict

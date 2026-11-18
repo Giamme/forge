@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
@@ -66,7 +67,12 @@ class ForgeProcTests(unittest.TestCase):
         with forge_proc.mask_sigterm():
             called = True
         self.assertTrue(called)
-        forge_proc.install_signal(forge_proc.SIGUSR1, lambda *_: None)
+        prev = signal.getsignal(forge_proc.SIGUSR1) if forge_proc.SIGUSR1 is not None else None
+        try:
+            forge_proc.install_signal(forge_proc.SIGUSR1, lambda *_: None)
+        finally:
+            if forge_proc.SIGUSR1 is not None and prev is not None:
+                signal.signal(forge_proc.SIGUSR1, prev)
 
     def test_guard_ping_identity_session_and_stop_tree(self) -> None:
         guard = SCRIPTS / 'forge-guard.py'
@@ -90,9 +96,12 @@ class ForgeProcTests(unittest.TestCase):
                     sys.executable,
                     '-c',
                     (
-                        'import pathlib, subprocess, sys, time\n'
+                        'import os, pathlib, subprocess, sys, time\n'
                         'c = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])\n'
-                        'pathlib.Path(sys.argv[1]).write_text(str(c.pid))\n'
+                        'p = pathlib.Path(sys.argv[1])\n'
+                        'tmp = p.with_suffix(".tmp")\n'
+                        'tmp.write_text(str(c.pid))\n'
+                        'os.replace(tmp, p)\n'
                         'time.sleep(30)\n'
                     ),
                     str(pidfile),
@@ -104,10 +113,15 @@ class ForgeProcTests(unittest.TestCase):
             )
             try:
                 deadline = time.monotonic() + 5.0
-                while not pidfile.exists() and time.monotonic() < deadline:
+                child_text = ''
+                while time.monotonic() < deadline:
+                    if pidfile.exists():
+                        child_text = pidfile.read_text().strip()
+                        if child_text.isdigit():
+                            break
                     time.sleep(0.05)
-                self.assertTrue(pidfile.exists())
-                child_pid = int(pidfile.read_text().strip())
+                self.assertTrue(child_text.isdigit(), f'child.pid not written cleanly: {child_text!r}')
+                child_pid = int(child_text)
                 self.assertTrue(forge_proc.pid_alive(child_pid))
 
                 stop = subprocess.run(

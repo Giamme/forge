@@ -400,17 +400,6 @@ def stop_tree(root: int, wait: float) -> int:
     return 0
 
 
-def kill_children(parent_pid: int, force: bool = False) -> int:
-    """Terminate descendants of ``parent_pid`` (used on platforms lacking ``pkill -P``)."""
-    table = ps_table()
-    if table is None or parent_pid <= 1:
-        return 0
-    targets = descendants(table, {parent_pid}) - _never(table)
-    for pid in sorted(targets, reverse=True):
-        forge_proc.signal_pid(pid, force=force)
-    return 0
-
-
 def reap(pgid: int, orphans_file: str, tracked: str | None = None) -> int:
     count = _reap_group(pgid, orphans_file)
     extra = _reap_tracked(tracked, pgid) if tracked else []
@@ -674,12 +663,6 @@ def main(argv: list[str]) -> int:
                 print('usage: forge-guard.py stop <record-file>', file=sys.stderr)
                 return 2
             return stop(rest[0])
-        if command == 'kill-children':
-            if len(rest) not in (1, 2):
-                print('usage: forge-guard.py kill-children <pid> [TERM|KILL]', file=sys.stderr)
-                return 2
-            force = len(rest) == 2 and rest[1].upper() == 'KILL'
-            return kill_children(int(rest[0]), force=force)
         if command == 'promises':
             tail = 3000
             if '--tail-bytes' in rest:

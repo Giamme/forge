@@ -62,7 +62,6 @@ import forge_posix  # noqa: E402
 import forge_proc  # noqa: E402
 import tempfile
 import time
-from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))

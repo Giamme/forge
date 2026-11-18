@@ -728,7 +728,12 @@ def start_summaries(plan, task):
 def doctor(spec, role='dwarf'):
     """Offline capability check of a spec: Refused when it fails, no quota spent."""
     override = os.environ.get('FORGE_CONTROL_DOCTOR')
-    base = shlex.split(override) if override else forge_proc.bash_cmd(os.path.join(SKILL, 'scripts', 'forge-dispatch.sh'), 'doctor')
+    if override:
+        base = shlex.split(override)
+    elif forge_proc.IS_WINDOWS:
+        base = forge_proc.bash_cmd(os.path.join(SKILL, 'scripts', 'forge-dispatch.sh'), 'doctor')
+    else:
+        base = ['bash', os.path.join(SKILL, 'scripts', 'forge-dispatch.sh'), 'doctor']
     try:
         done = subprocess.run(base + ['--spec', spec, '--role', role], capture_output=True, text=True,
                               stdin=subprocess.DEVNULL, timeout=60)
