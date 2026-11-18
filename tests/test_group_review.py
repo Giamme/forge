@@ -40,7 +40,11 @@ class GroupCase(MemberCase):
             self.hold_group(p)              # `run` would review the group itself: these tests do it by hand
         r = self.run_script('forge-parallel.sh', 'run', p)
         for task in 'abc':
-            self.assertEqual(self.read(p, task, 'status'), 'IMPLEMENTED' if review == 'group' else 'PASS', r.stdout)
+            # The run's output says only that a task ended ERROR; why is in the task's own output.
+            out = p / 'tasks' / task / 'task.out'
+            said = out.read_text(errors='replace')[-4000:] if out.exists() else '(no task.out)'
+            self.assertEqual(self.read(p, task, 'status'), 'IMPLEMENTED' if review == 'group' else 'PASS',
+                             r.stdout + '\n--- tasks/%s/task.out (end):\n%s' % (task, said))
         return p
 
     def review(self, p, gid='g1'):
