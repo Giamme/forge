@@ -37,7 +37,7 @@ echo copied >> "$HOME/agy.calls"
         self.seed = self.root / 'seed'; self.seed.mkdir()
         self.git(self.seed, 'init', '-q')
         (self.seed / 'scripts').mkdir()
-        for name in ['forge-update.sh', 'forge-install.sh', 'forge-install-ripwire.sh']:
+        for name in ['forge-update.sh', 'forge-install.sh', 'forge-install-ripwire.sh', 'forge-lib-env.sh']:
             shutil.copyfile(ROOT / 'scripts' / name, self.seed / 'scripts' / name)
         (self.seed / 'SKILL.md').write_text('old skill\n')
         self.git(self.seed, 'add', '.'); self.git(self.seed, 'commit', '-qm', 'initial')

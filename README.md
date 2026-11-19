@@ -65,9 +65,11 @@ git clone https://github.com/Giamme/forge.git ~/.claude/skills/forge
 bash ~/.claude/skills/forge/scripts/forge-install.sh
 ```
 
-forge runs on macOS and Linux. It needs bash, git, Python 3.9 or later, and the agent CLIs
-you route models through; [the doctor](docs/install.md#check-what-forge-can-reach) shows which
-ones it can reach. Foundry's `forge` shares the name: see
+forge runs on macOS, Linux, and Windows (Git Bash + native Python 3.9 or later). It needs bash,
+git, Python 3.9 or later, and the agent CLIs you route models through;
+[the doctor](docs/install.md#check-what-forge-can-reach) shows which ones it can reach. On
+Windows, install Git for Windows alongside Python 3.9+; see [Windows notes](docs/install.md#windows)
+for `FORGE_BASH`, junctions, and platform differences. Foundry's `forge` shares the name: see
 [the Foundry note](docs/install.md#from-npm).
 
 → [Install and update](docs/install.md)

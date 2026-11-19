@@ -6,9 +6,32 @@ Install forge from npm or a git checkout, check which agent CLIs it can reach, a
 
 ## Requirements
 
-forge runs on macOS and Linux. It needs bash, git and Python 3.9 or later, plus the agent
-CLIs you route models through; the doctor below shows which ones it finds. Installing from
+forge runs on macOS, Linux, and Windows. It needs bash, git and Python 3.9 or later, plus the
+agent CLIs you route models through; the doctor below shows which ones it finds. Installing from
 npm brings none of these with it.
+
+### Windows
+
+On Windows, forge runs natively through Git Bash (`bin/forge.js` for npm, `forge.cmd` for CMD or
+PowerShell) and standard Windows Python 3.9+ (no WSL or MSYS2 Python install is required).
+
+- **Prerequisites:** [Git for Windows](https://gitforwindows.org/) (provides `git` and Git Bash)
+  and native Python 3.9 or later on `PATH` (or discoverable via `py -3`).
+- **`FORGE_BASH`:** If Git Bash lives in a non-standard location, set `FORGE_BASH` to the full
+  path of your `bash.exe`; forge ignores Windows `System32\bash.exe` / `WindowsApps` WSL stubs.
+- **`python3` shim:** When `python3` resolves to the Microsoft Store alias, forge writes a
+  per-user wrapper in `%LOCALAPPDATA%\forge\bin` (`python3` and `python3.cmd`) pointing at your
+  installed `python` or `py -3`.
+- **Known platform differences:**
+  - Skill links under `.claude`, `.codex`, and `.openclaude` use NTFS directory junctions
+    (`mklink /J`), which do not require Administrator privileges or Developer Mode; Antigravity still
+    receives a copied directory, so re-run `forge install` / `forge update` after pulling changes.
+  - Process-tree termination (timeouts, Ctrl-C, orphan reaping) uses Win32 Job Objects and
+    `TerminateProcess` because Windows lacks POSIX `SIGTERM`/`os.killpg`, so background helpers are
+    ended forcefully rather than via a graceful shutdown signal.
+  - `O_NOFOLLOW` / `O_DIRECTORY` symlink checks fall back to `os.lstat` (reparse-point) checks
+    before open, which is best-effort rather than kernel-atomic, and POSIX `chmod` permission bits
+    are not enforced natively on Windows.
 
 ## From npm
 

@@ -2,6 +2,9 @@
 # Update the canonical checkout, then refresh each harness through the installer.
 set -uo pipefail
 
+source "$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/forge-lib-env.sh"
+forge_ensure_python3
+
 main() {
   local source_dir dry=0 local_only=0 upstream remote branch before after changes
   source_dir="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
@@ -24,7 +27,9 @@ main() {
   fi
   echo "forge: update source: $source_dir"
   if [ "$local_only" = 0 ]; then
-    if [ "$(git -C "$source_dir" rev-parse --show-toplevel 2>/dev/null)" != "$source_dir" ]; then
+    local git_top
+    git_top="$(git -C "$source_dir" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ "$(forge_posix_path "$git_top")" != "$(forge_posix_path "$source_dir")" ]; then
       case "$source_dir" in
         */node_modules/*)
           # @latest, because older npm updated a global package within ^version: never 0.7 -> 0.8.

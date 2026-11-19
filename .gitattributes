@@ -1,3 +1,10 @@
 # Keep LF line endings in every checkout. Git for Windows converts text files to CRLF by default,
 # and bash cannot run a script with CRLF line ends.
 * text=auto eol=lf
+
+*.cmd text eol=crlf
+
+*.png binary
+*.webp binary
+*.woff2 binary
+*.pyc binary

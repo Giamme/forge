@@ -11,6 +11,8 @@ while [ -L "$SELF" ]; do
   esac
 done
 ROOT="$(cd -P "$(dirname "$SELF")" && pwd)"
+source "$ROOT/scripts/forge-lib-env.sh"
+forge_ensure_python3
 
 usage() {
   printf '%s\n' \

@@ -51,8 +51,14 @@ def _enclosing_func(tree: ast.AST, target: ast.AST) -> str | None:
 class CrossPlatformGuardrailTests(unittest.TestCase):
     def test_no_crlf_in_adapter_and_modified_python_sources(self):
         candidates: list[Path] = [
+            ROOT / 'forge',
+            ROOT / 'bin' / 'forge.js',
             *sorted(SCRIPTS.rglob('*.py')),
+            *sorted(SCRIPTS.glob('*.sh')),
+            *sorted((ROOT / 'tests').glob('*.py')),
+            *sorted((ROOT / 'tests').glob('*.sh')),
             *sorted((ROOT / 'ui' / 'forge_ui').rglob('*.py')),
+            *sorted((ROOT / 'ui' / 'forge_ui' / 'static').glob('*.js')),
         ]
         crlf_files = [
             str(p.relative_to(ROOT)).replace('\\', '/')
@@ -60,6 +66,9 @@ class CrossPlatformGuardrailTests(unittest.TestCase):
             if p.is_file() and b'\r\n' in p.read_bytes()
         ]
         self.assertEqual(crlf_files, [], f'CRLF line endings found: {crlf_files}')
+        forge_cmd = ROOT / 'forge.cmd'
+        if forge_cmd.is_file():
+            self.assertIn(b'\r\n', forge_cmd.read_bytes(), 'forge.cmd must keep CRLF line endings')
 
     def test_no_unguarded_posix_primitives_in_production_python(self):
         violations: list[str] = []

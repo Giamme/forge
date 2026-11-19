@@ -995,8 +995,8 @@ def retry_prepared(args, plan, answer):
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as handle:
             handle.write(answer + '\n')
-        command = ['bash', os.path.join(SKILL, 'scripts', 'forge-parallel.sh'), 'retry', plan, args.task,
-                   '--answer-file', tmp, '--no-dispatch']
+        command = forge_proc.bash_cmd(os.path.join(SKILL, 'scripts', 'forge-parallel.sh'), 'retry', plan, args.task,
+                                      '--answer-file', tmp, '--no-dispatch')
         if args.json:   # stdout is the JSON: the command's own words go to stderr
             done = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True)
             sys.stderr.write(done.stdout + done.stderr)

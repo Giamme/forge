@@ -142,6 +142,59 @@ class ForgeProcTests(unittest.TestCase):
                     forge_proc.kill_tree(parent.pid, force=True)
                     parent.wait(timeout=5)
 
+    @unittest.skipUnless(forge_proc.IS_WINDOWS, 'Windows command & Job Object tests')
+    def test_win_job_object_kills_grandchild_and_maps_bin_bash(self) -> None:
+        _, mapped = forge_proc.resolve_win_command(['/bin/bash', '-c', 'echo hi'])
+        self.assertTrue(Path(mapped[0]).is_file(), mapped)
+        self.assertEqual(mapped[1:], ['-c', 'echo hi'])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            child_pid_file = Path(tmp) / 'grandchild.pid'
+            guard = SCRIPTS / 'forge-guard.py'
+            guardian = subprocess.Popen(
+                [
+                    sys.executable, str(guard), 'session', '--', sys.executable, '-c',
+                    (
+                        'import os, pathlib, subprocess, sys, time\n'
+                        'g = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], '
+                        'creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)\n'
+                        'p = pathlib.Path(sys.argv[1])\n'
+                        'tmp_p = p.with_suffix(".tmp")\n'
+                        'tmp_p.write_text(str(g.pid))\n'
+                        'os.replace(tmp_p, p)\n'
+                        'time.sleep(30)\n'
+                    ),
+                    str(child_pid_file),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            grandchild_pid = None
+            try:
+                deadline = time.monotonic() + 8.0
+                while time.monotonic() < deadline:
+                    if child_pid_file.exists() and child_pid_file.read_text().strip().isdigit():
+                        grandchild_pid = int(child_pid_file.read_text().strip())
+                        break
+                    time.sleep(0.05)
+                self.assertIsNotNone(grandchild_pid)
+                self.assertTrue(forge_proc.pid_alive(grandchild_pid))
+
+                # Abruptly kill only the guardian: its Job Object must terminate child + grandchild.
+                forge_proc.signal_pid(guardian.pid, force=True)
+                guardian.wait(timeout=5)
+                deadline = time.monotonic() + 5.0
+                while forge_proc.pid_alive(grandchild_pid) and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertFalse(forge_proc.pid_alive(grandchild_pid))
+            finally:
+                if guardian.poll() is None:
+                    guardian.kill()
+                    guardian.wait(timeout=5)
+                if grandchild_pid is not None and forge_proc.pid_alive(grandchild_pid):
+                    forge_proc.signal_pid(grandchild_pid, force=True)
+
 
 if __name__ == '__main__':
     unittest.main()

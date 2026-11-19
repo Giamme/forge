@@ -349,7 +349,9 @@ class Context:
         `limit` is the route's timeout; a timeout given to `dispatch` (a test's) replaces it.
         `stdin` is bytes for a call that uses `--file -`, or None. `json_stdout` is false when a
         successful CLI prints text (a brief answer, including a late-answer notice)."""
-        result = run_cli([str(self.cli), *args], self.timeout or limit or TIMEOUT_S, stdin=stdin)
+        raw = [str(self.cli), *args]
+        argv = forge_proc.resolve_win_command(raw)[1] if forge_proc.IS_WINDOWS else raw
+        result = run_cli(argv, self.timeout or limit or TIMEOUT_S, stdin=stdin)
         return map_exit(result) if json_stdout else _text_exit(result)
 
     def locked(self, work):
@@ -1943,7 +1945,10 @@ def _specs_check(ctx):
         spec = _triage_spec(params['spec'])
     except BadBody as exc:
         return _invalid(str(exc))
-    result = run_cli(['bash', _DISPATCH, 'doctor', '--spec', spec, '--role', 'side'], ctx.timeout or TIMEOUT_S)
+    argv = forge_proc.bash_cmd(_DISPATCH, 'doctor', '--spec', spec, '--role', 'side') if forge_proc.IS_WINDOWS else [
+        'bash', _DISPATCH, 'doctor', '--spec', spec, '--role', 'side',
+    ]
+    result = run_cli(argv, ctx.timeout or TIMEOUT_S)
     if result.timed_out:
         return 504, {'error': 'timeout', 'detail': TIMEOUT_DETAIL}
     if result.error:
