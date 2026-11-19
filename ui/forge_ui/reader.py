@@ -14,6 +14,17 @@ import sys
 import time
 import urllib.parse
 
+_SCRIPTS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'scripts')
+_inserted = _SCRIPTS not in sys.path
+if _inserted:
+    sys.path.insert(0, _SCRIPTS)
+try:
+    import forge_posix  # noqa: E402
+    import forge_proc  # noqa: E402
+finally:
+    if _inserted and _SCRIPTS in sys.path:
+        sys.path.remove(_SCRIPTS)
+
 from forge_ui import checks, diffs, executions, findings, fractal, groups, links, repos, transcripts
 from forge_ui.findings import verdict as _verdict
 
@@ -702,15 +713,7 @@ def _scheduler(reader):
     """RunDetail.scheduler: whether a scheduler runs this plan now, and, while one does, what holds it: a drain, a
     stop, infrastructure pauses (scheduler-written infra.paused) and the capacity it dispatches up to."""
     pid = (reader.object('scheduler.live') or {}).get('pid') if reader.exists('scheduler.live') else None
-    live = False
-    if type(pid) is int and pid > 0:
-        try:
-            os.kill(pid, 0)
-            live = True
-        except PermissionError:
-            live = True
-        except (OSError, OverflowError):
-            live = False
+    live = forge_proc.pid_alive(pid)
     result = dict(live=live, drained=False, stopping=None, pauses=[], max_parallel=None)
     if not live:
         return result
@@ -955,14 +958,9 @@ def _brief_writer_alive(reader):
     """brief.pid names a running process: the question writer `run` started has not finished."""
     try:
         pid = int((reader.text('brief.pid') or '').split()[0])
-        if pid > 0:
-            os.kill(pid, 0)
-            return True
-    except PermissionError:
-        return True
     except (OSError, ValueError, IndexError):
-        pass
-    return False
+        return False
+    return forge_proc.pid_alive(pid)
 
 
 def _brief_wait(reader, ident):
@@ -3287,7 +3285,10 @@ def _log_name(lane, k, retry=False):
 def _open_log(path, name):
     """The open log and its stat, or None: a missing file, a symlink, anything not regular."""
     try:
-        fd = os.open(os.path.join(os.path.realpath(path), name), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = forge_posix.open_nofollow(
+            os.path.join(os.path.realpath(path), name),
+            os.O_RDONLY | forge_posix.O_NOFOLLOW | forge_posix.O_NONBLOCK,
+        )
     except OSError:
         return None
     try:

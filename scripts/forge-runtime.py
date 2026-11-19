@@ -15,6 +15,11 @@ import sys
 import time
 import uuid
 
+_SCRIPTS = str(Path(__file__).resolve().parent)
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+import forge_proc  # noqa: E402
+
 
 def write_json(path: Path, value: dict) -> None:
     temporary = path.with_name(path.name + '.' + uuid.uuid4().hex)
@@ -134,17 +139,15 @@ def clock(log: str, out: str, every: str | None = None) -> None:
     def sample() -> None:
         nonlocal last
         # A TERM waits until the line is whole: it is delivered when the mask is lifted.
-        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
-        try:
-            size = os.stat(log).st_size
-            if size != last:
-                with open(out, 'a') as stream:
-                    stream.write('%.3f %d\n' % (time.time(), size))
-                last = size
-        except OSError:
-            pass
-        finally:
-            signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGTERM})
+        with forge_proc.mask_sigterm():
+            try:
+                size = os.stat(log).st_size
+                if size != last:
+                    with open(out, 'a') as stream:
+                        stream.write('%.3f %d\n' % (time.time(), size))
+                    last = size
+            except OSError:
+                pass
 
     try:
         while os.getppid() == parent and not os.path.exists(stop_file):
@@ -802,12 +805,16 @@ def settle(log: str, grace: str, pid: str) -> None:
     poll = min(SETTLE_POLL_S, max(grace_s / 4, 0.05))
     size, since, judged = None, time.monotonic(), None
     while True:
-        try:
-            os.kill(target, 0)
-        except ProcessLookupError:
-            sys.exit(1)
-        except PermissionError:
-            pass
+        if forge_proc.IS_WINDOWS:
+            if not forge_proc.pid_alive(target):
+                sys.exit(1)
+        else:
+            try:
+                os.kill(target, 0)
+            except ProcessLookupError:
+                sys.exit(1)
+            except PermissionError:
+                pass
         try:
             now = os.stat(log).st_size
         except OSError:

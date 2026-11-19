@@ -54,6 +54,11 @@ import sys
 import tempfile
 import time
 
+_SCRIPTS = str(Path(__file__).resolve().parent)
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+import forge_proc  # noqa: E402
+
 _SPEC = importlib.util.spec_from_file_location('forge_fail_first', Path(__file__).resolve().parent / 'forge-fail-first.py')
 failfirst = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(failfirst)
@@ -228,10 +233,12 @@ class Slot:
                     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
                 except FileExistsError:
                     try:
-                        os.kill(int(path.read_text().strip() or 0), 0)
-                    except (ProcessLookupError, ValueError):
-                        path.unlink(missing_ok=True)          # its holder is gone
-                    except (OSError, PermissionError):
+                        holder = int(path.read_text().strip() or 0)
+                        if holder != 0 and not forge_proc.pid_alive(holder):
+                            path.unlink(missing_ok=True)          # its holder is gone
+                    except ValueError:
+                        path.unlink(missing_ok=True)
+                    except OSError:
                         pass
                     continue
                 with os.fdopen(fd, 'w') as handle:

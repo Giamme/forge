@@ -8,13 +8,14 @@ import subprocess
 import time
 
 from . import artifact, lock, read_json, write_json
+import forge_proc
 
 
 def remember(run: Path, argv: list[str]) -> None:
     with lock(run / 'pipeline-record.lock'):
         config = read_json(run / 'run.json')
         if 'pipeline_argv' not in config:
-            config.update(pipeline_argv=['/bin/bash', *argv], pipeline_cwd=str(Path.cwd()))
+            config.update(pipeline_argv=forge_proc.bash_cmd(*argv), pipeline_cwd=str(Path.cwd()))
             write_json(run / 'run.json', config)
 
 

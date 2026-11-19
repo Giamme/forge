@@ -17,10 +17,21 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import urllib.parse
+
+_SCRIPTS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'scripts')
+_inserted = _SCRIPTS not in sys.path
+if _inserted:
+    sys.path.insert(0, _SCRIPTS)
+try:
+    import forge_proc  # noqa: E402
+finally:
+    if _inserted and _SCRIPTS in sys.path:
+        sys.path.remove(_SCRIPTS)
 
 
 TIMEOUT_S = 60       # one CLI call; a test sets a shorter one
@@ -161,6 +172,9 @@ class CliResult:
 
 
 def _signal_group(pgid, sig):
+    if forge_proc.IS_WINDOWS:
+        forge_proc.kill_tree(pgid, force=(sig == forge_proc.SIGKILL))
+        return
     try:
         os.killpg(pgid, sig)
     except (ProcessLookupError, PermissionError):
@@ -181,7 +195,7 @@ def run_cli(argv, timeout, stdin=None):
     try:
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                start_new_session=True, close_fds=True, env=env)
+                                close_fds=True, env=env, **forge_proc.popen_group_kwargs())
     except OSError as exc:
         return CliResult(error=f'cannot run the forge CLI: {exc.strerror or exc}')
     try:
@@ -193,14 +207,14 @@ def run_cli(argv, timeout, stdin=None):
         while proc.poll() is None and time.monotonic() < deadline:
             time.sleep(0.05)
         # Children that outlive the leader (or ignore SIGTERM) die here; the leader is reaped by wait().
-        _signal_group(pgid, signal.SIGKILL)
+        _signal_group(pgid, forge_proc.SIGKILL)
         proc.wait()
         for pipe in (proc.stdin, proc.stdout, proc.stderr):
             if pipe:
                 pipe.close()
         return CliResult(timed_out=True)
     except BaseException:
-        _signal_group(proc.pid, signal.SIGKILL)
+        _signal_group(proc.pid, forge_proc.SIGKILL)
         proc.wait()
         raise
     return CliResult(code=proc.returncode, stdout=out.decode('utf-8', 'replace'), stderr=err.decode('utf-8', 'replace'))
@@ -1433,15 +1447,7 @@ def _scheduler_live(path):
             pid = json.load(handle).get('pid')
     except (OSError, ValueError, AttributeError, RecursionError):
         return False
-    if type(pid) is not int or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except PermissionError:
-        return True
-    except (OSError, OverflowError):
-        return False
-    return True
+    return forge_proc.pid_alive(pid)
 
 
 def _task_answer(ctx):

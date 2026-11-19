@@ -29,9 +29,9 @@ import sys
 import tempfile
 import time
 
-import fcntl
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import forge_flock as fcntl  # noqa: E402
+import forge_posix  # noqa: E402
 import forge_side  # noqa: E402
 
 # The facts the model sees. 8 KB, the same cut forge uses for a reply it carries forward.
@@ -576,7 +576,11 @@ def _lock(task_dir: Path):
     """
     task_dir.mkdir(parents=True, exist_ok=True)
     try:
-        fd = os.open(task_dir / 'summary.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o644)
+        fd = forge_posix.open_nofollow(
+            task_dir / 'summary.lock',
+            os.O_CREAT | os.O_RDWR | forge_posix.O_NOFOLLOW,
+            0o644,
+        )
     except OSError:
         return None
     try:

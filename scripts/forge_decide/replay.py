@@ -19,13 +19,18 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-import fcntl
 import json
 import os
 from pathlib import Path
+import sys
 import threading
 import time
 from urllib.parse import quote
+
+_SCRIPTS = str(Path(__file__).resolve().parents[1])
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+import forge_flock as fcntl  # noqa: E402
 
 from . import _save, providers, state_dir
 from . import labels, metrics, sites

@@ -53,6 +53,12 @@ import sys
 import tempfile
 import time
 
+_SCRIPTS = str(Path(__file__).resolve().parent)
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+import forge_posix  # noqa: E402
+import forge_proc  # noqa: E402
+
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import forge_verify_reports as reports  # noqa: E402  next to this script
 
@@ -204,7 +210,7 @@ def run_stoppable(argv: list[str], stopped=None, **kwargs) -> tuple[int, bytes, 
     """Run a command in its own process group and wait for it, stopping the group (TERM, then
     KILL after KILL_AFTER seconds) and raising Stopped as soon as ``stopped()`` is true."""
     proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, start_new_session=True, **kwargs)
+                            stderr=subprocess.PIPE, **forge_proc.popen_group_kwargs(), **kwargs)
     while True:
         try:
             out, err = proc.communicate(timeout=TICK)
@@ -212,11 +218,8 @@ def run_stoppable(argv: list[str], stopped=None, **kwargs) -> tuple[int, bytes, 
         except subprocess.TimeoutExpired:
             if stopped is None or not stopped():
                 continue
-        for sig, wait in ((signal.SIGTERM, KILL_AFTER), (signal.SIGKILL, KILL_AFTER)):
-            try:
-                os.killpg(proc.pid, sig)
-            except (ProcessLookupError, PermissionError):
-                pass
+        for force, wait in ((False, KILL_AFTER), (True, KILL_AFTER)):
+            forge_proc.kill_tree(proc.pid, force=force)
             try:
                 proc.communicate(timeout=wait)
                 break
@@ -264,7 +267,7 @@ def fingerprint(checkout: str, command: str | None, stopped=None) -> str:
     """The checkout's fingerprint; Stopped when ``stopped()`` turns true meanwhile."""
     if not command:
         return default_fingerprint(checkout, stopped)
-    rc, out, err = run_stoppable(['/bin/bash', '-c', command], stopped, cwd=checkout)
+    rc, out, err = run_stoppable(forge_proc.bash_cmd('-c', command), stopped, cwd=checkout)
     if rc != 0:
         raise RuntimeError(f'fingerprint command exited {rc}: {_text(err)}')
     return _text(out)
@@ -430,12 +433,16 @@ class Verification:
         try:
             if os.path.islink(log):
                 os.unlink(log)   # the log name is ours: never written through a link left in --out
-            fd = os.open(log, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o666)
+            fd = forge_posix.open_nofollow(
+                log,
+                os.O_WRONLY | os.O_APPEND | os.O_CREAT | forge_posix.O_NOFOLLOW,
+                0o666,
+            )
             with os.fdopen(fd, 'ab') as fh:
                 offset = fh.tell()
-                proc = subprocess.Popen(['/bin/bash', '-c', lane['command']], cwd=self.checkout,
+                proc = subprocess.Popen(forge_proc.bash_cmd('-c', lane['command']), cwd=self.checkout,
                                         stdin=subprocess.DEVNULL, stdout=fh,
-                                        stderr=subprocess.STDOUT, start_new_session=True)
+                                        stderr=subprocess.STDOUT, **forge_proc.popen_group_kwargs())
         except (OSError, ValueError) as exc:  # ValueError: an embedded NUL in the command
             with open(log, 'ab') as fh:
                 fh.write(f'forge-verify: cannot start lane: {exc}\n'.encode())
@@ -462,7 +469,7 @@ class Verification:
         lane = self.by_name[name]
         rc = live.proc.poll()
         if rc is None:  # still there after the KILL: a process stuck in the kernel
-            rc = -signal.SIGKILL
+            rc = -forge_proc.SIGKILL
         self._pump({name: live})  # what is left to read, capped; an interrupt still gets through
         live.close()
         self._end(lane, lane['runs'][-1], rc if rc >= 0 else 128 - rc, interrupted)
@@ -644,7 +651,7 @@ class Verification:
             if live.exists() and not kept.exists():
                 shutil.copyfile(live, kept)
             if truncate:
-                os.close(os.open(live, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW))
+                os.close(forge_posix.open_nofollow(live, os.O_WRONLY | os.O_TRUNC | forge_posix.O_NOFOLLOW))
         except OSError as exc:
             print(f'forge-verify: cannot keep {kept.name}: {exc}', file=sys.stderr)
 
@@ -670,7 +677,7 @@ class Verification:
             time.sleep(TICK)
         for pgid in groups:
             if self._group_alive(pgid):
-                self._signal(pgid, signal.SIGKILL)
+                self._signal(pgid, forge_proc.SIGKILL)
         deadline = time.monotonic() + 3 * KILL_AFTER  # SIGKILL cannot be caught; do not hang on D state
         while time.monotonic() < deadline and any(self._group_alive(g) for g in groups):
             time.sleep(TICK)
@@ -685,26 +692,25 @@ class Verification:
             if not self._group_alive(pgid) or now >= give_up:
                 continue
             if now >= deadline:
-                self._signal(pgid, signal.SIGKILL)
+                self._signal(pgid, forge_proc.SIGKILL)
             keep.append((pgid, deadline, group, give_up))
         self.lingering = keep
 
     @staticmethod
     def _signal(pgid: int, sig: int) -> None:
-        try:
-            os.killpg(pgid, sig)
-        except (ProcessLookupError, PermissionError):
-            pass
+        forge_proc.kill_tree(pgid, force=(sig == forge_proc.SIGKILL))
 
     def _group_alive(self, pgid: int) -> bool:
         for live in self.running.values():
             if live.proc.pid == pgid:
                 live.proc.poll()  # reap a leader that exited, or it stays a zombie of the group
-        try:
-            os.killpg(pgid, 0)
-        except (ProcessLookupError, PermissionError):
-            return False
-        return True
+        if not forge_proc.IS_WINDOWS:
+            try:
+                os.killpg(pgid, 0)
+            except (ProcessLookupError, PermissionError):
+                return False
+            return True
+        return forge_proc.group_alive(pgid)
 
     # the whole verification ------------------------------------------------------------
 
