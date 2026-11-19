@@ -1688,18 +1688,26 @@ run_worktree_setup() { # run_worktree_setup <plan> <repo> <wt> <tdir> <id>
   fi
 }
 
+add_task_worktree() { # add_task_worktree <repo> <wt> <br> <base>: on <br> when it exists, else a new <br> at <base>
+  if (cd "$1" && git rev-parse --verify --quiet "$3" >/dev/null 2>&1); then
+    (cd "$1" && git worktree add "$2" "$3")
+  else
+    (cd "$1" && git worktree add -b "$3" "$2" "$4")
+  fi
+}
+
 ensure_worktree() { # ensure_worktree <repo> <wt> <br> <base> <tdir> <plan> <id>
   local REPO="$1" wt="$2" br="$3" base="$4" tdir="$5" PLAN="$6" id="$7"
-  # A worktree directory deleted by hand leaves its registration behind, and that
-  # registration then blocks `worktree add` with "already exists". Prune first.
-  (cd "$REPO" && git worktree prune >/dev/null 2>&1)
-  if [ -e "$wt/.git" ]; then
-    return 0
-  elif (cd "$REPO" && git rev-parse --verify --quiet "$br" >/dev/null 2>&1); then
-    (cd "$REPO" && git worktree add "$wt" "$br") >"$tdir/worktree.out" 2>&1
-  else
-    (cd "$REPO" && git worktree add -b "$br" "$wt" "$base") >"$tdir/worktree.out" 2>&1
-  fi || return 1
+  [ ! -e "$wt/.git" ] || return 0
+  # A worktree directory deleted by hand leaves its registration behind, and that registration
+  # blocks `worktree add` with "already exists": prune, then add again. Only after a failed add:
+  # tasks start together, and a prune while another task's add is midway removes that task's
+  # half-made registration ("could not open '.git/worktrees/<id>/gitdir'"). The second add also
+  # recovers from a prune that another forge process ran at that moment.
+  add_task_worktree "$REPO" "$wt" "$br" "$base" >"$tdir/worktree.out" 2>&1 || {
+    (cd "$REPO" && git worktree prune >/dev/null 2>&1)
+    add_task_worktree "$REPO" "$wt" "$br" "$base" >>"$tdir/worktree.out" 2>&1
+  } || return 1
   forge_worktree_event created "$PLAN" "$REPO" "$wt" "$br" task "$id"
   run_worktree_setup "$PLAN" "$REPO" "$wt" "$tdir" "$id"
 }
