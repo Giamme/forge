@@ -83,7 +83,7 @@ still break there.
 CI ([`.github/workflows/test.yml`](.github/workflows/test.yml)) runs `bash tests/check.sh` on
 every pull request, on Linux with Python 3.9, and its **Tests passed** check has to pass before
 merging. To keep pull requests quick, macOS and Linux with the latest Python 3 run only after a
-merge to `main`. So if your change touches shell scripts, run the suite on macOS too if you can,
+merge to `dev`. So if your change touches shell scripts, run the suite on macOS too if you can,
 and say in the pull request if you couldn't. A pull request that only changes documentation
 skips the tests. Windows is not covered yet ([#166](https://github.com/Giamme/forge/issues/166)).
 
