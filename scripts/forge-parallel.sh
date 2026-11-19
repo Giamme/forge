@@ -2959,7 +2959,8 @@ verify_result_body() { # plan, checkout, artifact directory[, fixed source]
   forge_metric_begin "$out" verification
   forge_metric_phase verification
   repo="$(cat "$plan/repo")"
-  rm -f "$out/verification.flaky" "$out/verification.retry.log" "$out/verification.failing.log" "$out/verification.coverage.txt" \
+  rm -f "$out/verification.status" "$out/verification.exit" \
+    "$out/verification.flaky" "$out/verification.retry.log" "$out/verification.failing.log" "$out/verification.coverage.txt" \
     "$out/verification.runs.tsv" "$out"/verification.run-*.log "$out/verification.commit" \
     "$out/verification.lanes.json" "$out"/verification.lane.*.log
   # The commit being verified, named before any early return, so every outcome (FAIL and

@@ -6,6 +6,7 @@ a later task will call it, from a shell that has the script's functions but not 
 import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 from pathlib import Path
 import subprocess
+import time
 import unittest
 
 import test_forge as fixtures
@@ -197,6 +198,50 @@ class FrozenVerificationTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertIn('discover', self.discover_log.read_text().split())
         self.assertEqual((out / 'verification.command').read_text(), 'echo discovered\n')
+
+    def test_second_verification_clears_stale_status_and_exit_while_running(self):
+        self.scenario({})
+        p = self.plan()
+        (p / 'verify_cmd').write_text('true\n')
+        r1 = self.body(p, p)
+        self.assertEqual(r1.returncode, 0, r1.stdout)
+        self.assertEqual((p / 'verification.status').read_text().strip(), 'PASS')
+        self.assertEqual((p / 'verification.exit').read_text().strip(), '0')
+
+        (self.repo / 'next.txt').write_text('two\n')
+        self.git('add', 'next.txt')
+        self.git('commit', '-qm', 'second commit')
+        commit2 = subprocess.check_output(['git', '-C', str(self.repo), 'rev-parse', 'HEAD'], text=True).strip()
+
+        started = self.root / 'verify.started'
+        release = self.root / 'verify.release'
+        (p / 'verify_cmd').write_text(
+            f'touch "{started}"; i=0; while [ ! -f "{release}" ] && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i+1)); done; false\n'
+        )
+        wt2 = self.checkout()
+        self.discover_log = self.root / 'discover2.log'
+        env = dict(self.env, SKILL=str(ROOT), DISCOVER_LOG=str(self.discover_log), EDIT_LIVE_LANE='')
+        proc = subprocess.Popen(
+            ['bash', '-c', HARNESS, 'harness', str(p), str(wt2), str(p)],
+            cwd=self.repo, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        try:
+            deadline = time.monotonic() + 10.0
+            while not started.exists() and time.monotonic() < deadline:
+                self.assertIsNone(proc.poll(), 'verify exited early')
+                time.sleep(0.05)
+            self.assertTrue(started.exists(), 'slow verify command did not start')
+            self.assertEqual((p / 'verification.commit').read_text().strip(), commit2)
+            self.assertFalse((p / 'verification.status').exists(),
+                             'stale verification.status lingered while new verification ran')
+            self.assertFalse((p / 'verification.exit').exists(),
+                             'stale verification.exit lingered while new verification ran')
+        finally:
+            release.write_text('go\n')
+            out, _ = proc.communicate(timeout=15)
+        self.assertEqual(proc.returncode, 1, out)
+        self.assertEqual((p / 'verification.status').read_text().strip(), 'FAIL')
+        self.assertEqual((p / 'verification.exit').read_text().strip(), '1')
 
 
 if __name__ == '__main__':
