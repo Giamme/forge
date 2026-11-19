@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ['1/16', '5/16', '9/16', '13/16']
+        shard: ['1/128', '17/128', '33/128', '49/128', '65/128', '81/128', '97/128', '113/128']
     defaults:
       run:
         shell: bash
