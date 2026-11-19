@@ -349,6 +349,14 @@ class ForgeTests(unittest.TestCase):
   self.assertEqual(r.returncode,2,r.stdout)
   metrics=json.loads(next(run.glob('attempts/*/metrics.json')).read_text())
   self.assertEqual(metrics['exit_code'],2); self.assertIsNone(metrics['input_tokens'])
+ def test_a_task_worktree_deleted_by_hand_is_made_again(self):
+  p=self.plan(deps='-')
+  run_id=(p/'run_id').read_text().strip()
+  wt=self.repo.resolve().parent/'.forge-worktrees'/run_id/'a'
+  subprocess.run(['git','-C',str(self.repo),'worktree','add','-q','-b','forge/%s/a'%run_id,str(wt)],check=True,env=self.env)
+  shutil.rmtree(wt)   # still registered: a plain `worktree add` refuses the path
+  r=self.run_script('forge-parallel.sh','run',p); self.assertEqual(r.returncode,0,r.stdout)
+  self.assertTrue((p/'tasks'/'a'/'merged').exists(),r.stdout)
  def test_summary_and_native_usage(self):
   r=self.solo(); self.assertEqual(r.returncode,0,r.stdout)
   self.assertNotIn('turn.completed',r.stdout)
