@@ -2,11 +2,12 @@
 # safe on pull requests from forks. The suite never calls a real model: it runs against fake
 # agent CLIs (see tests/README.md).
 #
-# Pull requests run Linux with Python 3.9, the oldest Python forge supports. Pushes to main, and
+# Pull requests run Linux with Python 3.9, the oldest Python forge supports. Pushes to dev, and
 # runs started by hand (Actions → Tests → Run workflow, on any branch), also run Linux with the
 # latest 3.x and macOS (with the system Bash 3.2) with both: macOS runners are slow and GitHub
 # runs few of them at once. A pull request that only changes documentation (DOCS_ONLY below)
-# runs no tests at all.
+# runs no tests at all. Pull requests are merged into dev, and main only receives releases from
+# dev, so a push to main runs nothing more: its commits already passed on dev.
 #
 # The whole suite takes about 40 minutes on one runner, so each OS and Python pair splits it into
 # 4 shards (tests/run_tests.py --shard). The "Tests passed" job at the end is the one check to
@@ -17,7 +18,7 @@ name: Tests
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [dev]
   workflow_dispatch:
 
 permissions:
