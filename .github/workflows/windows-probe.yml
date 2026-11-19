@@ -1,0 +1,41 @@
+# TEMPORARY: finds which tests fail on Windows. Deleted before the real PR.
+name: Windows probe
+on:
+  push:
+    branches: [ci/windows-probe2]
+permissions:
+  contents: read
+jobs:
+  probe:
+    name: windows · ${{ matrix.shard }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ['1/4', '2/4', '3/4', '4/4']
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+      - name: Environment
+        run: |
+          set -x
+          command -v bash python python3 git node || true
+          bash --version | head -1; python --version; git --version
+          which -a bash python3 || true
+          python -c "import sys, os; print(sys.platform, os.name, sys.executable)"
+          python -c "import sys; sys.path.insert(0, 'scripts'); import forge_proc; print(forge_proc.bash_executable())"
+          nproc || true
+      - name: Tests
+        run: python tests/run_tests.py --shard ${{ matrix.shard }} --slowest 40 2>&1 | tee probe.log
+        continue-on-error: true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-${{ strategy.job-index }}
+          path: probe.log
