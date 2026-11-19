@@ -1381,7 +1381,8 @@ report_infra() { # report_infra <plan>
 }
 
 report_known_issues() { # report_known_issues <plan>
-  local plan="$1" id n=0
+  local plan="$1" id n=0 id_w
+  id_w="$(id_col_width "$plan/tasks.tsv")"
   for id in $(all_ids "$plan/tasks.tsv"); do
     [ -s "$plan/tasks/$id/known_issues.md" ] || continue
     # A FAIL task's tolerated findings are on disk too (the gate writes them whatever its
@@ -1389,7 +1390,7 @@ report_known_issues() { # report_known_issues <plan>
     case "$(task_status "$plan" "$id")" in PASS|MERGED) ;; *) continue ;; esac
     [ "$n" = 0 ] && echo "known issues accepted (findings below the QA threshold, or accepted by a human):"
     n=$((n+1))
-    printf '  %-14s %s finding(s)  %s\n' "$id" "$(grep -c '^- ' "$plan/tasks/$id/known_issues.md" 2>/dev/null || echo 0)" "$plan/tasks/$id/known_issues.md"
+    printf '  %-*s %s finding(s)  %s\n' "$id_w" "$id" "$(grep -c '^- ' "$plan/tasks/$id/known_issues.md" 2>/dev/null || echo 0)" "$plan/tasks/$id/known_issues.md"
   done
   # What an adopted range kept: findings below the threshold, or a verdict --approved overrode.
   local dir
@@ -1397,7 +1398,7 @@ report_known_issues() { # report_known_issues <plan>
     [ -s "$plan/$dir/known_issues.md" ] || continue
     [ "$n" = 0 ] && echo "known issues accepted (findings below the QA threshold, or accepted by a person):"
     n=$((n+1))
-    printf '  %-14s %s finding(s)  %s\n' adopted "$(grep -c '^- ' "$plan/$dir/known_issues.md" 2>/dev/null)" "$plan/$dir/known_issues.md"
+    printf '  %-*s %s finding(s)  %s\n' "$id_w" adopted "$(grep -c '^- ' "$plan/$dir/known_issues.md" 2>/dev/null)" "$plan/$dir/known_issues.md"
   done
   [ "$n" -gt 0 ] && echo
   return 0
@@ -1406,14 +1407,15 @@ report_known_issues() { # report_known_issues <plan>
 # The PASS verdicts forge turned into FAIL, since FORGE_RUN_STARTED (set by run and retry;
 # unset shows them all), including those whose task a later attempt fixed.
 report_gate_flips() { # report_gate_flips <plan>
-  local plan="$1" id n=0 at attempt thr worst
+  local plan="$1" id n=0 at attempt thr worst id_w
+  id_w="$(id_col_width "$plan/tasks.tsv")"
   for id in $(all_ids "$plan/tasks.tsv"); do
     [ -s "$plan/tasks/$id/qa.flips" ] || continue
     while IFS="$(printf '\t')" read -r at attempt thr worst; do
       awk -v at="${at:-0}" -v since="${FORGE_RUN_STARTED:-0}" 'BEGIN { exit !(at + 0 >= since + 0) }' || continue
       [ "$n" = 0 ] && echo "forge overrode the reviewer's verdict (PASS, but it listed a CONFIRMED finding at or above the threshold):"
       n=$((n+1))
-      printf '  %-14s attempt %s: PASS -> FAIL at the %s threshold (worst %s)\n' "$id" "$attempt" "$thr" "$worst"
+      printf '  %-*s attempt %s: PASS -> FAIL at the %s threshold (worst %s)\n' "$id_w" "$id" "$attempt" "$thr" "$worst"
     done < "$plan/tasks/$id/qa.flips"
   done
   [ "$n" -gt 0 ] && echo
@@ -1421,12 +1423,13 @@ report_gate_flips() { # report_gate_flips <plan>
 }
 
 report_guard_notes() { # report_guard_notes <plan>
-  local plan="$1" id n=0 line
+  local plan="$1" id n=0 line id_w
+  id_w="$(id_col_width "$plan/tasks.tsv")"
   for id in $(all_ids "$plan/tasks.tsv"); do
     [ -s "$plan/tasks/$id/guard.txt" ] || continue
     [ "$n" = 0 ] && echo "implementer guard notes (observed by forge, not self-reported):"
     n=$((n+1))
-    while IFS= read -r line; do printf '  %-14s %s\n' "$id" "$line"; done < "$plan/tasks/$id/guard.txt"
+    while IFS= read -r line; do printf '  %-*s %s\n' "$id_w" "$id" "$line"; done < "$plan/tasks/$id/guard.txt"
   done
   [ "$n" -gt 0 ] && echo
   return 0
@@ -1480,7 +1483,8 @@ report_size() { # report_size <plan>
 # withdrawn since the last attempt leaves the `escalation.next` that `--check` wrote for it,
 # so a marker found with no pin pending is decided again rather than trusted.
 report_escalations() { # report_escalations <plan>
-  local plan="$1" id n=0 head pin
+  local plan="$1" id n=0 head pin id_w
+  id_w="$(id_col_width "$plan/tasks.tsv")"
   head="retry policy (after $(cat "$plan/escalate_after" 2>/dev/null || echo 3) failed attempts on one model):"
   for id in $(all_ids "$plan/tasks.tsv"); do
     pin="$(pin_spec "$plan/tasks/$id/escalation.pin")"
@@ -1489,9 +1493,9 @@ report_escalations() { # report_escalations <plan>
       [ "$n" = 0 ] && echo "$head"
       n=$((n+1))
       if qa_only_next "$plan" "$id"; then
-        printf '  %-14s its next retry goes to %s (pinned; after the QA-only re-run)\n' "$id" "$pin"
+        printf '  %-*s its next retry goes to %s (pinned; after the QA-only re-run)\n' "$id_w" "$id" "$pin"
       else
-        printf '  %-14s its next retry goes to %s (pinned)\n' "$id" "$pin"
+        printf '  %-*s its next retry goes to %s (pinned)\n' "$id_w" "$id" "$pin"
       fi
       continue
     fi
@@ -1501,10 +1505,10 @@ report_escalations() { # report_escalations <plan>
     fi
     if [ -s "$plan/tasks/$id/split.suggested" ]; then
       [ "$n" = 0 ] && echo "$head"
-      n=$((n+1)); printf '  %-14s split suggested: %s\n' "$id" "$(cat "$plan/tasks/$id/split.suggested")"
+      n=$((n+1)); printf '  %-*s split suggested: %s\n' "$id_w" "$id" "$(cat "$plan/tasks/$id/split.suggested")"
     elif [ -s "$plan/tasks/$id/escalation.next" ] && [ "$(task_status "$plan" "$id")" != MERGED ]; then
       [ "$n" = 0 ] && echo "$head"
-      n=$((n+1)); printf '  %-14s its next retry goes to %s\n' "$id" "$(cat "$plan/tasks/$id/escalation.next")"
+      n=$((n+1)); printf '  %-*s its next retry goes to %s\n' "$id_w" "$id" "$(cat "$plan/tasks/$id/escalation.next")"
     fi
   done
   [ "$n" -gt 0 ] && echo
