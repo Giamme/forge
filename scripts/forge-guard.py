@@ -451,6 +451,9 @@ def _ps_field(pid: int, field: str) -> str | None:
 def identity(pid: int) -> str | None:
     if forge_proc.IS_WINDOWS:
         return forge_proc.process_start_time(pid)
+    # On Cygwin (Windows MSYS2 mode) this is Cygwin ps's STIME (see the Cygwin block below): the
+    # time of day, which becomes the date 24 hours after the start. A process older than a day
+    # then no longer matches the identity recorded for it, and `stop` leaves it running.
     return _ps_field(pid, 'lstart')
 
 
@@ -621,6 +624,65 @@ def promises(path: str, tail_bytes: int = 3000) -> int:
     for name, excerpt in scan_promises(text):
         print('%s\t%s' % (name, excerpt.replace('\t', ' ')))
     return 0
+
+
+# --- Windows (MSYS2/Cygwin) -----------------------------------------------------
+# procps builds each row from /proc/<pid>/stat, which Cygwin fills by asking Windows: about half
+# a second per process, so one listing takes 15-20 s and outlives every timeout above, leaving
+# the guards blind. Its start time is also the Windows process's, which changes when a Cygwin
+# process execs a native program (a harness), so an identity recorded before the exec never
+# matched again. Cygwin's own ps reads the same process table in milliseconds, keeps the start
+# time across exec and hides zombies. Its STIME has one-second resolution and switches from the
+# time of day to the date 24 hours after the start: identities compare within a day.
+if sys.platform == 'cygwin':
+    CYGWIN_PS = '/usr/bin/ps'
+    _CYGWIN_ROW = re.compile(r'^\s*[A-Z]?\s*(\d+)\s+(\d+)\s+(\d+)\s+\d+\s+\S+\s+\d+\s+'
+                             r'(\d\d:\d\d:\d\d|[A-Z][a-z]{2}\s+\d+)\s+(.*)$')
+
+    def _cygwin_rows(pid: int | None = None):
+        """{pid: (ppid, pgid, start, executable)} of live processes, or None when ps cannot run."""
+        try:
+            out = subprocess.run([CYGWIN_PS, '-l'] + (['-p', str(pid)] if pid else ['-a']),
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                 timeout=30).stdout.decode(errors='replace')
+        except (OSError, subprocess.SubprocessError):
+            return None
+        rows = {}
+        for line in out.splitlines()[1:]:
+            match = _CYGWIN_ROW.match(line)
+            if match:
+                rows[int(match[1])] = (int(match[2]), int(match[3]), ' '.join(match[4].split()), match[5].strip())
+        return rows
+
+    def _command(pid: int, fallback: str) -> str:
+        """The full command line where Cygwin can read it cheaply; the executable otherwise."""
+        try:
+            with open('/proc/%d/cmdline' % pid, 'rb') as handle:
+                return handle.read().replace(b'\0', b' ').decode(errors='replace').strip() or fallback
+        except OSError:
+            return fallback
+
+    def list_group(pgid: int):
+        rows = _cygwin_rows()
+        if rows is None:
+            return None
+        me = os.getpid()
+        return [(pid, _command(pid, exe)) for pid, (_ppid, group, _start, exe) in sorted(rows.items())
+                if group == pgid and pid != me]
+
+    def ps_table():
+        rows = _cygwin_rows()
+        if rows is None:
+            return None
+        return {pid: (ppid, start, exe) for pid, (ppid, _group, start, exe) in rows.items()}
+
+    def _ps_field(pid: int, field: str) -> str | None:
+        if pid <= 0:
+            return None
+        row = (_cygwin_rows(pid) or {}).get(pid)
+        if row is None:
+            return None
+        return {'stat': 'S', 'lstart': row[2], 'ppid': str(row[0]), 'pgid': str(row[1])}.get(field)
 
 
 # --- cli ----------------------------------------------------------------------

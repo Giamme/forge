@@ -48,6 +48,8 @@
 set -uo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Windows: re-run inside MSYS2 when started from Git Bash (no-op elsewhere).
+. "$SKILL_DIR/scripts/forge-win.sh"
 source "$SKILL_DIR/scripts/forge-lib-env.sh"
 forge_ensure_python3
 DISPATCH="$SKILL_DIR/scripts/forge-dispatch.sh"

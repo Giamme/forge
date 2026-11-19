@@ -65,6 +65,8 @@
 set -uo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Windows: re-run inside MSYS2 when started from Git Bash (no-op elsewhere).
+. "$SKILL_DIR/scripts/forge-win.sh"
 source "$SKILL_DIR/scripts/forge-lib-env.sh"
 forge_ensure_python3
 REGISTRY="${FORGE_REGISTRY:-$SKILL_DIR/registry.tsv}"
@@ -933,7 +935,9 @@ case "${FORGE_ORPHAN_GUARD:-on}" in off|OFF|Off|0|no|false) ;; *)
   if [ -z "${FORGE_FRACTAL_RUN:-}" ] && [ -r "$GUARD" ] && [ "$(python3 "$GUARD" ping 2>/dev/null)" = ok ]; then GUARD_ON=1; fi ;;
 esac
 RUNCMD=("${CMD[@]}")
-[ "$GUARD_ON" != 1 ] || RUNCMD=(python3 "$D_GUARD" session -- "${CMD[@]}")
+# Windows MSYS2 mode (forge-win.sh): the harness gets the PATH it had in Git Bash, not MSYS2's.
+[ -z "${FORGE_WIN_AGENT_PATH:-}" ] || RUNCMD=(env -u MSYS -u FORGE_WIN_AGENT_PATH "PATH=$FORGE_WIN_AGENT_PATH" "MSYSTEM=${FORGE_WIN_MSYSTEM-}" "${CMD[@]}")
+[ "$GUARD_ON" != 1 ] || RUNCMD=(python3 "$D_GUARD" session -- "${RUNCMD[@]}")
 role_env() { [ -z "$D_ROLE_TMP" ] || export TMPDIR="$D_ROLE_TMP" TMP="$D_ROLE_TMP" TEMP="$D_ROLE_TMP"; }
 if [ "$PROMPT_VIA_STDIN" = 1 ]; then
   ( cd "$REPO" && role_env && { ! forge_is_windows || export MSYS_NO_PATHCONV=1; } && exec "${RUNCMD[@]}" < "$PROMPT_FILE" ) > "$LOG" 2>&1 &
