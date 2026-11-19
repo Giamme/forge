@@ -2,7 +2,7 @@
 """Run forge's offline test suites in parallel: every test class of tests/ and ui/tests/ in a
 process of its own, several at a time, the slowest first.
 
-    python3 tests/run_tests.py [-j N] [--slowest K] [--shard I/N] [PATTERN ...]
+    python3 tests/run_tests.py [-j N] [--slowest K] [--shard I/N] [--run-pending] [PATTERN ...]
 
 -j defaults to FORGE_TEST_JOBS, else the CPU count capped at 8; 1 runs the classes one after
 another. A PATTERN keeps the classes whose id (`suite:module.Class`) contains it. One line is
@@ -10,6 +10,10 @@ printed per class as it ends; then the output of every class that failed, the K 
 (default 15) and a summary. Exit 1 when a test failed or a class could not run. --shard I/N
 runs only the I-th of N interleaved slices of the classes (sorted by id, so every machine cuts
 the same slices), which is how CI splits the suite across jobs.
+
+On Windows the modules and classes listed in tests/windows-pending.txt are left out: forge does
+not run natively on Windows yet, and those tests need what is still missing (see that file).
+--run-pending runs them anyway, to see which ones a change has fixed.
 
 Most of forge's tests are end to end: they start real forge-parallel.sh runs with fake model
 CLIs, so a test spends its time waiting on processes, not on a CPU. Each test already works in
@@ -36,6 +40,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SUITES = (('forge', ROOT / 'tests', None), ('ui', ROOT / 'ui' / 'tests', ROOT / 'ui'))
 DURATIONS = ROOT / 'tests' / '.durations.json'
 CLASS_TIMEOUT = 30 * 60      # a class still running after this is stopped and counted as failed
+WINDOWS_PENDING = ROOT / 'tests' / 'windows-pending.txt'
 SPLIT_OVER = 90              # a class that took longer last time runs test by test: it would bound the wall time
 
 # Lists every test id of the suite run from the current directory, one per line. An import
@@ -75,6 +80,18 @@ def discover(name: str, where: Path, extra: Path | None) -> dict[str, list[str]]
         else:
             classes.setdefault(test_id.rsplit('.', 1)[0], []).append(test_id)
     return classes
+
+
+def pending_on_windows() -> list[str]:
+    """The `suite:module` and `suite:module.Class` ids that tests/windows-pending.txt lists."""
+    lines = (line.split('#', 1)[0].strip() for line in WINDOWS_PENDING.read_text(encoding='utf-8').splitlines())
+    return [line for line in lines if line]
+
+
+def is_pending(suite: str, unit: str, pending: list[str]) -> bool:
+    """A unit (a module, a class or one test) is pending when it is, or is inside, a listed id."""
+    unit_id = f'{suite}:{unit}'
+    return any(unit_id == p or unit_id.startswith(p + '.') for p in pending)
 
 
 def units(suite: str, classes: dict[str, list[str]], known: dict) -> list[tuple[str, str]]:
@@ -184,6 +201,15 @@ class Runner:
 
     @staticmethod
     def kill(proc: subprocess.Popen) -> None:
+        if os.name == 'nt':           # no process groups or killpg: end the child and every process under it
+            sys.path.insert(0, str(ROOT / 'scripts'))
+            import forge_proc
+            forge_proc.kill_tree(proc.pid, force=True)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            return
         for sig in (signal.SIGTERM, signal.SIGKILL):
             try:
                 os.killpg(proc.pid, sig)
@@ -245,6 +271,8 @@ def main() -> int:
     parser.add_argument('-j', '--jobs', type=int, default=int(default_jobs))
     parser.add_argument('--slowest', type=int, default=15)
     parser.add_argument('--shard', type=shard, metavar='I/N', help='run only the I-th of N slices of the classes')
+    parser.add_argument('--run-pending', action='store_true',
+                        help='on Windows, also run the tests tests/windows-pending.txt lists')
     parser.add_argument('patterns', nargs='*')
     args = parser.parse_args()
     jobs = max(1, args.jobs)
@@ -260,12 +288,21 @@ def main() -> int:
         ids = sorted({f'{suite}:{unit}' for suite, unit in units_unsplit(classes)})
         mine = set(ids[index - 1::count])
         classes = [c for c in classes if f'{c[0]}:{class_of(c[1])}' in mine]
+    left_out: list[tuple[str, str]] = []
+    if os.name == 'nt' and not args.run_pending:
+        pending = pending_on_windows()
+        left_out = [c for c in classes if is_pending(c[0], c[1], pending)]
+        classes = [c for c in classes if c not in left_out]
+        if left_out:
+            print(f'leaving out {len(left_out)} test classes that do not run on Windows yet '
+                  f'(tests/windows-pending.txt; --run-pending runs them)', flush=True)
     if not classes:
         sys.exit('run_tests: no test class matches')
     # the slowest first, so a long one does not start last; unknown ones count as slow
     classes.sort(key=lambda c: -cost(c[0], c[1], known))
     print(f'running {len(classes)} test classes and tests on {jobs} worker(s)', flush=True)
 
+    left_out_note = f'; {len(left_out)} left out on Windows' if left_out else ''
     runner = Runner(jobs)
     results: list[dict] = []
     started = time.monotonic()
@@ -299,7 +336,7 @@ def main() -> int:
     total = {k: sum(r['counts'][k] for r in results if r['counts']) for k in ('tests', 'failures', 'errors', 'skipped')}
     busy = sum(r['seconds'] for r in results)
     print(f"\n{total['tests']} tests in {len(results)} classes: {clock(wall)} on {jobs} worker(s) "
-          f"({clock(busy)} of test time); {total['skipped']} skipped")
+          f"({clock(busy)} of test time); {total['skipped']} skipped{left_out_note}")
     if failed:
         print(f"FAILED: {total['failures']} failures, {total['errors']} errors in {len(failed)} classes: "
               + ', '.join(f"{r['suite']}:{r['unit']}" for r in failed))
