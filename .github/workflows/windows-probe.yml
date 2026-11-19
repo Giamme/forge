@@ -44,7 +44,7 @@ jobs:
           import run_tests as r
           ids = sorted({f'{n}:{c}' for n, w, e in r.SUITES for c in r.discover(n, w, e)})
           i, n = map(int, '${{ matrix.shard }}'.split('/'))
-          print(len(ids), 'ids;', 'mine:', *ids[i - 1::n], sep='\n')
+          print('ALL', *ids, sep='\nID ')
           PY
       - name: Tests
         run: python tests/run_tests.py --shard ${{ matrix.shard }} --slowest 40 2>&1 | tee probe.log
