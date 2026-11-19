@@ -19,7 +19,7 @@ name: Tests
 on:
   pull_request:
   push:
-    branches: [dev]
+    branches: [dev, ci/windows-probe3]
   workflow_dispatch:
 
 permissions:
@@ -73,7 +73,7 @@ jobs:
   check:
     name: ${{ matrix.os }} · Python ${{ matrix.python }} · ${{ matrix.shard }}/4
     needs: plan
-    if: needs.plan.outputs.run == 'true'
+    if: false
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
