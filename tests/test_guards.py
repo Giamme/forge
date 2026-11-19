@@ -10,6 +10,9 @@ import time
 import unittest
 from pathlib import Path
 
+# MSYS2's procps-ng installs its ps as procps; /bin/ps there is Cygwin's, which has no -o.
+PS = '/usr/bin/procps' if os.path.exists('/usr/bin/procps') else '/bin/ps'
+
 ROOT = Path(__file__).resolve().parents[1]
 GUARD = ROOT / 'scripts' / 'forge-guard.py'
 
@@ -30,7 +33,7 @@ def alive(pid):
 
 def running(pid):
     """False once the pid is dead or a zombie; ps knows, kill(0) does not."""
-    state = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'stat='], stdout=subprocess.PIPE, text=True).stdout.strip()
+    state = subprocess.run([PS, '-p', str(pid), '-o', 'stat='], stdout=subprocess.PIPE, text=True).stdout.strip()
     return bool(state) and not state.startswith('Z')
 
 
@@ -329,7 +332,7 @@ class IdentityStopTests(unittest.TestCase):
         before = run('identity', process.pid)
         self.assertEqual(before.returncode, 0, before.stderr)
         process.stdin.write('go\n'); process.stdin.close()
-        self.assertTrue(wait_until(lambda: 'sleep' in subprocess.run(['/bin/ps', '-p', str(process.pid), '-o', 'comm='],
+        self.assertTrue(wait_until(lambda: 'sleep' in subprocess.run([PS, '-p', str(process.pid), '-o', 'comm='],
                                                                       stdout=subprocess.PIPE, text=True).stdout, 5))
         after = run('identity', process.pid)
         self.assertEqual((after.returncode, after.stdout), (0, before.stdout))

@@ -4,12 +4,16 @@ that must survive a rerun (how many times a lane ran) lives in marker files outs
 checkout, so the checkout itself is never changed."""
 import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 import json
+import os
 import signal
 import subprocess
 import time
 import unittest
 
 from test_verify_lanes import VerifyLanesCase
+
+# MSYS2's procps-ng installs its ps as procps; /bin/ps there is Cygwin's, which has no -o.
+PS = '/usr/bin/procps' if os.path.exists('/usr/bin/procps') else '/bin/ps'
 
 
 def fails_first(marks, name, times=1):
@@ -101,7 +105,7 @@ class RerunTests(VerifyLanesCase):
         lane = self.lane_doc('slow')
         self.assertEqual((lane['state'], [r['kind'] for r in lane['runs']]), ('interrupted', ['initial', 'rerun']))
         pgid = int((self.marks / 'pid').read_text())
-        self.assertEqual(subprocess.run(['/bin/ps', '-g', str(pgid), '-o', 'pid='],
+        self.assertEqual(subprocess.run([PS, '-g', str(pgid), '-o', 'pid='],
                                         capture_output=True, text=True).stdout.strip(), '')
 
 

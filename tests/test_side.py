@@ -24,6 +24,9 @@ import forge_dataset  # noqa: E402
 import forge_side  # noqa: E402
 from forge_decide import save_user  # noqa: E402
 
+# MSYS2's procps-ng installs its ps as procps; /bin/ps there is Cygwin's, which has no -o.
+PS = '/usr/bin/procps' if os.path.exists('/usr/bin/procps') else '/bin/ps'
+
 OFF = {
     'retro': False,
     'brief': {'level': 'off', 'scope': 'task', 'model': ''},
@@ -39,7 +42,7 @@ def _alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
-    result = subprocess.run(['/bin/ps', '-o', 'state=', '-p', str(pid)],
+    result = subprocess.run([PS, '-o', 'state=', '-p', str(pid)],
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     if result.returncode != 0:
         return False
@@ -49,7 +52,7 @@ def _alive(pid: int) -> bool:
 
 def _group_pids(pgid: int) -> list[int]:
     """Live (not zombie) members of a process group."""
-    result = subprocess.run(['/bin/ps', '-ax', '-o', 'pid=,pgid=,state='],
+    result = subprocess.run([PS, '-ax', '-o', 'pid=,pgid=,state='],
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     found = []
     for line in result.stdout.splitlines():

@@ -146,7 +146,8 @@ class ForgeTests(unittest.TestCase):
   # Jev is the same story: a developer's ~/.config/forge/jev.json with a key turns it on, and
   # it then picks a verify command on its own (UNVERIFIED becomes FAIL) and calls the network.
   # Its coverage lives in the test_jev*.py files, which point XDG_CONFIG_HOME at a temp dir.
-  self.env=dict(os.environ, PATH=str(self.bin), FORGE_MEMORY='off', FORGE_TIMEOUT='0', FORGE_RIPWIRE='off', FORGE_JEV='off', CALLS=str(self.root/'calls'), GIT_AUTHOR_NAME='test', GIT_AUTHOR_EMAIL='test@test', GIT_COMMITTER_NAME='test', GIT_COMMITTER_EMAIL='test@test')
+  self.env=dict(os.environ, PATH=str(self.bin)+(':/usr/bin' if os.environ.get('OSTYPE','') in ('cygwin','msys') or os.path.exists('/usr/bin/cygpath') else ''),  # cygwin: tools reached by symlink need their DLLs
+    FORGE_MEMORY='off', FORGE_TIMEOUT='0', FORGE_RIPWIRE='off', FORGE_JEV='off', CALLS=str(self.root/'calls'), GIT_AUTHOR_NAME='test', GIT_AUTHOR_EMAIL='test@test', GIT_COMMITTER_NAME='test', GIT_COMMITTER_EMAIL='test@test')
   self.git('init','-q'); (self.repo/'base.txt').write_text('base\n'); self.git('add','.'); self.git('commit','-qm','initial')
  def git(self,*args):
   return subprocess.check_output(['git',*args],cwd=self.repo,env=self.env)

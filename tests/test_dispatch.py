@@ -17,6 +17,9 @@ from pathlib import Path
 
 import test_forge as fixtures
 
+# MSYS2's procps-ng installs its ps as procps; /bin/ps there is Cygwin's, which has no -o.
+PS = '/usr/bin/procps' if os.path.exists('/usr/bin/procps') else '/bin/ps'
+
 ROOT = fixtures.ROOT
 DISPATCH = ROOT / 'scripts' / 'forge-dispatch.sh'
 # --fast-mode is omitted on purpose, matching FAKE: claude's help does not list it.
@@ -856,7 +859,7 @@ class OrphanGuardTests(DispatchBase):
         pid = self.background()
         self.assertTrue(wait_until(lambda: not alive(pid), 5), 'orphan still running after dispatch returned')
         orphans = self.read('dwarf.orphans').splitlines()
-        if os.access('/bin/ps', os.X_OK):
+        if os.access(PS, os.X_OK):
             self.assertIn(str(pid), [line.split('\t')[0] for line in orphans], orphans)
             self.assertTrue(any('sleep' in line for line in orphans), orphans)
         self.assertEqual((self.attempt('dwarf') / 'dwarf.orphans').read_text(), self.read('dwarf.orphans'))
@@ -876,7 +879,7 @@ class OrphanGuardTests(DispatchBase):
     def assert_reaped_and_listed(self, pids):
         for pid in pids:
             self.assertTrue(wait_until(lambda: not alive(pid), 3), 'pid %d still running after dispatch returned' % pid)
-        if os.access('/bin/ps', os.X_OK):
+        if os.access(PS, os.X_OK):
             listed = {line.split('\t')[0] for line in self.read('dwarf.orphans').splitlines()}
             self.assertTrue({str(pid) for pid in pids} <= listed, listed)
 
