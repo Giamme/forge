@@ -97,6 +97,16 @@ class TriageHomeTests(unittest.TestCase):
         self.assertFalse((home / '1200').exists())
         self.assertTrue((home / 'note').is_dir())
 
+    def test_non_ascii_digit_dir_names_are_skipped_by_allocate_triage_and_next_n(self):
+        home = forge_side.triage_home(KEY)
+        (home / '\u00b2').mkdir(parents=True)
+        dest = forge_side.allocate_triage(KEY)
+        self.assertEqual(dest, home / '1')
+
+        task_dir = self.base / 'kind' / 'task'
+        (task_dir / '\u00b2').mkdir(parents=True)
+        self.assertEqual(forge_side._next_n(self.base / 'kind', 'task'), 1)
+
     def test_a_symlinked_home_is_refused(self):
         target = self.base / 'elsewhere'
         target.mkdir()

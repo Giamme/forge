@@ -253,6 +253,13 @@ def _count(kind_dir: Path) -> int:
     return total
 
 
+def _slot_number(name: str) -> int | None:
+    """Parse an ASCII base-10 slot directory name, ignoring Unicode digits like `²`."""
+    if not (name.isascii() and name.isdigit()):
+        return None
+    return int(name)
+
+
 def _next_n(kind_dir: Path, task: str) -> int:
     """1 + the highest numeric `<n>` already under this task. Other tasks have their own count."""
     highest = 0
@@ -263,8 +270,9 @@ def _next_n(kind_dir: Path, task: str) -> int:
         except OSError:
             children = []
         for child in children:
-            if child.is_dir() and child.name.isdigit():
-                highest = max(highest, int(child.name))
+            number = _slot_number(child.name)
+            if number is not None and child.is_dir():
+                highest = max(highest, number)
     return highest + 1
 
 
@@ -357,7 +365,8 @@ def _triage_slots(home: Path) -> tuple[int, int]:
     except OSError:
         return 0, 0
     for child in children:
-        if not child.name.isdigit():
+        number = _slot_number(child.name)
+        if number is None:
             continue
         try:
             info = child.lstat()
@@ -367,7 +376,7 @@ def _triage_slots(home: Path) -> tuple[int, int]:
             raise ValueError('triage dispatch dir must be a real directory, not a symlink')
         if not stat.S_ISDIR(info.st_mode):
             continue
-        highest = max(highest, int(child.name))
+        highest = max(highest, number)
         count += 1
     return highest, count
 
