@@ -6,7 +6,8 @@ import threading
 import time
 import uuid
 
-from . import read_json, write_json
+from . import SCRIPTS, read_json, write_json
+import forge_proc
 
 
 def _dataset_step(task, node: dict, directory: Path, **values) -> None:
@@ -54,7 +55,7 @@ def run_step(tree, node: dict, workspace: Path, prompt: str, *, phase: str = 'im
         cost = None
         try:
             with output.open('w') as stream:
-                process = agent.spawn(invocation, start_new_session=True)
+                process = agent.spawn(invocation, **forge_proc.popen_group_kwargs())
                 write_json(directory / 'process.json', dict(pid=process.pid, identity=process_identity(process.pid)))
                 def drain():
                     for line in process.stdout:

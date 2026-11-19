@@ -65,7 +65,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import errno
-import fcntl
 import json
 import os
 import re
@@ -82,7 +81,10 @@ from pathlib import Path
 SCRIPTS = os.path.dirname(os.path.realpath(__file__))
 if SCRIPTS not in sys.path:
     sys.path.insert(0, SCRIPTS)
+import forge_flock as fcntl  # noqa: E402
 import forge_infra  # noqa: E402
+import forge_posix  # noqa: E402
+import forge_proc  # noqa: E402
 
 SKILL = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 LOCK_WAIT = 5.0
@@ -94,7 +96,6 @@ DEFAULT_VERIFY_RETRIES = 1   # forge-parallel.sh
 DEFAULT_PRE_REVIEW_PARALLEL = 2   # forge-artifact.sh forge_pre_review
 LEVELS = ('P0', 'P1', 'P2', 'P3')
 STOP_MARKERS = ('escalation.stop', 'split.suggested', 'escalation.next')
-DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 
 NEXT_ATTEMPT = "at the task's next attempt"
 NEXT_DECISION = 'at the next retry decision'
@@ -126,7 +127,7 @@ def valid_task_id(name):
 
 def _enter(fd, part, create, rel):
     try:
-        return os.open(part, DIR_FLAGS, dir_fd=fd)
+        return forge_posix.enter_dir(fd, part, nofollow=True)
     except FileNotFoundError:
         if not create:
             return None
@@ -135,11 +136,11 @@ def _enter(fd, part, create, rel):
             raise Invalid(f'{rel}: {part} is not a real directory')
         raise
     try:
-        os.mkdir(part, dir_fd=fd)
+        forge_posix.mkdir_at(fd, part)
     except FileExistsError:
         pass
     try:
-        return os.open(part, DIR_FLAGS, dir_fd=fd)
+        return forge_posix.enter_dir(fd, part, nofollow=True)
     except OSError as error:
         if error.errno in (errno.ELOOP, errno.ENOTDIR):
             raise Invalid(f'{rel}: {part} is not a real directory')
@@ -149,25 +150,25 @@ def _enter(fd, part, create, rel):
 def _open_parent(plan, rel, create=False):
     """(fd of rel's parent dir, leaf name); (None, leaf) when a parent does not exist and create is off."""
     *dirs, leaf = rel.split('/')
-    fd = os.open(plan, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    fd = forge_posix.open_dir(plan, nofollow=False)
     try:
         for part in dirs:
             nxt = _enter(fd, part, create, rel)
-            os.close(fd)
+            forge_posix.close_dir(fd)
             fd = nxt
             if fd is None:
                 return None, leaf
         return fd, leaf
     except BaseException:
         if fd is not None:
-            os.close(fd)
+            forge_posix.close_dir(fd)
         raise
 
 
 def _regular(fd, leaf, rel):
     """The lstat of an existing regular file, None when absent; anything else is unsafe."""
     try:
-        st = os.stat(leaf, dir_fd=fd, follow_symlinks=False)
+        st = forge_posix.stat_at(fd, leaf, follow_symlinks=False)
     except FileNotFoundError:
         return None
     if not stat.S_ISREG(st.st_mode):
@@ -183,7 +184,7 @@ def probe(plan, rel):
     try:
         return _regular(fd, leaf, rel) is not None
     finally:
-        os.close(fd)
+        forge_posix.close_dir(fd)
 
 
 def _read(plan, rel, tail):
@@ -192,7 +193,11 @@ def _read(plan, rel, tail):
         return None
     try:
         try:
-            rfd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=fd)
+            rfd = forge_posix.open_at(
+                fd,
+                leaf,
+                os.O_RDONLY | forge_posix.O_NOFOLLOW | forge_posix.O_NONBLOCK | forge_posix.O_CLOEXEC,
+            )
         except FileNotFoundError:
             return None
         except OSError as error:
@@ -210,7 +215,7 @@ def _read(plan, rel, tail):
         finally:
             os.close(rfd)
     finally:
-        os.close(fd)
+        forge_posix.close_dir(fd)
     if cut:
         data = data.partition(b'\n')[2]   # the first line is cut in half
     return data.decode('utf-8', 'replace')
@@ -243,18 +248,23 @@ def write_atomic(plan, rel, text):
     tmp = f'.{leaf}.{os.getpid()}.{time.time_ns()}.tmp'
     try:
         _regular(fd, leaf, rel)
-        tfd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644, dir_fd=fd)
+        tfd = forge_posix.open_at(
+            fd,
+            tmp,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | forge_posix.O_NOFOLLOW | forge_posix.O_CLOEXEC,
+            0o644,
+        )
         try:
             os.write(tfd, text.encode('utf-8'))
         finally:
             os.close(tfd)
-        os.replace(tmp, leaf, src_dir_fd=fd, dst_dir_fd=fd)
+        forge_posix.replace_at(fd, tmp, leaf)
     except BaseException:
         with contextlib.suppress(OSError):
-            os.unlink(tmp, dir_fd=fd)
+            forge_posix.unlink_at(fd, tmp)
         raise
     finally:
-        os.close(fd)
+        forge_posix.close_dir(fd)
 
 
 def remove_safe(plan, rel):
@@ -265,12 +275,12 @@ def remove_safe(plan, rel):
     try:
         if _regular(fd, leaf, rel) is None:
             return False
-        os.unlink(leaf, dir_fd=fd)
+        forge_posix.unlink_at(fd, leaf)
         return True
     except FileNotFoundError:
         return False
     finally:
-        os.close(fd)
+        forge_posix.close_dir(fd)
 
 
 def append_line(plan, rel, line):
@@ -281,7 +291,12 @@ def append_line(plan, rel, line):
         raise Invalid(f'{rel}: a parent directory is missing')
     try:
         _regular(fd, leaf, rel)
-        afd = os.open(leaf, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644, dir_fd=fd)
+        afd = forge_posix.open_at(
+            fd,
+            leaf,
+            os.O_WRONLY | os.O_APPEND | os.O_CREAT | forge_posix.O_NOFOLLOW | forge_posix.O_CLOEXEC,
+            0o644,
+        )
         try:
             if not stat.S_ISREG(os.fstat(afd).st_mode):
                 raise Invalid(f'{rel} is not a regular file')
@@ -289,7 +304,7 @@ def append_line(plan, rel, line):
         finally:
             os.close(afd)
     finally:
-        os.close(fd)
+        forge_posix.close_dir(fd)
 
 
 @contextlib.contextmanager
@@ -299,13 +314,18 @@ def control_lock(plan):
     try:
         _regular(fd, leaf, 'control.lock')   # a FIFO would block the open
         try:
-            lock = os.open(leaf, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644, dir_fd=fd)
+            lock = forge_posix.open_at(
+                fd,
+                leaf,
+                os.O_RDWR | os.O_CREAT | forge_posix.O_NOFOLLOW | forge_posix.O_CLOEXEC,
+                0o644,
+            )
         except OSError as error:
             if error.errno == errno.ELOOP:
                 raise Invalid('control.lock is not a regular file')
             raise
     finally:
-        os.close(fd)
+        forge_posix.close_dir(fd)
     try:
         deadline = time.monotonic() + LOCK_WAIT
         while True:
@@ -351,17 +371,7 @@ def is_live(plan):
         pid = json.loads(read_file(plan, 'scheduler.live') or '')['pid']
     except (ValueError, KeyError, TypeError):
         return False
-    if type(pid) is not int or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except (OSError, OverflowError):
-        return False
-    return True
+    return forge_proc.pid_alive(pid)
 
 
 def is_fractal(plan):
@@ -709,7 +719,8 @@ def start_summaries(plan, task):
         command += ['--task', task]
     try:
         with open(os.path.join(plan, 'summaries.out'), 'ab') as out:
-            subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
+            subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=out,
+                             **forge_proc.popen_group_kwargs(detached=True))
     except OSError:
         pass
 
@@ -717,7 +728,12 @@ def start_summaries(plan, task):
 def doctor(spec, role='dwarf'):
     """Offline capability check of a spec: Refused when it fails, no quota spent."""
     override = os.environ.get('FORGE_CONTROL_DOCTOR')
-    base = shlex.split(override) if override else ['bash', os.path.join(SKILL, 'scripts', 'forge-dispatch.sh'), 'doctor']
+    if override:
+        base = shlex.split(override)
+    elif forge_proc.IS_WINDOWS:
+        base = forge_proc.bash_cmd(os.path.join(SKILL, 'scripts', 'forge-dispatch.sh'), 'doctor')
+    else:
+        base = ['bash', os.path.join(SKILL, 'scripts', 'forge-dispatch.sh'), 'doctor']
     try:
         done = subprocess.run(base + ['--spec', spec, '--role', role], capture_output=True, text=True,
                               stdin=subprocess.DEVNULL, timeout=60)

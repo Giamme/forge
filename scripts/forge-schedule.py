@@ -31,7 +31,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import errno
-import fcntl
 import json
 import math
 import os
@@ -50,7 +49,10 @@ import time
 # forge_infra.py sits beside this file; forge-control.py loads this module by path.
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+import forge_flock as fcntl  # noqa: E402
 import forge_infra  # noqa: E402
+import forge_posix  # noqa: E402
+import forge_proc  # noqa: E402
 
 
 def dataset_event(name: str, plan: Path, task: str, values: dict) -> None:
@@ -304,7 +306,10 @@ def _read_budget(plan: object, *parts: str) -> int | None:
     """A non-negative integer from a control file; None when it is missing, empty, a
     symlink or anything else, so the caller falls through to its next source."""
     try:
-        fd = os.open(_resolve(plan, *parts), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = forge_posix.open_nofollow(
+            _resolve(plan, *parts),
+            os.O_RDONLY | forge_posix.O_NOFOLLOW | forge_posix.O_NONBLOCK,
+        )
         try:
             data = os.read(fd, 65)
         finally:
@@ -321,7 +326,11 @@ def _control_lock(plan: object):
     error: warn and proceed without it (yielding False), never fail the run."""
     fd = None
     try:
-        fd = os.open(_resolve(plan, 'control.lock'), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+        fd = forge_posix.open_nofollow(
+            _resolve(plan, 'control.lock'),
+            os.O_RDWR | os.O_CREAT | forge_posix.O_NOFOLLOW,
+            0o644,
+        )
         deadline = time.monotonic() + CONTROL_LOCK_WAIT
         while True:
             try:
@@ -358,7 +367,10 @@ def _task_dirs(plan: object, names: object) -> list[str]:
 def _read_small(plan: object, name: str) -> str | None:
     """A short plan-level control file's stripped text; None when missing or unsafe."""
     try:
-        fd = os.open(_resolve(plan, name), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = forge_posix.open_nofollow(
+            _resolve(plan, name),
+            os.O_RDONLY | forge_posix.O_NOFOLLOW | forge_posix.O_NONBLOCK,
+        )
         try:
             return os.read(fd, 65).decode('ascii').strip()
         finally:
@@ -432,15 +444,7 @@ def interrupt_grace() -> float:
 
 
 def _group_alive(pgid: int) -> bool:
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
+    return forge_proc.group_alive(pgid)
 
 
 def stop_harnesses(plan: object, names: object, groups: object = ()) -> None:
@@ -522,7 +526,10 @@ def decision_head(plan: object, name: str) -> str:
 
 def read_request(plan: object, name: str) -> dict | None:
     try:
-        fd = os.open(_resolve(plan, REQUESTS, name), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = forge_posix.open_nofollow(
+            _resolve(plan, REQUESTS, name),
+            os.O_RDONLY | forge_posix.O_NOFOLLOW | forge_posix.O_NONBLOCK,
+        )
         try:
             data = os.read(fd, REQUEST_MAX + 1)
         finally:
@@ -563,7 +570,11 @@ def settle_request(plan: object, name: str, request: dict | None, outcome: str, 
              'previous': None, 'request': name,
              'outcome': outcome, 'reason': reason}
     try:
-        fd = os.open(_resolve(plan, 'control.log'), os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+        fd = forge_posix.open_nofollow(
+            _resolve(plan, 'control.log'),
+            os.O_WRONLY | os.O_APPEND | os.O_CREAT | forge_posix.O_NOFOLLOW,
+            0o644,
+        )
         try:
             os.write(fd, (json.dumps(entry) + '\n').encode('utf-8'))
         finally:
@@ -644,14 +655,9 @@ def brief_writer_alive(plan: object) -> bool:
     The file is removed when the writer ends, so a missing or unreadable one means it is gone."""
     try:
         pid = int((Path(plan) / 'brief.pid').read_text().split()[0])
-        if pid <= 0:
-            return False
-        os.kill(pid, 0)
-    except PermissionError:
-        return True
     except (OSError, ValueError, IndexError):
         return False
-    return True
+    return forge_proc.pid_alive(pid)
 
 
 def brief_unanswered(plan: object, name: str) -> list:
@@ -757,7 +763,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         dataset_event('sched_terminal', plan, name, dict(status=state))
 
     def merge(name: str) -> None:
-        result = subprocess.run(['/bin/bash', script, '_merge', str(plan), name])
+        result = subprocess.run([forge_proc.bash_executable(), script, '_merge', str(plan), name])
         if result.returncode and status(name) == 'PASS':
             mark(name, 'ERROR')
         elif brief_mode != 'off' and status(name) == 'MERGED':
@@ -885,7 +891,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     def requeue(name: str) -> bool:
         """Prepare a retry exactly as `retry` does, then put the task at the queue head. A task at its
         attempt cap (#69) is not prepared: _prepare_retry stops it for a decision instead."""
-        result = subprocess.run(['/bin/bash', script, '_prepare_retry', str(plan), name])
+        result = subprocess.run([forge_proc.bash_executable(), script, '_prepare_retry', str(plan), name])
         if result.returncode:
             refused[name] = budget(name)
             return False
@@ -917,7 +923,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     def prompt_requeue(name: str) -> bool:
         """Re-dispatch a STALE task (its prompt changed while the attempt ran, #150) with the new text. The stale
         attempt spent nothing, so no retry is counted: retries, retries.used and decided.left stay as they are."""
-        result = subprocess.run(['/bin/bash', script, '_prepare_retry', str(plan), name, '--prompt'])
+        result = subprocess.run([forge_proc.bash_executable(), script, '_prepare_retry', str(plan), name, '--prompt'])
         if result.returncode:
             print('forge: ' + name + ' is not re-dispatched: its changed prompt could not be prepared',
                   file=sys.stderr, flush=True)
@@ -944,7 +950,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         either: _prepare_retry --resume stops it for a decision, and it leaves the queue."""
         if not _pinned(plan, name) and not at_cap(name):
             return True
-        result = subprocess.run(['/bin/bash', script, '_prepare_retry', str(plan), name, '--resume'])
+        result = subprocess.run([forge_proc.bash_executable(), script, '_prepare_retry', str(plan), name, '--resume'])
         if result.returncode:
             if status(name) == 'NEEDS_DECISION':
                 print('forge: ' + name + ' is not resumed: it is at its attempt cap and waits for your decision',
@@ -987,7 +993,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         if name not in pairs_cache:
             row = row_now(name)
             qa_only = (plan / 'tasks' / name / 'resume').exists() and subprocess.run(
-                ['/bin/bash', script, '_qa_only', str(plan), name],
+                [forge_proc.bash_executable(), script, '_qa_only', str(plan), name],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
             specs = [row[5]] if qa_only or row[4] == 'script' else [row[4], row[5]]
             pairs_cache[name] = [spec_pair(registry, spec) for spec in specs]
@@ -1015,7 +1021,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         # The implementer's pair when it is held (a full dispatch), else the reviewer's.
         role = 'dwarf' if len(pairs) == 2 and any(holds(pause, pairs[:1]) for pause in holding) else 'qa'
         excluded = {(pause['harness'], pause['model'] or '*') for pause in pauses.values()}
-        command = ['/bin/bash', script, '_prepare_retry', str(plan), name, '--fallback',
+        command = [forge_proc.bash_executable(), script, '_prepare_retry', str(plan), name, '--fallback',
                    ','.join(sorted(h + '/' + m for h, m in excluded)), '--cause', holding[0]['class']]
         if role == 'qa':
             command += ['--role', 'qa']
@@ -1068,7 +1074,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             return False
         excluded = {(info['harness'], info['model'] if scope.startswith('model:') else '*')}
         excluded.update((p['harness'], p['model'] or '*') for p in pauses.values())
-        command = ['/bin/bash', script, '_prepare_retry', str(plan), name, '--fallback',
+        command = [forge_proc.bash_executable(), script, '_prepare_retry', str(plan), name, '--fallback',
                    ','.join(sorted(h + '/' + m for h, m in excluded)), '--cause', cause]
         if stage == 'qa':
             command += ['--role', 'qa']
@@ -1104,7 +1110,10 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     def backoff() -> tuple:
         """The plan's infra_backoff, read at every wait so a change applies to the next one."""
         try:
-            fd = os.open(_resolve(plan, 'infra_backoff'), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            fd = forge_posix.open_nofollow(
+                _resolve(plan, 'infra_backoff'),
+                os.O_RDONLY | forge_posix.O_NOFOLLOW | forge_posix.O_NONBLOCK,
+            )
             try:
                 text = os.read(fd, 4097).decode('ascii').strip()
             finally:
@@ -1318,7 +1327,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             if not _write_atomic(plan, answer + '\n', 'tasks', name, 'answer.md'):
                 return 'refused', 'the answer could not be written to tasks/' + name + '/answer.md'
         # A STALE task spent no attempt: it is prepared with the new prompt, not as a failed one (#150).
-        command = ['/bin/bash', script, '_prepare_retry', str(plan), name] + (
+        command = [forge_proc.bash_executable(), script, '_prepare_retry', str(plan), name] + (
             ['--prompt'] if state == 'STALE' else (['--dwarf', dwarf] if dwarf else []) + decision)
         rc = subprocess.run(command).returncode
         if rc == 3:
@@ -1380,7 +1389,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             summary_seen[name] = summary_signature(name)   # before it runs: its first change must trigger
         except Exception:
             pass
-        if subprocess.run(['/bin/bash', script, '_waves', str(plan)]).returncode:
+        if subprocess.run([forge_proc.bash_executable(), script, '_waves', str(plan)]).returncode:
             _warn('waves.tsv was not refreshed for ' + name + '; the task still runs')
         return 'applied', None
 
@@ -1401,7 +1410,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             return 'refused', ('a ' + state + ' task has no reviewer verdict to override: accept takes a FAIL, '
                                'UNKNOWN or NEEDS_DECISION task')
         env = dict(os.environ, FORGE_ACCEPT_ACTOR=request.get('actor') or 'cli')
-        result = subprocess.run(['/bin/bash', script, '_accept', str(plan), name, '--reason', reason, '--approved'],
+        result = subprocess.run([forge_proc.bash_executable(), script, '_accept', str(plan), name, '--reason', reason, '--approved'],
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
         lines = [line for line in result.stdout.splitlines() if line.strip()]
         if result.returncode:
@@ -1485,7 +1494,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         wrong here ends the run without a sweep, never with a failure."""
         nonlocal sweep_asked
         sweep_asked = True
-        command = ['/bin/bash', script, '_sweep', str(plan), '--severity', sweep, '--max', str(sweep_max)]
+        command = [forge_proc.bash_executable(), script, '_sweep', str(plan), '--severity', sweep, '--max', str(sweep_max)]
         result = subprocess.run(command + (['--plausible'] if sweep_plausible else []),
                                 stdout=subprocess.PIPE, text=True)
         if result.returncode:
@@ -1526,7 +1535,10 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     def gread(gid: str, name: str) -> str:
         """A short file of the group's dir, stripped; empty when missing or unsafe."""
         try:
-            fd = os.open(_resolve(plan, 'groups', gid, name), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            fd = forge_posix.open_nofollow(
+                _resolve(plan, 'groups', gid, name),
+                os.O_RDONLY | forge_posix.O_NOFOLLOW | forge_posix.O_NONBLOCK,
+            )
             try:
                 return os.read(fd, 4097).decode('utf-8', 'replace').strip()
             finally:
@@ -1575,8 +1587,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         root.mkdir(parents=True, exist_ok=True)
         log = open(root / 'group.out', 'ab')
         process = subprocess.Popen(
-            ['/bin/bash', script, '_group', str(plan), gid],
-            stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+            forge_proc.bash_cmd(script, '_group', str(plan), gid),
+            stdout=log, stderr=subprocess.STDOUT, **forge_proc.popen_group_kwargs(),
         )
         active[GROUP_KEY + gid] = process, log
         group_again.discard(gid)
@@ -1598,7 +1610,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
 
     def group_line(gid: str) -> None:
         """Say what a group that waits for a person (or the next run) waits for: _group_settle's own line."""
-        subprocess.run(['/bin/bash', script, '_group_settle', str(plan), gid])
+        subprocess.run([forge_proc.bash_executable(), script, '_group_settle', str(plan), gid])
 
     def requeue_members(gid: str) -> None:
         """Every member now in AUTO_RETRY and retryable goes back through the ordinary requeue: its budget,
@@ -1610,7 +1622,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     def merge_group(gid: str, requeue_ok: bool = True) -> None:
         # _merge_group flags each merged member's dependents itself (forge_brief_stale), so a direct call
         # behaves the same; the scheduler does not do it a second time.
-        result = subprocess.run(['/bin/bash', script, '_merge_group', str(plan), gid])
+        result = subprocess.run([forge_proc.bash_executable(), script, '_merge_group', str(plan), gid])
         if result.returncode != 0 and requeue_ok and not interrupted and not graceful:
             requeue_members(gid)   # a member the merge invalidated, when its review is what was voided
 
@@ -1640,7 +1652,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             merge_group(gid, going)
         elif state == 'FAIL':
             if not interrupted:
-                result = subprocess.run(['/bin/bash', script, '_group_settle', str(plan), gid])
+                result = subprocess.run([forge_proc.bash_executable(), script, '_group_settle', str(plan), gid])
                 if result.returncode:
                     _warn('group ' + gid + ' could not be settled (exit ' + str(result.returncode)
                           + '); its members stay IMPLEMENTED')
@@ -1733,12 +1745,20 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         that process is gone: the run is ending and the earlier summarize of this task still holds its lock."""
         command = [sys.executable, os.environ.get('FORGE_SUMMARIZE') or SUMMARIZE, str(plan), '--task', name]
         if after is not None:
-            command = ['/bin/sh', '-c', 'while kill -0 "$0" 2>/dev/null; do sleep 1; done; exec "$@"',
-                       str(after)] + command
+            if forge_proc.IS_WINDOWS:
+                waiter = ('import os, subprocess, sys, time; sys.path.insert(0, sys.argv[1]); '
+                          'import forge_proc\n'
+                          'pid = int(sys.argv[2])\n'
+                          'while forge_proc.pid_alive(pid): time.sleep(1)\n'
+                          'sys.exit(subprocess.run(sys.argv[3:]).returncode)')
+                command = [sys.executable, '-c', waiter, str(Path(__file__).resolve().parent), str(after), *command]
+            else:
+                command = ['/bin/sh', '-c', 'while kill -0 "$0" 2>/dev/null; do sleep 1; done; exec "$@"',
+                           str(after)] + command
         out = open(plan / 'summaries.out', 'ab')
         try:
             process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=out,
-                                       start_new_session=True)
+                                       **forge_proc.popen_group_kwargs(detached=True))
         finally:
             out.close()
         summary_procs[name] = process
@@ -1848,7 +1868,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             if state == 'PASS':
                 merge_group(gid)
             elif state == 'FAIL' and not gsettled(gid) and not interrupted:
-                subprocess.run(['/bin/bash', script, '_group_settle', str(plan), gid])
+                subprocess.run([forge_proc.bash_executable(), script, '_group_settle', str(plan), gid])
                 requeue_members(gid)
             elif state in ('INTERRUPTED', 'INFRA', 'TIMEOUT'):
                 group_again.add(gid)
@@ -1963,8 +1983,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 human.discard(name)
                 _remove(plan, 'tasks', name, 'retry.prepared')
                 process = subprocess.Popen(
-                    ['/bin/bash', script, '_task', str(plan), name],
-                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True, env=env,
+                    forge_proc.bash_cmd(script, '_task', str(plan), name),
+                    stdout=log, stderr=subprocess.STDOUT, env=env, **forge_proc.popen_group_kwargs(),
                 )
                 active[name] = process, log
                 pending.remove(name)
@@ -2007,10 +2027,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         reap_exited(allow_requeue=False)
         stopping = list(active.items())
         for name, (process, log) in stopping:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except OSError:
-                pass
+            forge_proc.kill_tree(process.pid, force=False)
         # The group outlives its leader while dispatch's EXIT trap stops the harness, so wait
         # for the group to empty, not for the leader. Reaping the leader matters too: its
         # zombie would keep the group alive.
@@ -2027,10 +2044,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             time.sleep(0.05)
         for name, (process, log) in stopping:
             if name in waiting:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except OSError:
-                    pass
+                forge_proc.kill_tree(process.pid, force=True)
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
@@ -2107,7 +2121,7 @@ def main() -> None:
             # Who holds it, for the next command the lock refuses. exec keeps this pid.
             _write_atomic(plan, json.dumps(dict(pid=os.getpid(), command=command, at=time.time())) + '\n', HOLDER)
             env = dict(os.environ, FORGE_PLAN_LOCK=plan)
-            os.execve('/bin/bash', ['/bin/bash', script, command, plan, *args], env)
+            forge_proc.exec_or_exit(forge_proc.bash_cmd(script, command, plan, *args), env=env, inherit_fds=True)
         parser = argparse.ArgumentParser(prog='forge-schedule.py')
         parser.add_argument('script')
         parser.add_argument('plan')

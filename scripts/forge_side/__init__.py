@@ -36,7 +36,6 @@ does not keep running after `run` returns.
 """
 from __future__ import annotations
 
-import fcntl
 import os
 from pathlib import Path
 import re
@@ -45,10 +44,14 @@ import stat
 import subprocess
 import sys
 
+SCRIPTS = Path(__file__).resolve().parent.parent
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+import forge_flock as fcntl  # noqa: E402
+import forge_proc  # noqa: E402
 from forge_decide import load_user
 from forge_decide.providers import privacy_floor
 
-SCRIPTS = Path(__file__).resolve().parent.parent
 DISPATCH = SCRIPTS / 'forge-dispatch.sh'
 
 KINDS = ('brief', 'brief-change', 'summary', 'triage')
@@ -478,6 +481,9 @@ def _finish(plan, task, kind, spec, ok, last, directory, reason) -> dict:
 
 def _signal_group(pgid: int, sig: int, proc: subprocess.Popen) -> None:
     """Signal the dispatch's session. Never this process's own group."""
+    if forge_proc.IS_WINDOWS:
+        forge_proc.kill_tree(proc.pid, force=(sig == forge_proc.SIGKILL))
+        return
     if pgid == os.getpgrp():
         try:
             proc.send_signal(sig)
@@ -505,17 +511,20 @@ def _stop_dispatch(proc: subprocess.Popen) -> None:
     trap as well.
     """
     try:
-        try:
-            pgid = os.getpgid(proc.pid)
-        except OSError:
+        if forge_proc.IS_WINDOWS:
             pgid = proc.pid
+        else:
+            try:
+                pgid = os.getpgid(proc.pid)
+            except OSError:
+                pgid = proc.pid
         _signal_group(pgid, signal.SIGTERM, proc)
         try:
             proc.wait(timeout=_STOP_GRACE_S)
         except subprocess.TimeoutExpired:
             pass
         # The shell can be gone while a preflight child is still in the session.
-        _signal_group(pgid, signal.SIGKILL, proc)
+        _signal_group(pgid, forge_proc.SIGKILL, proc)
         try:
             proc.wait(timeout=_STOP_GRACE_S)
         except subprocess.TimeoutExpired:
@@ -539,14 +548,14 @@ def _dispatch_and_wait(dest: Path, repo, prompt, spec, limit: int, event_dir, ta
         return _finish(event_dir, task, kind, spec, False, None, dest, 'error')
     if not repo:
         return _finish(event_dir, task, kind, spec, False, None, dest, 'error')
-    argv = ['/bin/bash', str(DISPATCH), 'side', '' if spec is None else str(spec),
-            '--repo', str(repo), '--run-dir', str(dest), '--prompt-file', str(dest / 'prompt.txt'),
-            '--timeout', str(max(0, limit))]
+    argv = forge_proc.bash_cmd(DISPATCH, 'side', '' if spec is None else str(spec),
+                               '--repo', str(repo), '--run-dir', str(dest), '--prompt-file', str(dest / 'prompt.txt'),
+                               '--timeout', str(max(0, limit)))
     # Own session, so a timeout can stop the preflight with the shell.
     try:
         proc = subprocess.Popen(
             argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True, close_fds=True)
+            close_fds=True, **forge_proc.popen_group_kwargs())
     except (OSError, subprocess.SubprocessError):
         return _finish(event_dir, task, kind, spec, False, _last(dest), dest, 'error')
     wait = None if limit <= 0 else limit + _DISPATCH_GRACE_S

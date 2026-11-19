@@ -16,6 +16,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import sys
 import tempfile
@@ -749,7 +750,7 @@ def _version_os(notes: list) -> tuple:
     if not versions:
         versions.append(_read(SKILL / 'VERSION').strip() or 'unknown')
     if not systems:
-        systems.append(os.uname().sysname)
+        systems.append(platform.system())
     return ', '.join(versions), ', '.join(systems)
 
 

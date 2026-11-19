@@ -16,12 +16,17 @@ library only.
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import math
 import os
 from pathlib import Path
+import sys
 import time
+
+_SCRIPTS = str(Path(__file__).resolve().parents[1])
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+import forge_flock as fcntl  # noqa: E402
 
 from . import state_dir
 

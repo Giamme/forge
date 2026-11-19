@@ -49,6 +49,7 @@ import time
 SKILL = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SKILL / 'scripts'))
 
+import forge_proc  # noqa: E402
 import forge_storage  # noqa: E402
 
 OK, REFUSED, BUSY, FAILED = 0, 2, 3, 4
@@ -293,8 +294,8 @@ def start_check(args) -> int:
             if args.exclude:
                 argv += ['--exclude', args.exclude]
             with open(log, 'ab') as sink:
-                subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=sink, stderr=sink, start_new_session=True,
-                                 close_fds=True)
+                subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=sink, stderr=sink,
+                                 close_fds=True, **forge_proc.popen_group_kwargs(detached=True))
     except Exception:   # noqa: BLE001 -- a run never fails over its storage check
         pass
     return OK

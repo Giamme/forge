@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow the format `{major}.{minor}[.{patch}]` ([...] parts appear only when non-zero).
 
+## [0.21] - 2026-11-19
+
+Groundwork for native Windows support, plus fixes for macOS with Python 3.9 and for parallel tasks that start at the same moment.
+
+### Highlights
+
+- First step toward native Windows support: file locking, safe file opening and process handling now go through one cross-platform layer that also works on Windows. Nothing changes on macOS or Linux, and Windows isn't usable yet: the Windows launcher, installer and docs come in the next part. Thanks to Kratoswer-byte for the port.
+
+### Fixed
+
+- On macOS with Python 3.9, such as the system `python3`, every phase of a run was recorded as taking about 0 seconds, so `report` and forge-ui showed wrong phase times. Phases are now timed on a clock that all of forge's processes share.
+- In brief mode, a task that waits for the brief writer could start right away on macOS with Python 3.9, as if the writer had already finished. The scheduler now always checks the writer the first time.
+- forge-ui no longer looks up the machine's full host name before it starts listening, which could delay its startup by several seconds on macOS.
+- The planner refuses a reply nested more than 64 levels deep or holding a number over 4,300 digits the same way on every Python version, and forge-ui refuses a profile nested that deep. Before, Python 3.12 and later accepted the deep profile, and older Python 3.9 builds spent a long time parsing the huge number.
+- In a parallel run, a task that started at the same moment as others could end ERROR with "could not create worktree — fatal: could not open '.git/worktrees/<id>/gitdir'". Tasks no longer clean up stale worktree registrations while another task is creating its worktree.
+
 ## [0.20] - 2026-11-17
 
 Review findings you can trust and manage: one record per repository with issue states from GitHub, forge findings and forge-ui actions, an optional triage agent, and a sweep per finding.

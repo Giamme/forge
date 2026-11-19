@@ -48,7 +48,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import fcntl
 import importlib.util
 import json
 import os
@@ -63,6 +62,8 @@ import time
 SCRIPTS = Path(__file__).resolve().parent
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
+import forge_flock as fcntl  # noqa: E402
+import forge_posix  # noqa: E402
 SEVERITIES = ('P0', 'P1', 'P2', 'P3')
 DEFAULT_MAX = 5     # fix tasks one sweep may add
 GROUP_CAP = 8       # findings one fix task is given; the rest of its file stays for forge issues
@@ -127,7 +128,11 @@ def write_atomic(path: Path, text: str) -> None:
 def control_lock(plan: Path):
     """The plan's control.lock, as `forge control` takes it, around a tasks.tsv rewrite. Busy for
     LOCK_WAIT seconds: proceed without it, as the scheduler does."""
-    fd = os.open(str(plan / 'control.lock'), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+    fd = forge_posix.open_nofollow(
+        str(plan / 'control.lock'),
+        os.O_RDWR | os.O_CREAT | forge_posix.O_NOFOLLOW,
+        0o644,
+    )
     try:
         deadline = time.monotonic() + LOCK_WAIT
         while True:

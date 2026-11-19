@@ -79,7 +79,6 @@ import argparse
 import contextlib
 import difflib
 import io
-import fcntl
 import hashlib
 import json
 import os
@@ -87,10 +86,16 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
+import sys
 import tempfile
 import calendar
 import time
 
+_SCRIPTS = str(Path(__file__).resolve().parents[1])
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+import forge_flock as fcntl  # noqa: E402
+import forge_proc  # noqa: E402
 import forge_brief
 import forge_brief.answers as answers
 import forge_groups
@@ -858,7 +863,7 @@ def _recompute_waves(plan) -> str | None:
         return None   # an unplanned plan gains nothing, and waves.tsv is what marks one as planned
     script = Path(forge_brief.SCRIPTS) / 'forge-parallel.sh'
     try:
-        done = subprocess.run(['/bin/bash', str(script), '_waves', str(plan)], stdin=subprocess.DEVNULL,
+        done = subprocess.run(forge_proc.bash_cmd(script, '_waves', str(plan)), stdin=subprocess.DEVNULL,
                               capture_output=True, text=True, timeout=120)
     except (OSError, subprocess.SubprocessError) as error:
         return 'waves.tsv was not refreshed: %s' % error

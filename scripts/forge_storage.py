@@ -36,8 +36,14 @@ import os
 import re
 import shutil
 import stat
+import sys
 import time
 from pathlib import Path
+
+_SCRIPTS = str(Path(__file__).resolve().parent)
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+import forge_posix  # noqa: E402
 
 DEP_DIRS = frozenset('node_modules bower_components .venv venv vendor .bundle Pods deps _build .dart_tool elm-stuff .build'.split())
 LOG_MIN = 64 << 10                  # a smaller log gains next to nothing from gzip
@@ -241,7 +247,11 @@ def compress_log(path) -> tuple[int, str | None]:
         except OSError as error:
             return 0, 'cannot remove %s: %s' % (part, error.strerror or error)
     try:
-        fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, stat.S_IMODE(before.st_mode))
+        fd = forge_posix.open_nofollow(
+            part,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | forge_posix.O_NOFOLLOW,
+            stat.S_IMODE(before.st_mode),
+        )
         with os.fdopen(fd, 'wb') as raw, open(path, 'rb') as source:
             with gzip.GzipFile(filename=os.path.basename(path), mode='wb', fileobj=raw, compresslevel=6,
                                mtime=int(before.st_mtime)) as packed:

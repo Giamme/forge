@@ -11,12 +11,18 @@ from `note`, is always `claimed`.
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 from pathlib import Path
+import platform
+import sys
 import tempfile
 import time
+
+_SCRIPTS = str(Path(__file__).resolve().parents[1])
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+import forge_flock as fcntl  # noqa: E402
 
 SKILL = Path(__file__).resolve().parents[2]
 TYPES = ('environment', 'sandbox', 'tooling', 'prompt', 'forge-bug', 'other')
@@ -225,7 +231,7 @@ def _context(plan: Path, role: str, resolved: dict, task, attempt) -> dict:
         'attempt': _attempt(attempt),
         'run_id': _first_line(plan / 'run_id'),
         'version': _first_line(SKILL / 'VERSION'),
-        'os': os.uname().sysname,
+        'os': platform.system(),
         't': int(time.time()),
     }
 

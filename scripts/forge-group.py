@@ -42,6 +42,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import forge_groups  # noqa: E402
+import forge_proc  # noqa: E402
 
 SCRIPTS = Path(__file__).resolve().parent
 PARALLEL = SCRIPTS / 'forge-parallel.sh'
@@ -346,7 +347,7 @@ def rearm(plan: str, gid: str, seen: str, reason: str) -> None:
 def run_settle(plan: str, gid: str, tasks: list) -> int:
     """_group_settle --tasks. Outside the control lock: post_attempt takes that same lock
     when the retry policy writes a marker, and holding it here would time that write out."""
-    command = ['/bin/bash', str(PARALLEL), '_group_settle', plan, gid, '--tasks', ','.join(tasks)]
+    command = forge_proc.bash_cmd(PARALLEL, '_group_settle', plan, gid, '--tasks', ','.join(tasks))
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=120)
     except OSError as error:

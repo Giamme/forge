@@ -2,15 +2,19 @@
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 SCRIPTS = Path(__file__).resolve().parents[1]
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+import forge_flock as fcntl  # noqa: E402
+import forge_proc  # noqa: E402
 REVISION = '18793200c0d7e8cdb2db369ea3abe5647a1e15e4'
 VERSION = '1.2.0'
 ARCHIVE_SHA256 = '3f7714ee0baec05af8d856db2b00d63398026fae2fcf50edbee542671126072c'
@@ -80,5 +84,5 @@ def command(argv: list, *, cwd: Path | None = None, timeout: float = 120, input:
 
 
 def artifact(verb: str, *args: object) -> str:
-    return command(['/bin/bash', '-c', 'source "$1"; shift; "$@"', 'forge',
-                    SCRIPTS / 'forge-artifact.sh', verb, *args]).decode().strip()
+    return command(forge_proc.bash_cmd('-c', 'source "$1"; shift; "$@"', 'forge',
+                                      SCRIPTS / 'forge-artifact.sh', verb, *args)).decode().strip()

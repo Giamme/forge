@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import argparse
 import errno
-import fcntl
 import hashlib
 import itertools
 import json
@@ -58,6 +57,13 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+_SCRIPTS = str(Path(__file__).resolve().parent)
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+import forge_flock as fcntl  # noqa: E402
+import forge_posix  # noqa: E402
+import forge_proc  # noqa: E402
 
 SKILL = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SKILL / 'scripts'))
@@ -210,7 +216,7 @@ def locate(arg):
 def read_text(path, cap=READ_MAX):
     """A run file's text: None if absent, Refused if it is not a plain readable file. Never follows a link."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        fd = forge_posix.open_nofollow(path, os.O_RDONLY | forge_posix.O_NONBLOCK | forge_posix.O_NOFOLLOW)
     except FileNotFoundError:
         return None
     except OSError as error:
@@ -324,23 +330,17 @@ def scheduler_pid(run):
         pid = json.loads(read_text(os.path.join(run.path, 'scheduler.live'), 64 * 1024) or '')['pid']
     except (ValueError, KeyError, TypeError, Refused):
         return None
-    if type(pid) is not int or pid <= 0:
-        return None
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return None
-    except PermissionError:
-        return pid
-    except (OSError, OverflowError):
-        return None
-    return pid
+    return pid if forge_proc.pid_alive(pid) else None
 
 
 def take_lock(run):
     """The run's operation lock, non-blocking, as the runners take it. Returns the open fd."""
     try:
-        fd = os.open(run.lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o644)
+        fd = forge_posix.open_nofollow(
+            run.lock_path,
+            os.O_RDWR | os.O_CREAT | forge_posix.O_NOFOLLOW | forge_posix.O_NONBLOCK,
+            0o644,
+        )
     except OSError as error:
         raise Failed('cannot open %s: %s' % (run.lock_path, error.strerror or error))
     try:

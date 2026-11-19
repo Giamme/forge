@@ -99,7 +99,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import errno
-import fcntl
 import hashlib
 import json
 import math
@@ -116,6 +115,10 @@ from pathlib import Path
 
 TIERS = ('low', 'medium', 'high')
 SCRIPTS = Path(__file__).resolve().parent
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+import forge_flock as fcntl  # noqa: E402
+import forge_posix  # noqa: E402
 REGISTRY = SCRIPTS.parent / 'registry.tsv'
 FAILED = ('FAIL', 'TIMEOUT', 'BOUNCED', 'INCOMPLETE')   # a judgment against the spec that ran
 NEUTRAL = ('INFRA', 'UNKNOWN', 'ERROR', 'RUNNING', 'INTERRUPTED', 'NEEDS_INPUT', 'NEEDS_DECISION', 'STALE')   # say nothing about it
@@ -938,7 +941,11 @@ def _task_dir(plan: Path, task: str):
 
 @contextlib.contextmanager
 def _control_lock(plan: Path):
-    fd = os.open(str(plan / 'control.lock'), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
+    fd = forge_posix.open_nofollow(
+        str(plan / 'control.lock'),
+        os.O_RDWR | os.O_CREAT | forge_posix.O_NOFOLLOW | forge_posix.O_CLOEXEC,
+        0o644,
+    )
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise OSError(errno.EINVAL, 'control.lock is not a regular file')
@@ -1155,7 +1162,7 @@ def _record(args, name: str, after=None) -> int:
         parent, _leaf = control._open_parent(plan, rel)
         if parent is None:
             return 1
-        os.close(parent)
+        forge_posix.close_dir(parent)
         if args.probe:
             control.probe(plan, rel)
         else:

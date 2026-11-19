@@ -76,7 +76,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import errno
-import fcntl
 import hashlib
 import importlib.util
 import json
@@ -91,6 +90,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import forge_posix  # noqa: E402
 from forge_registry import repo_key  # noqa: E402
 import forge_identity  # noqa: E402
 from forge_findings import status as record_status  # noqa: E402
@@ -992,7 +992,10 @@ def _read_store(name, noun, shape, valid):
         if not stat.S_ISREG(os.lstat(path).st_mode):
             raise Fail(not_regular)
         # NOFOLLOW again for a swap after the lstat; NONBLOCK so a FIFO cannot hold the open
-        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as fh:
+        with os.fdopen(
+            forge_posix.open_nofollow(path, os.O_RDONLY | forge_posix.O_NOFOLLOW | forge_posix.O_NONBLOCK),
+            "rb",
+        ) as fh:
             if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
                 raise Fail(not_regular)
             raw = fh.read(STORE_MAX + 1)
