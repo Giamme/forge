@@ -5,7 +5,8 @@
 # Pull requests run Linux with Python 3.9, the oldest Python forge supports. Pushes to dev, and
 # runs started by hand (Actions → Tests → Run workflow, on any branch), also run Linux with the
 # latest 3.x and macOS (with the system Bash 3.2) with both: macOS runners are slow and GitHub
-# runs few of them at once. A pull request that only changes documentation (DOCS_ONLY below)
+# runs few of them at once. They also run one Windows job (Git Bash, latest Python 3.x): see the
+# windows job below. A pull request that only changes documentation (DOCS_ONLY below)
 # runs no tests at all. Pull requests are merged into dev, and main only receives releases from
 # dev, so a push to main runs nothing more: its commits already passed on dev.
 #
@@ -101,10 +102,37 @@ jobs:
       - name: tests/check.sh --shard ${{ matrix.shard }}/4
         run: bash tests/check.sh --shard ${{ matrix.shard }}/4
 
+  # Native Windows (Git Bash with a Windows Python), one job with the latest Python, on pushes to
+  # dev and runs started by hand only: Windows minutes cost twice Linux ones. forge does not run
+  # natively on Windows yet (the port's part 2 adds the entry points), so the tests that need what
+  # is missing are listed in tests/windows-pending.txt, with why, and run_tests.py leaves them
+  # out here. What runs covers the platform adapters and everything that already works.
+  windows:
+    name: windows-latest · Python 3.x
+    needs: plan
+    if: needs.plan.outputs.run == 'true' && github.event_name != 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+      - name: Versions
+        run: |
+          bash --version | head -1
+          python3 --version
+          git --version
+      - name: tests/check.sh
+        run: bash tests/check.sh
+
   passed:
     name: Tests passed
     if: always()
-    needs: [plan, check]
+    needs: [plan, check, windows]
     runs-on: ubuntu-latest
     steps:
       - name: Every shard passed
@@ -112,8 +140,11 @@ jobs:
           PLAN: ${{ needs.plan.result }}
           RUN: ${{ needs.plan.outputs.run }}
           CHECK: ${{ needs.check.result }}
+          WINDOWS: ${{ needs.windows.result }}
         run: |
-          echo "plan: $PLAN, tests needed: $RUN, shards: $CHECK"
+          echo "plan: $PLAN, tests needed: $RUN, shards: $CHECK, windows: $WINDOWS"
           [ "$PLAN" = success ] || exit 1
           if [ "$RUN" = false ]; then echo "documentation only: no tests to run"; exit 0; fi
-          [ "$CHECK" = success ]
+          [ "$CHECK" = success ] || exit 1
+          # skipped on pull requests, which run no Windows job
+          [ "$WINDOWS" = success ] || [ "$WINDOWS" = skipped ]

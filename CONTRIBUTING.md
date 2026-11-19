@@ -85,7 +85,10 @@ every pull request, on Linux with Python 3.9, and its **Tests passed** check has
 merging. To keep pull requests quick, macOS and Linux with the latest Python 3 run only after a
 merge to `dev`. So if your change touches shell scripts, run the suite on macOS too if you can,
 and say in the pull request if you couldn't. A pull request that only changes documentation
-skips the tests. Windows is not covered yet ([#166](https://github.com/Giamme/forge/issues/166)).
+skips the tests. A merge to `dev` also runs the suite on Windows (Git Bash), except the tests
+listed in [`tests/windows-pending.txt`](tests/windows-pending.txt), which need parts of the
+Windows port that have not landed yet. If your change makes one of them pass on Windows, delete
+its line.
 
 ## Rules the code follows
 
