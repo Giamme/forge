@@ -297,10 +297,15 @@ def record(gate: str, result: dict) -> Path:
     _private_dir(path.parent)
     with open(f'{path}.lock', 'a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        data = _load(path)
-        results = data.get('results') if isinstance(data.get('results'), dict) else {}
-        results['%s/%s' % (result['provider'], result['model'])] = {k: result[k] for k in _RECORDED if k in result}
-        _save(path, dict(data, version=VERSION, results=results), 0o600)
+        try:
+            data = _load(path)
+            results = data.get('results') if isinstance(data.get('results'), dict) else {}
+            results['%s/%s' % (result['provider'], result['model'])] = {k: result[k] for k in _RECORDED if k in result}
+            _save(path, dict(data, version=VERSION, results=results), 0o600)
+        finally:
+            # Unlocked before the close, not by it: on Cygwin a lock that only the close releases
+            # can leave another thread of this process waiting on it for ever.
+            fcntl.flock(lock, fcntl.LOCK_UN)
     return path
 
 

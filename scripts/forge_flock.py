@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import errno
 import os
+import sys
 import time
 
 try:
@@ -32,6 +33,11 @@ else:
     LOCK_UN = 8
 
 _LOCK_OFFSET = 0x40000000  # 1 GiB sentinel byte; msvcrt does not extend file size
+
+# Cygwin (Windows MSYS2 mode): flock sometimes fails with EFAULT when threads of one process lock
+# the same file at the same moment, and the same call succeeds when repeated.
+_CYGWIN = sys.platform == 'cygwin'
+_CYGWIN_EFAULT_TRIES = 100  # 10 ms apart: about a second
 
 _BUSY_ERRNOS = frozenset(
     getattr(errno, name)
@@ -57,8 +63,17 @@ def _msvcrt_lock_sentinel(fd: int, mode: int) -> None:
 def flock(fd_or_file, operation: int) -> None:
     """Acquire or release an advisory lock matching ``fcntl.flock`` semantics."""
     if _fcntl is not None:
-        _fcntl.flock(fd_or_file, operation)
-        return
+        if not _CYGWIN:
+            _fcntl.flock(fd_or_file, operation)
+            return
+        for attempt in range(_CYGWIN_EFAULT_TRIES):
+            try:
+                _fcntl.flock(fd_or_file, operation)
+                return
+            except OSError as exc:
+                if exc.errno != errno.EFAULT or attempt == _CYGWIN_EFAULT_TRIES - 1:
+                    raise
+                time.sleep(0.01)
 
     fd = _fileno(fd_or_file)
     nonblocking = bool(operation & LOCK_NB)
