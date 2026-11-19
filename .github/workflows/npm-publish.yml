@@ -1,4 +1,7 @@
-# Publishes @giamme/forge to npm when a GitHub Release is published.
+# Publishes @giamme/forge to npm.
+# - A dev -> main release merge that changes VERSION: tags v<VERSION>, creates the GitHub Release
+#   with the notes from CHANGELOG.md, then publishes. Nothing happens when that tag already exists.
+# - A GitHub Release published by hand: publishes its tag.
 # No token: npm trusted publishing (OIDC). One-time setup on npmjs.com, package @giamme/forge →
 # Settings → Trusted publishing → GitHub Actions: owner Giamme, repository forge, workflow
 # npm-publish.yml. Provenance is attached automatically.
@@ -6,6 +9,9 @@
 name: npm publish
 
 on:
+  push:
+    branches: [main]
+    paths: [VERSION]          # only release merges bump it, so other pushes start nothing
   release:
     types: [published]
   workflow_dispatch:
@@ -23,10 +29,40 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # A Release made here with GITHUB_TOKEN doesn't trigger `release: published`, so the publish
+  # job below runs after it in this same workflow (which also keeps npm trusted publishing valid).
+  release:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.make.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag and create the GitHub Release unless it exists
+        id: make
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver="$(tr -d '[:space:]' < VERSION)"
+          tag="v$ver"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists; nothing to release"; exit 0
+          fi
+          # The CHANGELOG.md section for this version, without its heading.
+          awk -v h="## [$ver]" 'index($0, h) == 1 { on = 1; next } on && /^## \[/ { exit } on' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "CHANGELOG.md has no section for $ver"; exit 1; }
+          gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --notes-file notes.md
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
   publish:
+    needs: release
+    # On a push, only after the release job made a new tag; otherwise (release, dispatch) always.
+    if: ${{ !cancelled() && (github.event_name != 'push' || needs.release.outputs.tag != '') }}
     runs-on: ubuntu-latest
     env:
-      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      TAG: ${{ github.event.release.tag_name || inputs.tag || needs.release.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
