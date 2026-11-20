@@ -170,7 +170,9 @@ class PrTests(unittest.TestCase):
             found = subprocess.run(['which', name], capture_output=True, text=True).stdout.strip()
             if found:
                 (tools / name).symlink_to(found)
-        _, err = self.forge_pr(str(self.run), '--create', code=2, env=dict(self.env, PATH=str(tools)))
+        # Cygwin: a tool reached through a symlink loads its DLLs from the PATH, not its own directory.
+        path = str(tools) + (':/usr/bin' if sys.platform == 'cygwin' else '')
+        _, err = self.forge_pr(str(self.run), '--create', code=2, env=dict(self.env, PATH=path))
         self.assertIn('needs the gh CLI', err)
 
 
