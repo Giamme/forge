@@ -1259,3 +1259,51 @@ class Decision(unittest.TestCase):
         self.assertNotIn('st-pass', chip.get_attribute('class'))
         self.assertEqual(chip.get_attribute('title'), 'forge gate: FAIL (reviewer said PASS)')
         self.assertClean(page)
+
+
+@unittest.skipUnless(sync_playwright, 'install Python Playwright to run browser checks')
+class TenAttemptTaskPartsTests(unittest.TestCase):
+    open = Page.open
+    three_or_skip = Page.three_or_skip
+    assertClean = Page.assertClean
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory(prefix='forge-ui-parts10-')
+        base = Path(cls.temp.name)
+        cls.plan = F.make_plan(base)
+        reader_dir = cls.plan / 'tasks' / 'reader'
+        for name in ('ledger.tsv', 'attempts.tsv'):
+            (reader_dir / name).unlink(missing_ok=True)
+        now = time.time()
+        ledger_rows = []
+        attempt_rows = []
+        for i in range(1, 11):
+            at = int(now - (11 - i) * 300)
+            verdict = 'PASS' if i == 10 else 'FAIL'
+            ledger_rows.append((at, i, f'task-reader-r{i}', verdict, verdict.lower(), 'P2', 1, 0, 1, 4096, 512))
+            attempt_rows.append((at, i, verdict, '', 'sol:xhigh'))
+        F.write(reader_dir / 'ledger.tsv', F.tsv(ledger_rows))
+        F.write(reader_dir / 'attempts.tsv', F.tsv(attempt_rows))
+        cls.key = reader.run_key(cls.plan)
+        _serve(cls, reader.Catalog(plans=[cls.plan], registry=False))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+        cls.temp.cleanup()
+
+    def test_ten_attempt_task_raises_every_part_when_opened_and_settled(self):
+        page = self.open(cdn=True)
+        page.goto(self.url + '#/runs/' + self.key + '/tasks/reader')
+        self.three_or_skip(page)
+        page.wait_for_function("() => window.ForgeUI.state.stage.view === 'run'")
+        page.wait_for_function("() => window.ForgeUI.state.stage.debug().prog.some(([id, p, t]) => id === 't:reader' && t === 1)")
+        page.evaluate("window.ForgeUI.state.stage.debug().settle()")
+        parts = page.evaluate("window.ForgeUI.state.stage.debug().parts('reader')")
+        self.assertEqual(len(parts), 20)
+        self.assertTrue(all(p['visible'] is True for p in parts), parts)
+        self.assertTrue(all(abs(p['scaleY'] - 1.0) < 1e-6 for p in parts), parts)
+        self.assertClean(page)

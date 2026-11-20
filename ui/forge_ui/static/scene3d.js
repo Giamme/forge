@@ -19,6 +19,16 @@ const clamp = v => Math.max(0, Math.min(1, v));
 const segT = (v, a, b) => clamp((v - a) / (b - a));
 const ez = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 const back = t => t <= 0 ? 0 : t >= 1 ? 1 : 1 + 2.2 * Math.pow(t - 1, 3) + 1.2 * Math.pow(t - 1, 2);
+// Opening stagger window on the parent task's progress p (0..1): keeps step 0.05 through
+// 8 slots (maxIdx <= 7) and scales down above that so the last part's window still ends at 1.
+export function partWindow(idx, maxIdx) {
+  const step = maxIdx > 7 ? .36 / maxIdx : .05;
+  return [.34 + idx * step, .64 + idx * step];
+}
+export function partRise(p, idx, maxIdx) {
+  const [a, b] = partWindow(idx, maxIdx);
+  return back(segT(p, a, b));
+}
 const MODEL_PALETTE = ['#4e9af1', '#f08c3a', '#6cc070', '#c46fd8', '#e0c341', '#4fc2c0', '#e06a8c', '#9a8cff', '#a3b84a', '#d98f6b'];
 const KIND_H = { dwarf: 24, qa: 13, shadow: 12 };
 
@@ -351,6 +361,8 @@ export async function createStage(host, cb = {}) {
     const padX = 10, padT = 22, padB = 10, gx = 8, gy = 7;
     const cw = (w - 2 * padX - (C - 1) * gx) / C, ch = Math.min(46, (d - padT - padB - (R - 1) * gy) / R);
     el.zoneEls = [];
+    const partEls = [];
+    let maxIdx = 0;
     tp.zones.forEach((z, ci) => {
       const zx = x + padX + ci * (cw + gx), zy = y + padT;
       const zm = E.lmat({ dashed: true, dashSize: 4 * TS, gapSize: 3 * TS });
@@ -365,7 +377,9 @@ export async function createStage(host, cb = {}) {
         const part = tp.parts.find(p => p.id === pid);
         const ph = KIND_H[part.kind] || 14;
         const n = { x: zx, y: zy + ri * (ch + gy), w: cw, d: ch, h: ph };
-        const k = newEl('p:' + task.id + ':' + part.id, 'part', G, n, { part, task: task.id, parent: el.id, idx: ri + ci * R });
+        const idx = ri + ci * R;
+        maxIdx = Math.max(maxIdx, idx);
+        const k = newEl('p:' + task.id + ':' + part.id, 'part', G, n, { part, task: task.id, parent: el.id, idx, maxIdx: 0 });
         el.root.remove(k.root); G.add(k.root);
         setStatus(k, part.planned ? 'PENDING' : part.status);
         const r = part.kind === 'qa' ? Math.min(cw, ch) * .3 : Math.min(4, Math.min(cw, ch) * .07);
@@ -380,9 +394,11 @@ export async function createStage(host, cb = {}) {
           const fs = pt.exec && pt.exec.findings || pt.shadow && pt.shadow.findings;
           if (fs && fs.worst) chip(cx, s, Cc, pad, ch - pad - 6 * 1.6, `${fs.worst}×${fs[fs.worst]}`, E.sevHex(fs.worst), { f: Math.min(5, ch * .14) });
         }, 'cover', { x: zx, y: n.y, z: ph });
+        partEls.push(k);
         el.kids.push(k);
       });
     });
+    for (const k of partEls) k.data.maxIdx = maxIdx;
     el.innerFlows = [];
     for (const l of tp.links) {
       const a = EL.get('p:' + task.id + ':' + l.from), b = EL.get('p:' + task.id + ':' + l.to); if (!a || !b) continue;
@@ -952,7 +968,7 @@ export async function createStage(host, cb = {}) {
       let lift = 0, ob = 1, ol = 1;
       const pr = PROG.get(el.id);
       if (pr) { const p = pr.p; lift = ez(segT(p, .04, .46)); ob = 1 - segT(p, .06, .3); ol = 1 - segT(p, .14, .46); }
-      if (el.kind === 'part') { const par = EL.get(el.data.parent), pp = par && PROG.get(par.id); const p = pp ? pp.p : 0; const [a, b] = [.34 + el.data.idx * .05, .64 + el.data.idx * .05]; const q = back(segT(p, a, b)); el.q = q; el.root.visible = q > .001; el.cover.scale.y = Math.max(.001, q); }
+      if (el.kind === 'part') { const par = EL.get(el.data.parent), pp = par && PROG.get(par.id); const p = pp ? pp.p : 0; const q = partRise(p, el.data.idx, el.data.maxIdx); el.q = q; el.root.visible = q > .001; el.cover.scale.y = Math.max(.001, q); }
       el.cover.visible = ol > .003;
       el.cover.position.y = (el.kind === 'task' ? 120 : 0) * lift * TS;
       if (el.kind === 'task' || el.kind === 'finish') el.cover.scale.y = Math.max(.05, c.hk);
@@ -1440,6 +1456,11 @@ export async function createStage(host, cb = {}) {
       return {
         view: st.view, mode: st.mode, rebuilds: st.rebuilds, sel: st.sel, prog: [...PROG].map(([id, p]) => [id, p.p, p.t]), fade: !!st.fade,
         nodes: [...EL.values()].map(el => ({ id: el.id, kind: el.kind, status: el.status, sel: el.tgt.sel, vis: el.tgt.vis })),
+        parts(taskId) {
+          const prefix = 'p:' + taskId + ':';
+          return [...EL.values()].filter(el => el.kind === 'part' && el.id.startsWith(prefix))
+            .map(el => ({ id: el.id, idx: el.data.idx, maxIdx: el.data.maxIdx, q: el.q, visible: el.root.visible, scaleY: el.cover.scale.y }));
+        },
         screenPos(id) { const el = EL.get(id); if (!el) return null; const r = E.canvas.getBoundingClientRect(); const p = E.project(el.n.x + el.n.w / 2, el.n.y + el.n.d / 2, el.n.h); return { x: r.left + p.x, y: r.top + p.y, on: p.on }; },
         settle() { for (const el of EL.values()) Object.assign(el.cur, el.tgt); for (const pr of PROG.values()) pr.p = pr.t; E.invalidate(); },
         beaconScale: () => ({ unit: BEACONS.unit, ppu: E.pxPerUnit() }),
