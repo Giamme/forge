@@ -996,7 +996,7 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf [decided]]
     if [ -n "$next" ]; then
       # retry_per_model replaces escalate_after (forge-route.py escalation). The note names the
       # count that moved the task, and does not point at a flag that no longer governs the plan.
-      per_model="$(tr -d '[:space:]' < "$PLAN/retry_per_model" 2>/dev/null || true)"
+      per_model="$(tr -d '[:space:]' 2>/dev/null < "$PLAN/retry_per_model" || true)"
       case "$per_model" in
         [1-9]|[1-9][0-9]) ;;
         *) per_model="" ;;
