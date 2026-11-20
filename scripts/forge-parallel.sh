@@ -1106,9 +1106,13 @@ EOF
     fi
   fi
 
-  local tmp="$PLAN/.tasks.tsv.new" orig_tasks="$PLAN/.tasks.tsv.orig.$$"
+  # A refused plan (a task left UNASSIGNED below) puts tasks.tsv back as it was, so nothing it
+  # routed, such as the default reviewer, is frozen into the next plan (#178). The copy is only
+  # made for a refusal, under one name, so an exit in between leaves at most this one file,
+  # which the next plan removes.
+  local tmp="$PLAN/.tasks.tsv.new" orig_tasks="$PLAN/.tasks.tsv.orig"
   : > "$tmp"
-  cp "$T" "$orig_tasks"
+  rm -f "$orig_tasks"
   local hi_i=0 md_i=0 lo_i=0 an_i=0 qhi_i=0 qmd_i=0 qlo_i=0 qan_i=0 unassigned=0 qa_kept_msg="" qa_flag_spec=""
   printf '# id\tdeps\tdifficulty\tfiles\tdwarf\tqa\ttitle\n' > "$tmp"
   local id deps diff files dw qa title line
@@ -1183,10 +1187,11 @@ EOF
       fi
     fi
     # A column runs one spec; a list there would only fail later, at its first dispatch.
-    case "$dw" in *,*) rm -f "$orig_tasks"; die "task '$id': the dwarf column names one spec, not a list ('$dw'); pool models with a --dwarf flag" ;; esac
-    case "$qa" in *,*) rm -f "$orig_tasks"; die "task '$id': the qa column names one spec, not a list ('$qa'); pool reviewers with a --qa flag" ;; esac
+    case "$dw" in *,*) die "task '$id': the dwarf column names one spec, not a list ('$dw'); pool models with a --dwarf flag" ;; esac
+    case "$qa" in *,*) die "task '$id': the qa column names one spec, not a list ('$qa'); pool reviewers with a --qa flag" ;; esac
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$deps" "$diff" "$files" "$dw" "$qa" "$title" >> "$tmp"
   done < "$T"
+  [ "$unassigned" -eq 0 ] || cp "$T" "$orig_tasks"
   mv "$tmp" "$T"
   # Which cells routing filled in, so a re-plan under another profile replaces those and no others.
   # Kept current through a --no-profile re-plan too, once a profile has recorded any.
@@ -1276,7 +1281,6 @@ EOF
     note "forge will not pick a model that spends your quota on your behalf."
     return 2
   fi
-  rm -f "$orig_tasks"
   return 0
 }
 

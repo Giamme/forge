@@ -692,10 +692,12 @@ class ProfileRunsTests(unittest.TestCase):
         self.assertEqual(first.returncode, 2, first.stdout)
         self.assertIn('UNASSIGNED', first.stdout)
         self.assertEqual(self.rows(p)['a'], dict(dwarf='-', qa='-'))
+        self.assertEqual(sorted(x.name for x in p.glob('.tasks.tsv.orig*')), [])   # the copy went back
 
         second = self.plan(p, '--no-profile', '--dwarf', 'sol', '--qa', 'sol')
         self.assertEqual(second.returncode, 0, second.stdout)
         self.assertEqual(self.rows(p)['a'], dict(dwarf='sol', qa='sol'))
+        self.assertEqual(sorted(x.name for x in p.glob('.tasks.tsv.orig*')), [])
 
         # 2. A reviewer explicitly written in tasks.tsv is preserved across both a refused
         #    call and a subsequent re-plan, with a note when `--qa` did not overwrite it.
