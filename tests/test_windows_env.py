@@ -141,6 +141,54 @@ class WindowsEnvTests(unittest.TestCase):
         self.assertIn('already linked', second.stdout)
         self.assertEqual((agy_forge / 'SKILL.md').is_file(), os.name == 'nt', second.stdout)
 
+    def test_install_junction_under_temp_is_idempotent_and_copy_preserves_checkout(self) -> None:
+        checkout = self.tmp / 'checkout'
+        (checkout / 'scripts').mkdir(parents=True)
+        for name in ('forge-install.sh', 'forge-lib-env.sh'):
+            shutil.copy2(SCRIPTS / name, checkout / 'scripts' / name)
+        (checkout / 'SKILL.md').write_text('# Forge\n', encoding='utf-8')
+        sentinel = checkout / 'SENTINEL.txt'
+        sentinel.write_text('keep checkout intact\n', encoding='utf-8')
+
+        home = self.tmp / 'home_tmp'
+        claude_skills = home / '.claude' / 'skills'
+        agy_skills = home / '.gemini' / 'config' / 'skills'
+        claude_skills.mkdir(parents=True)
+        agy_skills.mkdir(parents=True)
+
+        installer = self._to_bash_path(checkout / 'scripts' / 'forge-install.sh')
+        env = dict(os.environ, HOME=self._to_bash_path(home), FORGE_RIPWIRE='off')
+        if os.name == 'nt':
+            env['USERPROFILE'] = str(home)
+            # Pre-seed Antigravity with a junction pointing at the checkout, and Claude with a junction
+            # created via /tmp/<name> (mirroring Git Bash /tmp mount aliases resolved by readlink).
+            checkout_sub = '/tmp/' + Path(self.dir.name).name + '/checkout'
+            seed = subprocess.run(
+                [self.bash, '-c',
+                 f'source "{self._to_bash_path(checkout / "scripts" / "forge-lib-env.sh")}"; '
+                 f'forge_link_dir "{installer.rsplit("/scripts/", 1)[0]}" "{self._to_bash_path(agy_skills / "forge")}"; '
+                 f'if [ -d "{checkout_sub}" ]; then forge_link_dir "{checkout_sub}" "{self._to_bash_path(claude_skills / "forge")}"; fi'],
+                capture_output=True, text=True, env=env,
+            )
+            self.assertEqual(seed.returncode, 0, seed.stdout + seed.stderr)
+        else:
+            env['PATH'] = '/usr/local/bin:/usr/bin:/bin'
+            (claude_skills / 'forge').symlink_to(os.path.relpath(checkout, claude_skills))
+
+        first = subprocess.run([self.bash, '-c', f'"{installer}" < /dev/null'], capture_output=True, text=True, env=env)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertTrue(sentinel.is_file(), 'checkout sentinel must survive copy_skill_dir removing prior junction')
+        self.assertEqual(sentinel.read_text(encoding='utf-8'), 'keep checkout intact\n')
+        self.assertIn('claude    : already linked', first.stdout)
+        if os.name == 'nt':
+            self.assertTrue((agy_skills / 'forge' / '.forge-installed').is_file(), first.stdout)
+            self.assertFalse((agy_skills / 'forge').is_symlink())
+
+        second = subprocess.run([self.bash, '-c', f'"{installer}" < /dev/null'], capture_output=True, text=True, env=env)
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertIn('claude    : already linked', second.stdout)
+        self.assertNotIn('linked (junction)', second.stdout)
+
     def test_doctor_win_fallbacks_and_msys_pathconv_preservation(self) -> None:
         dispatch = self._to_bash_path(SCRIPTS / 'forge-dispatch.sh')
         repo = self.tmp / 'repo'
