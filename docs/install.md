@@ -117,8 +117,9 @@ To set MSYS2 mode up:
    git clone https://github.com/Giamme/forge.git ~/.claude/skills/forge
    ```
 
-   The npm package is macOS and Linux only, and `scripts/forge-install.sh` (links into the
-   other harnesses, optional Fractal) has not been tried in MSYS2 mode.
+   MSYS2 mode has only been tried from a git checkout: neither the npm package nor
+   `scripts/forge-install.sh` (links into the other harnesses, optional Fractal) has been tried
+   in it.
 
 What differs in MSYS2 mode:
 
