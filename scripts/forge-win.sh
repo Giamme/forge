@@ -9,6 +9,9 @@
 #   FORGE_WIN_MODE=msys2   an entry script started from Git Bash re-runs itself inside MSYS2
 #   an MSYS2 shell         forge started there runs there, whatever FORGE_WIN_MODE says
 #
+# Inside MSYS2 this file exports FORGE_WIN_MODE=msys2, so helpers that adapt forge to native
+# Windows can tell they are not in native mode.
+#
 #   pacman -S python git procps-ng diffutils     in the MSYS2 at FORGE_MSYS2_ROOT (default C:/msys64)
 #
 # Symlinks are made as real Windows symlinks (Developer Mode must be on). A link to a target
@@ -90,7 +93,9 @@ if [ -n "${FORGE_WIN_REEXEC:-}" ]; then
   unset FORGE_WIN_REEXEC MSYS_NO_PATHCONV MSYS2_ARG_CONV_EXCL
   export FORGE_WIN_AGENT_PATH="$PATH" PATH="/usr/bin:$PATH"
 fi
-export MSYSTEM=MSYS MSYS=winsymlinks:native
+# FORGE_WIN_MODE says which mode runs, to every child script and helper, also when forge was
+# started from an MSYS2 shell without it: native-port helpers must treat MSYS2 mode as POSIX.
+export MSYSTEM=MSYS MSYS=winsymlinks:native FORGE_WIN_MODE=msys2
 # Worktree links must be relative: Git for Windows, which the native agent CLIs use, cannot follow
 # the /c/... paths MSYS2's git writes. The setting travels in the environment, but the first
 # worktree made with it adds extensions.relativeWorktrees to the repository's config, and from

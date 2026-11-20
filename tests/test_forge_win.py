@@ -18,7 +18,8 @@ BASH = shutil.which('bash') or '/bin/bash'
 # so the Git Bash cases cannot be simulated there.
 IN_MSYS2 = os.path.exists('/usr/bin/pacman') and not os.path.exists('/git-bash.exe')
 REPORT = ('OSTYPE="$1"; . "$2"; echo "rc=$?"; echo "agent_path=${FORGE_WIN_AGENT_PATH-unset}"; '
-          'if declare -F pkill >/dev/null; then echo pkill=function; else echo pkill=command; fi')
+          'if declare -F pkill >/dev/null; then echo pkill=function; else echo pkill=command; fi; '
+          'echo "mode=${FORGE_WIN_MODE-unset}"')
 
 
 def source(ostype, mode=None, **extra):
@@ -33,22 +34,32 @@ def source(ostype, mode=None, **extra):
 
 
 class ForgeWinTests(unittest.TestCase):
-    def assert_untouched(self, result):
+    def assert_untouched(self, result, mode):
         self.assertEqual((result.returncode, result.stderr), (0, ''))
-        self.assertEqual(result.stdout.split(), ['rc=0', 'agent_path=unset', 'pkill=command'])
+        self.assertEqual(result.stdout.split(),
+                         ['rc=0', 'agent_path=unset', 'pkill=command', 'mode=%s' % (mode or 'unset')])
 
     def test_off_windows_it_does_nothing_whatever_the_mode(self):
         for ostype in ('linux-gnu', 'darwin23'):
             for mode in (None, 'msys2', 'not-a-mode'):
                 with self.subTest(ostype=ostype, mode=mode):
-                    self.assert_untouched(source(ostype, mode))
+                    self.assert_untouched(source(ostype, mode), mode)
 
     @unittest.skipIf(IN_MSYS2, 'inside MSYS2 forge always runs in MSYS2 mode')
     def test_native_is_the_default_in_git_bash_and_starts_no_process(self):
         for mode in (None, 'native'):
             with self.subTest(mode=mode):
                 # No command can be found: the native path may only use builtins and file tests.
-                self.assert_untouched(source('msys', mode, PATH=os.path.join(ROOT, 'no-such-dir')))
+                self.assert_untouched(source('msys', mode, PATH=os.path.join(ROOT, 'no-such-dir')), mode)
+
+    @unittest.skipUnless(IN_MSYS2, 'needs a real MSYS2')
+    def test_an_msys2_shell_runs_msys2_mode_and_says_so(self):
+        # Helpers that adapt forge to native Windows read FORGE_WIN_MODE to tell MSYS2 mode apart.
+        for mode in (None, 'native', 'msys2'):
+            with self.subTest(mode=mode):
+                result = source('msys', mode)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.split()[2:], ['pkill=function', 'mode=msys2'])
 
     def test_an_unknown_mode_is_refused(self):
         result = source('msys', 'MSYS2')
