@@ -255,6 +255,55 @@ class PlanShapeFlowTests(unittest.TestCase):
         self.assertNotIn('plan-shape.json', names)
         self.assertNotIn('collapsed.json', names)
 
+    def test_long_task_ids_align_approval_status_and_results_tables(self):
+        long_id = 'a-task-with-a-long-id'
+        plan = self.write_plan('wide-ids', [
+            task_row('a', '-', 'low', 'a.txt', 'Short task'),
+            task_row(long_id, '-', 'low', 'b.txt', 'Long task'),
+        ])
+        (plan / 'tasks' / 'a' / 'approach.md').write_text('Step one.\n')
+        planned = self.plan(plan, '--no-profile')
+        self.assertEqual(planned.returncode, 0, planned.stdout)
+        lines = planned.stdout.splitlines()
+        hdr = next(line for line in lines if re.match(r'^  id\s+diff\s+dwarf\s+qa\s+files$', line))
+        row_short = next(line for line in lines if line.startswith('  a '))
+        row_long = next(line for line in lines if line.startswith('  ' + long_id + ' '))
+        app_line = next(line for line in lines if '| Step one.' in line)
+        for col in ('diff', 'dwarf', 'qa', 'files'):
+            pos = hdr.index(col)
+            self.assertNotEqual(row_short[pos], ' ', row_short)
+            self.assertNotEqual(row_long[pos], ' ', row_long)
+            self.assertEqual(row_short[pos - 1], ' ', row_short)
+            self.assertEqual(row_long[pos - 1], ' ', row_long)
+        self.assertEqual(app_line.index('|'), hdr.index('diff'))
+
+        ran = self.run_script('forge-parallel.sh', 'run', plan)
+        self.assertEqual(ran.returncode, 0, ran.stdout)
+        prompt_text = (plan / 'tasks' / 'a' / 'dwarf.prompt').read_text()
+        st_lines = prompt_text.splitlines()
+        st_hdr = next(line for line in st_lines if re.match(r'^id\s+diff\s+status\s+files$', line))
+        st_table = st_lines[st_lines.index(st_hdr) + 1:]
+        st_short = next(line for line in st_table if line.startswith('a '))
+        st_long = next(line for line in st_table if line.startswith(long_id + ' '))
+        for col in ('diff', 'status', 'files'):
+            pos = st_hdr.index(col)
+            self.assertEqual(st_short[pos - 1], ' ', st_short)
+            self.assertEqual(st_long[pos - 1], ' ', st_long)
+            self.assertNotEqual(st_short[pos], ' ', st_short)
+            self.assertNotEqual(st_long[pos], ' ', st_long)
+
+        res_lines = ran.stdout.splitlines()
+        res_hdr = next(line for line in res_lines if re.match(r'^  id\s+status\s+branch$', line))
+        res_table = res_lines[res_lines.index(res_hdr) + 1:]
+        res_short = next(line for line in res_table if line.startswith('  a '))
+        res_long = next(line for line in res_table if line.startswith('  ' + long_id + ' '))
+        for col in ('status', 'branch'):
+            pos = res_hdr.index(col)
+            self.assertEqual(res_short[pos - 1], ' ', res_short)
+            self.assertEqual(res_long[pos - 1], ' ', res_long)
+            self.assertNotEqual(res_short[pos], ' ', res_short)
+            self.assertNotEqual(res_long[pos], ' ', res_long)
+
 
 if __name__ == '__main__':
     unittest.main()

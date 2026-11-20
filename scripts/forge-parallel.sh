@@ -209,6 +209,13 @@ field() { # field <tasks.tsv> <id> <colname>
 }
 all_ids() { awk -F'\t' '!/^#/ && NF {print $1}' "$1"; }
 
+render_results_table() { # render_results_table <plan>
+  local w
+  w="$(id_col_width "$1/results.tsv" "$1/tasks.tsv")"
+  printf '  %-*s %-14s %s\n' "$w" id status branch
+  awk -F'\t' -v w="$w" '{printf "  %-*s %-14s %s\n", w, $1, $2, $3}' "$1/results.tsv"
+}
+
 list_has() { # list_has <needle> <comma-list>
   local n="$1" l="$2" w
   [ "$l" = "-" ] && return 1
@@ -1428,23 +1435,25 @@ EOF
     echo "QA effort: high where a reviewer spec names none (forge-dispatch.sh's default; planning stays at xhigh)"
   fi
   echo
-  local w id dws starred=0
+  local w id dws starred=0 id_w pad
+  id_w="$(id_col_width "$T")"
+  printf -v pad '%*s' $((id_w + 3)) ''
   for w in $(awk -F'\t' '{print $1}' "$W" | sort -un); do
     local cnt; cnt="$(awk -F'\t' -v w="$w" '$1==w' "$W" | wc -l | tr -d ' ')"
     echo "wave $w ($cnt parallel)"
-    printf '  %-14s %-7s %-24s %-14s %s\n' id diff dwarf qa files
+    printf '  %-*s %-7s %-24s %-14s %s\n' "$id_w" id diff dwarf qa files
     for id in $(awk -F'\t' -v w="$w" '$1==w {print $2}' "$W"); do
       dws="$(field "$T" "$id" dwarf)"
       if [ -s "$PLAN/tasks/$id/route.explored" ] && [ "$(cat "$PLAN/tasks/$id/route.explored")" = "$dws" ]; then
         dws="$dws*"; starred=1
       fi
-      printf '  %-14s %-7s %-24s %-14s %s\n' \
-        "$id" "$(field "$T" "$id" difficulty)" "$dws" \
+      printf '  %-*s %-7s %-24s %-14s %s\n' \
+        "$id_w" "$id" "$(field "$T" "$id" difficulty)" "$dws" \
         "$(field "$T" "$id" qa)" "$(field "$T" "$id" files)"
       # The approach is shown here because this gate is the only moment a human can
       # change the plan for free. After dispatch, changing it costs a whole run.
       if [ -s "$PLAN/tasks/$id/approach.md" ]; then
-        sed 's/^/                 | /' "$PLAN/tasks/$id/approach.md"
+        sed "s/^/${pad}| /" "$PLAN/tasks/$id/approach.md"
       fi
     done
     echo
@@ -1593,12 +1602,14 @@ write_capsule() { # write_capsule <plan> <id> <role>
     echo "Files this task owns: $(field "$T" "$me" files)"
     echo
     echo "## Run status"
-    printf '%-14s %-7s %-9s %s\n' id diff status files
+    local id_w
+    id_w="$(id_col_width "$T")"
+    printf '%-*s %-7s %-11s %s\n' "$id_w" id diff status files
     for id in $(all_ids "$T"); do
       if [ "$id" = "$me" ]; then st="THIS ONE"
       elif [ -s "$PLAN/tasks/$id/reviewed.commit" ] && git -C "$(cat "$PLAN/repo")" merge-base --is-ancestor "$(cat "$PLAN/tasks/$id/reviewed.commit")" "$(cat "$PLAN/tasks/$me/base_ref")"; then st=MERGED
       else st="NOT IN BASE"; fi
-      printf '%-14s %-7s %-9s %s\n' "$id" "$(field "$T" "$id" difficulty)" "$st" "$(field "$T" "$id" files)"
+      printf '%-*s %-7s %-11s %s\n' "$id_w" "$id" "$(field "$T" "$id" difficulty)" "$st" "$(field "$T" "$id" files)"
     done
     echo
     echo "## Ground rules"
@@ -2591,13 +2602,14 @@ PY
 }
 
 report_untested() { # report_untested <plan> <id>...: verdicts that rest on reading alone (#117)
-  local plan="$1" id tests_note untested=0; shift
+  local plan="$1" id tests_note untested=0 id_w; shift
+  id_w="$(id_col_width "$plan/tasks.tsv")"
   for id in "$@"; do
     tests_note="$(forge_tests_note "$plan/tasks/$id/qa.last")"
     if [ -n "$tests_note" ]; then
       [ "$untested" = 0 ] && echo "reviews whose tests could not run:"
       untested=1
-      printf '  %-14s %s\n' "$id" "$tests_note"
+      printf '  %-*s %s\n' "$id_w" "$id" "$tests_note"
     fi
   done
   [ "$untested" = 0 ] || echo
@@ -2841,8 +2853,7 @@ do_retry() {
   write_results "$PLAN"
   echo
   # 14 covers NEEDS_DECISION; 9 pushes the branch column out for IMPLEMENTED (11) too.
-  printf '  %-14s %-14s %s\n' id status branch
-  awk -F'\t' '{printf "  %-14s %-14s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
+  render_results_table "$PLAN"
   run_report_extras "$PLAN"
   report_decisions "$PLAN"
   [ "$(task_status "$PLAN" "$id")" = "MERGED" ] || return 5
@@ -3582,8 +3593,7 @@ do_run() {
   echo "results (integration branch: $int_br)"
   echo "artifacts: $PLAN/tasks/<id>/{dwarf,qa}.{last,log}; results: $PLAN/results.tsv"
   # 14 covers NEEDS_DECISION; 9 pushes the branch column out for IMPLEMENTED (11) too.
-  printf '  %-14s %-14s %s\n' id status branch
-  awk -F'\t' '{printf "  %-14s %-14s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
+  render_results_table "$PLAN"
   echo
   if [ -n "$retro_line" ]; then printf '%s\n\n' "$retro_line"; fi
   run_report_extras "$PLAN"
@@ -3595,12 +3605,13 @@ do_run() {
 
   # Undeclared files are reported here rather than buried in a task log, because
   # this is the list that explains any CONFLICT above.
-  local drift=0
+  local drift=0 id_w
+  id_w="$(id_col_width "$T")"
   for id in $(all_ids "$T"); do
     if [ -s "$PLAN/tasks/$id/drift.txt" ]; then
       [ "$drift" = 0 ] && echo "scope drift (touched files the task did not declare):"
       drift=1
-      printf '  %-14s %s\n' "$id" "$(tr '\n' ' ' < "$PLAN/tasks/$id/drift.txt")"
+      printf '  %-*s %s\n' "$id_w" "$id" "$(tr '\n' ' ' < "$PLAN/tasks/$id/drift.txt")"
     fi
   done
   [ "$drift" = 1 ] && echo
