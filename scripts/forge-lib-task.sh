@@ -1347,6 +1347,18 @@ qa_gate() { # qa_gate <plan> <id> <tdir> <verdict> [threshold]
 }
 
 # --- report blocks ----------------------------------------------------------------
+# The id column is as wide as the plan's longest task id, and never narrower than 14. Here and
+# not in forge-parallel.sh, which uses it too, because this file is also sourced on its own.
+id_col_width() { # id_col_width <tsv...> -> longest col-1 task id length across readable TSVs, at least 14
+  local w=14 f n=0
+  for f in "$@"; do
+    [ -r "$f" ] || continue
+    n="$(awk -F'\t' '!/^#/ && NF { if (length($1) > m) m = length($1) } END { print m + 0 }' "$f" 2>/dev/null)" || n=0
+    [ "$n" -gt "$w" ] && w="$n"
+  done
+  echo "$w"
+}
+
 # The wording of each line, and what the causes need, is forge_infra.py's; this block only lays them out.
 # A lateral move is news whether or not a task is still paused, so its lines come out either way.
 report_infra() { # report_infra <plan>

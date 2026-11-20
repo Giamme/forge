@@ -209,16 +209,6 @@ field() { # field <tasks.tsv> <id> <colname>
 }
 all_ids() { awk -F'\t' '!/^#/ && NF {print $1}' "$1"; }
 
-id_col_width() { # id_col_width <tsv...> -> longest col-1 task id length across readable TSVs, at least 14
-  local w=14 f n=0
-  for f in "$@"; do
-    [ -r "$f" ] || continue
-    n="$(awk -F'\t' '!/^#/ && NF { if (length($1) > m) m = length($1) } END { print m + 0 }' "$f" 2>/dev/null)" || n=0
-    [ "$n" -gt "$w" ] && w="$n"
-  done
-  echo "$w"
-}
-
 render_results_table() { # render_results_table <plan>
   local w
   w="$(id_col_width "$1/results.tsv" "$1/tasks.tsv")"
