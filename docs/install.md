@@ -126,9 +126,9 @@ What differs in MSYS2 mode:
   as 0600 (provider keys, settings) are as private as your user profile, no more.
 - A script task's `tasks/<id>/run` counts as executable when it starts with `#!`.
 - `forge watch` raises no desktop notification, and Ripwire has no Windows build.
-- `stop` recognises a harness by its start time, which Cygwin gives as a time of day for the
-  first 24 hours and as a date after that: a harness that has run for more than a day is left
-  running.
+- `stop` recognises a harness by its start time, which Cygwin gives to the second for the first
+  24 hours and only to the day after that: past a day, a harness is recognised by the day it
+  started.
 
 If MSYS2 programs fail at random to start (`0xC0000142`, or `fork: Resource temporarily
 unavailable`), look at Windows' Exploit protection. Cygwin's `fork` rebuilds the parent's memory

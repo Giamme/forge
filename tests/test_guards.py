@@ -406,5 +406,39 @@ class IdentityStopTests(unittest.TestCase):
         self.assertEqual(run('identity').returncode, 2)
 
 
+class CygwinStartTests(unittest.TestCase):
+    """Windows MSYS2 mode: Cygwin ps's STIME made absolute, so a start older than a day still
+    matches the one recorded before (to the day). Pure functions, checked on every platform."""
+
+    NOON = time.mktime((2026, 11, 20, 12, 0, 0, 0, 0, -1))      # local time
+
+    def test_a_time_of_day_is_today_or_yesterday(self):
+        self.assertEqual(guard._cygwin_start('09:30:00', self.NOON), '2026-11-20 09:30:00')
+        self.assertEqual(guard._cygwin_start('18:55:19', self.NOON), '2026-11-19 18:55:19')
+
+    def test_a_date_is_this_year_or_the_last(self):
+        self.assertEqual(guard._cygwin_start('Nov 19', self.NOON), '2026-11-19')
+        self.assertEqual(guard._cygwin_start('Nov  9', self.NOON), '2026-11-09')
+        new_year = time.mktime((2027, 1, 2, 12, 0, 0, 0, 0, -1))
+        self.assertEqual(guard._cygwin_start('Dec 31', new_year), '2026-12-31')
+
+    def test_other_text_is_left_as_it_is(self):
+        for text in ('', 'nov 19', '9:30', 'Nov', '2026-11-19'):
+            with self.subTest(text=text):
+                self.assertEqual(guard._cygwin_start(text, self.NOON), text)
+
+    def test_a_start_known_to_the_day_matches_that_day_only(self):
+        same = guard._cygwin_same_start
+        self.assertTrue(same('2026-11-19 18:55:19', '2026-11-19 18:55:19'))
+        self.assertTrue(same('2026-11-19 18:55:19', '2026-11-19'))
+        self.assertTrue(same('2026-11-19', '2026-11-19 18:55:19'))
+        self.assertFalse(same('2026-11-19 18:55:19', '2026-11-20'))
+        self.assertFalse(same('2026-11-19 18:55:19', '2026-11-19 18:55:20'))
+
+    def test_only_cygwin_compares_to_the_day(self):
+        self.assertEqual(guard._same_start('2026-11-19 18:55:19', '2026-11-19'), sys.platform == 'cygwin')
+        self.assertTrue(guard._same_start('Thu Nov 19 18:55:19 2026', 'Thu Nov 19 18:55:19 2026'))
+
+
 if __name__ == '__main__':
     unittest.main()
