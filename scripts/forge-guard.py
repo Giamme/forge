@@ -76,6 +76,7 @@ KILL_WAIT_S = 1.0
 # --- session ------------------------------------------------------------------
 def _win_session(argv: list[str]) -> int:
     _, exec_argv = forge_proc.resolve_win_command(argv)
+    job = forge_proc.ProcessJob()
     try:
         proc = subprocess.Popen(exec_argv)
     except FileNotFoundError:
@@ -84,7 +85,16 @@ def _win_session(argv: list[str]) -> int:
     except OSError as error:
         print('forge-guard: cannot execute %s: %s' % (argv[0], error), file=sys.stderr)
         return 126
-    return proc.wait()
+    job.attach(proc.pid)
+    try:
+        rc = proc.wait()
+        # Keep KILL_ON_JOB_CLOSE armed while the child runs so an abrupt guardian
+        # termination cleans up descendants atomically; disarm on normal return so
+        # `reap` can still observe and record intentional orphans.
+        job.disarm()
+        return rc
+    finally:
+        job.close()
 
 
 def session(argv: list[str]) -> int:
@@ -400,6 +410,17 @@ def stop_tree(root: int, wait: float) -> int:
     return 0
 
 
+def kill_children(parent_pid: int, force: bool = False) -> int:
+    """Terminate descendants of `parent_pid` (used on platforms lacking `pkill -P`)."""
+    table = ps_table()
+    if table is None or parent_pid <= 1:
+        return 0
+    targets = descendants(table, {parent_pid}) - _never(table)
+    for pid in sorted(targets, reverse=True):
+        forge_proc.signal_pid(pid, force=force)
+    return 0
+
+
 def reap(pgid: int, orphans_file: str, tracked: str | None = None) -> int:
     count = _reap_group(pgid, orphans_file)
     extra = _reap_tracked(tracked, pgid) if tracked else []
@@ -606,8 +627,8 @@ def promises(path: str, tail_bytes: int = 3000) -> int:
 def main(argv: list[str]) -> int:
     if not argv:
         print('usage: forge-guard.py ping | session -- CMD... | reap <pgid> <orphans-file> [--tracked FILE] | '
-              'track <pid> <file> [--interval S] | stop-tree <pid> [--wait S] | identity <pid> | '
-              'stop <record-file> | '
+              'track <pid> <file> [--interval S] | stop-tree <pid> [--wait S] | kill-children <pid> [TERM|KILL] | '
+              'identity <pid> | stop <record-file> | '
               'promises <file> [--tail-bytes N]', file=sys.stderr)
         return 2
     command, rest = argv[0], argv[1:]
@@ -639,6 +660,12 @@ def main(argv: list[str]) -> int:
                 print('usage: forge-guard.py stop-tree <pid> [--wait S]', file=sys.stderr)
                 return 2
             return stop_tree(int(rest[0]), max(0.0, wait))
+        if command == 'kill-children':
+            if len(rest) not in (1, 2):
+                print('usage: forge-guard.py kill-children <pid> [TERM|KILL]', file=sys.stderr)
+                return 2
+            force = len(rest) == 2 and rest[1].upper() == 'KILL'
+            return kill_children(int(rest[0]), force=force)
         if command == 'track':
             interval = TRACK_INTERVAL_S
             if '--interval' in rest:

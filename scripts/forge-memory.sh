@@ -49,6 +49,8 @@ TAB="$(printf '\t')"
 # export it, and this script is also run directly. Getting it wrong would leave the Jev
 # curation below silently disabled instead of visibly broken.
 SKILL_DIR="${SKILL_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+source "$SKILL_DIR/scripts/forge-lib-env.sh"
+forge_ensure_python3
 
 # Writing files into someone's repo automatically needs an escape hatch that does
 # not require editing the skill.

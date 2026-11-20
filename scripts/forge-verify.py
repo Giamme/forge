@@ -856,6 +856,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     signal.signal(signal.SIGTERM, interrupt)
     signal.signal(signal.SIGINT, interrupt)
+    forge_proc.install_signal(forge_proc.SIGBREAK, interrupt)
     return verification.run()
 
 

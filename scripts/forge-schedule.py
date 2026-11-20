@@ -709,6 +709,12 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 raise ValueError('task ' + GROUP_KEY + g.id + ' clashes with group ' + g.id)
     group_of = {m: g.id for g in rgroups.values() for m in g.members}   # member -> its review group
     active = {}        # task id, or GROUP_KEY + gid for a running group review
+    task_jobs: dict[str, forge_proc.ProcessJob] = {}
+
+    def _track_job(key: str, pid: int) -> None:
+        job = forge_proc.ProcessJob()
+        if job.attach(pid):
+            task_jobs[key] = job
     pending = list(tasks)
     interrupted = False
     group_again = set()   # groups to review once more whatever their status says (a resume, an UNKNOWN)
@@ -1591,6 +1597,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             stdout=log, stderr=subprocess.STDOUT, **forge_proc.popen_group_kwargs(),
         )
         active[GROUP_KEY + gid] = process, log
+        _track_job(GROUP_KEY + gid, process.pid)
         group_again.discard(gid)
         print('forge: reviewing group ' + gid + ' (' + ', '.join(rgroups[gid].members) + ')',
               file=sys.stderr, flush=True)
@@ -1697,6 +1704,10 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                     into.add(name)
                 log.close()
                 del active[name]
+                job = task_jobs.pop(name, None)
+                if job is not None:
+                    job.disarm()
+                    job.close()
                 if name.startswith(GROUP_KEY) and name not in tasks:
                     gid = name[len(GROUP_KEY):]
                     if os.environ.get('FORGE_OUTPUT') == 'full':
@@ -1832,6 +1843,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    forge_proc.install_signal(forge_proc.SIGBREAK, stop)
     try:
         live_start(plan, tasks, retry_failed, infra_retries, rgroups)
         summaries_on_change()
@@ -1971,7 +1983,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                         continue
                 root = plan / 'tasks' / name
                 if not (root / 'base_ref').exists():
-                    worktree = Path((plan / 'wt_root').read_text().strip()) / '_integration'
+                    worktree = Path(forge_posix.host_path((plan / 'wt_root').read_text().strip())) / '_integration'
                     base = subprocess.check_output(['git', '-C', str(worktree), 'rev-parse', 'HEAD'])
                     (root / 'base_ref').write_bytes(base)
                 log = open(root / 'task.out', 'ab')
@@ -1987,6 +1999,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                     stdout=log, stderr=subprocess.STDOUT, env=env, **forge_proc.popen_group_kwargs(),
                 )
                 active[name] = process, log
+                _track_job(name, process.pid)
                 pending.remove(name)
                 print('forge: dispatched ' + name + ' -> ' + str(root), file=sys.stderr, flush=True)
             if not active and graceful:
@@ -2045,6 +2058,10 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         for name, (process, log) in stopping:
             if name in waiting:
                 forge_proc.kill_tree(process.pid, force=True)
+            job = task_jobs.pop(name, None)
+            if job is not None:
+                job.terminate()
+                job.close()
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:

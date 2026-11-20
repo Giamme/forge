@@ -613,8 +613,13 @@ do_accept() {
 # very integration branch being merged). The lock is taken by re-exec, like the router's
 # own lock for run/retry/integrate, so the file descriptors stay open for bash.
 PLANS_LOCK_PY='
-import fcntl, os, sys
+import os, sys
 script, count = sys.argv[1], int(sys.argv[2])
+_scripts = os.path.dirname(os.path.abspath(script))
+if _scripts not in sys.path:
+    sys.path.insert(0, _scripts)
+import forge_flock as fcntl
+import forge_proc
 held = []
 for path in sys.argv[3:3 + count]:
     try:
@@ -627,7 +632,7 @@ for path in sys.argv[3:3 + count]:
     os.set_inheritable(handle.fileno(), True)
     held.append(handle)
 env = dict(os.environ, FORGE_COMBINE_LOCKED="1")
-os.execve("/bin/bash", ["/bin/bash", script, "combine"] + sys.argv[3 + count:], env)
+forge_proc.exec_or_exit(forge_proc.bash_cmd(script, "combine", *sys.argv[3 + count:]), env=env, inherit_fds=True)
 '
 
 plans_predict_conflict() { # 0 merges cleanly, 1 would conflict, 2 cannot tell (old git)

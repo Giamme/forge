@@ -36,6 +36,10 @@ import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS = ROOT / 'scripts'
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+import forge_proc  # noqa: E402
 # (name, directory the tests are discovered and run from, extra import path)
 SUITES = (('forge', ROOT / 'tests', None), ('ui', ROOT / 'ui' / 'tests', ROOT / 'ui'))
 DURATIONS = ROOT / 'tests' / '.durations.json'
@@ -173,7 +177,7 @@ class Runner:
         with tempfile.TemporaryFile() as out:
             proc = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '--child', unit, report],
                                     cwd=where, env=env_for(extra), stdin=subprocess.DEVNULL,
-                                    stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
+                                    stdout=out, stderr=subprocess.STDOUT, **forge_proc.popen_group_kwargs())
             with self.lock:
                 self.live[proc.pid] = proc
             timed_out = False
@@ -201,14 +205,12 @@ class Runner:
 
     @staticmethod
     def kill(proc: subprocess.Popen) -> None:
-        if os.name == 'nt':           # no process groups or killpg: end the child and every process under it
-            sys.path.insert(0, str(ROOT / 'scripts'))
-            import forge_proc
+        if forge_proc.IS_WINDOWS:           # no process groups or killpg: end the child and every process under it
             forge_proc.kill_tree(proc.pid, force=True)
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                pass
+                proc.kill()
             return
         for sig in (signal.SIGTERM, signal.SIGKILL):
             try:

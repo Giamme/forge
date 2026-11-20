@@ -62,7 +62,7 @@ def registry_dir() -> Path:
     user's repo. ``config_path()`` is ``<that>/forge/jev.json``; the registry is the
     sibling ``runs`` directory.
     """
-    value = os.environ.get('XDG_CONFIG_HOME') or ''
+    value = forge_posix.host_path(os.environ.get('XDG_CONFIG_HOME') or '')
     base = Path(value).expanduser() if value else None
     if base is None or not base.is_absolute():
         base = Path.home() / '.config'
@@ -286,7 +286,7 @@ def _repo_of(run_dir: Path) -> Path | None:
     with os.fdopen(fd, 'rb') as handle:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             return None
-        line = handle.readline(_REPO_LINE_MAX).decode(errors='replace').strip()
+        line = forge_posix.host_path(handle.readline(_REPO_LINE_MAX).decode(errors='replace').strip())
     # Empty, or text no path can hold, or relative: a relative repo would be resolved
     # against whatever directory the runner happened to start in, and keyed to the wrong repo.
     if not line or '\x00' in line or not os.path.isabs(line):

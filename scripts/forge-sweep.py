@@ -259,7 +259,7 @@ class Context:
     def __init__(self, plan: Path):
         self.plan = plan
         self.repo = read(plan / 'repo')
-        wt_root = read(plan / 'wt_root')
+        wt_root = forge_posix.host_path(read(plan / 'wt_root'))
         self.integration = os.path.join(wt_root, '_integration') if wt_root else ''
         rc, tip = git(self.integration, 'rev-parse', 'HEAD') if self.integration else (1, b'')
         self.tip = tip.decode().strip() if not rc else ''

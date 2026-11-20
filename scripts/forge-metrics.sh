@@ -53,7 +53,12 @@ forge_outcomes_harvest() { # forge_outcomes_harvest <plan dir>
   ( sleep $(( limit + 10 )); kill -KILL "$pid" 2>/dev/null ) >/dev/null 2>&1 &
   watcher=$!
   wait "$pid" 2>/dev/null
-  pkill -P "$watcher" 2>/dev/null; kill "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null
+  if command -v pkill >/dev/null 2>&1; then
+    pkill -P "$watcher" 2>/dev/null
+  elif declare -F forge_kill_children >/dev/null 2>&1; then
+    forge_kill_children "$watcher"
+  fi
+  kill "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null
   return 0
 }
 forge_dataset_invocation() { # forge_dataset_invocation <command> <rc> <started> [argv...]

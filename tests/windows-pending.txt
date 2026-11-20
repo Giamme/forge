@@ -134,7 +134,6 @@ ui:test_control_actions.CompactTests
 ui:test_control_actions.MemoriesForgetTests
 ui:test_control_api.ArgvAndMappingTests
 ui:test_control_api.ReadOnlyTests
-ui:test_control_api.RealForgeTests
 ui:test_control_api.RefusalTests
 ui:test_control_api.TimeoutAndBusyTests
 ui:test_control_endpoints.BriefAnswerTests
@@ -163,8 +162,6 @@ forge:test_guards.SessionTests
 forge:test_handoff.ShowTests
 forge:test_identity
 forge:test_pr
-forge:test_retro.CliTests
-forge:test_retro.RecordTests
 forge:test_submodules
 forge:test_worktrees_cli.FailureTests
 ui:test_diffs.EndpointTests
@@ -261,7 +258,6 @@ ui:test_control_api.TokenPlacementTests
 ui:test_control_endpoints.ProjectsTests
 ui:test_control_endpoints.ReadOnlyProjectsTests
 ui:test_control_endpoints.ReadOnlyWorktreesTests
-ui:test_control_endpoints.SummariesRealCliTests
 ui:test_control_endpoints.WorktreesTests
 ui:test_fractal.FractalEndpointTests
 ui:test_models

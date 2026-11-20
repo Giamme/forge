@@ -48,6 +48,8 @@
 set -uo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$SKILL_DIR/scripts/forge-lib-env.sh"
+forge_ensure_python3
 DISPATCH="$SKILL_DIR/scripts/forge-dispatch.sh"
 MEMORY="$SKILL_DIR/scripts/forge-memory.sh"
 source "$SKILL_DIR/scripts/forge-artifact.sh"
@@ -229,7 +231,7 @@ RUN="$(cd "$RUN" && pwd)"
 # The frozen copy, atomically. Only the process that holds the run's lock writes it (a refused
 # second start, or a dry run, must not change what an active run froze): the first pass above
 # only read and checked, and the re-exec under the lock chooses again from the same arguments.
-if [ "$DRY" != 1 ] && [ "${FORGE_SOLO_LOCK:-}" = "$RUN" ]; then
+if [ "$DRY" != 1 ] && [ "$(forge_posix_path "${FORGE_SOLO_LOCK:-}")" = "$RUN" ]; then
   forge_profile_py solo "$RUN" --repo "$REPO" --no-validate --write ${pf_args[@]+"${pf_args[@]}"} >/dev/null || exit $?
 fi
 [ -z "$PF_LINE" ] || [ -n "${FORGE_SOLO_LOCK:-}" ] || echo "$PF_LINE"
@@ -239,7 +241,7 @@ fi
 REPO="$(cd "$REPO" && pwd)"
 # Before any decision-model step: the privacy floor and the run budget read these.
 [ "$JEV_OPTS" = 1 ] && forge_decide_env "$REPO" "$RUN"
-if [ "$DRY" != 1 ] && [ "${FORGE_SOLO_LOCK:-}" != "$RUN" ]; then
+if [ "$DRY" != 1 ] && [ "$(forge_posix_path "${FORGE_SOLO_LOCK:-}")" != "$RUN" ]; then
   exec python3 "$SKILL_DIR/scripts/forge-fractal.py" _lock "$RUN" "$0" "${ORIGINAL_ARGS[@]}"
 fi
 # After the lock re-exec, so the process that dispatches is the one that writes it.

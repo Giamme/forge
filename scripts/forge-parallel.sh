@@ -172,6 +172,8 @@ set -uo pipefail
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$SKILL_DIR/scripts/forge-lib-env.sh"
+forge_ensure_python3
 DISPATCH="$SKILL_DIR/scripts/forge-dispatch.sh"
 MEMORY="$SKILL_DIR/scripts/forge-memory.sh"
 source "$SKILL_DIR/scripts/forge-artifact.sh"
@@ -2904,16 +2906,28 @@ verify_group_stop() { # TERM the verify command's group; KILL it after FORGE_VER
   # Until the guard's setsid there is no group: the TERM goes to the guard itself, which dies
   # of it before it starts the command. A group that forms all the same gets its TERM from
   # the timer.
-  kill -TERM -- "-$group" 2>/dev/null || { termed=0; kill -TERM "$group" 2>/dev/null; }
+  if [ -r "/proc/$group/winpid" ]; then
+    forge_kill_group "$group" TERM
+    kill -TERM "$group" 2>/dev/null || true
+  else
+    kill -TERM -- "-$group" 2>/dev/null || { termed=0; kill -TERM "$group" 2>/dev/null; }
+  fi
   # The timer polls in short naps rather than sleeping the whole grace in one: it ends by
   # itself within a nap of the group's last member, and a long sleep left behind would hold
   # the plan lock it inherited.
   ( trap - TERM INT
     ticks=$((FORGE_VERIFY_GRACE * 10))
-    while kill -0 -- "-$group" 2>/dev/null || { [ "$termed" = 0 ] && kill -0 "$group" 2>/dev/null; }; do
+    while kill -0 -- "-$group" 2>/dev/null || { [ "$termed" = 0 ] && kill -0 "$group" 2>/dev/null; } || { [ -r "/proc/$group/winpid" ] && kill -0 "$group" 2>/dev/null; }; do
       if [ "$termed" = 0 ] && kill -TERM -- "-$group" 2>/dev/null; then termed=1; fi
       if [ "$ticks" -le 0 ]; then
-        if [ "$termed" = 1 ]; then kill -KILL -- "-$group" 2>/dev/null; else kill -KILL "$group" 2>/dev/null; fi
+        if [ -r "/proc/$group/winpid" ]; then
+          forge_kill_group "$group" KILL
+          kill -KILL "$group" 2>/dev/null
+        elif [ "$termed" = 1 ]; then
+          kill -KILL -- "-$group" 2>/dev/null
+        else
+          kill -KILL "$group" 2>/dev/null
+        fi
         break
       fi
       sleep 0.1
@@ -2928,20 +2942,25 @@ verify_signal() { # trap handler of a stoppable verification
 }
 
 verify_exec() { # verify_exec <checkout> <command> <log> [grace seconds, default 5] -> the command's exit code, 130 when stopped
-  local wt="$1" cmd="$2" log="$3" rc=0 group deadline
+  local wt="$1" cmd="$2" log="$3" rc=0 group deadline guard_py="$SKILL_DIR/scripts/forge-guard.py"
   if [ "${FORGE_RUN_STOPPABLE:-0}" != 1 ]; then
     (cd "$wt" && /bin/bash -c "$cmd") > "$log" 2>&1
     return $?
   fi
   FORGE_VERIFY_GRACE="${4:-5}"
   [ "$FORGE_VERIFY_STOP" = 1 ] && return 130
+  ! forge_is_windows || guard_py="$(forge_host_path "$guard_py")"
   # A background job ignores SIGINT and SIGQUIT, and the command would inherit that; the
   # wrapper restores both before the guard puts the command in a session of its own.
-  (cd "$wt" && exec python3 -c 'import os, signal, sys
-for name in (signal.SIGINT, signal.SIGQUIT):
-    signal.signal(name, signal.SIG_DFL)
+  (cd "$wt" && { ! forge_is_windows || export MSYS_NO_PATHCONV=1; } && exec python3 -c 'import os, signal, subprocess, sys
+for sig_name in ("SIGINT", "SIGQUIT"):
+    sig = getattr(signal, sig_name, None)
+    if sig is not None:
+        signal.signal(sig, signal.SIG_DFL)
+if os.name == "nt":
+    sys.exit(subprocess.run([sys.executable] + sys.argv[1:]).returncode)
 os.execv(sys.executable, [sys.executable] + sys.argv[1:])' \
-    "$SKILL_DIR/scripts/forge-guard.py" session -- /bin/bash -c "$cmd") > "$log" 2>&1 <&0 &
+    "$guard_py" session -- /bin/bash -c "$cmd") > "$log" 2>&1 <&0 &
   group=$!
   FORGE_VERIFY_GROUP="$group"
   [ "$FORGE_VERIFY_STOP" = 1 ] && verify_group_stop
@@ -3245,9 +3264,32 @@ forge_brief_start() { # forge_brief_start <plan>
   PYTHONPATH="$SKILL_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 -c \
     'import sys, forge_brief; forge_brief.note_missing_groups(sys.argv[1])' "$plan" || true
   python3 - "$plan" "$SKILL_DIR/scripts/forge-brief.py" <<'PY' || { note "brief: could not start the question writer"; return 0; }
-import os, subprocess, sys
+import os, subprocess, sys, time
 plan, script = sys.argv[1], sys.argv[2]
 pidfile = os.path.join(plan, 'brief.pid')
+if not hasattr(os, 'fork'):
+    worker = (
+        'import os, subprocess, sys\n'
+        'plan, script, pidfile = sys.argv[1], sys.argv[2], sys.argv[3]\n'
+        'try:\n'
+        '    with open(pidfile, "w") as handle:\n'
+        '        handle.write("%d\\n" % os.getpid())\n'
+        '    subprocess.run([sys.executable, script, "write", plan], stdin=subprocess.DEVNULL)\n'
+        'finally:\n'
+        '    try: os.unlink(pidfile)\n'
+        '    except OSError: pass\n'
+    )
+    flags = getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0) | getattr(subprocess, 'DETACHED_PROCESS', 0)
+    with open(os.path.join(plan, 'brief.out'), 'ab') as out:
+        proc = subprocess.Popen(
+            [sys.executable, '-c', worker, plan, script, pidfile],
+            stdin=subprocess.DEVNULL, stdout=out, stderr=out,
+            creationflags=flags, close_fds=True,
+        )
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and not os.path.exists(pidfile) and proc.poll() is None:
+        time.sleep(0.02)
+    sys.exit(0)
 ready, signal_ready = os.pipe()
 child = os.fork()
 if child:
@@ -3479,7 +3521,7 @@ do_run() {
   # Durable, beside the repo — never TMPDIR. A temp worktree root has destroyed
   # real work here before: isolated worktrees are never pushed, so when the root
   # goes, the only copy of that work goes with it.
-  wt_root="$(cd "$REPO/.." && pwd)/.forge-worktrees/$run_id"
+  wt_root="$(forge_host_path "$(cd "$REPO/.." && pwd)/.forge-worktrees/$run_id")"
   echo "$wt_root" > "$PLAN/wt_root"
   # Sibling, not parent: git refs are files, so a branch `forge/<run>` makes
   # `forge/<run>/<task>` impossible ("cannot lock ref ... exists; cannot create").
@@ -4069,7 +4111,7 @@ fi
 case "$CMD" in
   # `combine` takes a plan dir that does not exist yet and locks its sources itself.
   run|retry|integrate|accept|adopt|review|split|attribute)
-    if [ "${FORGE_PLAN_LOCK:-}" != "${1:-}" ]; then
+    if [ "$(forge_posix_path "${FORGE_PLAN_LOCK:-}")" != "${1:-}" ]; then
       exec python3 "$SKILL_DIR/scripts/forge-schedule.py" lock "$SELF" "$CMD" "$@"
     fi ;;
 esac
