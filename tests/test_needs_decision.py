@@ -285,6 +285,11 @@ class DecisionTests(DecisionCase):
         p, _ = self.converging_plan()
         self.retry(p, '--decide', 'retry=1', '--reason', 'one more', '--approved')
         self.assertEqual(self.read(p, 'decided.left'), '0')
+        self.assertFalse((p / 'tasks/a/decision.md').exists())
+        r = self.retry(p, '--decide', 'retry=1', '--reason', 'again', '--approved')
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn('is FAIL, not waiting for a decision', r.stdout)
+        self.assertIn('run without --decide: forge-parallel.sh retry', r.stdout)
         self.retry(p)
         self.assertFalse((p / 'tasks/a/decided.left').exists())
 

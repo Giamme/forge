@@ -914,7 +914,10 @@ def decision_of(plan, args, dwarf):
     status = task_status(plan, args.task, strict=True)
     if status != 'NEEDS_DECISION':
         if args.decide is not None:
-            raise Refused(f'task {args.task} is {status}, not waiting for a decision: --decide only decides a NEEDS_DECISION task')
+            hint = ' (retry without --decide)' if status in (
+                'FAIL', 'UNKNOWN', 'ERROR', 'TIMEOUT', 'INTERRUPTED', 'INVALIDATED', 'CONFLICT',
+            ) else ''
+            raise Refused(f'task {args.task} is {status}, not waiting for a decision: --decide only decides a NEEDS_DECISION task{hint}')
         return None
     if args.decide is None and dwarf is None:
         head = ' '.join(line.strip() for line in (read_file(plan, f'tasks/{args.task}/decision.md') or '').splitlines()[:3]
