@@ -34,8 +34,9 @@ link_dir() { # link_dir <target-parent> <label>
   if [ ! -d "$parent" ]; then say "$label: skipped ($parent does not exist)"; return; fi
   if [ "$dest" = "$SKILL_DIR" ]; then say "$label: is the source directory"; return; fi
   if [ -L "$dest" ]; then
-    target="$(readlink "$dest" 2>/dev/null || true)"
-    if [ "$(forge_posix_path "$target")" = "$(forge_posix_path "$SKILL_DIR")" ]; then
+    # Canonicalize physically so /tmp mounts, 8.3 short names, and relative symlinks match SKILL_DIR.
+    target="$(cd -P -- "$dest" 2>/dev/null && pwd -P || true)"
+    if [ -n "$target" ] && [ "$target" = "$SKILL_DIR" ]; then
       say "$label: already linked"; return
     fi
   fi
@@ -79,7 +80,7 @@ copy_skill_dir() { # copy_skill_dir <target-parent> <label> — real directory c
     return 0
   fi
   if [ -L "$dest" ]; then
-    rm -rf "$dest"
+    rmdir "$dest" 2>/dev/null || rm -f "$dest" 2>/dev/null || rm -rf "$dest"
   elif [ -e "$dest" ] && [ ! -f "$dest/.forge-installed" ]; then
     say "$label: SKIPPED — $dest exists and is not managed by forge; move it aside first"; return 1
   fi

@@ -28,7 +28,10 @@ PowerShell) and standard Windows Python 3.9+ (no WSL or MSYS2 Python install is 
     receives a copied directory, so re-run `forge install` / `forge update` after pulling changes.
   - Process-tree termination (timeouts, Ctrl-C, orphan reaping) uses Win32 Job Objects and
     `TerminateProcess` because Windows lacks POSIX `SIGTERM`/`os.killpg`, so background helpers are
-    ended forcefully rather than via a graceful shutdown signal.
+    ended forcefully rather than via a graceful shutdown signal. Because `ProcessJob.attach` runs
+    right after `Popen`, a grandchild spawned in the first few milliseconds can escape the job
+    (cleanup is best-effort), and killing the scheduler abruptly ends running tasks attached to its
+    Job Object rather than leaving them in separate sessions as on macOS/Linux.
   - `O_NOFOLLOW` / `O_DIRECTORY` symlink checks fall back to `os.lstat` (reparse-point) checks
     before open, which is best-effort rather than kernel-atomic, and POSIX `chmod` permission bits
     are not enforced natively on Windows.
