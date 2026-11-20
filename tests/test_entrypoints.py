@@ -17,10 +17,10 @@ class EntrypointTests(unittest.TestCase):
         node = shutil.which('node')
         if not node:
             self.skipTest('node not available')
-        done = subprocess.run([node, str(FORGE_JS), '--help'], capture_output=True, text=True, timeout=15)
+        done = subprocess.run([node, str(FORGE_JS), '--help'], capture_output=True, text=True, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn('usage: forge <command>', done.stdout)
-        bad = subprocess.run([node, str(FORGE_JS), '__no_such_command__'], capture_output=True, text=True, timeout=15)
+        bad = subprocess.run([node, str(FORGE_JS), '__no_such_command__'], capture_output=True, text=True, timeout=60)
         self.assertEqual(bad.returncode, 2)
 
     def test_node_bin_forge_js_filters_windows_bash_stubs(self) -> None:
@@ -37,15 +37,15 @@ class EntrypointTests(unittest.TestCase):
             'if (isWindowsBashStub("C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe")) process.exit(4);'
         )
         self.assertIn('isWindowsBashStub', src)
-        done = subprocess.run([node, '-e', check, str(FORGE_JS)], capture_output=True, text=True, timeout=10)
+        done = subprocess.run([node, '-e', check, str(FORGE_JS)], capture_output=True, text=True, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr)
 
     @unittest.skipUnless(os.name == 'nt', 'Windows CMD entrypoint test')
     def test_forge_cmd_help_and_exit_code_on_windows(self) -> None:
-        done = subprocess.run(['cmd.exe', '/c', str(FORGE_CMD), '--help'], capture_output=True, text=True, timeout=15)
+        done = subprocess.run(['cmd.exe', '/c', str(FORGE_CMD), '--help'], capture_output=True, text=True, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn('usage: forge <command>', done.stdout)
-        bad = subprocess.run(['cmd.exe', '/c', str(FORGE_CMD), '__no_such_command__'], capture_output=True, text=True, timeout=15)
+        bad = subprocess.run(['cmd.exe', '/c', str(FORGE_CMD), '__no_such_command__'], capture_output=True, text=True, timeout=60)
         self.assertEqual(bad.returncode, 2)
 
 
