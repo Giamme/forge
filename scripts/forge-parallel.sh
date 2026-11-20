@@ -1822,6 +1822,35 @@ record_dispatched_inputs() { # record_dispatched_inputs <tdir>
   done
 }
 
+# Brief inputs the last completed review judged (#209), written in reverse order so
+# prompt.reviewed's presence marks the snapshot complete.
+record_reviewed_inputs() { # record_reviewed_inputs <tdir> <thr>
+  local tdir="$1" thr="${2:-}" f tmp
+  tmp="$tdir/.approach.reviewed.tmp"
+  if [ -f "$tdir/approach.md" ]; then cp "$tdir/approach.md" "$tmp" || { rm -f "$tmp"; return 1; }
+  else : > "$tmp" || return 1; fi
+  mv "$tmp" "$tdir/approach.reviewed" || { rm -f "$tmp"; return 1; }
+  tmp="$tdir/.qa.reviewed.threshold.tmp"
+  printf '%s\n' "$thr" > "$tmp" && mv "$tmp" "$tdir/qa.reviewed.threshold" || { rm -f "$tmp"; return 1; }
+  tmp="$tdir/.prompt.reviewed.tmp"
+  if [ -f "$tdir/prompt.md" ]; then cp "$tdir/prompt.md" "$tmp" || { rm -f "$tmp"; return 1; }
+  else : > "$tmp" || return 1; fi
+  mv "$tmp" "$tdir/prompt.reviewed" || { rm -f "$tmp"; return 1; }
+}
+
+brief_changed_since_review() { # brief_changed_since_review <tdir> <thr> -> 0 when changed
+  local tdir="$1" thr="${2:-}" f cur
+  [ -f "$tdir/prompt.reviewed" ] || return 1
+  for f in prompt approach; do
+    cur="$tdir/$f.md"; [ -f "$cur" ] || cur=/dev/null
+    cmp -s "$tdir/$f.reviewed" "$cur" || return 0
+  done
+  if [ -f "$tdir/qa.reviewed.threshold" ]; then
+    [ "$(cat "$tdir/qa.reviewed.threshold" 2>/dev/null)" = "$thr" ] || return 0
+  fi
+  return 1
+}
+
 # Whether the planner edited prompt.md or approach.md while the attempt ran (#150). Returns 0 when it did:
 # the attempt is then STALE, written to stale.diff and control.log, and the caller stops before any review.
 # Returns 1 when nothing changed, or when the attempt predates the .dispatched copies (no check possible).
@@ -2011,7 +2040,7 @@ do_task_body() (
     base="$(git -C "$(cat "$PLAN/wt_root")/_integration" rev-parse HEAD)"; printf '%s\n' "$base" > "$tdir/base_ref"
   fi
 
-  local dw qa yd yq rc ft_dwarf ft_qa
+  local dw qa yd yq rc ft_dwarf ft_qa qa_thr
   dw="$(field "$T" "$id" dwarf)"; qa="$(field "$T" "$id" qa)"
   yd=""; yq=""
   [ -f "$PLAN/yolo_dwarf" ] && yd="--yolo"
@@ -2019,6 +2048,8 @@ do_task_body() (
   # Empty when the role is not listed, so the recorded command line is unchanged.
   ft_dwarf="$(forge_fast_tier "$PLAN" dwarf)"
   ft_qa="$(forge_fast_tier "$PLAN" qa)"
+  # Read once per attempt: governs brief-change re-review (#209), the QA prompt, and qa_gate.
+  qa_thr="$(qa_threshold_for "$PLAN" "$id")"
 
   if ! ensure_worktree "$REPO" "$wt" "$br" "$base" "$tdir" "$PLAN" "$id"; then
     echo ERROR > "$tdir/status"
@@ -2178,18 +2209,22 @@ do_task_body() (
     fi
     # A bounced attempt (retry_findings.source `bounce`) was never reviewed, so a retry that keeps
     # its code is reviewed rather than refused as identical: the refusal is for a diff a review
-    # already judged.
+    # already judged. The same applies when the brief or threshold changed since that review (#209).
     if [ -s "$tdir/changes.prev.diff" ] && cmp -s "$tdir/changes.diff" "$tdir/changes.prev.diff" \
         && [ "$(cat "$tdir/retry_findings.source" 2>/dev/null)" != bounce ]; then
-      # A retry its CLI cancelled before it changed anything did not keep the code on purpose.
-      if grep -qx 'class=cancelled' "$tdir/dwarf.infra" 2>/dev/null; then
-        infra_stop "$tdir" "$id" dwarf "$attempt"; return 8
+      if brief_changed_since_review "$tdir" "$qa_thr"; then
+        note "$id: brief changed since the last review — reviewing the unchanged diff against the updated brief"
+      else
+        # A retry its CLI cancelled before it changed anything did not keep the code on purpose.
+        if grep -qx 'class=cancelled' "$tdir/dwarf.infra" 2>/dev/null; then
+          infra_stop "$tdir" "$id" dwarf "$attempt"; return 8
+        fi
+        echo FAIL > "$tdir/status"
+        : > "$tdir/noretry"
+        echo "The retry changed nothing: the diff is byte-identical to the previous attempt." \
+          > "$tdir/qa.last"
+        note "$id: retry produced no new changes — not re-reviewing identical code"; return 1
       fi
-      echo FAIL > "$tdir/status"
-      : > "$tdir/noretry"
-      echo "The retry changed nothing: the diff is byte-identical to the previous attempt." \
-        > "$tdir/qa.last"
-      note "$id: retry produced no new changes — not re-reviewing identical code"; return 1
     fi
 
     if ! git -C "$wt" diff --cached --quiet "$base" -- .forge; then
@@ -2267,8 +2302,7 @@ do_task_body() (
   echo "$review_fp" > "$tdir/review.fingerprint"
 
   forge_metric_phase preparation
-  local qa_thr rs_on=0
-  qa_thr="$(qa_threshold_for "$PLAN" "$id")"
+  local rs_on=0
   # Read once per round, like the threshold: continuing the earlier reviewer's session is an
   # opt-in experiment (plan --reviewer-session), and a round never changes its mind midway.
   [ -f "$PLAN/reviewer_session" ] && rs_on=1
@@ -2499,6 +2533,7 @@ for r in json.load(sys.stdin):
   # FAIL. qa_thr is the value the review prompt was built with, so the prompt and the gate of
   # one attempt agree. Before record_attempt, so attempts.tsv shows the gated status.
   qa_gate "$PLAN" "$id" "$tdir" "$verdict" "$qa_thr"
+  record_reviewed_inputs "$tdir" "$qa_thr" || true
   return 0
 )
 

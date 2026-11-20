@@ -741,6 +741,8 @@ PYEOF
     esac
     echo "  lower the threshold:    forge-parallel.sh retry $PLAN $id --decide threshold=P1 --reason \"...\" --approved"
     echo "                          (this task's blocking threshold, then one retry)"
+    echo "  clarify the brief:      edit tasks/$id/prompt.md (or approach.md), then retry with --decide retry=1"
+    echo "                          (--reason \"...\" --approved; unchanged code is re-reviewed against the new brief)"
     echo "  a named model:          forge-parallel.sh retry $PLAN $id --dwarf <spec> --reason \"...\" --approved"
     echo "                          (one attempt; with --decide retry=N, up to N attempts held on that model)"
     case "$from" in FAIL|UNKNOWN)       # with no reviewer verdict, accept has nothing to override
