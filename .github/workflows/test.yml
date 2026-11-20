@@ -13,6 +13,8 @@
 # The whole suite takes about 40 minutes on one runner, so each OS and Python pair splits it into
 # 4 shards (tests/run_tests.py --shard). The "Tests passed" job at the end is the one check to
 # require for merging: it fails when any shard did, and passes for a documentation-only change.
+# The msys2 job (Windows MSYS2 mode, a short list of tests) runs with the windows job but is not
+# part of "Tests passed" yet: it becomes required once it has been reliable for a while.
 
 name: Tests
 
@@ -128,6 +130,38 @@ jobs:
           git --version
       - name: tests/check.sh
         run: bash tests/check.sh
+
+  # Windows MSYS2 mode (scripts/forge-win.sh), in the runner's own MSYS2: only the tests that cover
+  # what the mode changes. Not in the passed job's needs yet: it becomes required once it has been
+  # reliable for a while.
+  msys2:
+    name: windows-latest · MSYS2
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      MSYS: winsymlinks:native
+    steps:
+      - uses: actions/checkout@v5
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          release: false
+          update: true
+          install: python git procps-ng diffutils
+      - name: Versions
+        run: |
+          bash --version | head -1
+          python3 --version
+          git --version
+      - name: tests/run_tests.py (MSYS2 mode)
+        run: >-
+          python3 tests/run_tests.py forge:test_forge_win. forge:test_flock. forge:test_guards.
+          forge:test_cross_platform. forge:test_pr. ui:test_reader.
 
   passed:
     name: Tests passed
