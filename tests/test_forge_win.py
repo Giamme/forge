@@ -61,6 +61,33 @@ class ForgeWinTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.split()[2:], ['pkill=function', 'mode=msys2'])
 
+    @unittest.skipUnless(IN_MSYS2, 'needs a real MSYS2')
+    def test_msys2_tools_come_first_and_agents_keep_the_shell_path(self):
+        # A UCRT64 or MINGW64 shell puts its own bin first, where a MinGW python3 is a native one.
+        script = ('. "$1"; command -v python3; echo "$PATH"; echo "$FORGE_WIN_AGENT_PATH"; '
+                  'echo "$FORGE_WIN_MSYSTEM"; echo "$MSYS"; . "$1"; echo "$PATH"; echo "$MSYS"')
+        with tempfile.TemporaryDirectory() as mingw:
+            fake = os.path.join(mingw, 'python3')
+            with open(fake, 'w') as f:
+                f.write('#!/bin/sh\necho mingw\n')
+            os.chmod(fake, 0o755)
+            shell_path = '%s:/usr/bin' % mingw
+            for msys, expected in ((None, 'winsymlinks:native'),
+                                   ('error_start:x', 'error_start:x winsymlinks:native'),
+                                   ('winsymlinks:nativestrict', 'winsymlinks:nativestrict')):
+                with self.subTest(msys=msys):
+                    env = {k: v for k, v in os.environ.items() if not k.startswith('FORGE_WIN_') and k != 'MSYS'}
+                    env.update(PATH=shell_path, MSYSTEM='UCRT64')
+                    if msys is not None:
+                        env['MSYS'] = msys
+                    result = subprocess.run(['/usr/bin/bash', '-c', script, 'forge-win-test', str(WIN)],
+                                            capture_output=True, text=True, env=env, timeout=60)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    # Sourced again by a child script, nothing changes.
+                    self.assertEqual(result.stdout.splitlines(), [
+                        '/usr/bin/python3', '/usr/bin:' + shell_path, shell_path, 'UCRT64', expected,
+                        '/usr/bin:' + shell_path, expected])
+
     def test_an_unknown_mode_is_refused(self):
         result = source('msys', 'MSYS2')
         self.assertEqual(result.returncode, 2, result.stderr)

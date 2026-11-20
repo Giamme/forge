@@ -17,8 +17,9 @@
 # Symlinks are made as real Windows symlinks (Developer Mode must be on). A link to a target
 # that does not exist yet falls back to an MSYS-only link, which native programs see as a file.
 #
-# FORGE_WIN_AGENT_PATH is the PATH Git Bash had. forge-dispatch.sh gives it back to the agent
-# CLIs, so they see what they would outside forge rather than MSYS2's tools first.
+# FORGE_WIN_AGENT_PATH is the PATH forge started with, in Git Bash or an MSYS2 shell, before
+# /usr/bin goes first. forge-dispatch.sh gives it back to the agent CLIs, so they see what they
+# would outside forge rather than MSYS2's tools first.
 #
 # This file is sourced on macOS too, so it keeps to Bash 3.2: no mapfile, no ${var,,}.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
@@ -87,15 +88,21 @@ for _forge_tool in python3 git procps cmp diff; do
     exit 127
   fi
 done
-if [ -n "${FORGE_WIN_REEXEC:-}" ]; then
-  # Just arrived from Git Bash. Its PATH is what an agent CLI should see; forge itself needs
-  # MSYS2's python3 and git ahead of the Windows ones.
-  unset FORGE_WIN_REEXEC MSYS_NO_PATHCONV MSYS2_ARG_CONV_EXCL
-  export FORGE_WIN_AGENT_PATH="$PATH" PATH="/usr/bin:$PATH"
+[ -z "${FORGE_WIN_REEXEC:-}" ] || unset FORGE_WIN_REEXEC MSYS_NO_PATHCONV MSYS2_ARG_CONV_EXCL
+# The PATH and MSYSTEM forge started with (Git Bash's, or the MSYS2 shell's) are what an agent
+# CLI should see. forge itself needs MSYS2's python3 and git ahead of everything: a UCRT64 or
+# MINGW64 shell puts /ucrt64/bin or /mingw64/bin first, where a MinGW Python is a native Windows
+# Python. Child scripts inherit both, so this runs once.
+if [ -z "${FORGE_WIN_AGENT_PATH:-}" ]; then
+  export FORGE_WIN_AGENT_PATH="$PATH"
+  [ -n "${FORGE_WIN_MSYSTEM+set}" ] || export FORGE_WIN_MSYSTEM="${MSYSTEM-}"
 fi
+case "$PATH" in /usr/bin:*) ;; *) export PATH="/usr/bin:$PATH" ;; esac
+# Real Windows symlinks, unless the user already chose how MSYS2 makes them.
+case " ${MSYS-} " in *" winsymlinks"*) ;; *) MSYS="${MSYS:+$MSYS }winsymlinks:native" ;; esac
 # FORGE_WIN_MODE says which mode runs, to every child script and helper, also when forge was
 # started from an MSYS2 shell without it: native-port helpers must treat MSYS2 mode as POSIX.
-export MSYSTEM=MSYS MSYS=winsymlinks:native FORGE_WIN_MODE=msys2
+export MSYSTEM=MSYS MSYS FORGE_WIN_MODE=msys2
 # Worktree links must be relative: Git for Windows, which the native agent CLIs use, cannot follow
 # the /c/... paths MSYS2's git writes. The setting travels in the environment, but the first
 # worktree made with it adds extensions.relativeWorktrees to the repository's config, and from
