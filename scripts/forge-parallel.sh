@@ -1113,8 +1113,14 @@ EOF
     fi
   fi
 
-  local tmp="$PLAN/.tasks.tsv.new"; : > "$tmp"
-  local hi_i=0 md_i=0 lo_i=0 an_i=0 qhi_i=0 qmd_i=0 qlo_i=0 qan_i=0 unassigned=0
+  # A refused plan (a task left UNASSIGNED below) puts tasks.tsv back as it was, so nothing it
+  # routed, such as the default reviewer, is frozen into the next plan (#178). The copy is only
+  # made for a refusal, under one name, so an exit in between leaves at most this one file,
+  # which the next plan removes.
+  local tmp="$PLAN/.tasks.tsv.new" orig_tasks="$PLAN/.tasks.tsv.orig"
+  : > "$tmp"
+  rm -f "$orig_tasks"
+  local hi_i=0 md_i=0 lo_i=0 an_i=0 qhi_i=0 qmd_i=0 qlo_i=0 qan_i=0 unassigned=0 qa_kept_msg="" qa_flag_spec=""
   printf '# id\tdeps\tdifficulty\tfiles\tdwarf\tqa\ttitle\n' > "$tmp"
   local id deps diff files dw qa title line
   while IFS= read -r line; do
@@ -1176,16 +1182,27 @@ EOF
       if [ "$qa" = "-" ] || [ -z "$qa" ]; then
         if [ -n "$Q_ANY" ]; then qa="$(pool_pick "$Q_ANY" "$qan_i")"; qan_i=$((qan_i+1)); else qa="opus"; fi
       fi
+    else
+      qa_flag_spec=""
+      case "$diff" in
+        high)   qa_flag_spec="${Q_HI:-$Q_ANY}" ;;
+        medium) qa_flag_spec="${Q_MD:-$Q_ANY}" ;;
+        low)    qa_flag_spec="${Q_LO:-$Q_ANY}" ;;
+      esac
+      if [ -n "$qa_flag_spec" ] && ! list_has "$qa" "$qa_flag_spec"; then
+        qa_kept_msg="${qa_kept_msg:+$qa_kept_msg, }$id ($qa)"
+      fi
     fi
     # A column runs one spec; a list there would only fail later, at its first dispatch.
     case "$dw" in *,*) die "task '$id': the dwarf column names one spec, not a list ('$dw'); pool models with a --dwarf flag" ;; esac
     case "$qa" in *,*) die "task '$id': the qa column names one spec, not a list ('$qa'); pool reviewers with a --qa flag" ;; esac
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$deps" "$diff" "$files" "$dw" "$qa" "$title" >> "$tmp"
   done < "$T"
+  [ "$unassigned" -eq 0 ] || cp "$T" "$orig_tasks"
   mv "$tmp" "$T"
   # Which cells routing filled in, so a re-plan under another profile replaces those and no others.
   # Kept current through a --no-profile re-plan too, once a profile has recorded any.
-  if [ -f "$PLAN/profile.json" ] || [ -f "$PLAN/routed.json" ]; then
+  if [ "$unassigned" -eq 0 ] && { [ -f "$PLAN/profile.json" ] || [ -f "$PLAN/routed.json" ]; }; then
     forge_profile_py routed "$PLAN" 2>/dev/null || true
   fi
 
@@ -1246,6 +1263,10 @@ EOF
   forge_groups_plan "$PLAN" "$GRP_SRC" "$GRP_REVIEW" "$GRP_MAX"
 
   render_table "$PLAN"
+  if [ -n "$qa_kept_msg" ]; then
+    echo "note: --qa left existing reviewer(s) unchanged on: $qa_kept_msg (set qa to '-' in tasks.tsv to let --qa fill them)"
+    echo
+  fi
   # What the gates did, from plan-gates.json: files and deps they added, prompts and
   # requirements still flagged. Prints nothing when no gate recorded anything.
   python3 "$SKILL_DIR/scripts/forge-plan-check.py" gates "$PLAN" 2>/dev/null || true
@@ -1260,6 +1281,7 @@ EOF
   forge_ui_launch "$PLAN"
 
   if [ "$unassigned" -gt 0 ]; then
+    mv -f "$orig_tasks" "$T"
     note ""
     note "$unassigned task(s) are UNASSIGNED: their difficulty tier has no --dwarf-<tier>"
     note "rule and there is no plain --dwarf fallback. Assign them before running —"
