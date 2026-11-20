@@ -2556,7 +2556,7 @@ merge_task() { # merge_task <plan> <id> -> 0 merged, 1 conflicted
   (cd "$int_wt" && git merge --abort >/dev/null 2>&1)
   echo CONFLICT > "$PLAN/tasks/$id/status"
   forge_dataset_event merge --dir "$PLAN" --task "$id" --set status=CONFLICT --set commit="$reviewed" \
-    --set conflicts="$(tr '\n' ' ' < "$tdir/conflict.files" 2>/dev/null)"
+    --set conflicts="$(tr '\n' ' ' 2>/dev/null < "$tdir/conflict.files")"
   return 1
 }
 

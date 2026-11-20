@@ -108,7 +108,7 @@ forge_winpid() {
   local pid="${1:-}" win=""
   [ -n "$pid" ] || return 0
   if [ -r "/proc/$pid/winpid" ]; then
-    read -r win < "/proc/$pid/winpid" 2>/dev/null || win=""
+    read -r win 2>/dev/null < "/proc/$pid/winpid" || win=""
     win="${win%$'\r'}"
   fi
   printf '%s\n' "${win:-$pid}"

@@ -190,6 +190,8 @@ class RetryTests(unittest.TestCase):
         self.assertIn('model=gpt-6-astra', (p / 'tasks/a/dwarf.resolved').read_text())
         self.assertEqual((p / 'tasks/a/escalations.tsv').read_text().split('\t')[1:], ['3', 'sol', 'astra', 'policy\n'])
         self.assertIn('escalating from sol to astra', r.stdout)
+        self.assertNotIn('No such file or directory', r.stdout)
+        self.assertNotIn('retry_per_model', r.stdout)
 
     def test_with_no_stronger_model_the_task_stops_with_a_split_suggestion(self):
         p = self.pooled_plan('--dwarf-low', 'sol')
