@@ -368,7 +368,12 @@ def _created(path, names):
             info = os.stat(path / name)
         except (OSError, ValueError):
             continue
-        value = getattr(info, 'st_birthtime', None) or info.st_mtime
+        birth = getattr(info, 'st_birthtime', None)
+        if birth and sys.platform in ('win32', 'cygwin'):
+            # Windows keeps a file's creation time when its mtime is set earlier, where macOS moves
+            # the birth time back with it: the earlier of the two is the start there too.
+            birth = min(birth, info.st_mtime)
+        value = birth or info.st_mtime
         if math.isfinite(value):
             times.append(float(value))
     return min(times) if times else None
