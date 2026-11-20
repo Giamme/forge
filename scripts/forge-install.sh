@@ -116,21 +116,17 @@ install_antigravity() {
   if command -v agy >/dev/null 2>&1; then
     has_agy=1
   fi
-  if [ ! -d "$agy_skills" ] && [ "$has_agy" = 0 ]; then
-    say "$label: skipped (agy not on PATH and $agy_skills does not exist)"; return
+  if forge_is_windows && [ -d "$agy_skills" ]; then
+    # Windows only. Electron/Node scanners check dirent.isDirectory(), which is false for Windows
+    # junctions, and Antigravity loads skills directly from ~/.gemini/config/skills without
+    # `agy plugin install` (which hits Access is denied on Windows while Antigravity.exe watches
+    # ~/.gemini/config/plugins). macOS and Linux keep the plugin below.
+    copy_skill_dir "$agy_skills" "antigravity" || rc=1
+    return "$rc"
   fi
-  if [ -d "$agy_skills" ]; then
-    if forge_is_windows; then
-      # Electron/Node scanners check dirent.isDirectory(), which is false for Windows junctions,
-      # and Antigravity loads skills directly from ~/.gemini/config/skills without `agy plugin install`
-      # (which hits Access is denied on Windows while Antigravity.exe watches ~/.gemini/config/plugins).
-      copy_skill_dir "$agy_skills" "antigravity" || rc=1
-      return "$rc"
-    else
-      link_dir "$agy_skills" "antigravity" || rc=1
-    fi
+  if [ "$has_agy" = 0 ]; then
+    say "$label: skipped (agy not on PATH)"; return
   fi
-  [ "$has_agy" = 1 ] || return "$rc"
   if [ "$DRY" = 1 ]; then
     say "  would: write plugin wrapper $wrapper"
     say "  would: agy plugin install $wrapper"

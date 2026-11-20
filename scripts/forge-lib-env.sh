@@ -9,7 +9,7 @@
 
 forge_is_windows() {
   case "${OSTYPE:-}" in
-    msys*|cygwin*) return 0 ;;
+    msys*|cygwin*) [ "${FORGE_WIN_MODE:-native}" != msys2 ] ;;   # MSYS2 mode (#164) runs forge as on POSIX
     *) return 1 ;;
   esac
 }

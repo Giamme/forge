@@ -93,6 +93,18 @@ class WindowsEnvTests(unittest.TestCase):
         )
         self.assertEqual(done.returncode, 0, done.stderr)
 
+    def test_forge_is_windows_follows_ostype_and_stands_aside_in_msys2_mode(self) -> None:
+        env_lib = self._to_bash_path(ENV_LIB)
+        cases = (('linux-gnu', '', 1), ('darwin23', '', 1), ('msys', '', 0), ('msys', 'native', 0),
+                 ('cygwin', '', 0), ('msys', 'msys2', 1), ('cygwin', 'msys2', 1))
+        for ostype, mode, expected in cases:
+            with self.subTest(ostype=ostype, mode=mode):
+                done = subprocess.run(
+                    [self.bash, '-c', f'OSTYPE={ostype}; FORGE_WIN_MODE={mode}; source "{env_lib}"; forge_is_windows'],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(done.returncode, expected, done.stderr)
+
     def test_install_links_claude_codex_and_antigravity_skills_idempotently(self) -> None:
         home = self.tmp / 'home'
         claude_skills = home / '.claude' / 'skills'
@@ -112,17 +124,22 @@ class WindowsEnvTests(unittest.TestCase):
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
         self.assertTrue((claude_skills / 'forge' / 'SKILL.md').is_file(), first.stdout)
         self.assertTrue((codex_skills / 'forge' / 'SKILL.md').is_file(), first.stdout)
-        self.assertTrue((agy_skills / 'forge' / 'SKILL.md').is_file(), first.stdout)
+        agy_forge = agy_skills / 'forge'
         if os.name == 'nt':
-            agy_forge = agy_skills / 'forge'
+            # Windows: a real copy in Antigravity's skills directory, which it reads without a plugin.
+            self.assertTrue((agy_forge / 'SKILL.md').is_file(), first.stdout)
             self.assertFalse(agy_forge.is_symlink())
             if hasattr(agy_forge, 'is_junction'):
                 self.assertFalse(agy_forge.is_junction())
+        else:
+            # macOS/Linux: Antigravity loads skills only from plugins, and agy is not on this PATH.
+            self.assertFalse(os.path.lexists(agy_forge), first.stdout)
+            self.assertIn('antigravity: skipped (agy not on PATH)', first.stdout)
 
         second = subprocess.run([self.bash, '-c', f'"{installer}" < /dev/null'], capture_output=True, text=True, env=env)
         self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
         self.assertIn('already linked', second.stdout)
-        self.assertTrue((agy_skills / 'forge' / 'SKILL.md').is_file(), second.stdout)
+        self.assertEqual((agy_forge / 'SKILL.md').is_file(), os.name == 'nt', second.stdout)
 
     def test_doctor_win_fallbacks_and_msys_pathconv_preservation(self) -> None:
         dispatch = self._to_bash_path(SCRIPTS / 'forge-dispatch.sh')

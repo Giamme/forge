@@ -53,22 +53,29 @@ const child = spawn(bash, [forgeScript, ...process.argv.slice(2)], {
   windowsHide: false,
 });
 
-const forwardedSignals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 const handlers = new Map();
-for (const sig of forwardedSignals) {
-  const fn = () => {
-    try {
-      child.kill(sig);
-    } catch (_err) {
-      // Child may already have exited.
-    }
-  };
+function listen(sig, fn) {
   try {
     process.on(sig, fn);
     handlers.set(sig, fn);
   } catch (_err) {
     // Signal not supported on this platform.
   }
+}
+// Ctrl-C already reaches bash: the terminal sends it to the whole foreground process group, and a
+// Windows console to every process attached to it. Passing it on would deliver it twice on macOS
+// and Linux, and on Windows child.kill() always ends the process at once, before forge can clean
+// up. So node only stays alive through it and leaves it to bash.
+listen('SIGINT', () => {});
+// SIGTERM and SIGHUP can reach node alone (a kill of its pid), so they are passed on.
+for (const sig of ['SIGTERM', 'SIGHUP']) {
+  listen(sig, () => {
+    try {
+      child.kill(sig);
+    } catch (_err) {
+      // Child may already have exited.
+    }
+  });
 }
 
 function cleanupSignals() {
