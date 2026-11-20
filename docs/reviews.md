@@ -78,10 +78,12 @@ Two things it deliberately does:
 - **Reviews the task's cumulative diff**, against the commit the task was originally branched
   from — not just the fix. Reviewing the fix alone would let the first attempt's code through
   unread.
-- **Refuses to re-review identical code.** If the retry produces a byte-identical diff, the
-  task fails again without spending a QA dispatch. A retry that only rejects the findings,
-  and leaves that diff unchanged, is still this identical retry: it writes
-  `tasks/<id>/noretry` and QA is not dispatched.
+- **Refuses to re-review identical code.** If the retry produces a byte-identical diff
+  against an unchanged brief, the task fails again without spending a QA dispatch. A retry that
+  only rejects the findings, and leaves both the diff and the brief unchanged, writes
+  `tasks/<id>/noretry` and QA is not dispatched. Clarifying `tasks/<id>/prompt.md` or
+  `approach.md` (or changing `qa_threshold`) before retrying lets QA re-review even unchanged code
+  against the updated brief.
 
 When the diff did change, QA on that retry is handed the previous round as well as the
 cumulative diff. The report goes under **Findings from the previous review round**. The

@@ -38,7 +38,7 @@ Symptoms, causes and fixes, from a skill a harness cannot see to a task that wil
 | every wave has exactly one task | `files` sets overlap across most tasks; the decomposition isn't actually parallel |
 | dwarves reimplement already-merged work | `goal.txt` or `files` missing, so the capsule carries no useful status |
 | several tasks report "produced no changes" | the decomposition made tasks that weren't independently actionable — use a coarser `--decompose-level`, not more retries |
-| `retry` says "produced no new changes" | the dwarf returned a byte-identical diff, so no reviewer was paid to read the same code twice. Escalate with `--dwarf`, or fix the prompt |
+| `retry` says "produced no new changes" | the dwarf returned a byte-identical diff against the same brief, so no reviewer was paid to read the same code twice. Escalate with `--dwarf`, or clarify `prompt.md` / `approach.md` (an updated brief re-reviews even unchanged code) |
 | a new file's code never reached QA | fixed: untracked files are diffed against `/dev/null`. A hand-built capture using only `git status --porcelain` shows the reviewer a filename and no content |
 | claude dwarf ends "I need your permission to edit" | a permission mode that prompts for Edit. forge uses `acceptEdits` plus an explicit Bash allowance, because `auto` allows shell but prompts for Edit, and `acceptEdits` alone allows Edit but prompts for real shell commands |
 | `.forge/` turns up in a review | a diff capture is missing `':(exclude).forge'` |
