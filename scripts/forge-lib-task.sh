@@ -782,7 +782,14 @@ decision_after_attempt() { # decision_after_attempt <plan> <id> <stop-before> <c
 retry_decision_gate() { # retry_decision_gate <plan> <id> <status> <decide> <dwarf> <reason> <approved 0|1>
   local PLAN="$1" id="$2" st="$3" decide="$4" dwarf="$5" reason="$6" approved="$7" n
   if [ "$st" != NEEDS_DECISION ]; then
-    [ -z "$decide" ] || die "retry: '$id' is $st, not waiting for a decision; --decide only decides a NEEDS_DECISION task"
+    if [ -n "$decide" ]; then
+      case "$st" in
+        FAIL|UNKNOWN|ERROR|TIMEOUT|INTERRUPTED|INVALIDATED|CONFLICT)
+          die "retry: '$id' is $st, not waiting for a decision; --decide only decides a NEEDS_DECISION task (run without --decide: forge-parallel.sh retry $PLAN $id)" ;;
+        *)
+          die "retry: '$id' is $st, not waiting for a decision; --decide only decides a NEEDS_DECISION task" ;;
+      esac
+    fi
     return 0
   fi
   if [ -z "$decide" ] && [ -z "$dwarf" ]; then
@@ -1017,7 +1024,7 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf [decided]]
     write_escalation "$PLAN" "$id" "$cur" "$newdwarf" "$esc_source" || { rm -f "$tdir/retry_findings.next"; return 1; }
   fi
   [ "$st" != NEEDS_INPUT ] || commit_answer_findings "$tdir" || return 1
-  rm -f "$tdir/noretry"
+  rm -f "$tdir/noretry" "$tdir/decision.md" "$tdir/decision.from"
 }
 
 # Puts the next implementer in place: tasks.tsv, the escalations.tsv record and the dataset

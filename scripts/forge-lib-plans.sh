@@ -596,7 +596,7 @@ do_accept() {
     write_results "$PLAN"
     die "task '$id' could not be merged (status now $(task_status "$PLAN" "$id")); nothing was accepted. See 'git -C $int_wt status' and the task branch $br" 6
   fi
-  rm -f "$kibak"
+  rm -f "$kibak" "$tdir/decision.md" "$tdir/decision.from"
   record_attempt "$PLAN" "$id"
   write_results "$PLAN"
   echo "$id accepted by a human and merged"
