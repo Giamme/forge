@@ -10,8 +10,8 @@ Closes #
 
 <!-- Tests you added or changed, and anything you checked by hand. -->
 
-CI runs `bash tests/check.sh` on Linux for this pull request. macOS only runs after the merge,
-so tick this if you ran the suite there yourself.
+CI runs `bash tests/check.sh` on Linux and Windows for this pull request. macOS only runs
+after the merge, so tick this if you ran the suite there yourself.
 
 - [ ] macOS
 
