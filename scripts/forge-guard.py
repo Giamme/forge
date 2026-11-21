@@ -55,6 +55,7 @@
 """
 from __future__ import annotations
 
+import datetime
 import os
 import re
 import signal
@@ -295,9 +296,15 @@ def read_tracked(path):
     return found
 
 
+def _same_start(recorded, current) -> bool:
+    """Whether two start times (identity, ps_table) name the same process start. Plain equality;
+    the Cygwin block below replaces it, since there a start older than a day is known to the day."""
+    return recorded == current
+
+
 def _mine(table, known):
     """The recorded processes still alive with their recorded start time (not a reused pid)."""
-    return {pid for pid, start in known.items() if pid in table and table[pid][1] == start}
+    return {pid for pid, start in known.items() if pid in table and _same_start(start, table[pid][1])}
 
 
 def track(root: int, path: str, interval: float = TRACK_INTERVAL_S) -> int:
@@ -403,7 +410,7 @@ def stop_tree(root: int, wait: float) -> int:
     while left and time.monotonic() < deadline:
         time.sleep(0.2)
         now = ps_table() or {}
-        left = {pid for pid in left if pid in now and now[pid][1] == starts[pid]}
+        left = {pid for pid in left if pid in now and _same_start(starts[pid], now[pid][1])}
     for pid in left:
         forge_proc.signal_pid(pid, force=True)
     print(len(targets))
@@ -451,6 +458,8 @@ def _ps_field(pid: int, field: str) -> str | None:
 def identity(pid: int) -> str | None:
     if forge_proc.IS_WINDOWS:
         return forge_proc.process_start_time(pid)
+    # On Cygwin (Windows MSYS2 mode) this is Cygwin ps's STIME made absolute (see the Cygwin
+    # block below). After 24 hours it is known only to the day: compare it with _same_start.
     return _ps_field(pid, 'lstart')
 
 
@@ -535,7 +544,8 @@ def stop(record: str) -> int:
     if pid > 1:
         if _pid_alive(pid):
             # A mismatch, or no way to tell, means the pid now belongs to someone else.
-            if recorded and identity(pid) == recorded:
+            current = identity(pid)
+            if recorded and current is not None and _same_start(recorded, current):
                 count = _stop_live(pid)
         else:
             count = _reap_group(pid, None)
@@ -621,6 +631,100 @@ def promises(path: str, tail_bytes: int = 3000) -> int:
     for name, excerpt in scan_promises(text):
         print('%s\t%s' % (name, excerpt.replace('\t', ' ')))
     return 0
+
+
+# --- Windows (MSYS2/Cygwin) -----------------------------------------------------
+# procps builds each row from /proc/<pid>/stat, which Cygwin fills by asking Windows: about half
+# a second per process, so one listing takes 15-20 s and outlives every timeout above, leaving
+# the guards blind. Its start time is also the Windows process's, which changes when a Cygwin
+# process execs a native program (a harness), so an identity recorded before the exec never
+# matched again. Cygwin's own ps reads the same process table in milliseconds, keeps the start
+# time across exec and hides zombies. Its STIME has one-second resolution and gives the time of
+# day for the first 24 hours, then only the date: _cygwin_start makes either absolute, and
+# _cygwin_same_start lets a start known to the day match one known to the second, so `stop`
+# still recognises a harness after a day (to the day: a pid reused on that same day would pass).
+_CYGWIN_MONTHS = {name: number for number, name in enumerate(
+    ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'), 1)}
+
+
+def _cygwin_start(stime: str, now: float | None = None) -> str:
+    """Cygwin ps's STIME as an absolute local start: 'YYYY-MM-DD HH:MM:SS' while ps gives the time
+    of day (the last 24 hours), 'YYYY-MM-DD' once it gives only the date ('Nov 19'). Text in
+    neither form comes back unchanged."""
+    today = time.localtime(time.time() if now is None else now)
+    parts = stime.split()
+    if len(parts) == 1 and re.fullmatch(r'\d\d:\d\d:\d\d', parts[0]):
+        day = datetime.date(today.tm_year, today.tm_mon, today.tm_mday)
+        if parts[0] > time.strftime('%H:%M:%S', today):      # later than now: it was yesterday
+            day -= datetime.timedelta(days=1)                  # by the date: a day is not always 86400 s
+        return '%s %s' % (day.isoformat(), parts[0])
+    if len(parts) == 2 and parts[0] in _CYGWIN_MONTHS and parts[1].isdigit():
+        month, mday = _CYGWIN_MONTHS[parts[0]], int(parts[1])
+        year = today.tm_year - ((month, mday) > (today.tm_mon, today.tm_mday))
+        return '%04d-%02d-%02d' % (year, month, mday)
+    return stime
+
+
+def _cygwin_same_start(recorded: str, current: str) -> bool:
+    """Whether two _cygwin_start values name the same start: equal, or one known only to the day
+    and the other on that day."""
+    if recorded == current:
+        return True
+    shorter, longer = sorted((recorded, current), key=len)
+    return len(shorter) == 10 and longer.startswith(shorter + ' ')
+
+
+if sys.platform == 'cygwin':
+    CYGWIN_PS = '/usr/bin/ps'
+    _CYGWIN_ROW = re.compile(r'^\s*[A-Z]?\s*(\d+)\s+(\d+)\s+(\d+)\s+\d+\s+\S+\s+\d+\s+'
+                             r'(\d\d:\d\d:\d\d|[A-Z][a-z]{2}\s+\d+)\s+(.*)$')
+    _same_start = _cygwin_same_start
+
+    def _cygwin_rows(pid: int | None = None):
+        """{pid: (ppid, pgid, start, executable)} of live processes, or None when ps cannot run.
+        LC_ALL=C keeps STIME's month names in English for _cygwin_start."""
+        try:
+            out = subprocess.run([CYGWIN_PS, '-l'] + (['-p', str(pid)] if pid else ['-a']),
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30,
+                                 env=dict(os.environ, LC_ALL='C')).stdout.decode(errors='replace')
+        except (OSError, subprocess.SubprocessError):
+            return None
+        rows = {}
+        for line in out.splitlines()[1:]:
+            match = _CYGWIN_ROW.match(line)
+            if match:
+                rows[int(match[1])] = (int(match[2]), int(match[3]), _cygwin_start(match[4]), match[5].strip())
+        return rows
+
+    def _command(pid: int, fallback: str) -> str:
+        """The full command line where Cygwin can read it cheaply; the executable otherwise."""
+        try:
+            with open('/proc/%d/cmdline' % pid, 'rb') as handle:
+                return handle.read().replace(b'\0', b' ').decode(errors='replace').strip() or fallback
+        except OSError:
+            return fallback
+
+    def list_group(pgid: int):
+        rows = _cygwin_rows()
+        if rows is None:
+            return None
+        me = os.getpid()
+        return [(pid, _command(pid, exe)) for pid, (_ppid, group, _start, exe) in sorted(rows.items())
+                if group == pgid and pid != me]
+
+    def ps_table():
+        rows = _cygwin_rows()
+        if rows is None:
+            return None
+        return {pid: (ppid, start, exe) for pid, (ppid, _group, start, exe) in rows.items()}
+
+    def _ps_field(pid: int, field: str) -> str | None:
+        if pid <= 0:
+            return None
+        row = (_cygwin_rows(pid) or {}).get(pid)
+        if row is None:
+            return None
+        return {'stat': 'S', 'lstart': row[2], 'ppid': str(row[0]), 'pgid': str(row[1])}.get(field)
 
 
 # --- cli ----------------------------------------------------------------------

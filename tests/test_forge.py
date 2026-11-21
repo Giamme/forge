@@ -11,6 +11,9 @@ import shutil
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+# procps' ps, for the tests that read process state: MSYS2 installs it as /usr/bin/procps, beside
+# Cygwin's own ps.
+PS = '/usr/bin/procps' if os.path.exists('/usr/bin/procps') else '/bin/ps'
 CLAUDE_SESSION = '5f0c2a8e-1d2b-4c3d-9e4f-0123456789ab'
 CODEX_THREAD = '6a1b3c4d-5e6f-7081-92a3-b4c5d6e7f809'
 # Interpolated below. A literal percent sign in the script has to be written %%.
@@ -146,7 +149,8 @@ class ForgeTests(unittest.TestCase):
   # Jev is the same story: a developer's ~/.config/forge/jev.json with a key turns it on, and
   # it then picks a verify command on its own (UNVERIFIED becomes FAIL) and calls the network.
   # Its coverage lives in the test_jev*.py files, which point XDG_CONFIG_HOME at a temp dir.
-  self.env=dict(os.environ, PATH=str(self.bin), FORGE_MEMORY='off', FORGE_TIMEOUT='0', FORGE_RIPWIRE='off', FORGE_JEV='off', CALLS=str(self.root/'calls'), GIT_AUTHOR_NAME='test', GIT_AUTHOR_EMAIL='test@test', GIT_COMMITTER_NAME='test', GIT_COMMITTER_EMAIL='test@test')
+  self.env=dict(os.environ, PATH=str(self.bin)+(':/usr/bin' if os.environ.get('OSTYPE','') in ('cygwin','msys') or os.path.exists('/usr/bin/cygpath') else ''),  # cygwin: tools reached by symlink need their DLLs
+    FORGE_MEMORY='off', FORGE_TIMEOUT='0', FORGE_RIPWIRE='off', FORGE_JEV='off', CALLS=str(self.root/'calls'), GIT_AUTHOR_NAME='test', GIT_AUTHOR_EMAIL='test@test', GIT_COMMITTER_NAME='test', GIT_COMMITTER_EMAIL='test@test')
   self.git('init','-q'); (self.repo/'base.txt').write_text('base\n'); self.git('add','.'); self.git('commit','-qm','initial')
  def git(self,*args):
   return subprocess.check_output(['git',*args],cwd=self.repo,env=self.env)

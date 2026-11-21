@@ -107,7 +107,8 @@ _FORGE_ENV_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 forge_winpid() {
   local pid="${1:-}" win=""
   [ -n "$pid" ] || return 0
-  if [ -r "/proc/$pid/winpid" ]; then
+  # Under MSYS2 mode /proc/<pid>/winpid exists too, but forge works with Cygwin pids there.
+  if forge_is_windows && [ -r "/proc/$pid/winpid" ]; then
     read -r win 2>/dev/null < "/proc/$pid/winpid" || win=""
     win="${win%$'\r'}"
   fi
@@ -137,7 +138,7 @@ forge_kill_group() {
   local pid="${1:-}" sig="${2:-TERM}"
   [ -n "$pid" ] || return 0
   kill -s "$sig" -- "-$pid" 2>/dev/null || true
-  if [ -r "/proc/$pid/winpid" ]; then
+  if forge_is_windows && [ -r "/proc/$pid/winpid" ]; then
     forge_kill_children "$pid" "$sig"
   fi
 }

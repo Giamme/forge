@@ -172,6 +172,8 @@ set -uo pipefail
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Windows: re-run inside MSYS2 when started from Git Bash (no-op elsewhere).
+. "$SKILL_DIR/scripts/forge-win.sh"
 source "$SKILL_DIR/scripts/forge-lib-env.sh"
 forge_ensure_python3
 DISPATCH="$SKILL_DIR/scripts/forge-dispatch.sh"
@@ -2941,7 +2943,7 @@ verify_group_stop() { # TERM the verify command's group; KILL it after FORGE_VER
   # Until the guard's setsid there is no group: the TERM goes to the guard itself, which dies
   # of it before it starts the command. A group that forms all the same gets its TERM from
   # the timer.
-  if [ -r "/proc/$group/winpid" ]; then
+  if forge_is_windows && [ -r "/proc/$group/winpid" ]; then
     forge_kill_group "$group" TERM
     kill -TERM "$group" 2>/dev/null || true
   else
@@ -2952,10 +2954,10 @@ verify_group_stop() { # TERM the verify command's group; KILL it after FORGE_VER
   # the plan lock it inherited.
   ( trap - TERM INT
     ticks=$((FORGE_VERIFY_GRACE * 10))
-    while kill -0 -- "-$group" 2>/dev/null || { [ "$termed" = 0 ] && kill -0 "$group" 2>/dev/null; } || { [ -r "/proc/$group/winpid" ] && kill -0 "$group" 2>/dev/null; }; do
+    while kill -0 -- "-$group" 2>/dev/null || { [ "$termed" = 0 ] && kill -0 "$group" 2>/dev/null; } || { forge_is_windows && [ -r "/proc/$group/winpid" ] && kill -0 "$group" 2>/dev/null; }; do
       if [ "$termed" = 0 ] && kill -TERM -- "-$group" 2>/dev/null; then termed=1; fi
       if [ "$ticks" -le 0 ]; then
-        if [ -r "/proc/$group/winpid" ]; then
+        if forge_is_windows && [ -r "/proc/$group/winpid" ]; then
           forge_kill_group "$group" KILL
           kill -KILL "$group" 2>/dev/null
         elif [ "$termed" = 1 ]; then
