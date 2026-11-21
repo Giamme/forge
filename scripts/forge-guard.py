@@ -55,6 +55,7 @@
 """
 from __future__ import annotations
 
+import datetime
 import os
 import re
 import signal
@@ -653,10 +654,10 @@ def _cygwin_start(stime: str, now: float | None = None) -> str:
     today = time.localtime(time.time() if now is None else now)
     parts = stime.split()
     if len(parts) == 1 and re.fullmatch(r'\d\d:\d\d:\d\d', parts[0]):
-        day = today
+        day = datetime.date(today.tm_year, today.tm_mon, today.tm_mday)
         if parts[0] > time.strftime('%H:%M:%S', today):      # later than now: it was yesterday
-            day = time.localtime(time.mktime(today) - 86400)
-        return time.strftime('%Y-%m-%d ', day) + parts[0]
+            day -= datetime.timedelta(days=1)                  # by the date: a day is not always 86400 s
+        return '%s %s' % (day.isoformat(), parts[0])
     if len(parts) == 2 and parts[0] in _CYGWIN_MONTHS and parts[1].isdigit():
         month, mday = _CYGWIN_MONTHS[parts[0]], int(parts[1])
         year = today.tm_year - ((month, mday) > (today.tm_mon, today.tm_mday))

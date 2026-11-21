@@ -394,8 +394,10 @@ def _task_lock(plan: Path, task: str):
     finally:
         # Unlocked before the close, not by it: on Cygwin a lock that only the close releases can leave
         # another thread of this process waiting on it for ever.
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 def _record(plan: Path, task: str, model: str, level: str, questions, error) -> dict:

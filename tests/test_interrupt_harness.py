@@ -18,7 +18,7 @@ from test_dispatch import HELP
 
 ROOT = Path(__file__).resolve().parents[1]
 # MSYS2's procps-ng installs its ps as procps; /bin/ps there is Cygwin's, which has no -o.
-PS = '/usr/bin/procps' if os.path.exists('/usr/bin/procps') else '/bin/ps'
+from test_forge import PS  # noqa: E402
 
 # Writes its pid, then runs for a minute. TERM is answered only after 30 s, far longer than
 # the scheduler's grace: a harness still alive after the grace was never KILLed by anyone.

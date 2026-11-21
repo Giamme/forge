@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 # MSYS2's procps-ng installs its ps as procps; /bin/ps there is Cygwin's, which has no -o.
+# As test_forge.PS: this module runs on native Windows too, where test_forge (fcntl) cannot load.
 PS = '/usr/bin/procps' if os.path.exists('/usr/bin/procps') else '/bin/ps'
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -415,6 +416,24 @@ class CygwinStartTests(unittest.TestCase):
     def test_a_time_of_day_is_today_or_yesterday(self):
         self.assertEqual(guard._cygwin_start('09:30:00', self.NOON), '2026-11-20 09:30:00')
         self.assertEqual(guard._cygwin_start('18:55:19', self.NOON), '2026-11-19 18:55:19')
+        new_year = time.mktime((2027, 1, 1, 0, 30, 0, 0, 0, -1))
+        self.assertEqual(guard._cygwin_start('23:59:00', new_year), '2026-12-31 23:59:00')
+
+    @unittest.skipUnless(hasattr(time, 'tzset'), 'needs time.tzset')
+    def test_yesterday_after_the_spring_clock_change_is_the_day_before(self):
+        # 29 March 2026 has 23 hours in Rome: 24 hours before 00:30 on the 30th is the 28th.
+        saved = os.environ.get('TZ')
+        os.environ['TZ'] = 'Europe/Rome'
+        time.tzset()
+        try:
+            now = time.mktime((2026, 3, 30, 0, 30, 0, 0, 0, -1))
+            self.assertEqual(guard._cygwin_start('23:00:00', now), '2026-03-29 23:00:00')
+        finally:
+            if saved is None:
+                os.environ.pop('TZ', None)
+            else:
+                os.environ['TZ'] = saved
+            time.tzset()
 
     def test_a_date_is_this_year_or_the_last(self):
         self.assertEqual(guard._cygwin_start('Nov 19', self.NOON), '2026-11-19')

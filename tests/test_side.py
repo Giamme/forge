@@ -25,7 +25,7 @@ import forge_side  # noqa: E402
 from forge_decide import save_user  # noqa: E402
 
 # MSYS2's procps-ng installs its ps as procps; /bin/ps there is Cygwin's, which has no -o.
-PS = '/usr/bin/procps' if os.path.exists('/usr/bin/procps') else '/bin/ps'
+from test_forge import PS  # noqa: E402
 
 OFF = {
     'retro': False,

@@ -13,7 +13,7 @@ import unittest
 from test_verify_lanes import VerifyLanesCase
 
 # MSYS2's procps-ng installs its ps as procps; /bin/ps there is Cygwin's, which has no -o.
-PS = '/usr/bin/procps' if os.path.exists('/usr/bin/procps') else '/bin/ps'
+from test_forge import PS  # noqa: E402
 
 
 def fails_first(marks, name, times=1):
