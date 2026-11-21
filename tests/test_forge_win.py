@@ -88,6 +88,18 @@ class ForgeWinTests(unittest.TestCase):
                         '/usr/bin/python3', '/usr/bin:' + shell_path, shell_path, 'UCRT64', expected,
                         '/usr/bin:' + shell_path, expected])
 
+    @unittest.skipUnless(IN_MSYS2, 'needs a real MSYS2')
+    def test_native_port_helpers_keep_cygwin_pids_in_msys2_mode(self):
+        # /proc/<pid>/winpid exists under Cygwin too; a Windows pid there would hide forge's own
+        # processes from the guard (orphans left running, harness identity lost).
+        lib = ROOT / 'scripts' / 'forge-lib-env.sh'
+        result = subprocess.run(['/usr/bin/bash', '-c', '. "$1"; . "$2"; echo "$$ $(forge_winpid $$)"',
+                                 'forge-win-test', str(WIN), str(lib)],
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        pid, winpid = result.stdout.split()
+        self.assertEqual(winpid, pid)
+
     def test_an_unknown_mode_is_refused(self):
         result = source('msys', 'MSYS2')
         self.assertEqual(result.returncode, 2, result.stderr)
