@@ -3,4 +3,4 @@ type: fixed
 breaking: false
 audience: user
 ---
-`forge install` now resolves junction and symlink targets physically (`cd -P ... && pwd -P`) so re-installing stays idempotent when Git Bash mounts `/tmp` or uses 8.3 short paths on Windows, and documents Windows Job Object behavior for abrupt scheduler termination.
+On Windows, running `forge install` again no longer re-creates links it already made when Git Bash shows the same folder under a different path (such as `/tmp` or a short `PROGRA~1` name).

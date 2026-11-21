@@ -3,4 +3,4 @@ type: fixed
 breaking: false
 audience: user
 ---
-Refused `forge-parallel.sh plan` runs (exit 2 when tasks are `UNASSIGNED`) now restore `tasks.tsv` and skip recording `routed.json` so a fallback `opus` reviewer is not frozen across a subsequent `plan --qa ...`, and `plan` now prints a note whenever `--qa` leaves existing explicit reviewers unchanged.
+A `plan` that was refused because tasks were `UNASSIGNED` no longer leaves the fallback `opus` reviewer stuck on them, so a following `plan --qa ...` picks the reviewer you ask for. `plan` also tells you when `--qa` leaves reviewers you set explicitly unchanged.
