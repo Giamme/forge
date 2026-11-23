@@ -181,6 +181,9 @@ def prompt(plan: Path, gid: str, threshold) -> str:
     earlier = _earlier(gdir)
     contract = attribute._contract()
     out = [contract.qa_text('head', 'group').rstrip('\n'), '']
+    deps = _read(gdir / 'review.deps').strip('\n')
+    if deps:
+        out += [deps, '']
     out += ['# Group %s: %s' % (gid, group.title if group.title != '-' else gid)]
     if group.goal != '-':
         out += ['', 'Goal of the group: %s' % group.goal]

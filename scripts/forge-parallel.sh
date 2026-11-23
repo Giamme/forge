@@ -1744,16 +1744,22 @@ populate_submodules() { # populate_submodules <repo> <wt> <tdir> <id>
 # work in — it just has to install things itself, which is the status quo this exists
 # to improve on. Failing the task instead would turn a slow run into a dead one.
 run_worktree_setup() { # run_worktree_setup <plan> <repo> <wt> <tdir> <id>
-  local PLAN="$1" REPO="$2" wt="$3" tdir="$4" id="$5" cmd
+  local PLAN="$1" REPO="$2" wt="$3" tdir="$4" id="$5" cmd before_ignored=""
   # Every worktree forge makes reaches here once, right after it exists, so the submodules'
   # files are in place before `.forge/setup` runs. The outcome lands in <tdir>/submodules.txt.
   populate_submodules "$REPO" "$wt" "$tdir" "$id"
   cmd="$(worktree_setup_command "$PLAN" "$REPO")"
   [ -n "$cmd" ] || return 0
+  before_ignored="$(mktemp "${TMPDIR:-/tmp}/forge-setup-ignored.XXXXXX" 2>/dev/null || true)"
+  [ -z "$before_ignored" ] || forge_capture_ignored_before "$wt" "$before_ignored"
   if (cd "$wt" && eval "$cmd") >"$tdir/setup.out" 2>&1; then
     note "$id: worktree setup ok"
   else
     note "$id: worktree setup failed (continuing) — see $tdir/setup.out"
+  fi
+  if [ -n "$before_ignored" ]; then
+    forge_record_setup_generated "$wt" "$before_ignored"
+    rm -f "$before_ignored"
   fi
 }
 
