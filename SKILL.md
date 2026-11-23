@@ -1,232 +1,149 @@
 ---
 name: forge
-description: Dispatch implementation and independent diff review to user-selected models through local agent CLIs. Use for /forge or explicit requests to delegate coding or review; explanation-only questions do not authorize dispatch.
-argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--profile <name>|--no-profile] [--fast <roles>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--collapse-chains] [--plan auto|always|never] [--fractal|--no-fractal|--fractal-auto-decompose] [--fractal-planner <spec>] [--jev|--no-jev] [--jev-shadow] [--gate NAME=MODE] [--no-gates] [--decide-budget tokens=N[,usd=X]] [--no-memory] [--no-ripwire] [--ui|--no-ui] [--timeout <seconds>] [--retry-failed <n>] [--escalate-after <n>] [--qa-threshold P0|P1|P2|P3|none|default] [--file-issues ask|auto|off] [--shadow-qa <spec>[,<spec>]] [--shadow-rate <0..1>] [--reviewer-session] [--explore <0..0.5>] [--fail-first]'
-allowed-tools: [Bash, Read]
+description: Dispatch implementation and independent diff review to user-selected models through local agent CLIs, and drive forge runs that already exist. Use for /forge, for explicit requests to delegate coding or review, and for questions about a forge run or plan in this repository - inspecting, resuming, retrying, accepting or reporting on it, a dwarf or QA verdict, a task at NEEDS_INPUT, NEEDS_DECISION or INFRA (exit 8), forge handoff, forge-ui, or the .forge/ directory. Explanation-only questions do not authorize dispatch.
+argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <spec>] [--decompose-level low|medium|high] [flags…]'
+allowed-tools: [Read, "Bash(forge *)", "Bash(bash ${CLAUDE_SKILL_DIR}/scripts/*)", "Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/*)", "Bash(${CLAUDE_SKILL_DIR}/forge *)"]
 ---
 
 # Forge
 
 Run an implementer (**dwarf**) followed by an independent **QA** review of its actual
 changes. Use the scripts for dispatch and capture; do not reconstruct harness commands.
-For explanation requests, explain the workflow without spending model quota.
+For explanation requests, explain the workflow without spending model quota. `<skill_dir>`
+below is the directory that holds this file (`${CLAUDE_SKILL_DIR}` in Claude Code). You
+orchestrate: write prompts and plan files, run forge's commands, and report; do not edit the
+repository's source yourself.
+
+## References
+
+Read the one that applies before acting; the full flag list is in [commands](docs/commands.md).
+
+- [Planning](references/planning.md): `--planner` (including `forge-parallel.sh auto`) or an agreed approach.
+- [Solo](references/solo.md): command, snapshots, artifacts, exit codes and native-review limits.
+- Decomposition: [planning a plan](references/decompose.md) (task schema, routing, profiles, waves, size,
+  gates, plan shape), [reviews and verdicts](references/decompose-review.md),
+  [retries, stops and recovery](references/decompose-recovery.md),
+  [integration and verification](references/decompose-integration.md),
+  [opt-in modes](references/decompose-opt-in.md) (groups, retro, brief, summaries).
+- [Leftover findings](references/findings.md): filing them as issues, triage, `--file-issues`.
+- [Harnesses](references/harnesses.md): invocation troubleshooting, the fast service tier, adding a harness.
+- [Fractal](references/fractal.md): opt-in nested execution, its question, limits, recovery and reporting.
+- [Memory](references/memory.md): `.forge/` learning and spend records (`--no-memory` disables them;
+  written to the user's repository, excluded from implementation diffs).
+- [forge-ui](references/ui.md): the opt-in run viewer; `forge ui open|status|stop`, `FORGE_UI=off`, privacy.
+- [Dataset](references/dataset.md): every run's inputs and outcomes, outside the repo; `FORGE_DATASET=off`.
+- [Decision models](references/decision-models.md): optional Jev or Clef gates, off until opted in with `forge decide`,
+  fail-open; they never change a tier, pick a model or stand in for QA or verification (`--jev-act` changes nothing).
+- [Ripwire](references/ripwire.md): automatic context when compatible; `--no-ripwire` or `FORGE_RIPWIRE=off`
+  disables it for every role, a separately dispatched planner included. Runners offer installation once.
+
+## Reporting
+
+Runners default to summary output. Read each `dwarf.last` and `qa.last` once; retrieve raw logs only
+when needed. Report findings faithfully and name verification limits. Source or review mutations
+invalidate acceptance. A missing verdict is UNKNOWN. No repository verification command means
+UNVERIFIED, even when QA passes. Read `<plan>/control.log` and mention any human change made mid-run
+(`forge control show <plan>` lists them). Keep execution completion, QA acceptance and verification
+apart. Offer the leftover findings as issues ([findings](references/findings.md)).
 
 ## Choices and boundaries
 
-- A dwarf model must be chosen by the user. Ask when it is missing; never invent one.
-  `--profile NAME` the user selected, or a default they set (`forge config profile use`),
-  counts as that choice: do not ask role by role on top of it. When neither a flag nor a
-  profile names models, offer one profile and wait: the user's default if one is set, else
-  the built-in `balanced` ([recommended routing](docs/models.md#recommended-routing)). Ask
-  role by role only if they decline. The runner applies a configured default when neither
-  flag is passed and the run has no frozen copy, and it does not select `balanced` by
-  itself. Pass `--profile balanced` when they accept it and it is not already the default;
-  pass `--no-profile` when they decline, so a configured default does not fill the rest.
-  A profile that names no dwarf pool still needs `--dwarf`.
-- QA defaults to `opus` when no profile names a reviewer; effort defaults to `medium` for dwarf, `high` for QA and `xhigh` for the planner.
-- Specs are `alias[:effort[:harness]]`, e.g. `sol:xhigh:openclaude`. Resolve using
+- **The user picks the models.** A dwarf must be chosen by the user; never invent one. A selected
+  `--profile NAME`, or a default they set (`forge config profile use`), is that choice. When neither a
+  flag nor a profile names models, offer one profile and wait: their default if set, else `balanced`
+  ([recommended routing](docs/models.md#recommended-routing)); ask role by role only if they decline.
+  The runner applies a configured default only when no flag is passed and the run has no frozen copy,
+  never `balanced` by itself: pass `--profile balanced` when accepted, `--no-profile` when declined.
+  A profile with no dwarf pool still needs `--dwarf`. QA defaults to `opus` when no profile names a
+  reviewer; effort defaults to `medium` (dwarf), `high` (QA), `xhigh` (planner).
+- Specs are `alias[:effort[:harness]]`, e.g. `sol:xhigh:openclaude`, resolved with
   [registry.tsv](registry.tsv); report any effort clamp. Literal model IDs require a harness.
-- Bypass flags apply only when explicitly requested for that role (`--yolo-dwarf`,
-  `--yolo-qa`). Bash access can mutate files despite disabled editing tools.
-- `--fast ROLES` is opt-in. Offer it only when the user asks for speed. `ROLES` is a comma
-  list of `dwarf`, `qa`, `planner` and `review`, or `all`, or `none`. It is billed at a
-  higher rate. Claude's fast mode needs extra usage enabled; without it the run stays at
-  standard speed, exits 0, and forge prints a note. Codex can do the same when the tier is
-  unsupported. Other harnesses (openclaude, opencode, antigravity, grok) refuse and exit 3.
-  A solo run accepts only `dwarf`, `qa` or `none`. Read
-  [the fast service tier](references/harnesses.md#fast-service-tier). A note is not a failed run.
-- Ask **“Use Fractal for this run? [y/N]”** once before an interactive run, unless
-  the user supplied `--fractal`, `--no-fractal`, or `--fractal-auto-decompose`. Pass the answer explicitly to
-  the runner. Unattended runs default off. Installation never activates Fractal.
-  Resume and explicit retry retain the recorded choice. Read [Fractal](references/fractal.md)
-  when selected; Fractal completion never substitutes for Forge QA acceptance.
-- Ask **“Open forge-ui to watch this run? [y/N]”** once at the start of every new
-  interactive run, unless the user supplied `--ui` or `--no-ui`. Pass the answer to `plan`
-  or `forge-solo.sh` and relay the `forge-ui:` URL they print. Never ask on resume or retry;
-  unattended runs leave it off. A UI failure never changes the run. Read [forge-ui](references/ui.md).
-- A finished solo run, `plan` or `run` may end with one stderr line, `forge X is available
-  (you have Y): <command>` (checked at most once a day; the command is `forge update`, or npm's
-  for an npm installation). Relay it once; run the update only when the user asks (that
-  command, then restart the harness session). `FORGE_UPDATE_CHECK=off` silences it.
-- `--fractal-auto-decompose` enables automatic split-or-atomic decisions before each
-  eligible node implements. Include the effective planner and bounds in the approval
-  preview; child decisions need no additional user approval inside those bounds.
-  Forward `--fractal-planner <spec>` to the runner. When omitted, forward a selected
-  top-level `--planner` as `--fractal-planner`; otherwise each task's initial root model
-  plans all its descendants. Ordinary `--fractal` keeps worker-requested decomposition.
-- One implementer per tree. Solo edits remain uncommitted. Decomposed runs may commit
-  and merge on Forge task and integration branches. Updating the user's branch requires
-  separate authorization and `integrate --approved`. Never push automatically.
-- The QA threshold defaults to `P2`: a CONFIRMED finding at P2 or worse blocks, so a PASS that
-  lists one becomes FAIL, and milder CONFIRMED findings are recorded as known issues. `--qa-threshold`
-  changes it (see [the verdict rule](docs/reviews.md#verdicts-and-failure)).
-- Show the decomposed task/model table and wait for approval before dispatch. Relay the
-  table's `profile:` line: the profile, and the flags that override it. Solo prints the
-  same line. When the table says the plan runs sequentially, offer `--collapse-chains`
-  (or one task) before approval. `forge-parallel.sh auto` already passes
-  `--collapse-chains` unless `--no-collapse`, so that line appears when collapse did not
-  run. Retry only
-  when requested; preserve failed task branches and worktrees. `run --retry-failed N`,
-  `--infra-retries M`, `plan --shadow-qa` (a second review of a
-  sampled share of attempts, never read, to measure reviewer agreement) and
-  `plan --reviewer-session` (continue the reviewer's session across rounds),
-  `plan --implementer-session` (a retry continues the implementer's session) and `run --sweep Pn`
-  (once every task merged, fix the tolerated findings at Pn or worse in a few extra tasks, one per
-  file; `--sweep-ahead` instead hands a task the open findings in its files) are opt-in: offer
-  them, never add them unprompted. So is `--fail-first` (solo or `plan`): the change's new
-  tests also run without its non-test changes, and the reviewer is asked to report any that
-  still pass as P2; it needs `.forge/verify-subset` and never changes a result by itself. So is
-  `plan --pre-review-tests`: before each review forge runs only the tests the attempt affects
-  (`.forge/verify-subset`), and a red attempt goes back to its implementer unreviewed. So are
-  `plan --groups` and `plan --group-review`: one review can cover several small, related,
-  low-risk tasks. Offer them, never add them unprompted, and keep a high-risk task on per-task
-  review. Read [Groups and group review](references/decompose.md#groups-and-group-review-opt-in). `plan` explores by default (`--explore 0.2`: now and then
-  a row left to forge gets its neighbouring tier's model from the user's pools, odds
-  recorded for `forge dataset routing`); say so with the table and pass `--explore 0` when
-  the user declines. Retries follow a policy: after three failed attempts on one model the
-  next goes a tier up in the user's pools, or the task stops as `NEEDS_DECISION`
-  (`--escalate-after N`, `0` = off); an explicit `retry --dwarf` overrides it. `accept`
-  overrides a reviewer: run it, with `--reason` and `--approved`, only when the user
-  explicitly says so; never self-accept.
-- When you report a run, read `<plan>/control.log` and mention any human change made mid-run
-  (a threshold, a budget, a model pin, a drain, stop or queued retry; `forge control show <plan>`
-  lists them). Never set a control, pin, `drain|stop|retry`, delete a run or compact one with
-  `forge control` / `forge runs rm` / `forge runs compact` unless the user asks; `forge du` only reads. Exit `130` / `INTERRUPTED`: the run was signalled or
-  stopped; `forge handoff resume <plan>` carries it on, and relay the `retry` lines it printed to finish by hand.
-- When a session starts on a repo with an active or unfinished run, or the user names one, run
-  `forge handoff` first and work from its output. Never start `run` for a run whose scheduler is
-  live; continue with `forge handoff resume <plan> --harness <this harness>`, which follows a live
-  run and restarts a stopped one with its recorded flags. A Fractal plan is left to `forge fractal
-  resume`. Claim the run with the session's harness. Take over another driver only on the user's
-  word (`--take-over`). Record what is not on disk (a decision the user made, a hand fix under way)
-  with `forge handoff note`.
-- A `waiting for your answer:` block is status `NEEDS_INPUT`: relay each question verbatim and
-  pass it with `retry <plan> <id> --answer "<reply>"`. Never answer for the user; nothing else
-  resumes it.
-- A task at `NEEDS_DECISION` waits for the user. Present `tasks/<id>/decision.md`'s reasons and
-  choices. Run `retry --decide`, `retry --dwarf` or `accept` (with `--reason` and `--approved`)
-  only on the user's explicit word, never to keep a run going; on a live run use `forge control
-  retry … --decide` or `forge control accept`, which the scheduler applies. Nothing else resumes it. The
-  split choice replaces the row in `tasks.tsv` and is a later `run`
-  ([when reviews don't converge](references/decompose.md#when-reviews-dont-converge)); do that
-  only when the user asks.
-- A group at `NEEDS_DECISION` waits for the user. Present `forge group show <plan>`. Run
-  `forge group retry <plan> <gid> --tasks <ids>` only on the user's word: that answers an
-  ambiguous decision. An oversized group is split in `groups.tsv` and planned again; do not
-  retry it. Nothing else resumes it.
-- Exit `8` / status `INFRA` is an infrastructure stop (`capacity`, `rate_limit`, `usage_limit`,
-  `budget`, `auth`, `network`, `provider_down`, `empty` or `cancelled`; an old run may say
-  `quota`), not a task failure, and no attempt was spent. Report each "needs you" item with its
-  hint, and re-run only when told. Offer a multi-task plan's whole-run review (`review`, or
-  `integrate --final-review <qa-spec>`) only when asked: it spends QA quota.
-- **Leftover findings become issues.** A run can finish with review findings nobody will act on:
-  - CONFIRMED findings the threshold tolerated, from a PASS or a FAIL (`tasks/<id>/known_issues.md`);
-  - PLAUSIBLE findings in a passed task's `qa.last`;
-  - whatever a whole-run review left open.
-  - Triage (`forge findings triage REPO --spec S`) needs a model the user names, never one you choose. Offer it, never start it unprompted. Relay its proposals, and run `forge findings apply` only on the user's explicit word for each one.
+- **Opt-in means opt-in.** Anything that spends quota, changes how a run behaves or posts outside the
+  machine needs the user's explicit word: offer it, never add it. That covers every flag below,
+  `--yolo-dwarf` / `--yolo-qa` (only for the role they name; Bash can still mutate files with editing
+  tools disabled) and `--fast` (offer only when the user asks for speed).
+- Ask **"Use Fractal for this run? [y/N]"** and **"Open forge-ui to watch this run? [y/N]"** once at the
+  start of every new interactive run, unless a flag answered it, and pass the answers on (details:
+  [Fractal](references/fractal.md#for-the-orchestrator), [forge-ui](references/ui.md)). Never ask on
+  resume or retry; unattended runs leave both off. Relay the `forge-ui:` URL; a UI failure never changes the run.
+- One implementer per tree. Solo edits stay uncommitted; decomposed runs commit only on forge's task and
+  integration branches. Updating the user's branch needs separate authorization and `integrate
+  --approved`. Never push.
+- QA threshold: `P2` by default (a CONFIRMED P2 or worse blocks; milder ones become known issues);
+  `--qa-threshold` changes it ([verdicts](docs/reviews.md#verdicts-and-failure)).
+- Show the decomposed task/model table, with its `profile:` line, and wait for approval before dispatch.
+  When it says the plan runs sequentially, offer `--collapse-chains` or one task (`auto` collapses
+  unless `--no-collapse`). `plan` [explores](references/decompose.md#exploratory-routing-on-by-default) by default (`--explore 0.2`): say so with the table; pass
+  `--explore 0` if the user declines. Retries escalate a tier after three failures on one model, or stop
+  at `NEEDS_DECISION` (`--escalate-after N`, `0` off); an explicit `retry --dwarf` overrides it.
+- Retry only when asked, and keep failed task branches and worktrees. `accept` overrides a reviewer: run
+  it (`--reason`, `--approved`) only on the user's explicit word; never self-accept.
+- Never set a control, pin, `drain|stop|retry`, delete or compact a run (`forge control`, `forge runs
+  rm|compact`) unless the user asks; `forge du` only reads.
+- Relay a `forge X is available (you have Y): <command>` line once; update only when asked (then restart
+  the harness session). `FORGE_UPDATE_CHECK=off` silences it.
 
-  `forge findings` holds what happened to each finding (fixed, dismissed, duplicate, to file), and a finding marked `to-file` is offered with the others.
+| Opt-in flag | Where | What it does |
+|---|---|---|
+| `--retry-failed N`, `--infra-retries M` | `run` | retry failed or infrastructure-stopped tasks automatically |
+| `--shadow-qa SPEC` | `plan` | a second, never-read review of sampled attempts, to measure agreement |
+| `--reviewer-session`, `--implementer-session` | `plan` | continue the reviewer's / implementer's session across rounds |
+| `--sweep Pn` / `--sweep-ahead` | `run` | fix tolerated findings at Pn or worse once all merged, one task per file / hand a task the open findings in its files |
+| `--fail-first` | solo, `plan` | new tests also run without the non-test changes; ones that still pass are P2; needs `.forge/verify-subset` |
+| `--pre-review-tests` | `plan` | run the affected tests before review; a red attempt goes back unreviewed |
+| `--groups`, `--group-review` | `plan` | one review for several small, related, low-risk tasks; keep high-risk tasks per task ([groups](references/decompose-opt-in.md#groups-and-group-review-opt-in)) |
+| `--fast ROLES` | any | faster service tier, billed higher ([fast tier](references/harnesses.md#fast-service-tier)): a run without it on the account stays standard and prints a note, not a failure; openclaude, opencode, antigravity and grok exit 3; solo takes only `dwarf`, `qa`, `none` |
+| retro, brief, summaries | `plan` | [opt-in modes](references/decompose-opt-in.md); brief and summaries need a model the user names |
 
-  When there are any, act on the user's `--file-issues` choice with one filer:
-  - **gh-proman**, only when it is installed and set up for the repository: `gh-proman -C <repo> config show` exits 0. It also puts the issues on the team's board with a priority. Run `gh-proman findings --from <plan or run dir> --include-plausible --json`, then follow the gh-proman skill's review-findings steps.
-  - **forge's own filer** otherwise (gh-proman missing, or not configured for this repo; never configure it yourself): `python3 <skill_dir>/scripts/forge-issues.py <plan or run dir> --include-plausible --json`, plain `gh issue create`. Pass `--lang` matching the repo's existing issues, and `--label bug` when the repo has that label. If `gh` is missing, unauthenticated or the repo has no GitHub remote, list the findings in the report and say why none were filed.
+## Existing runs
 
-  The choice:
-  - `ask` (the default): show the dry-run summary (count by severity, titles, anything already filed) and ask once: **"File these N findings as GitHub issues? [all / CONFIRMED only / none]"**. Then re-run with `--apply`, adding `--include-plausible` only for "all".
-  - `auto`: file them without asking (`--apply`, PLAUSIBLE included as "to verify" issues) and report what was created and skipped.
-  - `off`: never offer.
-
-  With the `findings` gate on (`forge decide gate findings on`), forge's filer adds `preselect` and `reason` to each finding in the dry-run JSON, and `--apply` turns a reworded duplicate of an open issue into a comment on it (`comments`, `commented`). `ask` shows the pre-selected findings and the reason for each one left out, and files the ones the user keeps with `--only <fps> --max-issues <count>`. `auto` files only the pre-selected ones the same way.
-
-  `--file-issues` is an instruction to you: never forward it to a runner. Skip INFRA, interrupted and still-failing runs. Both filers mark each issue with the same finding fingerprint and skip a finding either one already filed, so offering again after a retry only brings up new ones. A draft flagged as a possible duplicate is skipped on `--apply`: show it, and file it (`--confirm-new`) only if the user says it is different.
-- Decision models (Jev, Clef) are optional, off until a gate is opted in with `forge decide`,
-  fail-open, and never change a task's tier, select a model, or substitute for QA acceptance
-  or repository verification (`--jev-act` is still accepted and changes nothing). Read
-  [Decision models](references/decision-models.md) when selected.
-- **Retro, brief and summaries are opt-in:** offer them, never add them unprompted. Brief and
-  summaries need a model the user names (`--brief-model`, `--summaries-model` or `forge config
-  set`); forge never picks one. With brief on, relay the questions from `forge brief show <plan>`,
-  pass the user's answers with `forge brief answer`, and never answer for the user. A strict brief
-  run exits `3` before any task starts while questions are open. With retro on, record each
-  obstacle with `forge retro note <plan> --type T --fixable-by F --summary S` (`T`: `environment`,
-  `sandbox`, `tooling`, `prompt`, `forge-bug` or `other`; `F`: `user`, `forge` or `unsure`), and at
-  the end of the run relay the groups in `<plan>/retro.md`. `forge retro issues` posts only on the
-  user's approval of the exact text it prints (`--apply --approve <hash>`). Details:
-  [retro notes](references/decompose.md#retro-notes-opt-in),
-  [brief mode](references/decompose.md#brief-mode-opt-in),
-  [task summaries](references/decompose.md#task-summaries-opt-in).
+- When a session starts on a repo with an active or unfinished run, or the user names one, run `forge
+  handoff` first and work from its output. Never start `run` while its scheduler is live: continue with
+  `forge handoff resume <plan> --harness <this harness>`, which follows a live run and restarts a stopped
+  one with its recorded flags (a Fractal plan: `forge fractal resume`). Take over another driver only on
+  the user's word (`--take-over`). Record what is not on disk with `forge handoff note`.
+- Exit `130` / `INTERRUPTED`: signalled or stopped; `forge handoff resume <plan>` carries it on; relay the
+  `retry` lines it printed.
+- `waiting for your answer:` is `NEEDS_INPUT`: relay each question verbatim and pass the reply with `retry
+  <plan> <id> --answer "<reply>"`. Never answer for the user; nothing else resumes it.
+- A task at `NEEDS_DECISION` waits for the user: present `tasks/<id>/decision.md`'s reasons and choices.
+  Run `retry --decide`, `retry --dwarf` or `accept` (`--reason`, `--approved`) only on the user's explicit
+  word, never to keep a run going; on a live run use `forge control retry … --decide` or `forge control
+  accept`. The split choice replaces the row in `tasks.tsv` for a later `run`, only when the user asks
+  ([when reviews don't converge](references/decompose-recovery.md#when-reviews-dont-converge)).
+- A group at `NEEDS_DECISION`: present `forge group show <plan>`; run `forge group retry <plan> <gid>
+  --tasks <ids>` only on the user's word. An oversized group is split in `groups.tsv` and planned again,
+  not retried.
+- Exit `8` / `INFRA` is an infrastructure stop (`capacity`, `rate_limit`, `usage_limit`, `budget`, `auth`,
+  `network`, `provider_down`, `empty`, `cancelled`; old runs say `quota`), not a task failure: no attempt
+  was spent. Report each "needs you" item with its hint and re-run only when told
+  ([infrastructure failures](references/decompose-recovery.md#infrastructure-failures)).
+- Offer a multi-task plan's whole-run review (`review`, or `integrate --final-review <qa-spec>`) only when
+  asked: it spends QA quota.
 
 ## Common workflow
 
-1. Inspect the repository and existing work, unless this is a decomposed `--planner` run:
-   the planner reads the repository, so do not explore it yourself. State the goal,
-   selected models and any bypass flags. Keep complete requirements in `prompt.md`; short
-   titles are insufficient for QA.
-2. Preflight every selected role before the first model call, including an optional planner:
-   `bash <skill_dir>/scripts/forge-dispatch.sh doctor --spec <spec> --role <role>`.
-   This checks resolution, executable and advertised flags without model quota. Authentication,
-   quota and live model availability remain unverified; a live probe must be explicitly requested.
-3. Use [solo runs](references/solo.md) for one implementation. For `--decompose-level
-   low|medium|high`, read [decomposition](references/decompose.md). With `--planner`, do not
-   assemble the table: call `auto` as below. Otherwise prepare the task table, obtain
-   approval, then use `forge-parallel.sh plan/run`. Write the user's request verbatim
-   to `request.md` in the run or plan dir, and pass `--decompose-level` to `plan` with the
-   level you actually split at, even when the user named none. Keep each task small and end
-   its `prompt.md` with an `## Acceptance criteria` section of checks the reviewer can verify;
-   `plan` names tasks over 7K characters or 9 files, where first attempts mostly fail review.
-   Pass the recorded Fractal choice and requested limits to the execution runner; tier
-   pools go to solo directly or decomposed `plan`. Fractal does not replace planner dispatch.
-   `--timeout` applies to decomposed runs too (kept in the plan).
-   For a decomposed `--planner` run, call `forge-parallel.sh auto` once, as one blocking
-   command, instead of writing the planner prompt and assembling the plan by hand. Omit
-   `--approved` on an interactive run, show the table, and wait; `--approved` is only for
-   the user's explicit pre-approval. Where the harness limits foreground commands, start
-   `auto` in the background and wait for its completion notice. Do not poll and do not
-   read its logs meanwhile. Auto preflights the planner and, on one plan send-back,
-   re-dispatches once. After the run (the `run` command `auto` printed, or
-   `auto --approved`), read `<plan>/results.tsv` and each failed task's `qa.last`, and
-   report. When you called `plan` yourself and it exits 4, the prompt or coverage gate
-   sent work back: read `<plan>/plan.sendback.md`, rewrite each listed task's `prompt.md`,
-   and extend or add tasks for each uncovered requirement (with `--planner`, re-dispatch
-   it with that file appended), then run `plan` again, once. Forge never sends the same
-   task or requirement back twice.
-4. Runners default to summary output. Read each `dwarf.last` and `qa.last` once; retrieve raw
-   logs only when needed. Report findings faithfully, and identify verification
-   limits. Source or review mutations invalidate acceptance. Missing verdicts are UNKNOWN.
-   An absent repository verification command means UNVERIFIED, even when QA passes.
+1. Inspect the repository and existing work, unless this is a decomposed `--planner` run (the planner
+   reads the repository). State the goal, selected models and any bypass flags. Keep complete
+   requirements in `prompt.md`; short titles are insufficient for QA.
+2. Preflight every selected role, an optional planner included, before the first model call:
+   `bash <skill_dir>/scripts/forge-dispatch.sh doctor --spec <spec> --role <role>`. It checks resolution,
+   executable and flags without quota; authentication, quota and live availability stay unverified
+   unless the user asks for a live probe.
+3. One implementation: [solo](references/solo.md). `--decompose-level low|medium|high`: read
+   [planning a plan](references/decompose.md). With `--planner`, call `forge-parallel.sh auto` once, as
+   one blocking command (in the background where the harness limits foreground commands; wait for its
+   notice, do not poll or read its logs), without `--approved` unless the user pre-approved; show the
+   table and wait. Otherwise write the task table, get approval, then `forge-parallel.sh plan/run`.
+   `auto` preflights the planner and re-dispatches once on a send-back. Write the request verbatim to
+   `request.md`, pass `--decompose-level` with the level you split at (even when the user named none),
+   end each `prompt.md` with `## Acceptance criteria` the reviewer can check, and keep tasks small
+   (`plan` names any over 7K characters or 9 files). `--timeout`, the Fractal choice and tier pools go
+   to the runner. If `plan` exits 4, read `<plan>/plan.sendback.md`, fix each listed prompt and cover
+   each listed requirement (with `--planner`, re-dispatch with that file appended), then run `plan`
+   once more; forge never sends the same thing back twice.
+4. After the run (the `run` that `auto` printed, or `auto --approved`), read `<plan>/results.tsv` and each
+   failed task's `qa.last`, and report as above.
 
-For a Fractal run, report its managed run ID with the Forge result. Use
-`<skill_dir>/forge fractal runs --repo <repo> --json` and `tree RUN_ID --json` to discover
-run/task/node IDs; use `status`, `logs` or `open` for inspection. Run-level `resume`
-recovers the recorded pipeline; scoped controls affect only the selected execution scope.
-Preserve failed work and state the distinction between execution completion, QA acceptance
-and verification. Read the Fractal reference before retrying, changing limits or exporting
-a portable report.
-
-Ripwire context is automatic when compatible; `--no-ripwire` or `FORGE_RIPWIRE=off`
-disables it. Pass opt-out to every role, including a separately dispatched planner.
-Runners offer installation once before agents; dispatch never prompts. See
-[Ripwire](references/ripwire.md) for installation, limits and fallback behavior.
-
-## Conditional references
-
-- [Planning](references/planning.md): read for `--planner` (including `forge-parallel.sh auto`) or an agreed approach.
-- [Solo](references/solo.md): command, snapshots, artifacts, exit codes and native-review limits.
-- [Decomposition](references/decompose.md): task schema, routing and profiles, `auto`, plan shape, waves, retries and integration.
-- [Harnesses](references/harnesses.md): invocation troubleshooting, the fast service tier, or adding a harness.
-- [Fractal](references/fractal.md): opt-in nested execution, installation, limits,
-  recovery, managed run commands, read-only dashboard and portable reports.
-- [Memory](references/memory.md): `.forge/` learning and spend records; `--no-memory` disables
-  them. Memory is written to the user's repository but excluded from implementation diffs.
-- [forge-ui](references/ui.md): the opt-in local run viewer; `forge ui open|status|stop`,
-  `FORGE_UI=off`, one shared server, privacy.
-- [Dataset](references/dataset.md): every run's inputs and outcomes, kept outside the repo
-  for training decision models; `forge dataset status|import|export|outcomes`, `FORGE_DATASET=off`.
-- [Decision models](references/decision-models.md): optional TypeSafe Jev or Cloudflare Clef
-  judgments (drift, forward dependency, prompt adequacy, memory curation, verify discovery);
-  off until a gate is opted in with `forge decide`; the criteria a site must meet, and what
-  was tried and removed.
-
-The common invocation is `/forge "<goal>" --dwarf <spec> [--qa <spec>]`. Advanced flags and
-commands live with their mode reference. Use [offline tests and evaluation cases](tests/README.md)
-when maintaining this skill.
+The common invocation is `/forge "<goal>" --dwarf <spec> [--qa <spec>]`. Use
+[offline tests and evaluation cases](tests/README.md) when maintaining this skill.

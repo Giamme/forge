@@ -127,7 +127,7 @@ reviews: 4 (2 groups replace 5 task reviews)
 The reviews line is `reviews: N (G groups replace M task reviews)`. The word stays `groups`
 when there is one. The count is tasks, minus members of review groups, plus the number of
 those groups. What the run then does is in
-[Groups and group review](../references/decompose.md#groups-and-group-review-opt-in). The
+[Groups and group review](../references/decompose-opt-in.md#groups-and-group-review-opt-in). The
 tradeoff is in [group review](reviews.md#group-review-opt-in).
 
 ## Fresh session per task, plus a capsule
@@ -240,7 +240,7 @@ branch tip is `A`'s `accepted.integration`, and `A`'s scheduler is not live. It 
 and `integration.base`, and creates `B`'s integration branch at that tip. `run` exits 3 if `A`
 moved and `B` has not yet merged a task. `integrate` prints `this brings plans` and the run
 ids, oldest first. `forge runs` shows `after <run>` on `B`. See
-[Chained plans](../references/decompose.md#chained-plans).
+[Chained plans](../references/decompose-integration.md#chained-plans).
 
 ## Resuming an interrupted run
 

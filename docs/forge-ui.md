@@ -60,7 +60,7 @@ Claude's session file on this machine.
 
 The *Verification* node opens the run's verification in the inspector. While it runs you see
 for how long, the step a lane announced (`::forge step`, see
-[verification lanes](../references/decompose.md#execution-checks-and-integration-verification))
+[verification lanes](../references/decompose-integration.md#execution-checks-and-integration-verification))
 and its last printed line, a warning after five minutes with no output, and the live output of
 the lane that printed last (or of the one you choose). Once it fails, the failing tests come
 first, by lane and marked new or known (from the lanes' JUnit or TAP reports), each with its

@@ -119,8 +119,8 @@ The feature files `retro_mode`, `brief`, `brief_scope`, `brief_model`, `summarie
 one under its file name. `brief_scope` and `brief_model` exist only when brief is on, and
 `summaries_model` only when summaries is on. `retro_mode`, `brief` and `summaries` hold `off`
 after an explicit off (`--no-retro`, `--brief off`, `--summaries off`); with no choice they
-are absent. See [retro notes](decompose.md#retro-notes-opt-in), [brief mode](decompose.md#brief-mode-opt-in)
-and [task summaries](decompose.md#task-summaries-opt-in).
+are absent. See [retro notes](decompose-opt-in.md#retro-notes-opt-in), [brief mode](decompose-opt-in.md#brief-mode-opt-in)
+and [task summaries](decompose-opt-in.md#task-summaries-opt-in).
 
 Each blob reference carries `sha` (the stored bytes), `original_sha`, `n` (the original
 size), `kept`, and `cut`. A cut keeps the head and the tail, because a QA prompt ends with

@@ -43,12 +43,16 @@ forge/
 │   ├── forge_dataset/           the run dataset: capture hooks, readers, importer, status checks
 │   ├── forge-pr.py              `forge pr`: a draft PR description for a finished run (reads with forge-ui's reader)
 │   └── forge-install.sh         install into every harness that needs it (opencode and grok find it themselves)
-├── ui/                          forge-ui: read-only local run viewer (`forge_ui` package, tests, API contract)
+├── ui/                          forge-ui: local run viewer (`forge_ui` package, tests, API contract)
 ├── site/                        the website and plain-language docs, published by GitHub Pages (see site/README.md)
 └── references/
     ├── ui.md                    forge-ui: commands, env vars, shared server, state, privacy
     ├── harnesses.md             per-harness invocation, ladders, failure modes
-    ├── decompose.md             tasks.tsv schema, difficulty criteria, wave algorithm
+    ├── decompose.md             planning a decomposed run: tasks.tsv, routing, waves, plan gates, plan shape
+    ├── decompose-review.md      QA verdicts, opt-in review modes, severity and known issues
+    ├── decompose-recovery.md    retries, NEEDS_DECISION, INFRA stops, accept, split and combine
+    ├── decompose-integration.md chained plans, branches and worktrees, verification
+    ├── decompose-opt-in.md      groups, retro notes, brief mode, task summaries
     ├── fractal.md               opt-in backend, limits, recovery and observability
     ├── memory.md                FORGE_LEARNING grammar, promotion and pruning rules
     └── dataset.md               the run dataset: what is captured, where, and its invariants
