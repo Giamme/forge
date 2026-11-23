@@ -434,16 +434,23 @@ test('a redraw while the add is in flight keeps the result line and the controls
 
 test('read-only memories show commands and the person chip, and no write buttons', async () => {
   const { h } = await openMemories(memories, false);
-  await until(() => codes(h).some(c => c.startsWith('forge memory edit')));
+  await until(() => labelled(h, 'Commands for trap:alpha'));
   for (let i = 0; i < 4; i++) await new Promise(r => setTimeout(r, 0));
-  const shown = codes(h);
   const editAlpha = `forge memory edit /repo trap:alpha --text 'Alpha landmine'`;
   const addAlpha = `forge memory add /repo --category trap --text 'Alpha landmine'`;
   const editHand = `forge memory edit /repo 'finding:by hand' --text 'typed once'`;
-  assert.ok(shown.includes(editAlpha));
-  assert.ok(shown.includes(addAlpha));
-  assert.ok(shown.includes(editHand));
+  // #175: no command line sits in a Learning cell; a row's commands open on request, one row at a time
+  assert.deepEqual(codes(learningBox(h, 'Alpha landmine')), []);
+  assert.equal(codes(h).some(c => c.startsWith('forge memory edit')), false);
+  click(labelled(h, 'Commands for trap:alpha'));
+  assert.ok(codes(h).includes(editAlpha));
+  assert.ok(codes(h).includes(addAlpha));
   assert.ok(labelled(h, 'Copy: ' + editAlpha));
+  click(labelled(h, 'Commands for finding:by hand'));
+  assert.ok(codes(h).includes(editHand));
+  assert.equal(codes(h).includes(editAlpha), false, 'one row at a time');
+  click(labelled(h, 'Close commands'));
+  assert.equal(codes(h).some(c => c.startsWith('forge memory')), false);
   assert.equal(buttons(h).some(b => b.textContent === 'Edit' || b.textContent === 'Add learning' || b.textContent === 'Save' || b.textContent.startsWith('Forget selected')), false);
   assert.equal(labelled(h, 'Select trap:alpha'), undefined);
   assert.equal(state.posts.length, 0);

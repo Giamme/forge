@@ -25,8 +25,9 @@ A finding a run's finding sweep (`run --sweep`) fixed stays listed, with `swept`
 otherwise), and is never drafted: the sweep task that merged and whose reviewer marked it FIXED is its record.
 One the sweep did not fix is drafted as before.
 
---json lists every finding in `findings` (fp, severity, origin, plan, task, text, `filed`, `review`, `swept`, ...). --offline never
-runs `gh` (no filed state, publication of commits judged from local refs only). --only FP[,FP] keeps those
+--json lists every finding in `findings` (fp, severity, origin, plan, task, text, `filed`, `review`, `swept`, ...), and
+`online`: true when GitHub was asked for the filed state. --offline never runs `gh` (no filed state, publication of
+commits judged from local refs only), and neither does a repository with no GitHub name; both list with `online` false. --only FP[,FP] keeps those
 fingerprints. --all-runs reads <run> as a repository (or a plan dir naming one) and collects every run of that
 repository, whichever checkout started it (the main working tree, a linked worktree, one that is removed), the newest
 plan winning for a finding present in several. --to-file keeps only the findings whose record status is `to-file`. A caller filing an explicit selection
@@ -1515,7 +1516,9 @@ def list_and_file(args, meta, found, notes, repo_path, slug, warnings, ident):
         if any(f["fp"] in gates for f in items):
             drafts[-1]["gate"] = draft_gate([gates[f["fp"]] for f in items if f["fp"] in gates])
     drafts.sort(key=lambda d: SEVERITIES.index(d["severity"]))
-    out = {"repo": slug, "plan": meta["plan"], "notes": notes, "warnings": warnings,
+    # `online`: GitHub was asked which issues exist. False under --offline and when the repository has no GitHub
+    # name, where a listing without --offline still asks nothing (forge-ui says so instead of "read from GitHub").
+    out = {"repo": slug, "online": not offline, "plan": meta["plan"], "notes": notes, "warnings": warnings,
            "summary": {"findings": len(seen), "already_filed": len(already),
                        "dismissed": sum(1 for e in entries if e["dismissed"]),
                        **{name: sum(1 for e in entries if e["status"] == status)
