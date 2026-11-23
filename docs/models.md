@@ -114,7 +114,8 @@ A word that isn't a recognized effort at all is an error, not a clamp.
 
 ## Yolo mode
 
-`--yolo-dwarf` and `--yolo-qa` drop that role's sandbox and approval gates:
+`--yolo-dwarf` and `--yolo-qa` drop that role's permission and approval gates, and on codex its
+sandbox:
 
 | Harness | Flag used |
 |---|---|
@@ -127,10 +128,13 @@ Each flag applies to **one role only**, so `--yolo-dwarf` alone is the normal co
 the implementer gets a free hand, the reviewer stays fenced in and still can't edit the code
 it's judging.
 
-You mostly don't need it. On codex, claude and openclaude the sandboxed roles are already
-useful — the dwarf edits files and runs tests, qa reads and runs commands but cannot write.
-Reach for yolo when a role genuinely must escape the sandbox: installing dependencies,
-writing outside the repo, touching the network.
+You mostly don't need it. Without yolo the dwarf already edits files and runs tests on codex,
+claude, openclaude, opencode and grok, and qa reads and runs commands without its editing
+tools. Only codex puts a role in an OS sandbox: on claude, openclaude, opencode and grok a role
+with a shell can already install dependencies, write outside the repo and reach the network, and
+yolo adds only the tools and prompts the permission mode held back. On opencode the dwarf gets
+`--auto` either way, so `--yolo-dwarf` changes nothing there. [Safety](safety.md#what-each-role-can-do-per-harness)
+has the table of what each role can do on each harness.
 
 > **Antigravity is the exception worth knowing.** Without yolo it cannot run *any* shell
 > command, and a single denied command **aborts the whole run** rather than degrading — a
