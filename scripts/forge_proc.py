@@ -20,12 +20,16 @@ IS_WINDOWS = os.name == 'nt'
 SIGKILL = getattr(signal, 'SIGKILL', signal.SIGTERM)
 SIGUSR1 = getattr(signal, 'SIGUSR1', None)
 SIGQUIT = getattr(signal, 'SIGQUIT', None)
+SIGBREAK = getattr(signal, 'SIGBREAK', None)
 
 _STILL_ACTIVE = 259
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_PROCESS_SET_QUOTA = 0x0100
 _PROCESS_TERMINATE = 0x0001
 _TH32CS_SNAPPROCESS = 0x00000002
 _ERROR_ACCESS_DENIED = 5
+_JOB_OBJECT_EXTENDED_LIMIT_INFO = 9
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 _CREATE_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
 
 
@@ -88,6 +92,11 @@ def resolve_win_command(argv: list[str]) -> tuple[Path, list[str]]:
     raw = argv[0]
     if not IS_WINDOWS:
         return Path(raw).resolve(), list(argv)
+    if raw in ('/bin/bash', '/bin/sh'):
+        exe = bash_executable()
+        return Path(exe), [exe, *argv[1:]]
+    if len(raw) >= 2 and raw[0] == '/' and raw[1].isalpha() and (len(raw) == 2 or raw[2] == '/'):
+        raw = f'{raw[1].upper()}:/{raw[3:]}'
     found = shutil.which(raw)
     if found:
         binary = Path(found).resolve()
@@ -177,6 +186,47 @@ if IS_WINDOWS:
             ('szExeFile', _wintypes.WCHAR * 260),
         ]
 
+    class _IO_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ('ReadOperationCount', ctypes.c_uint64),
+            ('WriteOperationCount', ctypes.c_uint64),
+            ('OtherOperationCount', ctypes.c_uint64),
+            ('ReadTransferCount', ctypes.c_uint64),
+            ('WriteTransferCount', ctypes.c_uint64),
+            ('OtherTransferCount', ctypes.c_uint64),
+        ]
+
+    class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ('PerProcessUserTimeLimit', ctypes.c_int64),
+            ('PerJobUserTimeLimit', ctypes.c_int64),
+            ('LimitFlags', _wintypes.DWORD),
+            ('MinimumWorkingSetSize', ctypes.c_size_t),
+            ('MaximumWorkingSetSize', ctypes.c_size_t),
+            ('ActiveProcessLimit', _wintypes.DWORD),
+            ('Affinity', ctypes.c_size_t),
+            ('PriorityClass', _wintypes.DWORD),
+            ('SchedulingClass', _wintypes.DWORD),
+        ]
+
+    class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ('BasicLimitInformation', _JOBOBJECT_BASIC_LIMIT_INFORMATION),
+            ('IoInfo', _IO_COUNTERS),
+            ('ProcessMemoryLimit', ctypes.c_size_t),
+            ('JobMemoryLimit', ctypes.c_size_t),
+            ('PeakProcessMemoryUsed', ctypes.c_size_t),
+            ('PeakJobMemoryUsed', ctypes.c_size_t),
+        ]
+
+    _kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, _wintypes.LPCWSTR]
+    _kernel32.CreateJobObjectW.restype = _wintypes.HANDLE
+    _kernel32.SetInformationJobObject.argtypes = [_wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, _wintypes.DWORD]
+    _kernel32.SetInformationJobObject.restype = _wintypes.BOOL
+    _kernel32.AssignProcessToJobObject.argtypes = [_wintypes.HANDLE, _wintypes.HANDLE]
+    _kernel32.AssignProcessToJobObject.restype = _wintypes.BOOL
+    _kernel32.TerminateJobObject.argtypes = [_wintypes.HANDLE, _wintypes.UINT]
+    _kernel32.TerminateJobObject.restype = _wintypes.BOOL
     _kernel32.OpenProcess.argtypes = [_wintypes.DWORD, _wintypes.BOOL, _wintypes.DWORD]
     _kernel32.OpenProcess.restype = _wintypes.HANDLE
     _kernel32.CloseHandle.argtypes = [_wintypes.HANDLE]
@@ -397,3 +447,61 @@ def group_alive(pgid: int) -> bool:
             return False
         return True
     return pid_alive(pgid)
+
+
+class ProcessJob:
+    """Win32 Job Object binding child/grandchild processes to this guardian handle.
+
+    Configures ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`` so an abrupt kill of the
+    guardian cleans up the entire descendant tree atomically; ``disarm()`` clears
+    the flag after a clean wait so intentional orphan reaping runs as designed.
+    """
+
+    def __init__(self) -> None:
+        self._handle: int | None = None
+
+    def attach(self, pid: int, *, kill_on_close: bool = True) -> bool:
+        if not IS_WINDOWS or not isinstance(pid, int) or pid <= 0 or pid > 0xFFFFFFFF:
+            return False
+        job = _kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return False
+        if kill_on_close and not self._set_limit_flags(job, _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE):
+            _kernel32.CloseHandle(job)
+            return False
+        proc = _kernel32.OpenProcess(_PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, pid)
+        if not proc:
+            _kernel32.CloseHandle(job)
+            return False
+        try:
+            if not _kernel32.AssignProcessToJobObject(job, proc):
+                _kernel32.CloseHandle(job)
+                return False
+        finally:
+            _kernel32.CloseHandle(proc)
+        self._handle = job
+        return True
+
+    def _set_limit_flags(self, handle: int, flags: int) -> bool:
+        info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info.BasicLimitInformation.LimitFlags = flags
+        return bool(_kernel32.SetInformationJobObject(
+            handle,
+            _JOB_OBJECT_EXTENDED_LIMIT_INFO,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        ))
+
+    def disarm(self) -> None:
+        if self._handle:
+            self._set_limit_flags(self._handle, 0)
+
+    def terminate(self, exit_code: int = 1) -> bool:
+        if self._handle:
+            return bool(_kernel32.TerminateJobObject(self._handle, exit_code))
+        return False
+
+    def close(self) -> None:
+        if self._handle:
+            _kernel32.CloseHandle(self._handle)
+            self._handle = None

@@ -11,6 +11,10 @@ while [ -L "$SELF" ]; do
   esac
 done
 ROOT="$(cd -P "$(dirname "$SELF")" && pwd)"
+# Windows: re-run inside MSYS2 when started from Git Bash (no-op elsewhere).
+. "$ROOT/scripts/forge-win.sh"
+source "$ROOT/scripts/forge-lib-env.sh"
+forge_ensure_python3
 
 usage() {
   printf '%s\n' \

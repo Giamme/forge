@@ -1,0 +1,1 @@
+ecbede3	fix(side): ignore non-ASCII digit directory names in slot numbering (#200)

@@ -47,7 +47,7 @@ def _dataset(hook: str, *args) -> None:
 
 
 def capability_help(cache: str, registry: str, recipe: str, command: list[str]) -> str:
-    binary = Path(command[0]).resolve()
+    binary, exec_command = forge_proc.resolve_win_command(command)
     stat = binary.stat()
     identity = [
         str(binary), stat.st_dev, stat.st_ino, stat.st_size,
@@ -61,7 +61,7 @@ def capability_help(cache: str, registry: str, recipe: str, command: list[str]) 
     path = root / key
     if path.exists():
         return path.read_text()
-    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    result = subprocess.run(exec_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if result.returncode:
         raise RuntimeError(result.stdout.decode(errors='replace'))
     temporary = root / (key + '.' + uuid.uuid4().hex)

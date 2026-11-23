@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import platform
 import sqlite3
 import subprocess
 import sys
@@ -215,7 +216,7 @@ class RecordTests(PlanCase):
         context = {
             'role': 'dwarf', 'spec': 'grok:xhigh', 'alias': 'grok', 'harness': 'grok', 'effort': 'xhigh',
             'tier': 'medium', 'task': 'core', 'attempt': 2, 'run_id': run_id,
-            'version': VERSION, 'os': os.uname().sysname,
+            'version': VERSION, 'os': platform.system(),
         }
         self.assertEqual(stored[0]['t'], stored[1]['t'])
         self.assertTrue(before <= stored[0]['t'] <= after)
@@ -349,7 +350,7 @@ class CliTests(PlanCase):
         self.assertEqual(note['tried'], 'read forge --help')
         self.assertEqual(note['evidence'], {'command': 'forge retro note', 'exit': 1, 'error': 'unknown command'})
         self.assertEqual(note['version'], VERSION)
-        self.assertEqual(note['os'], os.uname().sysname)
+        self.assertEqual(note['os'], platform.system())
         self.assertEqual(note['run_id'], (self.plan / 'run_id').read_text(encoding='utf-8').strip())
         for key in ('spec', 'alias', 'harness', 'effort', 'tier', 'task', 'attempt'):
             self.assertIsNone(note[key], key)

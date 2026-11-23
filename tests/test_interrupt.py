@@ -13,6 +13,9 @@ import unittest
 
 import test_forge as fixtures
 
+# MSYS2's procps-ng installs its ps as procps; /bin/ps there is Cygwin's, which has no -o.
+from test_forge import PS  # noqa: E402
+
 PGREP = '/usr/bin/pgrep'
 SCRIPTS = fixtures.ROOT / 'scripts'
 
@@ -155,7 +158,7 @@ class InterruptTests(unittest.TestCase):
 
     @staticmethod
     def running(pid):
-        state = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'stat='], capture_output=True, text=True).stdout.strip()
+        state = subprocess.run([PS, '-p', str(pid), '-o', 'stat='], capture_output=True, text=True).stdout.strip()
         return bool(state) and not state.startswith('Z')
 
     def test_sigint_to_the_scheduler_skips_verification(self):

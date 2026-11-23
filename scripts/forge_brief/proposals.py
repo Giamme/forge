@@ -506,7 +506,12 @@ def _proposals_lock(plan):
         fcntl.flock(fd, fcntl.LOCK_EX)
         yield
     finally:
-        os.close(fd)
+        # Unlocked before the close, not by it: on Cygwin a lock that only the close releases can leave
+        # another thread of this process waiting on it for ever.
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 @contextlib.contextmanager

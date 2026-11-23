@@ -10,6 +10,10 @@ import time
 import unittest
 from pathlib import Path
 
+# MSYS2's procps-ng installs its ps as procps; /bin/ps there is Cygwin's, which has no -o.
+# As test_forge.PS: this module runs on native Windows too, where test_forge (fcntl) cannot load.
+PS = '/usr/bin/procps' if os.path.exists('/usr/bin/procps') else '/bin/ps'
+
 ROOT = Path(__file__).resolve().parents[1]
 GUARD = ROOT / 'scripts' / 'forge-guard.py'
 
@@ -30,7 +34,7 @@ def alive(pid):
 
 def running(pid):
     """False once the pid is dead or a zombie; ps knows, kill(0) does not."""
-    state = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'stat='], stdout=subprocess.PIPE, text=True).stdout.strip()
+    state = subprocess.run([PS, '-p', str(pid), '-o', 'stat='], stdout=subprocess.PIPE, text=True).stdout.strip()
     return bool(state) and not state.startswith('Z')
 
 
@@ -329,7 +333,7 @@ class IdentityStopTests(unittest.TestCase):
         before = run('identity', process.pid)
         self.assertEqual(before.returncode, 0, before.stderr)
         process.stdin.write('go\n'); process.stdin.close()
-        self.assertTrue(wait_until(lambda: 'sleep' in subprocess.run(['/bin/ps', '-p', str(process.pid), '-o', 'comm='],
+        self.assertTrue(wait_until(lambda: 'sleep' in subprocess.run([PS, '-p', str(process.pid), '-o', 'comm='],
                                                                       stdout=subprocess.PIPE, text=True).stdout, 5))
         after = run('identity', process.pid)
         self.assertEqual((after.returncode, after.stdout), (0, before.stdout))
@@ -401,6 +405,58 @@ class IdentityStopTests(unittest.TestCase):
             self.assertFalse(bad.exists())
         self.assertEqual(run('stop').returncode, 2)
         self.assertEqual(run('identity').returncode, 2)
+
+
+class CygwinStartTests(unittest.TestCase):
+    """Windows MSYS2 mode: Cygwin ps's STIME made absolute, so a start older than a day still
+    matches the one recorded before (to the day). Pure functions, checked on every platform."""
+
+    NOON = time.mktime((2026, 11, 20, 12, 0, 0, 0, 0, -1))      # local time
+
+    def test_a_time_of_day_is_today_or_yesterday(self):
+        self.assertEqual(guard._cygwin_start('09:30:00', self.NOON), '2026-11-20 09:30:00')
+        self.assertEqual(guard._cygwin_start('18:55:19', self.NOON), '2026-11-19 18:55:19')
+        new_year = time.mktime((2027, 1, 1, 0, 30, 0, 0, 0, -1))
+        self.assertEqual(guard._cygwin_start('23:59:00', new_year), '2026-12-31 23:59:00')
+
+    @unittest.skipUnless(hasattr(time, 'tzset'), 'needs time.tzset')
+    def test_yesterday_after_the_spring_clock_change_is_the_day_before(self):
+        # 29 March 2026 has 23 hours in Rome: 24 hours before 00:30 on the 30th is the 28th.
+        saved = os.environ.get('TZ')
+        os.environ['TZ'] = 'Europe/Rome'
+        time.tzset()
+        try:
+            now = time.mktime((2026, 3, 30, 0, 30, 0, 0, 0, -1))
+            self.assertEqual(guard._cygwin_start('23:00:00', now), '2026-03-29 23:00:00')
+        finally:
+            if saved is None:
+                os.environ.pop('TZ', None)
+            else:
+                os.environ['TZ'] = saved
+            time.tzset()
+
+    def test_a_date_is_this_year_or_the_last(self):
+        self.assertEqual(guard._cygwin_start('Nov 19', self.NOON), '2026-11-19')
+        self.assertEqual(guard._cygwin_start('Nov  9', self.NOON), '2026-11-09')
+        new_year = time.mktime((2027, 1, 2, 12, 0, 0, 0, 0, -1))
+        self.assertEqual(guard._cygwin_start('Dec 31', new_year), '2026-12-31')
+
+    def test_other_text_is_left_as_it_is(self):
+        for text in ('', 'nov 19', '9:30', 'Nov', '2026-11-19'):
+            with self.subTest(text=text):
+                self.assertEqual(guard._cygwin_start(text, self.NOON), text)
+
+    def test_a_start_known_to_the_day_matches_that_day_only(self):
+        same = guard._cygwin_same_start
+        self.assertTrue(same('2026-11-19 18:55:19', '2026-11-19 18:55:19'))
+        self.assertTrue(same('2026-11-19 18:55:19', '2026-11-19'))
+        self.assertTrue(same('2026-11-19', '2026-11-19 18:55:19'))
+        self.assertFalse(same('2026-11-19 18:55:19', '2026-11-20'))
+        self.assertFalse(same('2026-11-19 18:55:19', '2026-11-19 18:55:20'))
+
+    def test_only_cygwin_compares_to_the_day(self):
+        self.assertEqual(guard._same_start('2026-11-19 18:55:19', '2026-11-19'), sys.platform == 'cygwin')
+        self.assertTrue(guard._same_start('Thu Nov 19 18:55:19 2026', 'Thu Nov 19 18:55:19 2026'))
 
 
 if __name__ == '__main__':

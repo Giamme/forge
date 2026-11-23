@@ -914,7 +914,10 @@ def decision_of(plan, args, dwarf):
     status = task_status(plan, args.task, strict=True)
     if status != 'NEEDS_DECISION':
         if args.decide is not None:
-            raise Refused(f'task {args.task} is {status}, not waiting for a decision: --decide only decides a NEEDS_DECISION task')
+            hint = ' (retry without --decide)' if status in (
+                'FAIL', 'UNKNOWN', 'ERROR', 'TIMEOUT', 'INTERRUPTED', 'INVALIDATED', 'CONFLICT',
+            ) else ''
+            raise Refused(f'task {args.task} is {status}, not waiting for a decision: --decide only decides a NEEDS_DECISION task{hint}')
         return None
     if args.decide is None and dwarf is None:
         head = ' '.join(line.strip() for line in (read_file(plan, f'tasks/{args.task}/decision.md') or '').splitlines()[:3]
@@ -995,8 +998,12 @@ def retry_prepared(args, plan, answer):
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as handle:
             handle.write(answer + '\n')
-        command = ['bash', os.path.join(SKILL, 'scripts', 'forge-parallel.sh'), 'retry', plan, args.task,
-                   '--answer-file', tmp, '--no-dispatch']
+        script = os.path.join(SKILL, 'scripts', 'forge-parallel.sh')
+        if forge_proc.IS_WINDOWS:
+            base = forge_proc.bash_cmd(script)
+        else:
+            base = ['bash', script]
+        command = base + ['retry', plan, args.task, '--answer-file', tmp, '--no-dispatch']
         if args.json:   # stdout is the JSON: the command's own words go to stderr
             done = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True)
             sys.stderr.write(done.stdout + done.stderr)

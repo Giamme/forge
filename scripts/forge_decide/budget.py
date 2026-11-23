@@ -119,15 +119,20 @@ def _add(path: Path, tokens: int, usd: float) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(f'{path}.lock', 'a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            total = _read(path)
-            total['tokens'] += tokens
-            total['usd'] = _sum_usd(total['usd'], usd)
-            tmp = path.with_name(f'{path.name}.{os.getpid()}.tmp')
             try:
-                tmp.write_text(json.dumps(total))
-                os.replace(tmp, path)
+                total = _read(path)
+                total['tokens'] += tokens
+                total['usd'] = _sum_usd(total['usd'], usd)
+                tmp = path.with_name(f'{path.name}.{os.getpid()}.tmp')
+                try:
+                    tmp.write_text(json.dumps(total))
+                    os.replace(tmp, path)
+                finally:
+                    tmp.unlink(missing_ok=True)
             finally:
-                tmp.unlink(missing_ok=True)
+                # Unlocked before the close, not by it: on Cygwin a lock that only the close releases
+                # can leave another thread of this process waiting on it for ever.
+                fcntl.flock(lock, fcntl.LOCK_UN)
     except Exception:  # fail-open: a charge that cannot be recorded is dropped
         pass
 

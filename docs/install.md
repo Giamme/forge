@@ -6,9 +6,37 @@ Install forge from npm or a git checkout, check which agent CLIs it can reach, a
 
 ## Requirements
 
-forge runs on macOS and Linux. It needs bash, git and Python 3.9 or later, plus the agent
-CLIs you route models through; the doctor below shows which ones it finds. Installing from
+forge runs on macOS, Linux, and Windows. It needs bash, git and Python 3.9 or later, plus the
+agent CLIs you route models through; the doctor below shows which ones it finds. Installing from
 npm brings none of these with it.
+
+### Windows
+
+On Windows, forge runs natively through Git Bash (`bin/forge.js` for npm, `forge.cmd` for CMD or
+PowerShell) and standard Windows Python 3.9+ (no WSL or MSYS2 Python install is required).
+This is native mode, the default. MSYS2 mode, opt-in, runs forge inside MSYS2 instead:
+see [Windows: MSYS2 mode](#windows-msys2-mode).
+
+- **Prerequisites:** [Git for Windows](https://gitforwindows.org/) (provides `git` and Git Bash)
+  and native Python 3.9 or later on `PATH` (or discoverable via `py -3`).
+- **`FORGE_BASH`:** If Git Bash lives in a non-standard location, set `FORGE_BASH` to the full
+  path of your `bash.exe`; forge ignores Windows `System32\bash.exe` / `WindowsApps` WSL stubs.
+- **`python3` shim:** When `python3` resolves to the Microsoft Store alias, forge writes a
+  per-user wrapper in `%LOCALAPPDATA%\forge\bin` (`python3` and `python3.cmd`) pointing at your
+  installed `python` or `py -3`.
+- **Known platform differences:**
+  - Skill links under `.claude`, `.codex`, and `.openclaude` use NTFS directory junctions
+    (`mklink /J`), which do not require Administrator privileges or Developer Mode; Antigravity still
+    receives a copied directory, so re-run `forge install` / `forge update` after pulling changes.
+  - Process-tree termination (timeouts, Ctrl-C, orphan reaping) uses Win32 Job Objects and
+    `TerminateProcess` because Windows lacks POSIX `SIGTERM`/`os.killpg`, so background helpers are
+    ended forcefully rather than via a graceful shutdown signal. Because `ProcessJob.attach` runs
+    right after `Popen`, a grandchild spawned in the first few milliseconds can escape the job
+    (cleanup is best-effort), and killing the scheduler abruptly ends running tasks attached to its
+    Job Object rather than leaving them in separate sessions as on macOS/Linux.
+  - `O_NOFOLLOW` / `O_DIRECTORY` symlink checks fall back to `os.lstat` (reparse-point) checks
+    before open, which is best-effort rather than kernel-atomic, and POSIX `chmod` permission bits
+    are not enforced natively on Windows.
 
 ## From npm
 
@@ -49,6 +77,67 @@ opencode and grok scan it on their own.
 The installer also offers optional Fractal support in an interactive terminal. Declining
 or a Fractal installation failure does not prevent ordinary Forge setup. See
 [Fractal installation](fractal.md#install-the-optional-runtime) for prerequisites and a separate install.
+
+## Windows: MSYS2 mode
+
+On Windows forge has two modes. Native mode, the default, runs it in Git Bash with Windows' own
+Python. MSYS2 mode runs it inside [MSYS2](https://www.msys2.org/) instead, where bash, git,
+python3 and ps agree on process IDs, process groups, signals, `flock` and symlinks as they do on
+Linux. MSYS2 mode is opt-in:
+
+- Set `FORGE_WIN_MODE=msys2` where forge starts, and start forge from Git Bash as usual: each
+  entry script re-runs itself inside MSYS2, and the agent CLIs still get the `PATH` they had in
+  Git Bash. For Claude Code, put the variable under `"env"` in `~/.claude/settings.json`; for a
+  terminal, in your shell profile.
+- Or start forge from an MSYS2 shell. There it always runs in MSYS2 mode.
+
+`FORGE_WIN_MODE` is `native` (the default) or `msys2`; any other value stops forge with an error.
+
+To set MSYS2 mode up:
+
+1. Install MSYS2 in `C:\msys64`, or set `FORGE_MSYS2_ROOT` to where it is. In an MSYS2 shell:
+
+   ```bash
+   pacman -Syu
+   pacman -S python git procps-ng diffutils
+   ```
+
+2. Use Git 2.48 or newer, both MSYS2's and the Git for Windows the agent CLIs use. forge's
+   worktrees link back to your repository with relative paths, which marks the repository as
+   needing Git 2.48 (`extensions.relativeWorktrees` in its config): older Git, and libgit2- or
+   JGit-based tools such as some IDEs, then refuse to open it. forge checks both versions and
+   stops with a message when one is older.
+3. Keep a native Windows Python on the Git Bash `PATH` (`python3`, `python` or `py`): the
+   hand-over to MSYS2 goes through it, because two MSYS runtimes cannot pass their environment
+   to each other directly.
+4. Turn on Developer Mode in Windows settings, so MSYS2 can create real symlinks.
+5. Clone forge where Claude Code reads skills:
+
+   ```bash
+   git clone https://github.com/Giamme/forge.git ~/.claude/skills/forge
+   ```
+
+   MSYS2 mode has only been tried from a git checkout: neither the npm package nor
+   `scripts/forge-install.sh` (links into the other harnesses, optional Fractal) has been tried
+   in it.
+
+What differs in MSYS2 mode:
+
+- File modes are not enforced: MSYS2 mounts Windows drives with `noacl`, so files forge writes
+  as 0600 (provider keys, settings) are as private as your user profile, no more.
+- A script task's `tasks/<id>/run` counts as executable when it starts with `#!`.
+- `forge watch` raises no desktop notification, and Ripwire has no Windows build.
+- `stop` recognises a harness by its start time, which Cygwin gives to the second for the first
+  24 hours and only to the day after that: past a day, a harness is recognised by the day it
+  started.
+
+If MSYS2 programs fail at random to start (`0xC0000142`, or `fork: Resource temporarily
+unavailable`), look at Windows' Exploit protection. Cygwin's `fork` rebuilds the parent's memory
+layout in the child, and forced ASLR gets in its way. First exempt MSYS2's own programs: in
+Windows Security, App & browser control, Exploit protection, Program settings, add the programs
+in `C:\msys64\usr\bin` and turn off "Force randomization for images (Mandatory ASLR)" and
+"Randomize memory allocations (Bottom-up ASLR)" for them. Change those settings system-wide only
+as a last resort: that weakens every program on the machine.
 
 ## Check what forge can reach
 

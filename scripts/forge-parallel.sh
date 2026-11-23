@@ -172,6 +172,10 @@ set -uo pipefail
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Windows: re-run inside MSYS2 when started from Git Bash (no-op elsewhere).
+. "$SKILL_DIR/scripts/forge-win.sh"
+source "$SKILL_DIR/scripts/forge-lib-env.sh"
+forge_ensure_python3
 DISPATCH="$SKILL_DIR/scripts/forge-dispatch.sh"
 MEMORY="$SKILL_DIR/scripts/forge-memory.sh"
 source "$SKILL_DIR/scripts/forge-artifact.sh"
@@ -208,6 +212,13 @@ field() { # field <tasks.tsv> <id> <colname>
   awk -F'\t' -v id="$2" -v n="$(col_no "$3")" '!/^#/ && NF && $1==id {print $n; exit}' "$1"
 }
 all_ids() { awk -F'\t' '!/^#/ && NF {print $1}' "$1"; }
+
+render_results_table() { # render_results_table <plan>
+  local w
+  w="$(id_col_width "$1/results.tsv" "$1/tasks.tsv")"
+  printf '  %-*s %-14s %s\n' "$w" id status branch
+  awk -F'\t' -v w="$w" '{printf "  %-*s %-14s %s\n", w, $1, $2, $3}' "$1/results.tsv"
+}
 
 list_has() { # list_has <needle> <comma-list>
   local n="$1" l="$2" w
@@ -1106,8 +1117,14 @@ EOF
     fi
   fi
 
-  local tmp="$PLAN/.tasks.tsv.new"; : > "$tmp"
-  local hi_i=0 md_i=0 lo_i=0 an_i=0 qhi_i=0 qmd_i=0 qlo_i=0 qan_i=0 unassigned=0
+  # A refused plan (a task left UNASSIGNED below) puts tasks.tsv back as it was, so nothing it
+  # routed, such as the default reviewer, is frozen into the next plan (#178). The copy is only
+  # made for a refusal, under one name, so an exit in between leaves at most this one file,
+  # which the next plan removes.
+  local tmp="$PLAN/.tasks.tsv.new" orig_tasks="$PLAN/.tasks.tsv.orig"
+  : > "$tmp"
+  rm -f "$orig_tasks"
+  local hi_i=0 md_i=0 lo_i=0 an_i=0 qhi_i=0 qmd_i=0 qlo_i=0 qan_i=0 unassigned=0 qa_kept_msg="" qa_flag_spec=""
   printf '# id\tdeps\tdifficulty\tfiles\tdwarf\tqa\ttitle\n' > "$tmp"
   local id deps diff files dw qa title line
   while IFS= read -r line; do
@@ -1169,16 +1186,27 @@ EOF
       if [ "$qa" = "-" ] || [ -z "$qa" ]; then
         if [ -n "$Q_ANY" ]; then qa="$(pool_pick "$Q_ANY" "$qan_i")"; qan_i=$((qan_i+1)); else qa="opus"; fi
       fi
+    else
+      qa_flag_spec=""
+      case "$diff" in
+        high)   qa_flag_spec="${Q_HI:-$Q_ANY}" ;;
+        medium) qa_flag_spec="${Q_MD:-$Q_ANY}" ;;
+        low)    qa_flag_spec="${Q_LO:-$Q_ANY}" ;;
+      esac
+      if [ -n "$qa_flag_spec" ] && ! list_has "$qa" "$qa_flag_spec"; then
+        qa_kept_msg="${qa_kept_msg:+$qa_kept_msg, }$id ($qa)"
+      fi
     fi
     # A column runs one spec; a list there would only fail later, at its first dispatch.
     case "$dw" in *,*) die "task '$id': the dwarf column names one spec, not a list ('$dw'); pool models with a --dwarf flag" ;; esac
     case "$qa" in *,*) die "task '$id': the qa column names one spec, not a list ('$qa'); pool reviewers with a --qa flag" ;; esac
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$deps" "$diff" "$files" "$dw" "$qa" "$title" >> "$tmp"
   done < "$T"
+  [ "$unassigned" -eq 0 ] || cp "$T" "$orig_tasks"
   mv "$tmp" "$T"
   # Which cells routing filled in, so a re-plan under another profile replaces those and no others.
   # Kept current through a --no-profile re-plan too, once a profile has recorded any.
-  if [ -f "$PLAN/profile.json" ] || [ -f "$PLAN/routed.json" ]; then
+  if [ "$unassigned" -eq 0 ] && { [ -f "$PLAN/profile.json" ] || [ -f "$PLAN/routed.json" ]; }; then
     forge_profile_py routed "$PLAN" 2>/dev/null || true
   fi
 
@@ -1239,6 +1267,10 @@ EOF
   forge_groups_plan "$PLAN" "$GRP_SRC" "$GRP_REVIEW" "$GRP_MAX"
 
   render_table "$PLAN"
+  if [ -n "$qa_kept_msg" ]; then
+    echo "note: --qa left existing reviewer(s) unchanged on: $qa_kept_msg (set qa to '-' in tasks.tsv to let --qa fill them)"
+    echo
+  fi
   # What the gates did, from plan-gates.json: files and deps they added, prompts and
   # requirements still flagged. Prints nothing when no gate recorded anything.
   python3 "$SKILL_DIR/scripts/forge-plan-check.py" gates "$PLAN" 2>/dev/null || true
@@ -1253,6 +1285,7 @@ EOF
   forge_ui_launch "$PLAN"
 
   if [ "$unassigned" -gt 0 ]; then
+    mv -f "$orig_tasks" "$T"
     note ""
     note "$unassigned task(s) are UNASSIGNED: their difficulty tier has no --dwarf-<tier>"
     note "rule and there is no plain --dwarf fallback. Assign them before running —"
@@ -1428,23 +1461,25 @@ EOF
     echo "QA effort: high where a reviewer spec names none (forge-dispatch.sh's default; planning stays at xhigh)"
   fi
   echo
-  local w id dws starred=0
+  local w id dws starred=0 id_w pad
+  id_w="$(id_col_width "$T")"
+  printf -v pad '%*s' $((id_w + 3)) ''
   for w in $(awk -F'\t' '{print $1}' "$W" | sort -un); do
     local cnt; cnt="$(awk -F'\t' -v w="$w" '$1==w' "$W" | wc -l | tr -d ' ')"
     echo "wave $w ($cnt parallel)"
-    printf '  %-14s %-7s %-24s %-14s %s\n' id diff dwarf qa files
+    printf '  %-*s %-7s %-24s %-14s %s\n' "$id_w" id diff dwarf qa files
     for id in $(awk -F'\t' -v w="$w" '$1==w {print $2}' "$W"); do
       dws="$(field "$T" "$id" dwarf)"
       if [ -s "$PLAN/tasks/$id/route.explored" ] && [ "$(cat "$PLAN/tasks/$id/route.explored")" = "$dws" ]; then
         dws="$dws*"; starred=1
       fi
-      printf '  %-14s %-7s %-24s %-14s %s\n' \
-        "$id" "$(field "$T" "$id" difficulty)" "$dws" \
+      printf '  %-*s %-7s %-24s %-14s %s\n' \
+        "$id_w" "$id" "$(field "$T" "$id" difficulty)" "$dws" \
         "$(field "$T" "$id" qa)" "$(field "$T" "$id" files)"
       # The approach is shown here because this gate is the only moment a human can
       # change the plan for free. After dispatch, changing it costs a whole run.
       if [ -s "$PLAN/tasks/$id/approach.md" ]; then
-        sed 's/^/                 | /' "$PLAN/tasks/$id/approach.md"
+        sed "s/^/${pad}| /" "$PLAN/tasks/$id/approach.md"
       fi
     done
     echo
@@ -1593,12 +1628,14 @@ write_capsule() { # write_capsule <plan> <id> <role>
     echo "Files this task owns: $(field "$T" "$me" files)"
     echo
     echo "## Run status"
-    printf '%-14s %-7s %-9s %s\n' id diff status files
+    local id_w
+    id_w="$(id_col_width "$T")"
+    printf '%-*s %-7s %-11s %s\n' "$id_w" id diff status files
     for id in $(all_ids "$T"); do
       if [ "$id" = "$me" ]; then st="THIS ONE"
       elif [ -s "$PLAN/tasks/$id/reviewed.commit" ] && git -C "$(cat "$PLAN/repo")" merge-base --is-ancestor "$(cat "$PLAN/tasks/$id/reviewed.commit")" "$(cat "$PLAN/tasks/$me/base_ref")"; then st=MERGED
       else st="NOT IN BASE"; fi
-      printf '%-14s %-7s %-9s %s\n' "$id" "$(field "$T" "$id" difficulty)" "$st" "$(field "$T" "$id" files)"
+      printf '%-*s %-7s %-11s %s\n' "$id_w" "$id" "$(field "$T" "$id" difficulty)" "$st" "$(field "$T" "$id" files)"
     done
     echo
     echo "## Ground rules"
@@ -1785,6 +1822,35 @@ record_dispatched_inputs() { # record_dispatched_inputs <tdir>
     else : > "$tmp" || return 1; fi
     mv "$tmp" "$tdir/$f.dispatched" || { rm -f "$tmp"; return 1; }
   done
+}
+
+# Brief inputs the last completed review judged (#209), written in reverse order so
+# prompt.reviewed's presence marks the snapshot complete.
+record_reviewed_inputs() { # record_reviewed_inputs <tdir> <thr>
+  local tdir="$1" thr="${2:-}" f tmp
+  tmp="$tdir/.approach.reviewed.tmp"
+  if [ -f "$tdir/approach.md" ]; then cp "$tdir/approach.md" "$tmp" || { rm -f "$tmp"; return 1; }
+  else : > "$tmp" || return 1; fi
+  mv "$tmp" "$tdir/approach.reviewed" || { rm -f "$tmp"; return 1; }
+  tmp="$tdir/.qa.reviewed.threshold.tmp"
+  printf '%s\n' "$thr" > "$tmp" && mv "$tmp" "$tdir/qa.reviewed.threshold" || { rm -f "$tmp"; return 1; }
+  tmp="$tdir/.prompt.reviewed.tmp"
+  if [ -f "$tdir/prompt.md" ]; then cp "$tdir/prompt.md" "$tmp" || { rm -f "$tmp"; return 1; }
+  else : > "$tmp" || return 1; fi
+  mv "$tmp" "$tdir/prompt.reviewed" || { rm -f "$tmp"; return 1; }
+}
+
+brief_changed_since_review() { # brief_changed_since_review <tdir> <thr> -> 0 when changed
+  local tdir="$1" thr="${2:-}" f cur
+  [ -f "$tdir/prompt.reviewed" ] || return 1
+  for f in prompt approach; do
+    cur="$tdir/$f.md"; [ -f "$cur" ] || cur=/dev/null
+    cmp -s "$tdir/$f.reviewed" "$cur" || return 0
+  done
+  if [ -f "$tdir/qa.reviewed.threshold" ]; then
+    [ "$(cat "$tdir/qa.reviewed.threshold" 2>/dev/null)" = "$thr" ] || return 0
+  fi
+  return 1
 }
 
 # Whether the planner edited prompt.md or approach.md while the attempt ran (#150). Returns 0 when it did:
@@ -1976,7 +2042,7 @@ do_task_body() (
     base="$(git -C "$(cat "$PLAN/wt_root")/_integration" rev-parse HEAD)"; printf '%s\n' "$base" > "$tdir/base_ref"
   fi
 
-  local dw qa yd yq rc ft_dwarf ft_qa
+  local dw qa yd yq rc ft_dwarf ft_qa qa_thr
   dw="$(field "$T" "$id" dwarf)"; qa="$(field "$T" "$id" qa)"
   yd=""; yq=""
   [ -f "$PLAN/yolo_dwarf" ] && yd="--yolo"
@@ -1984,6 +2050,8 @@ do_task_body() (
   # Empty when the role is not listed, so the recorded command line is unchanged.
   ft_dwarf="$(forge_fast_tier "$PLAN" dwarf)"
   ft_qa="$(forge_fast_tier "$PLAN" qa)"
+  # Read once per attempt: governs brief-change re-review (#209), the QA prompt, and qa_gate.
+  qa_thr="$(qa_threshold_for "$PLAN" "$id")"
 
   if ! ensure_worktree "$REPO" "$wt" "$br" "$base" "$tdir" "$PLAN" "$id"; then
     echo ERROR > "$tdir/status"
@@ -2143,18 +2211,22 @@ do_task_body() (
     fi
     # A bounced attempt (retry_findings.source `bounce`) was never reviewed, so a retry that keeps
     # its code is reviewed rather than refused as identical: the refusal is for a diff a review
-    # already judged.
+    # already judged. The same applies when the brief or threshold changed since that review (#209).
     if [ -s "$tdir/changes.prev.diff" ] && cmp -s "$tdir/changes.diff" "$tdir/changes.prev.diff" \
         && [ "$(cat "$tdir/retry_findings.source" 2>/dev/null)" != bounce ]; then
-      # A retry its CLI cancelled before it changed anything did not keep the code on purpose.
-      if grep -qx 'class=cancelled' "$tdir/dwarf.infra" 2>/dev/null; then
-        infra_stop "$tdir" "$id" dwarf "$attempt"; return 8
+      if brief_changed_since_review "$tdir" "$qa_thr"; then
+        note "$id: brief changed since the last review — reviewing the unchanged diff against the updated brief"
+      else
+        # A retry its CLI cancelled before it changed anything did not keep the code on purpose.
+        if grep -qx 'class=cancelled' "$tdir/dwarf.infra" 2>/dev/null; then
+          infra_stop "$tdir" "$id" dwarf "$attempt"; return 8
+        fi
+        echo FAIL > "$tdir/status"
+        : > "$tdir/noretry"
+        echo "The retry changed nothing: the diff is byte-identical to the previous attempt." \
+          > "$tdir/qa.last"
+        note "$id: retry produced no new changes — not re-reviewing identical code"; return 1
       fi
-      echo FAIL > "$tdir/status"
-      : > "$tdir/noretry"
-      echo "The retry changed nothing: the diff is byte-identical to the previous attempt." \
-        > "$tdir/qa.last"
-      note "$id: retry produced no new changes — not re-reviewing identical code"; return 1
     fi
 
     if ! git -C "$wt" diff --cached --quiet "$base" -- .forge; then
@@ -2232,8 +2304,7 @@ do_task_body() (
   echo "$review_fp" > "$tdir/review.fingerprint"
 
   forge_metric_phase preparation
-  local qa_thr rs_on=0
-  qa_thr="$(qa_threshold_for "$PLAN" "$id")"
+  local rs_on=0
   # Read once per round, like the threshold: continuing the earlier reviewer's session is an
   # opt-in experiment (plan --reviewer-session), and a round never changes its mind midway.
   [ -f "$PLAN/reviewer_session" ] && rs_on=1
@@ -2464,6 +2535,7 @@ for r in json.load(sys.stdin):
   # FAIL. qa_thr is the value the review prompt was built with, so the prompt and the gate of
   # one attempt agree. Before record_attempt, so attempts.tsv shows the gated status.
   qa_gate "$PLAN" "$id" "$tdir" "$verdict" "$qa_thr"
+  record_reviewed_inputs "$tdir" "$qa_thr" || true
   return 0
 )
 
@@ -2521,7 +2593,7 @@ merge_task() { # merge_task <plan> <id> -> 0 merged, 1 conflicted
   (cd "$int_wt" && git merge --abort >/dev/null 2>&1)
   echo CONFLICT > "$PLAN/tasks/$id/status"
   forge_dataset_event merge --dir "$PLAN" --task "$id" --set status=CONFLICT --set commit="$reviewed" \
-    --set conflicts="$(tr '\n' ' ' < "$tdir/conflict.files" 2>/dev/null)"
+    --set conflicts="$(tr '\n' ' ' 2>/dev/null < "$tdir/conflict.files")"
   return 1
 }
 
@@ -2591,13 +2663,14 @@ PY
 }
 
 report_untested() { # report_untested <plan> <id>...: verdicts that rest on reading alone (#117)
-  local plan="$1" id tests_note untested=0; shift
+  local plan="$1" id tests_note untested=0 id_w; shift
+  id_w="$(id_col_width "$plan/tasks.tsv")"
   for id in "$@"; do
     tests_note="$(forge_tests_note "$plan/tasks/$id/qa.last")"
     if [ -n "$tests_note" ]; then
       [ "$untested" = 0 ] && echo "reviews whose tests could not run:"
       untested=1
-      printf '  %-14s %s\n' "$id" "$tests_note"
+      printf '  %-*s %s\n' "$id_w" "$id" "$tests_note"
     fi
   done
   [ "$untested" = 0 ] || echo
@@ -2841,8 +2914,7 @@ do_retry() {
   write_results "$PLAN"
   echo
   # 14 covers NEEDS_DECISION; 9 pushes the branch column out for IMPLEMENTED (11) too.
-  printf '  %-14s %-14s %s\n' id status branch
-  awk -F'\t' '{printf "  %-14s %-14s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
+  render_results_table "$PLAN"
   run_report_extras "$PLAN"
   report_decisions "$PLAN"
   [ "$(task_status "$PLAN" "$id")" = "MERGED" ] || return 5
@@ -2871,16 +2943,28 @@ verify_group_stop() { # TERM the verify command's group; KILL it after FORGE_VER
   # Until the guard's setsid there is no group: the TERM goes to the guard itself, which dies
   # of it before it starts the command. A group that forms all the same gets its TERM from
   # the timer.
-  kill -TERM -- "-$group" 2>/dev/null || { termed=0; kill -TERM "$group" 2>/dev/null; }
+  if forge_is_windows && [ -r "/proc/$group/winpid" ]; then
+    forge_kill_group "$group" TERM
+    kill -TERM "$group" 2>/dev/null || true
+  else
+    kill -TERM -- "-$group" 2>/dev/null || { termed=0; kill -TERM "$group" 2>/dev/null; }
+  fi
   # The timer polls in short naps rather than sleeping the whole grace in one: it ends by
   # itself within a nap of the group's last member, and a long sleep left behind would hold
   # the plan lock it inherited.
   ( trap - TERM INT
     ticks=$((FORGE_VERIFY_GRACE * 10))
-    while kill -0 -- "-$group" 2>/dev/null || { [ "$termed" = 0 ] && kill -0 "$group" 2>/dev/null; }; do
+    while kill -0 -- "-$group" 2>/dev/null || { [ "$termed" = 0 ] && kill -0 "$group" 2>/dev/null; } || { forge_is_windows && [ -r "/proc/$group/winpid" ] && kill -0 "$group" 2>/dev/null; }; do
       if [ "$termed" = 0 ] && kill -TERM -- "-$group" 2>/dev/null; then termed=1; fi
       if [ "$ticks" -le 0 ]; then
-        if [ "$termed" = 1 ]; then kill -KILL -- "-$group" 2>/dev/null; else kill -KILL "$group" 2>/dev/null; fi
+        if forge_is_windows && [ -r "/proc/$group/winpid" ]; then
+          forge_kill_group "$group" KILL
+          kill -KILL "$group" 2>/dev/null
+        elif [ "$termed" = 1 ]; then
+          kill -KILL -- "-$group" 2>/dev/null
+        else
+          kill -KILL "$group" 2>/dev/null
+        fi
         break
       fi
       sleep 0.1
@@ -2895,20 +2979,25 @@ verify_signal() { # trap handler of a stoppable verification
 }
 
 verify_exec() { # verify_exec <checkout> <command> <log> [grace seconds, default 5] -> the command's exit code, 130 when stopped
-  local wt="$1" cmd="$2" log="$3" rc=0 group deadline
+  local wt="$1" cmd="$2" log="$3" rc=0 group deadline guard_py="$SKILL_DIR/scripts/forge-guard.py"
   if [ "${FORGE_RUN_STOPPABLE:-0}" != 1 ]; then
     (cd "$wt" && /bin/bash -c "$cmd") > "$log" 2>&1
     return $?
   fi
   FORGE_VERIFY_GRACE="${4:-5}"
   [ "$FORGE_VERIFY_STOP" = 1 ] && return 130
+  ! forge_is_windows || guard_py="$(forge_host_path "$guard_py")"
   # A background job ignores SIGINT and SIGQUIT, and the command would inherit that; the
   # wrapper restores both before the guard puts the command in a session of its own.
-  (cd "$wt" && exec python3 -c 'import os, signal, sys
-for name in (signal.SIGINT, signal.SIGQUIT):
-    signal.signal(name, signal.SIG_DFL)
+  (cd "$wt" && { ! forge_is_windows || export MSYS_NO_PATHCONV=1; } && exec python3 -c 'import os, signal, subprocess, sys
+for sig_name in ("SIGINT", "SIGQUIT"):
+    sig = getattr(signal, sig_name, None)
+    if sig is not None:
+        signal.signal(sig, signal.SIG_DFL)
+if os.name == "nt":
+    sys.exit(subprocess.run([sys.executable] + sys.argv[1:]).returncode)
 os.execv(sys.executable, [sys.executable] + sys.argv[1:])' \
-    "$SKILL_DIR/scripts/forge-guard.py" session -- /bin/bash -c "$cmd") > "$log" 2>&1 <&0 &
+    "$guard_py" session -- /bin/bash -c "$cmd") > "$log" 2>&1 <&0 &
   group=$!
   FORGE_VERIFY_GROUP="$group"
   [ "$FORGE_VERIFY_STOP" = 1 ] && verify_group_stop
@@ -2959,7 +3048,8 @@ verify_result_body() { # plan, checkout, artifact directory[, fixed source]
   forge_metric_begin "$out" verification
   forge_metric_phase verification
   repo="$(cat "$plan/repo")"
-  rm -f "$out/verification.flaky" "$out/verification.retry.log" "$out/verification.failing.log" "$out/verification.coverage.txt" \
+  rm -f "$out/verification.status" "$out/verification.exit" \
+    "$out/verification.flaky" "$out/verification.retry.log" "$out/verification.failing.log" "$out/verification.coverage.txt" \
     "$out/verification.runs.tsv" "$out"/verification.run-*.log "$out/verification.commit" \
     "$out/verification.lanes.json" "$out"/verification.lane.*.log
   # The commit being verified, named before any early return, so every outcome (FAIL and
@@ -3211,9 +3301,32 @@ forge_brief_start() { # forge_brief_start <plan>
   PYTHONPATH="$SKILL_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 -c \
     'import sys, forge_brief; forge_brief.note_missing_groups(sys.argv[1])' "$plan" || true
   python3 - "$plan" "$SKILL_DIR/scripts/forge-brief.py" <<'PY' || { note "brief: could not start the question writer"; return 0; }
-import os, subprocess, sys
+import os, subprocess, sys, time
 plan, script = sys.argv[1], sys.argv[2]
 pidfile = os.path.join(plan, 'brief.pid')
+if not hasattr(os, 'fork'):
+    worker = (
+        'import os, subprocess, sys\n'
+        'plan, script, pidfile = sys.argv[1], sys.argv[2], sys.argv[3]\n'
+        'try:\n'
+        '    with open(pidfile, "w") as handle:\n'
+        '        handle.write("%d\\n" % os.getpid())\n'
+        '    subprocess.run([sys.executable, script, "write", plan], stdin=subprocess.DEVNULL)\n'
+        'finally:\n'
+        '    try: os.unlink(pidfile)\n'
+        '    except OSError: pass\n'
+    )
+    flags = getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0) | getattr(subprocess, 'DETACHED_PROCESS', 0)
+    with open(os.path.join(plan, 'brief.out'), 'ab') as out:
+        proc = subprocess.Popen(
+            [sys.executable, '-c', worker, plan, script, pidfile],
+            stdin=subprocess.DEVNULL, stdout=out, stderr=out,
+            creationflags=flags, close_fds=True,
+        )
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and not os.path.exists(pidfile) and proc.poll() is None:
+        time.sleep(0.02)
+    sys.exit(0)
 ready, signal_ready = os.pipe()
 child = os.fork()
 if child:
@@ -3445,7 +3558,7 @@ do_run() {
   # Durable, beside the repo — never TMPDIR. A temp worktree root has destroyed
   # real work here before: isolated worktrees are never pushed, so when the root
   # goes, the only copy of that work goes with it.
-  wt_root="$(cd "$REPO/.." && pwd)/.forge-worktrees/$run_id"
+  wt_root="$(forge_host_path "$(cd "$REPO/.." && pwd)/.forge-worktrees/$run_id")"
   echo "$wt_root" > "$PLAN/wt_root"
   # Sibling, not parent: git refs are files, so a branch `forge/<run>` makes
   # `forge/<run>/<task>` impossible ("cannot lock ref ... exists; cannot create").
@@ -3581,8 +3694,7 @@ do_run() {
   echo "results (integration branch: $int_br)"
   echo "artifacts: $PLAN/tasks/<id>/{dwarf,qa}.{last,log}; results: $PLAN/results.tsv"
   # 14 covers NEEDS_DECISION; 9 pushes the branch column out for IMPLEMENTED (11) too.
-  printf '  %-14s %-14s %s\n' id status branch
-  awk -F'\t' '{printf "  %-14s %-14s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
+  render_results_table "$PLAN"
   echo
   if [ -n "$retro_line" ]; then printf '%s\n\n' "$retro_line"; fi
   run_report_extras "$PLAN"
@@ -3594,12 +3706,13 @@ do_run() {
 
   # Undeclared files are reported here rather than buried in a task log, because
   # this is the list that explains any CONFLICT above.
-  local drift=0
+  local drift=0 id_w
+  id_w="$(id_col_width "$T")"
   for id in $(all_ids "$T"); do
     if [ -s "$PLAN/tasks/$id/drift.txt" ]; then
       [ "$drift" = 0 ] && echo "scope drift (touched files the task did not declare):"
       drift=1
-      printf '  %-14s %s\n' "$id" "$(tr '\n' ' ' < "$PLAN/tasks/$id/drift.txt")"
+      printf '  %-*s %s\n' "$id_w" "$id" "$(tr '\n' ' ' < "$PLAN/tasks/$id/drift.txt")"
     fi
   done
   [ "$drift" = 1 ] && echo
@@ -4035,7 +4148,7 @@ fi
 case "$CMD" in
   # `combine` takes a plan dir that does not exist yet and locks its sources itself.
   run|retry|integrate|accept|adopt|review|split|attribute)
-    if [ "${FORGE_PLAN_LOCK:-}" != "${1:-}" ]; then
+    if [ "$(forge_posix_path "${FORGE_PLAN_LOCK:-}")" != "${1:-}" ]; then
       exec python3 "$SKILL_DIR/scripts/forge-schedule.py" lock "$SELF" "$CMD" "$@"
     fi ;;
 esac

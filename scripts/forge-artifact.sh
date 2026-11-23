@@ -102,7 +102,11 @@ forge_review_deps() { # source checkout, review snapshot, note file (#117)
   if [ -n "$src" ]; then
     while IFS= read -r rel; do
       [ -n "$rel" ] && [ -d "$src/$rel" ] && [ ! -e "$2/$rel" ] && [ ! -L "$2/$rel" ] || continue
-      ln -s "$src/$rel" "$2/$rel" 2>/dev/null || continue
+      if declare -F forge_link_dir >/dev/null 2>&1; then
+        forge_link_dir "$src/$rel" "$2/$rel" 2>/dev/null || continue
+      else
+        ln -s "$src/$rel" "$2/$rel" 2>/dev/null || continue
+      fi
       mkdir -p "$2/.git/info" && echo "/$rel" >> "$2/.git/info/exclude"
       linked="$linked${linked:+, }$rel"
     done <<< "$(_forge_dep_dirs "$src" | sort)"

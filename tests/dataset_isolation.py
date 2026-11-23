@@ -13,6 +13,18 @@ import shutil
 import signal
 import tempfile
 
+if os.name == 'posix' and os.uname().sysname.startswith(('CYGWIN', 'MSYS')):
+    # Windows refuses to delete a file that is still open. Tests read the store through
+    # connections they never close, which CPython only closes when it collects them; on
+    # Linux the temp dir goes anyway, here its cleanup fails with EBUSY. Collect first.
+    import gc
+    _cleanup = tempfile.TemporaryDirectory.cleanup
+
+    def _collect_then_cleanup(self):
+        gc.collect()
+        _cleanup(self)
+    tempfile.TemporaryDirectory.cleanup = _collect_then_cleanup
+
 HOME = tempfile.mkdtemp(prefix='forge-dataset-test-')
 os.environ['FORGE_DATA_HOME'] = HOME
 atexit.register(shutil.rmtree, HOME, True)

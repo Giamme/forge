@@ -98,6 +98,26 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(self.calls().count('dwarf'), 2)
         self.assertTrue((p / 'tasks/a/noretry').exists())
 
+    def test_clarifying_the_brief_re_reviews_unchanged_code_while_unchanged_brief_refuses(self):
+        p = self.plan_of([('a', '-', 'a.txt')])
+        self.scenario({'a.qa.1': {'verdict': 'FAIL'}, 'a.dwarf.2': {'no_edit': True}, 'a.qa.2': {'verdict': 'FAIL'},
+                       'a.dwarf.3': {'no_edit': True}, 'a.qa.3': {'verdict': 'PASS'}})
+        r = self.run_script('forge-parallel.sh', 'run', p)
+        self.assertEqual(r.returncode, 5, r.stdout)
+        # Clarify the brief so the unchanged code is reviewed again against the updated scope.
+        prompt_path = p / 'tasks/a/prompt.md'
+        prompt_path.write_text(prompt_path.read_text() + '\nScope note: minimal output is acceptable.\n')
+        r2 = self.run_script('forge-parallel.sh', 'retry', p, 'a')
+        self.assertEqual(r2.returncode, 5, r2.stdout)
+        self.assertEqual(self.calls(), ['dwarf', 'qa', 'dwarf', 'qa'], r2.stdout)
+        self.assertIn('brief changed since the last review', r2.stdout)
+        self.assertFalse((p / 'tasks/a/noretry').exists())
+        # Retrying again with the same code and no further brief change is still refused.
+        r3 = self.run_script('forge-parallel.sh', 'retry', p, 'a')
+        self.assertEqual(r3.returncode, 5, r3.stdout)
+        self.assertEqual(self.calls(), ['dwarf', 'qa', 'dwarf', 'qa', 'dwarf'], r3.stdout)
+        self.assertTrue((p / 'tasks/a/noretry').exists())
+
     def test_the_retry_hint_names_the_failed_task_and_the_flag(self):
         p = self.plan_of([('a', '-', 'a.txt')])
         self.scenario({'a.qa.*': {'verdict': 'FAIL'}})
@@ -190,6 +210,8 @@ class RetryTests(unittest.TestCase):
         self.assertIn('model=gpt-6-astra', (p / 'tasks/a/dwarf.resolved').read_text())
         self.assertEqual((p / 'tasks/a/escalations.tsv').read_text().split('\t')[1:], ['3', 'sol', 'astra', 'policy\n'])
         self.assertIn('escalating from sol to astra', r.stdout)
+        self.assertNotIn('No such file or directory', r.stdout)
+        self.assertNotIn('retry_per_model', r.stdout)
 
     def test_with_no_stronger_model_the_task_stops_with_a_split_suggestion(self):
         p = self.pooled_plan('--dwarf-low', 'sol')

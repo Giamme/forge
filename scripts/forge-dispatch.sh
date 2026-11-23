@@ -65,6 +65,10 @@
 set -uo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Windows: re-run inside MSYS2 when started from Git Bash (no-op elsewhere).
+. "$SKILL_DIR/scripts/forge-win.sh"
+source "$SKILL_DIR/scripts/forge-lib-env.sh"
+forge_ensure_python3
 REGISTRY="${FORGE_REGISTRY:-$SKILL_DIR/registry.tsv}"
 RUNTIME="$SKILL_DIR/scripts/forge-runtime.py"
 GUARD="$SKILL_DIR/scripts/forge-guard.py"
@@ -92,6 +96,51 @@ ladder_for() {
 # The harness name is not always the binary name.
 binary_for() {
   case "$1" in antigravity) echo agy ;; *) echo "$1" ;; esac
+}
+
+# Resolve a harness CLI: first PATH, then well-known per-user Windows install paths.
+resolve_binary() { # resolve_binary <harness> -> path on stdout, exit 1 if missing
+  local name bin cand localappdata appdata userprofile
+  name="$(binary_for "$1")"
+  if bin="$(command -v "$name" 2>/dev/null)" && [ -n "$bin" ]; then
+    printf '%s\n' "$bin"; return 0
+  fi
+  forge_is_windows || return 1
+  if bin="$(command -v "$name.cmd" 2>/dev/null)" && [ -n "$bin" ]; then
+    printf '%s\n' "$bin"; return 0
+  fi
+  localappdata="$(forge_posix_path "${LOCALAPPDATA:-}")"
+  appdata="$(forge_posix_path "${APPDATA:-}")"
+  userprofile="$(forge_posix_path "${USERPROFILE:-}")"
+  case "$1" in
+    antigravity)
+      for cand in ${localappdata:+"$localappdata/agy/bin/agy.exe"}; do
+        [ -f "$cand" ] && { printf '%s\n' "$cand"; return 0; }
+      done ;;
+    opencode)
+      if bin="$(command -v opencode-cli 2>/dev/null)" && [ -n "$bin" ]; then
+        printf '%s\n' "$bin"; return 0
+      fi
+      for cand in \
+        ${localappdata:+"$localappdata/Programs/@opencode-aidesktop/resources/opencode-cli.exe"} \
+        ${appdata:+"$appdata/npm/opencode.cmd"} \
+        ${appdata:+"$appdata/npm/opencode"}; do
+        [ -f "$cand" ] && { printf '%s\n' "$cand"; return 0; }
+      done ;;
+    claude)
+      for cand in \
+        ${userprofile:+"$userprofile/.local/bin/claude.exe"} \
+        ${HOME:+"$HOME/.local/bin/claude.exe"}; do
+        [ -f "$cand" ] && { printf '%s\n' "$cand"; return 0; }
+      done ;;
+    openclaude|codex)
+      for cand in \
+        ${appdata:+"$appdata/npm/$name.cmd"} \
+        ${appdata:+"$appdata/npm/$name"}; do
+        [ -f "$cand" ] && { printf '%s\n' "$cand"; return 0; }
+      done ;;
+  esac
+  return 1
 }
 
 # Every effort word forge recognizes, weakest first. Used only to tell "you asked
@@ -190,7 +239,7 @@ doctor() {
   local rc=0 h bin
   printf '%-12s %-10s %s\n' HARNESS STATUS DETAIL
   for h in codex claude openclaude opencode antigravity grok; do
-    bin="$(command -v "$(binary_for "$h")" 2>/dev/null)"
+    bin="$(resolve_binary "$h" 2>/dev/null)"
     if [ -z "$bin" ]; then
       printf '%-12s %-10s %s\n' "$h" MISSING "$(binary_for "$h") not on PATH"; rc=1; continue
     fi
@@ -432,19 +481,20 @@ if [ "$PREFLIGHT" != 1 ] && [ "$DRY" != 1 ]; then
   # dispatch and must not be the thing that hangs it.
   exit_cleanup() {
     [ -z "${tpid:-}" ] || kill -TERM "$tpid" 2>/dev/null
+    local _hw="${hwinpid:-${hpid:-}}"
     if [ -n "${hpid:-}" ] && kill -0 "$hpid" 2>/dev/null; then
-      [ "${GUARD_ON:-0}" != 1 ] || kill -s TERM -- "-$hpid" 2>/dev/null
-      pkill -TERM -P "$hpid" 2>/dev/null; kill -TERM "$hpid" 2>/dev/null
+      [ "${GUARD_ON:-0}" != 1 ] || forge_kill_group "$hpid" TERM
+      forge_kill_children "$hpid" TERM; kill -TERM "$hpid" 2>/dev/null
       if [ "${GUARD_ON:-0}" = 1 ]; then
-        sleep 1; kill -s KILL -- "-$hpid" 2>/dev/null
+        sleep 1; forge_kill_group "$hpid" KILL
         # what it started in sessions of their own (#129)
-        python3 "$GUARD" reap "$hpid" "$RUN_DIR/$ROLE.orphans" --tracked "$RUN_DIR/$ROLE.tracked" >/dev/null 2>&1
+        python3 "$GUARD" reap "$_hw" "$RUN_DIR/$ROLE.orphans" --tracked "$RUN_DIR/$ROLE.tracked" >/dev/null 2>&1
       fi
-    elif [ "${GUARD_ON:-0}" = 1 ] && [ "${reaped:-0}" != 1 ] && [ -n "${hpid:-}" ]; then
+    elif [ "${GUARD_ON:-0}" = 1 ] && [ "${reaped:-0}" != 1 ] && [ -n "${_hw:-}" ]; then
       # Interrupted after the harness exited but before the normal reap.
-      python3 "$GUARD" reap "$hpid" "$RUN_DIR/$ROLE.orphans" --tracked "$RUN_DIR/$ROLE.tracked" >/dev/null 2>&1
+      python3 "$GUARD" reap "$_hw" "$RUN_DIR/$ROLE.orphans" --tracked "$RUN_DIR/$ROLE.tracked" >/dev/null 2>&1
     fi
-    for watcher in ${wpid:-} ${spid:-}; do pkill -P "$watcher" 2>/dev/null; kill "$watcher" 2>/dev/null; done
+    for watcher in ${wpid:-} ${spid:-}; do forge_kill_children "$watcher" TERM; kill "$watcher" 2>/dev/null; done
     [ -z "${cpid:-}" ] || kill "$cpid" 2>/dev/null
     rm -f "$RUN_DIR/$ROLE.harness" "$RUN_DIR/$ROLE.tracked"
     case "${ROLE_TMP:-}" in "$RUN_DIR"/.*-tmp.*) [ ! -d "$ROLE_TMP" ] || rm -rf -- "$ROLE_TMP" ;; esac
@@ -547,6 +597,15 @@ codex_read_only() {
 }
 
 # Sets CMD (and PROMPT_VIA_STDIN) for the dispatch, or for the fresh one when CONTINUE_ID is empty.
+D_REPO="$REPO"; D_RUN_DIR="$RUN_DIR"; D_LAST="$LAST"; D_PROMPT_FILE="$PROMPT_FILE"; D_GUARD="$GUARD"
+if forge_is_windows; then
+  D_REPO="$(forge_host_path "$REPO")"
+  D_RUN_DIR="$(forge_host_path "$RUN_DIR")"
+  D_LAST="$(forge_host_path "$LAST")"
+  D_PROMPT_FILE="$(forge_host_path "$PROMPT_FILE")"
+  D_GUARD="$(forge_host_path "$GUARD")"
+fi
+
 build_cmd() {
   CMD=()
   case "$HARNESS" in
@@ -557,7 +616,7 @@ build_cmd() {
         # whether the diff is correct, but not whether it is the change that was
         # actually asked for. `codex exec review` also has no --cd, hence the
         # subshell cd below.
-        CMD=(codex exec review --json -m "$MODEL" --skip-git-repo-check -o "$LAST")
+        CMD=(codex exec review --json -m "$MODEL" --skip-git-repo-check -o "$D_LAST")
         [ -n "$EFFORT" ] && CMD+=(-c "model_reasoning_effort=$EFFORT")
         [ "$SERVICE_TIER" = fast ] && CMD+=(-c "service_tier=fast")
         if [ -n "$REVIEW_BASE" ]; then CMD+=(--base "$REVIEW_BASE"); else CMD+=(--uncommitted); fi
@@ -569,7 +628,7 @@ build_cmd() {
         # An id that starts with '-' would be read as a flag, so it goes after a `--`.
         CMD=(codex exec resume)
         case "$CONTINUE_ID" in -*) ;; *) CMD+=("$CONTINUE_ID") ;; esac
-        CMD+=(--json -m "$MODEL" --skip-git-repo-check -o "$LAST")
+        CMD+=(--json -m "$MODEL" --skip-git-repo-check -o "$D_LAST")
         [ -n "$EFFORT" ] && CMD+=(-c "model_reasoning_effort=$EFFORT")
         [ "$SERVICE_TIER" = fast ] && CMD+=(-c "service_tier=fast")
         if [ "$YOLO" = 1 ]; then CMD+=(--dangerously-bypass-approvals-and-sandbox)
@@ -578,7 +637,7 @@ build_cmd() {
         CMD+=(-)
         PROMPT_VIA_STDIN=1
       else
-        CMD=(codex exec --json -m "$MODEL" -C "$REPO" --skip-git-repo-check -o "$LAST")
+        CMD=(codex exec --json -m "$MODEL" -C "$D_REPO" --skip-git-repo-check -o "$D_LAST")
         [ -n "$EFFORT" ] && CMD+=(-c "model_reasoning_effort=$EFFORT")
         [ "$SERVICE_TIER" = fast ] && CMD+=(-c "service_tier=fast")
         # --approve-for-me and --dangerously-bypass-... are mutually exclusive.
@@ -593,7 +652,7 @@ build_cmd() {
       # The run dir sits outside the repo (so it stays out of the diff), which also
       # puts it outside the harness's default reach — without this the agent
       # refuses to open the very artifacts forge just wrote for it.
-      CMD=("$HARNESS" -p --model "$MODEL" --add-dir "$RUN_DIR")
+      CMD=("$HARNESS" -p --model "$MODEL" --add-dir "$D_RUN_DIR")
       # One JSON message per line: what the agent said and every tool call, so the run keeps
       # its conversation (forge-ui reads it), ending in the `result` line forge-runtime.py
       # takes the final message and the tokens from. stream-json needs --verbose with -p.
@@ -639,7 +698,7 @@ build_cmd() {
       PROMPT_VIA_STDIN=1
       ;;
     opencode)
-      CMD=(opencode run -m "$MODEL" --dir "$REPO")
+      CMD=(opencode run -m "$MODEL" --dir "$D_REPO")
       [ -n "$EFFORT" ] && CMD+=(--variant "$EFFORT")
       # opencode run exposes no sandbox tier — without --auto it blocks on a
       # permission prompt that nothing can answer headlessly, so it is always set.
@@ -660,7 +719,7 @@ build_cmd() {
       # --add-dir on the repo is not optional. Antigravity is workspace-scoped
       # rather than cwd-scoped, so without it the agent searches the wrong tree and
       # the run dies on "Find command timed out: context deadline exceeded".
-      CMD+=(--add-dir "$REPO" --add-dir "$RUN_DIR")
+      CMD+=(--add-dir "$D_REPO" --add-dir "$D_RUN_DIR")
       if [ "$YOLO" = 1 ]; then CMD+=(--dangerously-skip-permissions)
       elif read_only_role; then CMD+=(--mode plan)
       else CMD+=(--mode accept-edits); fi
@@ -672,7 +731,7 @@ build_cmd() {
       # claude gives without acceptEdits, so the dwarf gets edits and the whole shell.
       # The Messages-format stream ends in a claude-shaped `result` line, which
       # forge-runtime.py reads for the final message and the tokens.
-      CMD=(grok --model "$MODEL" --prompt-file "$PROMPT_FILE" --output-format streaming-messages-json)
+      CMD=(grok --model "$MODEL" --prompt-file "$D_PROMPT_FILE" --output-format streaming-messages-json)
       [ -n "$EFFORT" ] && CMD+=(--reasoning-effort "$EFFORT")
       # After its last turn a headless run waits for the background work it started (a test
       # suite, say) and wakes the model with each result, but by default for only 600 s: then
@@ -693,6 +752,9 @@ build_cmd() {
       ;;
     *) die "no dispatch recipe for harness '$HARNESS'" ;;
   esac
+  if [ -n "${RESOLVED_BIN:-}" ] && ! command -v "$(binary_for "$HARNESS")" >/dev/null 2>&1; then
+    CMD[0]="$RESOLVED_BIN"
+  fi
 }
 # A read-only role's own writable temp dir (#148). Test runners need one (Vitest's EPERM in a
 # read-only sandbox), and the role gets none otherwise. It sits in the run dir, outside the
@@ -700,12 +762,15 @@ build_cmd() {
 # point at it, and the dispatch removes it when it ends. A dry run or a preflight only shows
 # its shape.
 ROLE_TMP=""
+D_ROLE_TMP=""
 if read_only_role; then
   if [ -n "$ATTEMPT" ]; then
     ROLE_TMP="$(mktemp -d "$RUN_DIR/.$ROLE-tmp.XXXXXX")" || ROLE_TMP=""
   else
     ROLE_TMP="$RUN_DIR/.$ROLE-tmp.XXXXXX"
   fi
+  D_ROLE_TMP="$ROLE_TMP"
+  [ -z "$ROLE_TMP" ] || ! forge_is_windows || D_ROLE_TMP="$(forge_host_path "$ROLE_TMP")"
 fi
 build_cmd
 
@@ -735,7 +800,12 @@ unadvertised_flag() { # unadvertised_flag <help text>
 preflight_command() {
   local bin help flag request="$CONTINUE_ID"
   local help_args=(--help) continue_args=(--help)
-  bin="$(command -v "$(binary_for "$HARNESS")")" || die "harness '$HARNESS' is not installed" 3
+  bin="$(resolve_binary "$HARNESS")" || die "harness '$HARNESS' is not installed" 3
+  ! forge_is_windows || bin="$(forge_host_path "$bin")"
+  RESOLVED_BIN="$bin"
+  if ! command -v "$(binary_for "$HARNESS")" >/dev/null 2>&1; then
+    CMD[0]="$RESOLVED_BIN"
+  fi
   case "$HARNESS" in
     codex) help_args=(exec --help); continue_args=(exec resume --help); [ "$NATIVE_REVIEW" = 1 ] && help_args=(exec review --help) ;;
     opencode) help_args=(run --help) ;;
@@ -829,7 +899,11 @@ fi
 if [ "$YOLO" = 1 ]; then
   note "YOLO: $HARNESS runs with sandbox and approvals disabled in $REPO"
 fi
-[ -n "$(command -v "$(binary_for "$HARNESS")")" ] || die "harness '$HARNESS' is not installed ($(binary_for "$HARNESS") not on PATH)" 3
+RESOLVED_BIN="$(resolve_binary "$HARNESS")" || die "harness '$HARNESS' is not installed ($(binary_for "$HARNESS") not on PATH)" 3
+! forge_is_windows || RESOLVED_BIN="$(forge_host_path "$RESOLVED_BIN")"
+if ! command -v "$(binary_for "$HARNESS")" >/dev/null 2>&1; then
+  CMD[0]="$RESOLVED_BIN"
+fi
 
 # Harnesses that take the prompt on argv get stdin redirected from /dev/null:
 # codex exec otherwise blocks waiting to append piped input to the prompt, which
@@ -861,14 +935,17 @@ case "${FORGE_ORPHAN_GUARD:-on}" in off|OFF|Off|0|no|false) ;; *)
   if [ -z "${FORGE_FRACTAL_RUN:-}" ] && [ -r "$GUARD" ] && [ "$(python3 "$GUARD" ping 2>/dev/null)" = ok ]; then GUARD_ON=1; fi ;;
 esac
 RUNCMD=("${CMD[@]}")
-[ "$GUARD_ON" != 1 ] || RUNCMD=(python3 "$GUARD" session -- "${CMD[@]}")
-role_env() { [ -z "$ROLE_TMP" ] || export TMPDIR="$ROLE_TMP" TMP="$ROLE_TMP" TEMP="$ROLE_TMP"; }
+# Windows MSYS2 mode (forge-win.sh): the harness gets the PATH it had in Git Bash, not MSYS2's.
+[ -z "${FORGE_WIN_AGENT_PATH:-}" ] || RUNCMD=(env -u MSYS -u FORGE_WIN_AGENT_PATH "PATH=$FORGE_WIN_AGENT_PATH" "MSYSTEM=${FORGE_WIN_MSYSTEM-}" "${CMD[@]}")
+[ "$GUARD_ON" != 1 ] || RUNCMD=(python3 "$D_GUARD" session -- "${RUNCMD[@]}")
+role_env() { [ -z "$D_ROLE_TMP" ] || export TMPDIR="$D_ROLE_TMP" TMP="$D_ROLE_TMP" TEMP="$D_ROLE_TMP"; }
 if [ "$PROMPT_VIA_STDIN" = 1 ]; then
-  ( cd "$REPO" && role_env && exec "${RUNCMD[@]}" < "$PROMPT_FILE" ) > "$LOG" 2>&1 &
+  ( cd "$REPO" && role_env && { ! forge_is_windows || export MSYS_NO_PATHCONV=1; } && exec "${RUNCMD[@]}" < "$PROMPT_FILE" ) > "$LOG" 2>&1 &
 else
-  ( cd "$REPO" && role_env && exec "${RUNCMD[@]}" </dev/null ) > "$LOG" 2>&1 &
+  ( cd "$REPO" && role_env && { ! forge_is_windows || export MSYS_NO_PATHCONV=1; } && exec "${RUNCMD[@]}" </dev/null ) > "$LOG" 2>&1 &
 fi
 hpid=$!
+hwinpid="$(forge_winpid "$hpid")"
 # Log clock: when the log grew, so forge-ui can time the commands of a harness whose events
 # carry no time (codex, grok). Advisory and off with FORGE_LOG_CLOCK=off; it ends on its own
 # if this dispatch dies first.
@@ -881,9 +958,9 @@ esac
 # (forge-guard.py stop) in case this dispatch dies before the trap finishes. The start time
 # tells the pid apart from a later reuse, and survives the exec chain $! still goes through.
 if [ "$GUARD_ON" = 1 ]; then
-  hident="$(python3 "$GUARD" identity "$hpid" 2>/dev/null)" || hident=""
+  hident="$(python3 "$GUARD" identity "$hwinpid" 2>/dev/null)" || hident=""
   if [ -n "$hident" ]; then
-    printf '%s\t%s\n' "$hpid" "$hident" > "$RUN_DIR/.$ROLE.harness.tmp" \
+    printf '%s\t%s\n' "$hwinpid" "$hident" > "$RUN_DIR/.$ROLE.harness.tmp" \
       && mv -f "$RUN_DIR/.$ROLE.harness.tmp" "$RUN_DIR/$ROLE.harness"
   fi
 fi
@@ -892,19 +969,19 @@ fi
 # it as a descendant, so the reap finds it by pid and start time. Advisory, like the guard.
 tpid=""
 if [ "$GUARD_ON" = 1 ]; then
-  python3 "$GUARD" track "$hpid" "$RUN_DIR/$ROLE.tracked" </dev/null >/dev/null 2>&1 & tpid=$!
+  python3 "$GUARD" track "$hwinpid" "$RUN_DIR/$ROLE.tracked" </dev/null >/dev/null 2>&1 & tpid=$!
 fi
 
 # Ends the harness: the whole process group first when the harness has its own (GUARD_ON),
 # then children, then the process itself, then SIGKILL for a CLI that traps TERM and takes
 # its time. Without the guard there is no group to signal as a unit.
 stop_harness() {
-  [ "$GUARD_ON" != 1 ] || kill -s TERM -- "-$hpid" 2>/dev/null
-  pkill -TERM -P "$hpid" 2>/dev/null
+  [ "$GUARD_ON" != 1 ] || forge_kill_group "$hpid" TERM
+  forge_kill_children "$hpid" TERM
   kill -TERM "$hpid" 2>/dev/null
   sleep 5
-  [ "$GUARD_ON" != 1 ] || kill -s KILL -- "-$hpid" 2>/dev/null
-  pkill -KILL -P "$hpid" 2>/dev/null
+  [ "$GUARD_ON" != 1 ] || forge_kill_group "$hpid" KILL
+  forge_kill_children "$hpid" KILL
   kill -KILL "$hpid" 2>/dev/null
 }
 
@@ -929,7 +1006,7 @@ spid=""
 case "$HARNESS" in claude|openclaude)
   if [ "$RESULT_GRACE" != 0 ]; then
     (
-      python3 "$RUNTIME" settle "$LOG" "$RESULT_GRACE" "$hpid" </dev/null || exit 0
+      python3 "$RUNTIME" settle "$LOG" "$RESULT_GRACE" "$hwinpid" </dev/null || exit 0
       kill -0 "$hpid" 2>/dev/null || exit 0
       : > "$RUN_DIR/$ROLE.settled"
       stop_harness
@@ -950,7 +1027,7 @@ fi
 for watcher in $wpid $spid; do
   # The watchdog is asleep in a child of its own, and so is the grace watcher; kill that
   # too or it outlives the run as an orphan holding the timer.
-  pkill -P "$watcher" 2>/dev/null
+  forge_kill_children "$watcher" TERM
   kill "$watcher" 2>/dev/null
   wait "$watcher" 2>/dev/null
 done
@@ -961,7 +1038,7 @@ done
 # changes nothing about the exit code.
 if [ -n "$tpid" ]; then kill -TERM "$tpid" 2>/dev/null; wait "$tpid" 2>/dev/null; tpid=""; fi
 if [ "$GUARD_ON" = 1 ]; then
-  orphans_found="$(python3 "$GUARD" reap "$hpid" "$RUN_DIR/$ROLE.orphans" --tracked "$RUN_DIR/$ROLE.tracked" 2>/dev/null)"
+  orphans_found="$(python3 "$GUARD" reap "$hwinpid" "$RUN_DIR/$ROLE.orphans" --tracked "$RUN_DIR/$ROLE.tracked" 2>/dev/null)"
   case "$orphans_found" in ''|*[!0-9]*|0) ;; *) note "$HARNESS left $orphans_found process(es) running after it exited; killed — see $RUN_DIR/$ROLE.orphans" ;; esac
 fi
 reaped=1

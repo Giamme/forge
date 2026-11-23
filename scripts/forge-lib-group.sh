@@ -75,7 +75,7 @@ do_group() (
   # 1. Status and round.
   mkdir -p "$G" || die "could not create $G" 3
   local round REPO run_id wt_root
-  round="$(tr -dc '0-9' < "$G/round" 2>/dev/null)"
+  round="$(tr -dc '0-9' 2>/dev/null < "$G/round")"
   round=$(( ${round:-0} + 1 ))
   printf '%s\n' "$round" > "$G/round.tmp" && mv -f "$G/round.tmp" "$G/round"
   # What an earlier round left that this one would otherwise be read as. attribution.json and
@@ -400,7 +400,7 @@ do_group_settle() (
     done
     for id in "${ids[@]}"; do case ",${named// /}," in *",$id,"*) want+=("$id") ;; esac; done
   fi
-  round="$(tr -dc '0-9' < "$G/round" 2>/dev/null)"
+  round="$(tr -dc '0-9' 2>/dev/null < "$G/round")"
   [ -n "$round" ] || die "group $gid has not been reviewed" 2
   # One settle per round, however often it is asked.
   [ "$(cat "$G/settled.round" 2>/dev/null)" = "$round" ] && return 0
@@ -532,7 +532,7 @@ merge_group() { # merge_group <plan> <gid> -> 0 merged, 1 not
   if [ "$st" != PASS ]; then note "group $gid: ${st:-not reviewed}, not PASS — nothing to merge"; return 1; fi
   REPO="$(cat "$PLAN/repo")"; run_id="$(cat "$PLAN/run_id")"
   int_wt="$(cat "$PLAN/wt_root")/_integration"
-  round="$(tr -dc '0-9' < "$G/round" 2>/dev/null)"
+  round="$(tr -dc '0-9' 2>/dev/null < "$G/round")"
   local ids=()
   IFS=, read -ra ids <<< "$members"
 
@@ -607,8 +607,8 @@ merge_group() { # merge_group <plan> <gid> -> 0 merged, 1 not
     for id in "${ids[@]}"; do rm -f "$PLAN/tasks/$id/.qa.last.merge.tmp"; echo CONFLICT > "$PLAN/tasks/$id/status"; done
     group_set_status "$G" CONFLICT
     forge_dataset_event group_merge --dir "$PLAN" --set group="$gid" --set status=CONFLICT --set commit="$commit" \
-      --set conflicts="$(tr '\n' ' ' < "$G/conflict.files" 2>/dev/null)"
-    note "group $gid: conflicts with the integration branch: $(tr '\n' ' ' < "$G/conflict.files" 2>/dev/null)"
+      --set conflicts="$(tr '\n' ' ' 2>/dev/null < "$G/conflict.files")"
+    note "group $gid: conflicts with the integration branch: $(tr '\n' ' ' 2>/dev/null < "$G/conflict.files")"
     return 1
   fi
   git -C "$int_wt" rev-parse HEAD > "$PLAN/accepted.integration"

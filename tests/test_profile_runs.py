@@ -684,6 +684,35 @@ class ProfileRunsTests(unittest.TestCase):
         self.assertFalse((self.root / 'mixed' / 'profile.json').exists())
         self.assertIn('the plans do not agree on profile.json', mixed.stdout)
 
+    def test_refused_plan_does_not_freeze_opus_and_replan_notes_kept_qa(self):
+        # 1. Refused call with missing --dwarf must leave qa='-' unfrozen so a later
+        #    `plan --qa <spec>` resolves the reviewer to <spec>.
+        p = self.make_plan(tasks=(('a', 'low'),), name='refused-plan')
+        first = self.plan(p, '--no-profile')
+        self.assertEqual(first.returncode, 2, first.stdout)
+        self.assertIn('UNASSIGNED', first.stdout)
+        self.assertEqual(self.rows(p)['a'], dict(dwarf='-', qa='-'))
+        self.assertEqual(sorted(x.name for x in p.glob('.tasks.tsv.orig*')), [])   # the copy went back
+
+        second = self.plan(p, '--no-profile', '--dwarf', 'sol', '--qa', 'sol')
+        self.assertEqual(second.returncode, 0, second.stdout)
+        self.assertEqual(self.rows(p)['a'], dict(dwarf='sol', qa='sol'))
+        self.assertEqual(sorted(x.name for x in p.glob('.tasks.tsv.orig*')), [])
+
+        # 2. A reviewer explicitly written in tasks.tsv is preserved across both a refused
+        #    call and a subsequent re-plan, with a note when `--qa` did not overwrite it.
+        kept = self.make_plan(tasks=(('a', 'low'),), name='explicit-qa')
+        t = (kept / 'tasks.tsv').read_text()
+        (kept / 'tasks.tsv').write_text(t.replace('\t-\t-\tA', '\t-\topus:medium\tA'))
+        refused = self.plan(kept, '--no-profile')
+        self.assertEqual(refused.returncode, 2, refused.stdout)
+        self.assertEqual(self.rows(kept)['a'], dict(dwarf='-', qa='opus:medium'))
+
+        replan = self.plan(kept, '--no-profile', '--dwarf', 'sol', '--qa', 'sol')
+        self.assertEqual(replan.returncode, 0, replan.stdout)
+        self.assertEqual(self.rows(kept)['a'], dict(dwarf='sol', qa='opus:medium'))
+        self.assertIn('left existing reviewer(s) unchanged on: a (opus:medium)', replan.stdout)
+
 
 if __name__ == '__main__':
     unittest.main()

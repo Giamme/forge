@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow the format `{major}.{minor}[.{patch}]` ([...] parts appear only when non-zero).
 
+## [0.22] - 2026-11-23
+
+Forge runs on Windows: natively from Git Bash, or inside MSYS2 if you prefer. Plus fixes for plan reviewers, retries after a brief edit, decisions and verification status.
+
+### Highlights
+
+- Forge now runs natively on Windows, from Git Bash with the regular Windows Python 3.9 or later. Start it with `forge` after an npm install, or with `forge.cmd` from CMD or PowerShell. `forge install` links skills with directory junctions instead of symlinks, and a run's processes are stopped together through Windows Job Objects. If the Microsoft Store alias hijacks `python3`, forge sets up its own shim. Thanks to Kratoswer-byte for the port.
+- On Windows you can choose MSYS2 mode instead: forge then runs inside MSYS2, where process groups, signals, file locks and symlinks behave as on Linux. Set `FORGE_WIN_MODE=msys2` and start forge from Git Bash as usual, or start it from an MSYS2 shell. Setup and limits are in [Install](docs/install.md#windows-msys2-mode). Thanks to Bardugo624.
+
+### Fixed
+
+- Approval, status and results tables stay aligned when task ids are longer than 14 characters: the `id` column now fits the plan's longest id.
+- A `plan` that was refused because tasks were `UNASSIGNED` no longer leaves the fallback `opus` reviewer stuck on them, so a following `plan --qa ...` picks the reviewer you ask for. `plan` also tells you when `--qa` leaves reviewers you set explicitly unchanged.
+- While a new verification is running, forge no longer shows the previous verification's result next to the new commit.
+- In forge-ui's 3D view, tasks with 8 or more attempts now show every attempt's boxes at full height when opened, instead of the later ones stopping short or staying hidden.
+- On Windows, running `forge install` again no longer re-creates links it already made when Git Bash shows the same folder under a different path (such as `/tmp` or a short `PROGRA~1` name).
+- Escalations and group operations no longer print stray `No such file or directory` messages when an optional plan file is missing.
+- After you resume or accept a `NEEDS_DECISION` task, its old decision is cleared, so a task that later ends `FAIL` no longer points you at a `--decide` that doesn't apply. Running `--decide` on a `FAIL` or `UNKNOWN` task now tells you to use `retry` without it.
+- Retrying a task after you clarify its `prompt.md`, `approach.md` or `qa_threshold` now reviews the same code again against the new brief, instead of refusing it as an identical diff. With an unchanged brief, an identical diff is still refused.
+
 ## [0.21] - 2026-11-19
 
 Groundwork for native Windows support, plus fixes for macOS with Python 3.9 and for parallel tasks that start at the same moment.

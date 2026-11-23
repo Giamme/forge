@@ -120,5 +120,42 @@ class ForgeFlockTests(unittest.TestCase):
             os.close(fd)
 
 
+class CygwinEfaultTests(unittest.TestCase):
+    """Windows MSYS2 mode: Cygwin's flock can fail with a spurious EFAULT when threads of one
+    process lock at once. That error is retried there; other errors and platforms are not."""
+
+    def setUp(self):
+        self.calls = []
+        saved = (forge_flock._fcntl, forge_flock._CYGWIN)
+        self.addCleanup(lambda: setattr(forge_flock, '_fcntl', saved[0]))
+        self.addCleanup(lambda: setattr(forge_flock, '_CYGWIN', saved[1]))
+
+    def use(self, cygwin, errors):
+        calls, pending = self.calls, list(errors)
+
+        class FakeFcntl:
+            @staticmethod
+            def flock(fd, operation):
+                calls.append((fd, operation))
+                if pending:
+                    raise OSError(pending.pop(0), 'injected')
+
+        forge_flock._fcntl, forge_flock._CYGWIN = FakeFcntl, cygwin
+
+    def test_cygwin_retries_efault_until_the_lock_is_taken(self):
+        self.use(True, [errno.EFAULT, errno.EFAULT])
+        forge_flock.flock(7, forge_flock.LOCK_EX)
+        self.assertEqual(self.calls, [(7, forge_flock.LOCK_EX)] * 3)
+
+    def test_other_errors_and_other_platforms_fail_at_once(self):
+        for cygwin, error in ((True, errno.EBADF), (False, errno.EFAULT)):
+            with self.subTest(cygwin=cygwin, error=error):
+                self.calls.clear()
+                self.use(cygwin, [error, error])
+                with self.assertRaises(OSError) as raised:
+                    forge_flock.flock(7, forge_flock.LOCK_EX)
+                self.assertEqual((raised.exception.errno, len(self.calls)), (error, 1))
+
+
 if __name__ == '__main__':
     unittest.main()

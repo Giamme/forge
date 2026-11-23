@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import errno
 import os
+import re
 import stat
+
+IS_WINDOWS = os.name == 'nt'
+_MSYS_PATH_RE = re.compile(r'^/([a-zA-Z])(?:/(.*))?$')
 
 O_NOFOLLOW = getattr(os, 'O_NOFOLLOW', 0)
 O_NONBLOCK = getattr(os, 'O_NONBLOCK', 0)
@@ -106,3 +110,16 @@ def unlink_at(handle: int | str, leaf: str) -> None:
         os.unlink(leaf, dir_fd=handle)
     else:
         os.unlink(os.path.join(handle, leaf))
+
+
+def host_path(path: os.PathLike | str) -> str:
+    """Convert an MSYS/Git-Bash `/c/...` path to `C:/...` on native Windows."""
+    text = os.fspath(path)
+    if IS_WINDOWS and text:
+        if text.startswith('\\\\?\\') and len(text) >= 6 and text[5] == ':':
+            text = text[4:]
+        m = _MSYS_PATH_RE.fullmatch(text)
+        if m:
+            rest = m.group(2) or ''
+            return f'{m.group(1).upper()}:/{rest}'
+    return text

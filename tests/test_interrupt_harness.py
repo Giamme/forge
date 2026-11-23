@@ -17,6 +17,8 @@ import test_forge as fixtures
 from test_dispatch import HELP
 
 ROOT = Path(__file__).resolve().parents[1]
+# MSYS2's procps-ng installs its ps as procps; /bin/ps there is Cygwin's, which has no -o.
+from test_forge import PS  # noqa: E402
 
 # Writes its pid, then runs for a minute. TERM is answered only after 30 s, far longer than
 # the scheduler's grace: a harness still alive after the grace was never KILLed by anyone.
@@ -42,7 +44,7 @@ esac
 
 
 def alive(pid):
-    state = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'stat='], stdout=subprocess.PIPE, text=True).stdout.strip()
+    state = subprocess.run([PS, '-p', str(pid), '-o', 'stat='], stdout=subprocess.PIPE, text=True).stdout.strip()
     return bool(state) and not state.startswith('Z')
 
 

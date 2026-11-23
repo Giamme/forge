@@ -939,7 +939,7 @@ class EndToEndTests(StoreCase):
         launcher = subprocess.run(['pgrep', '-f', 'forge-shadow.py run --plan %s' % p], capture_output=True,
                                   text=True).stdout.split()
         self.assertEqual(len(launcher), 1, launcher)
-        task_shell = int(subprocess.run(['ps', '-o', 'ppid=', '-p', launcher[0]], capture_output=True,
+        task_shell = int(subprocess.run([shutil.which('procps') or 'ps', '-o', 'ppid=', '-p', launcher[0]], capture_output=True,  # procps: Cygwin's ps has no -o
                                         text=True).stdout.strip())
         os.kill(task_shell, 9)
         self.wait_for(lambda: (shadow / 'shadow.status').exists(), 30)
