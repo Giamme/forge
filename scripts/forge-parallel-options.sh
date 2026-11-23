@@ -38,7 +38,7 @@
 #   --qa-threshold Pn|none|default  plan run retry review  $PLAN/qa_threshold  least severe CONFIRMED
 #                                                                  finding that still blocks; none (or off) =
 #                                                                  P3, default removes the file (P2)
-#   --verify-retries N      run retry integrate  $PLAN/verify_retries  reruns of a failed verify command
+#   --verify-retries N      run retry integrate verify $PLAN/verify_retries  reruns of a failed verify command
 #   --escalate-after N      run retry         $PLAN/escalate_after failed attempts on one model before the
 #                                                                  next goes a tier up (default 3; 0 = off)
 #   --max-attempts N        plan              $PLAN/max_attempts   attempts a task may spend across runs before it
@@ -159,7 +159,7 @@ forge_pp_flag() {
       PP_SHIFT=1
       rm -f "$plan/escalate_effort" ;;
     --verify-retries)
-      case "$cmd" in run|retry|integrate) ;; *) return 1 ;; esac
+      case "$cmd" in run|retry|integrate|verify) ;; *) return 1 ;; esac
       pp_nonneg --verify-retries "${2:-}"
       printf '%s' "$2" > "$plan/verify_retries" ;;
     --verify-lane)

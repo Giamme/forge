@@ -15,24 +15,72 @@ verify_lanes_present() { # verify_lanes_present <dir>
 }
 
 # Where a plan's verification comes from, in this order: the plan's lanes (--verify-lane,
-# $PLAN/verify.d/), the plan's --verify, the repository's lanes (.forge/verify.d/), the
-# repository's .forge/verify. Prints "<kind><TAB><location>" with kind lanes:plan,
-# command:plan, lanes:repo or command:repo, or nothing when none is configured.
-verify_source_for() { # verify_source_for <plan> <repo>
+# $PLAN/verify.d/), the plan's --verify, then the repository's lanes (.forge/verify.d/) and its
+# .forge/verify. With a checkout (the integration worktree or an integrate candidate) that is not
+# the repository itself, the repository's configuration committed in that checkout comes before
+# the repository root's copy (#151): lanes belong to the commit they verify, so a merged task or an
+# adopted range that changes .forge/verify.d/ is verified with its own lanes. Only tracked files
+# count there; a checkout whose .forge/ is not in git falls through to the root's.
+# Prints "<kind><TAB><location>" with kind lanes:plan, command:plan, lanes:checkout,
+# command:checkout, lanes:repo or command:repo, or nothing when none is configured.
+verify_source_for() { # verify_source_for <plan> <repo> [checkout]
+  local co="${3:-}"
+  if [ -n "$co" ] && { [ ! -d "$co" ] || [ "$co" -ef "$2" ]; }; then co=""; fi
   if verify_lanes_present "$1/verify.d"; then printf 'lanes:plan\t%s\n' "$1/verify.d"
   elif [ -s "$1/verify_cmd" ]; then printf 'command:plan\t%s\n' "$1/verify_cmd"
+  elif [ -n "$co" ] && verify_lanes_present "$co/.forge/verify.d" \
+       && [ -n "$(git -C "$co" ls-files -- .forge/verify.d 2>/dev/null)" ]; then
+    printf 'lanes:checkout\t%s\n' "$co/.forge/verify.d"
+  elif [ -n "$co" ] && [ -s "$co/.forge/verify" ] \
+       && [ -n "$(git -C "$co" ls-files -- .forge/verify 2>/dev/null)" ]; then
+    printf 'command:checkout\t%s\n' "$co/.forge/verify"
   elif verify_lanes_present "$2/.forge/verify.d"; then printf 'lanes:repo\t%s\n' "$2/.forge/verify.d"
   elif [ -s "$2/.forge/verify" ]; then printf 'command:repo\t%s\n' "$2/.forge/verify"
   fi
   return 0
 }
 
+# When verification runs the configuration committed in the checkout (lanes:checkout,
+# command:checkout), say how the repository root's copy differs, so a run never wonders which
+# one ran: one line per lane that is changed, only on the branch, or only in the root. Prints
+# nothing when they agree or the root has nothing.
+verify_root_difference() { # verify_root_difference <source line> <repo>
+  local kind="${1%%$'\t'*}" loc="${1#*$'\t'}" repo="$2" f name changed="" mine="" theirs=""
+  case "$kind" in
+    lanes:checkout)
+      verify_lanes_present "$repo/.forge/verify.d" || return 0
+      for f in "$loc"/*; do
+        [ -f "$f" ] || continue
+        name="${f##*/}"; case "$name" in *~) continue ;; esac
+        if [ ! -f "$repo/.forge/verify.d/$name" ]; then mine="${mine:+$mine, }$name"
+        elif ! cmp -s "$f" "$repo/.forge/verify.d/$name"; then changed="${changed:+$changed, }$name"; fi
+      done
+      for f in "$repo/.forge/verify.d"/*; do
+        [ -f "$f" ] || continue
+        name="${f##*/}"; case "$name" in *~) continue ;; esac
+        [ -f "$loc/$name" ] || theirs="${theirs:+$theirs, }$name"
+      done
+      [ -n "$changed$mine$theirs" ] || return 0
+      echo "verification runs the lanes committed on the branch it verifies ($loc), not $repo/.forge/verify.d:"
+      [ -z "$changed" ] || echo "  changed on the branch: $changed"
+      [ -z "$mine" ] || echo "  only on the branch: $mine"
+      [ -z "$theirs" ] || echo "  only in the repository root (not run): $theirs"
+      ;;
+    command:checkout)
+      if [ -s "$repo/.forge/verify" ] && ! cmp -s "$loc" "$repo/.forge/verify"; then
+        echo "verification runs the .forge/verify committed on the branch it verifies ($loc), which differs from $repo/.forge/verify"
+      fi
+      ;;
+  esac
+  return 0
+}
+
 # The verify command a plan would run, as text: the command itself, or for lanes every
 # lane's command (its #forge: option lines left out), one after another. Prints nothing
 # when nothing is configured.
-verify_command_for() { # verify_command_for <plan> <repo>
+verify_command_for() { # verify_command_for <plan> <repo> [checkout]
   local src loc
-  src="$(verify_source_for "$1" "$2")"
+  src="$(verify_source_for "$1" "$2" "${3:-}")"
   loc="${src#*$'\t'}"
   case "$src" in
     command:*) cat "$loc" ;;
@@ -82,12 +130,13 @@ verify_lanes_snapshot() { # verify_lanes_snapshot <lanes dir> <out>
 # nothing, passes.
 verify_lanes_check() { # verify_lanes_check <plan> <repo> <checkout>
   local src loc out
-  src="$(verify_source_for "$1" "$2")"
+  src="$(verify_source_for "$1" "$2" "$3")"
   case "$src" in lanes:*) ;; *) return 0 ;; esac
   loc="${src#*$'\t'}"
-  if [ "${src%%$'\t'*}" = lanes:repo ] && [ -s "$2/.forge/verify" ]; then
-    note ".forge/verify is ignored: the repository declares verification lanes in .forge/verify.d/"
-  fi
+  case "${src%%$'\t'*}" in
+    lanes:repo) [ ! -s "$2/.forge/verify" ] || note ".forge/verify is ignored: the repository declares verification lanes in .forge/verify.d/" ;;
+    lanes:checkout) [ ! -s "$3/.forge/verify" ] || note ".forge/verify is ignored: the repository declares verification lanes in .forge/verify.d/" ;;
+  esac
   out="$(python3 "$SKILL_DIR/scripts/forge-verify.py" lanes --lanes-dir "$loc" --checkout "$3" 2>&1 >/dev/null)" \
     || die "invalid verification lanes in $loc:
 $out"

@@ -27,6 +27,7 @@
 #   forge-parallel.sh integrate <plan-dir> --approved [--verify-retries N] [--final-review <qa-spec>]
 #   forge-parallel.sh review <plan-dir> [--qa <spec>] [--yolo-qa] [--qa-threshold Pn|none|default]
 #   forge-parallel.sh attribute <plan-dir> [--force]   (find a merge that breaks the failed verification)
+#   forge-parallel.sh verify <plan-dir> [--verify-retries N]   (verify the integration branch again, nothing else)
 #   forge-parallel.sh accept <plan-dir> <task-id> --reason "<why>" --approved
 #   forge-parallel.sh adopt <plan-dir> <commit|a..b> | --head --reason "<why>" [--qa <spec>] [--approved]
 #                                     (a commit made outside forge, reviewed alone, comes into the run)
@@ -2087,7 +2088,7 @@ do_task_body() (
       echo "On retry, fix the findings in the existing work; preserve parts not criticised. Explain any finding you reject."
       # With repository verification configured, the whole suite runs after the merge, never per attempt.
       echo; python3 "$SKILL_DIR/scripts/forge-contract.py" dwarf $([ ! -f "$PLAN/pre_review_tests" ] || echo --pre-review) \
-        $([ -z "$(verify_source_for "$PLAN" "$REPO")" ] || echo --verify-after-merge)
+        $([ -z "$(verify_source_for "$PLAN" "$REPO" "$(cat "$PLAN/wt_root" 2>/dev/null)/_integration")" ] || echo --verify-after-merge)
       echo; /bin/bash "$MEMORY" note dwarf
       # Last, after the memory note. Nothing is printed when retro is off.
       forge_retro_prompt "$PLAN" dwarf
@@ -3081,7 +3082,12 @@ verify_result_body() { # plan, checkout, artifact directory[, fixed source]
       note "combined result UNVERIFIED: the fixed verification source $fixed is missing or empty"; return 0
     fi
   else
-    vsource="$(verify_source_for "$plan" "$repo")"
+    vsource="$(verify_source_for "$plan" "$repo" "$wt")"
+    # The checkout's own lanes or command run (#151): say where the root's copy differs.
+    case "$vsource" in
+      *:checkout) local diffline
+        while IFS= read -r diffline; do note "$diffline"; done < <(verify_root_difference "$vsource" "$repo") ;;
+    esac
   fi
   case "$vsource" in command:*) cmd="$(cat "${vsource#*$'\t'}")" ;; esac
   # A lanes snapshot belongs to the verification that wrote it: a run on a command, or on
@@ -3634,7 +3640,7 @@ do_run() {
     advisory|gated) forge_brief_start "$PLAN" ;;
   esac
   # Say now, before any model is paid for, which suites the verify command will not run.
-  verify_coverage_report "$REPO" "$(verify_command_for "$PLAN" "$REPO")" "$PLAN/verification.coverage.txt"
+  verify_coverage_report "$REPO" "$(verify_command_for "$PLAN" "$REPO" "$int_wt")" "$PLAN/verification.coverage.txt"
   local sched_rc=0 paused=0 sched_args=()
   [ "$PP_RETRY_FAILED" -gt 0 ] && sched_args+=(--retry-failed "$PP_RETRY_FAILED")
   [ "$PP_INFRA_RETRIES" -gt 0 ] && sched_args+=(--infra-retries "$PP_INFRA_RETRIES")
@@ -3797,6 +3803,37 @@ do_run() {
   [ "$paused" = 1 ] && return 8
   [ "$failed" = 1 ] && return 5
   return 0
+}
+
+# --- verify -------------------------------------------------------------------
+# The plan's verification of its integration branch, and nothing else (#151): after a lane was
+# fixed, or to tell a flaky failure from a real one, without a `run` that has nothing to dispatch.
+# The same lanes or command a run would use, on the same checkout, with its results in the plan.
+do_verify() {
+  local PLAN="${1:?verify needs a plan dir}"; shift
+  while [ $# -gt 0 ]; do
+    if forge_pp_flag verify "$PLAN" "$@"; then shift "$PP_SHIFT"; else die "verify: unknown option '$1'"; fi
+  done
+  [ -s "$PLAN/tasks.tsv" ] || die "no tasks.tsv in '$PLAN'" 3
+  [ -s "$PLAN/wt_root" ] && [ -s "$PLAN/repo" ] && [ -s "$PLAN/accepted.integration" ] \
+    || die "this plan has never been run, so it has no integration branch to verify" 3
+  local REPO int_wt
+  REPO="$(cat "$PLAN/repo")"; int_wt="$(cat "$PLAN/wt_root")/_integration"
+  [ -e "$int_wt/.git" ] || die "the integration worktree $int_wt is missing" 3
+  [ "$(git -C "$int_wt" rev-parse HEAD 2>/dev/null)" = "$(cat "$PLAN/accepted.integration")" ] \
+    || die "integration branch changed outside this run. To bring those commits into the run: forge-parallel.sh adopt $PLAN --head --reason \"...\"" 3
+  verify_lanes_check "$PLAN" "$REPO" "$int_wt"
+  local left="" lid
+  for lid in $(all_ids "$PLAN/tasks.tsv"); do
+    case "$(task_status "$PLAN" "$lid")" in PENDING|BLOCKED|RUNNING) left="${left:+$left }$lid" ;; esac
+  done
+  [ -z "$left" ] || note "tasks still to run ($left): this verifies the integration branch as it is now, without them"
+  local rc=0
+  verify_result "$PLAN" "$int_wt" "$PLAN" || rc=$?
+  write_results "$PLAN"
+  report_verify_notes "$PLAN"
+  echo "verification of $(git -C "$int_wt" rev-parse --short HEAD 2>/dev/null): $(cat "$PLAN/verification.status" 2>/dev/null || echo UNVERIFIED)"
+  case "$rc" in 0) return 0 ;; 130) return 130 ;; *) return 5 ;; esac
 }
 
 # --- integrate ----------------------------------------------------------------
@@ -4139,7 +4176,7 @@ if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
   forge_fractal_help
   exit 0
 fi
-[ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|auto|run|retry|accept|adopt|review|integrate|split|attribute|combine> <plan-dir> [...]"
+[ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|auto|run|retry|accept|adopt|review|integrate|split|attribute|verify|combine> <plan-dir> [...]"
 CMD="$1"; shift
 [ ! -f "${1:-}/no_ripwire" ] || export FORGE_RIPWIRE=off
 if [ -d "${1:-}" ]; then
@@ -4147,7 +4184,7 @@ if [ -d "${1:-}" ]; then
 fi
 case "$CMD" in
   # `combine` takes a plan dir that does not exist yet and locks its sources itself.
-  run|retry|integrate|accept|adopt|review|split|attribute)
+  run|retry|integrate|accept|adopt|review|split|attribute|verify)
     if [ "$(forge_posix_path "${FORGE_PLAN_LOCK:-}")" != "${1:-}" ]; then
       exec python3 "$SKILL_DIR/scripts/forge-schedule.py" lock "$SELF" "$CMD" "$@"
     fi ;;
@@ -4156,7 +4193,7 @@ esac
 # path (die included). Installed after the lock re-exec, so it fires once, in the process
 # that did the work; `_task` and `_merge` are parts of a `run` and are not recorded alone.
 case "$CMD" in
-  plan|run|retry|integrate|accept|adopt|review|split|attribute|combine)
+  plan|run|retry|integrate|accept|adopt|review|split|attribute|verify|combine)
     FORGE_DATASET_INVOCATION="inv-$(date +%s)-$$-$RANDOM"; export FORGE_DATASET_INVOCATION
     FORGE_DATASET_STARTED="$(date +%s)"
     FORGE_DATASET_ARGV=("$@")
@@ -4167,7 +4204,7 @@ esac
 need_fn() { declare -F "$1" >/dev/null || die "'$CMD' is not available: $1 is missing" 3; }
 # A plan with a frozen profile asks its decision-model gates from that copy (`plan` does it itself,
 # after it freezes). The internal subcommands inherit it from the `run` that started them.
-case "$CMD" in run|retry|integrate|accept|adopt|review|split|attribute) forge_profile_export "${1:-}" ;; esac
+case "$CMD" in run|retry|integrate|accept|adopt|review|split|attribute|verify) forge_profile_export "${1:-}" ;; esac
 case "$CMD" in
   plan)      do_plan "$@"; rc=$?; forge_update_notice; exit "$rc" ;;
   auto)      do_auto "$@" ;;
@@ -4205,6 +4242,7 @@ case "$CMD" in
   review)    need_fn do_review;  do_review "$@" ;;
   split)     need_fn do_split;   do_split "$@" ;;
   attribute) need_fn do_attribute; do_attribute "$@" ;;
+  verify)    do_verify "$@" ;;
   combine)   need_fn do_combine; do_combine "$@" ;;
   _task)     do_task "$@" ;;
   _merge)    merge_task "$@" ;;

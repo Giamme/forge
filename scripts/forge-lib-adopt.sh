@@ -148,7 +148,7 @@ do_adopt() {
     cat "$out/review.deps"
     echo "Forge ran no tests of its own on this range, so nothing here stands in for yours."
     # The run's verification, named and not run: it runs after this review, on the whole branch (#131).
-    vcmd="$(verify_command_for "$PLAN" "$(cat "$PLAN/repo")" | head -c 4000)"
+    vcmd="$(verify_command_for "$PLAN" "$(cat "$PLAN/repo")" "$int_wt" | head -c 4000)"
     if [ -n "$vcmd" ]; then
       echo "The run verifies its integration branch with the command below, after this review. Run the parts of it that touch this range:"
       echo '```sh'; printf '%s\n' "$vcmd"; echo '```'
