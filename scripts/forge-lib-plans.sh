@@ -550,14 +550,16 @@ do_accept() {
   sha="$(cat "$tdir/reviewed.commit")"
   body="$(plans_reviewer_text "$tdir" "$st")"
   n="$(printf '%s\n' "$body" | grep -c '^- ')"
-  local gthr='' gdec=''
+  local gthr='' gdec='' greason=''
   if [ -f "$tdir/qa.gate" ]; then
-    IFS="$(printf '\t')" read -r gthr gdec _ < "$tdir/qa.gate" || true
+    IFS="$(printf '\t')" read -r gthr gdec _ _ _ _ greason < "$tdir/qa.gate" || true
   fi
   rm -f "$kibak"; [ -f "$ki" ] && cp -p "$ki" "$kibak"
   {
     if [ -s "$ki" ]; then cat "$ki"; echo; fi
-    if [ "${gdec:-}" = fail ]; then
+    if [ "${gdec:-}" = fail ] && [ "${greason:-}" = tests ]; then
+      echo "## Accepted by a human despite forge's FAIL (the reviewer said PASS, but reported failing tests)"
+    elif [ "${gdec:-}" = fail ]; then
       echo "## Accepted by a human despite forge's FAIL (the reviewer said PASS, but listed findings at or above $gthr)"
     else
       echo "## Accepted by a human despite the reviewer's $st verdict"

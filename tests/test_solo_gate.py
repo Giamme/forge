@@ -35,7 +35,8 @@ class SoloGateTests(unittest.TestCase):
         self.assertIn('verdict: FAIL (' + OVERRIDE % 'P2' + ')', r.stdout)
         fields = (run / 'qa.gate').read_text().rstrip('\n').split('\t')
         self.assertEqual(fields[:2], ['P2', 'fail'])
-        self.assertEqual(len(fields), 6)
+        self.assertEqual(len(fields), 7)
+        self.assertEqual(fields[6], 'findings')
         self.assertFalse((run / 'qa_threshold').exists())
 
     def test_a_pass_with_only_a_confirmed_p3_stays_pass_and_records_it(self):

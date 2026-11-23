@@ -107,6 +107,35 @@ class QaGateOnceTests(unittest.TestCase):
         (self.tdir / 'qa_threshold').write_text('high\n')
         self.assertEqual(self.resolved(), ('P1', 'set'))
 
+    def test_qa_gate_never_accepts_failing_tests_and_flips_pass_to_fail(self):
+        # #171: a FAIL with only P3 findings still stays FAIL under P2 when tests failed,
+        # and a PASS reporting failing tests flips to FAIL with the failing-tests note.
+        (self.tdir / 'qa.last').write_text(
+            'Review.\n\n- [P3][CONFIRMED] a.py:1 — nit\n\n'
+            'FORGE_TESTS: RAN — FAILED: test_one\nFORGE_VERDICT: FAIL\n',
+            encoding='utf-8')
+        self.gate('P2')
+        self.assertEqual(self.status(), 'FAIL')
+        self.assertTrue((self.tdir / 'qa.gate').read_text(encoding='utf-8').startswith('P2\tkeep\tP3\t'))
+
+        (self.tdir / 'qa.last').write_text(
+            'Review.\n\n- [P3] a.py:1 — unstated mild note\n\n'
+            'FORGE_TESTS: RAN — FAILED: test_one, test_two\nFORGE_VERDICT: PASS\n',
+            encoding='utf-8')
+        (self.tdir / 'status').write_text('PASS\n', encoding='utf-8')
+        result = self.sh('note() { echo "$*"; }; qa_gate \'%s\' t1 \'%s\' PASS P2' % (self.plan, self.tdir))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.status(), 'FAIL')
+        self.assertIn('reported failing tests', result.stdout)
+        self.assertNotIn('at or above the P2 threshold', result.stdout)
+        self.assertEqual((self.tdir / 'qa.gate').read_text(encoding='utf-8').rstrip('\n').split('\t')[6], 'tests')
+        # carry_findings reads the gate reason and names the failing tests for the next implementer.
+        (self.tdir / 'reviewed.commit').write_text('abc123\n', encoding='utf-8')
+        self.assertEqual(self.sh("carry_findings '%s'" % self.tdir).returncode, 0)
+        carried = (self.tdir / 'retry_findings.md').read_text(encoding='utf-8')
+        self.assertIn('reported failing tests (test_one, test_two)', carried)
+        self.assertNotIn('Fix those findings.', carried)
+
     def test_garbage_in_both_files_is_the_default(self):
         (self.plan / 'qa_threshold').write_text('P9\n')
         (self.tdir / 'qa_threshold').write_text('high\n')
@@ -169,9 +198,14 @@ class GateFlipsTests(unittest.TestCase):
                                            encoding='utf-8')
         result = self.sh("qa_gate '%s' t1 '%s' PASS P2" % (self.plan, self.tdir))
         self.assertEqual(result.returncode, 0, result.stderr)
-        stamp, attempt, thr, worst = (self.tdir / 'qa.flips').read_text(encoding='utf-8').rstrip('\n').split('\t')
+        stamp, attempt, thr, worst, reason = (self.tdir / 'qa.flips').read_text(encoding='utf-8').rstrip('\n').split('\t')
         self.assertRegex(stamp, r'^\d+\.\d{3}$')
-        self.assertEqual((attempt, thr, worst), ('0', 'P2', 'P2'))
+        self.assertEqual((attempt, thr, worst, reason), ('0', 'P2', 'P2', 'findings'))
+
+    def test_a_flip_from_failing_tests_is_reported_as_tests_not_findings(self):
+        out = self.report('1700000000.950\t3\tP2\t-\ttests\n', '1700000000.100')
+        self.assertIn('attempt 3: PASS -> FAIL at the P2 threshold (reported failing tests)', out)
+        self.assertNotIn('CONFIRMED finding', out)
 
     def test_run_and_retry_stamp_the_run_start_with_the_same_clock(self):
         self.assertRegex(self.sh('forge_now').stdout, r'^\d+\.\d{3}$')

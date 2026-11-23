@@ -443,7 +443,13 @@ if [ -z "$NATIVE" ]; then
     printf '%s\t%s\n' "$THR" "$gate_line" > "$RUN/qa.gate"
     case "$(printf '%s' "$gate_line" | awk -F'\t' '{print $1}')" in
       accept) verdict=PASS; gate_note=" (accepted with known issues: $RUN/known_issues.md)" ;;
-      fail)   verdict=FAIL; gate_note=" (the reviewer said PASS, but listed a CONFIRMED finding at or above the $THR threshold — forge made it FAIL)" ;;
+      fail)
+        verdict=FAIL
+        if [ "$(printf '%s' "$gate_line" | awk -F'\t' '{print $6}')" = tests ]; then
+          gate_note=" (the reviewer said PASS, but reported failing tests — forge made it FAIL)"
+        else
+          gate_note=" (the reviewer said PASS, but listed a CONFIRMED finding at or above the $THR threshold — forge made it FAIL)"
+        fi ;;
     esac
   fi
 fi

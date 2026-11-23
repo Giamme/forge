@@ -443,14 +443,25 @@ carry_findings() { # carry_findings <tdir>
   rm -f "$tdir/retry_findings.session" "$tdir/retry_findings.resolved"
   carry_implementer_session "$tdir"
   printf 'review\n' > "$tdir/retry_findings.source"
-  local gthr='' gdec=''
+  local gthr='' gdec='' greason='' failed_names=''
   if [ -f "$tdir/qa.gate" ]; then
-    IFS="$(printf '\t')" read -r gthr gdec _ < "$tdir/qa.gate" || true
+    IFS="$(printf '\t')" read -r gthr gdec _ _ _ _ greason < "$tdir/qa.gate" || true
   fi
   if [ "${gdec:-}" = fail ]; then
     # forge, not the reviewer, failed this attempt: say so above the copied report.
-    { printf "forge: the reviewer's verdict was PASS, but this report lists CONFIRMED findings at or above the \`%s\` blocking threshold, so forge failed the attempt. Fix those findings.\n\n" "$gthr"
-      cat "$tdir/qa.last"; } > "$tdir/.retry_findings.md.tmp" && mv "$tdir/.retry_findings.md.tmp" "$tdir/retry_findings.md"
+    if [ "${greason:-}" = tests ]; then
+      failed_names="$(python3 "$SKILL_DIR/scripts/forge-contract.py" tests --failed --qa-last "$tdir/qa.last" 2>/dev/null || true)"
+      if [ -n "$failed_names" ] && [ "$failed_names" != FAILED ]; then
+        { printf "forge: the reviewer's verdict was PASS, but it reported failing tests (%s), so forge failed the attempt. Fix those failing tests.\n\n" "$failed_names"
+          cat "$tdir/qa.last"; } > "$tdir/.retry_findings.md.tmp" && mv "$tdir/.retry_findings.md.tmp" "$tdir/retry_findings.md"
+      else
+        { printf "forge: the reviewer's verdict was PASS, but it reported failing tests, so forge failed the attempt. Fix those failing tests.\n\n"
+          cat "$tdir/qa.last"; } > "$tdir/.retry_findings.md.tmp" && mv "$tdir/.retry_findings.md.tmp" "$tdir/retry_findings.md"
+      fi
+    else
+      { printf "forge: the reviewer's verdict was PASS, but this report lists CONFIRMED findings at or above the \`%s\` blocking threshold, so forge failed the attempt. Fix those findings.\n\n" "$gthr"
+        cat "$tdir/qa.last"; } > "$tdir/.retry_findings.md.tmp" && mv "$tdir/.retry_findings.md.tmp" "$tdir/retry_findings.md"
+    fi
   else
     cp "$tdir/qa.last" "$tdir/retry_findings.md"
   fi
@@ -1353,7 +1364,7 @@ forge_now() { python3 -c 'import time; print("%.3f" % time.time())' 2>/dev/null 
 # prompt; when given it is used as-is, so a change to the files between the prompt and the
 # gate cannot split one attempt across two thresholds. Absent (or empty), the files are read.
 qa_gate() { # qa_gate <plan> <id> <tdir> <verdict> [threshold]
-  local plan="$1" id="$2" tdir="$3" verdict="$4" thr="${5:-}" line worst
+  local plan="$1" id="$2" tdir="$3" verdict="$4" thr="${5:-}" line worst greason
   rm -f "$tdir/qa.gate" "$tdir/known_issues.md"
   [ -n "$thr" ] || thr="$(qa_threshold_for "$plan" "$id")"
   line="$(python3 "$SKILL_DIR/scripts/forge-contract.py" gate --verdict "${verdict:-UNKNOWN}" \
@@ -1367,10 +1378,15 @@ qa_gate() { # qa_gate <plan> <id> <tdir> <verdict> [threshold]
     fail)
       echo FAIL > "$tdir/status"
       worst="$(printf '%s' "$line" | awk -F'\t' '{print $2}')"
-      note "$id: the reviewer said PASS but listed a CONFIRMED finding at or above the $thr threshold (worst $worst) — forge made it FAIL"
+      greason="$(printf '%s' "$line" | awk -F'\t' '{print $6}')"
+      if [ "$greason" = tests ]; then
+        note "$id: the reviewer said PASS but reported failing tests — forge made it FAIL"
+      else
+        note "$id: the reviewer said PASS but listed a CONFIRMED finding at or above the $thr threshold (worst $worst) — forge made it FAIL"
+      fi
       # A scheduled task's notes go to its task.out, and a later attempt replaces qa.gate: this
       # log is what lets the run's summary say forge overrode a verdict (report_gate_flips).
-      printf '%s\t%s\t%s\t%s\n' "$(forge_now)" "$(cat "$tdir/attempt" 2>/dev/null || echo 0)" "$thr" "$worst" \
+      printf '%s\t%s\t%s\t%s\t%s\n' "$(forge_now)" "$(cat "$tdir/attempt" 2>/dev/null || echo 0)" "$thr" "$worst" "${greason:-findings}" \
         >> "$tdir/qa.flips" ;;
   esac
   return 0
@@ -1449,15 +1465,19 @@ report_known_issues() { # report_known_issues <plan>
 # The PASS verdicts forge turned into FAIL, since FORGE_RUN_STARTED (set by run and retry;
 # unset shows them all), including those whose task a later attempt fixed.
 report_gate_flips() { # report_gate_flips <plan>
-  local plan="$1" id n=0 at attempt thr worst id_w
+  local plan="$1" id n=0 at attempt thr worst greason id_w
   id_w="$(id_col_width "$plan/tasks.tsv")"
   for id in $(all_ids "$plan/tasks.tsv"); do
     [ -s "$plan/tasks/$id/qa.flips" ] || continue
-    while IFS="$(printf '\t')" read -r at attempt thr worst; do
+    while IFS="$(printf '\t')" read -r at attempt thr worst greason; do
       awk -v at="${at:-0}" -v since="${FORGE_RUN_STARTED:-0}" 'BEGIN { exit !(at + 0 >= since + 0) }' || continue
-      [ "$n" = 0 ] && echo "forge overrode the reviewer's verdict (PASS, but it listed a CONFIRMED finding at or above the threshold):"
+      [ "$n" = 0 ] && echo "forge overrode the reviewer's verdict (PASS -> FAIL):"
       n=$((n+1))
-      printf '  %-*s attempt %s: PASS -> FAIL at the %s threshold (worst %s)\n' "$id_w" "$id" "$attempt" "$thr" "$worst"
+      if [ "${greason:-findings}" = tests ]; then
+        printf '  %-*s attempt %s: PASS -> FAIL at the %s threshold (reported failing tests)\n' "$id_w" "$id" "$attempt" "$thr"
+      else
+        printf '  %-*s attempt %s: PASS -> FAIL at the %s threshold (worst %s)\n' "$id_w" "$id" "$attempt" "$thr" "$worst"
+      fi
     done < "$plan/tasks/$id/qa.flips"
   done
   [ "$n" -gt 0 ] && echo
