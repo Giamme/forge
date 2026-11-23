@@ -10,6 +10,7 @@ source: CHANGELOG.md
 <dl class="terms">
   <dt>Long-running plans</dt><dd>Plans that keep growing over days: verification runs the lanes committed on the integration branch, <code>adopt</code> remembers earlier rounds, <code>integrate</code> accepts a tree dirty only with forge's own memory, and memory written in a linked worktree is kept. <a href="https://github.com/Giamme/forge/issues/151">#151</a> <a href="https://github.com/Giamme/forge/issues/155">#155</a> <a href="https://github.com/Giamme/forge/issues/156">#156</a> <a href="https://github.com/Giamme/forge/issues/159">#159</a></dd>
   <dt>Decomposition at every level</dt><dd>Goal to plans to tasks to subtasks with the same rules throughout, native to forge. Each split is a recorded decision within depth and size limits you approve up front, and forge-ui shows the whole tree. <a href="https://github.com/Giamme/forge/issues/153">#153</a>. It replaces the optional Fractal runtime, which will be removed. <a href="https://github.com/Giamme/forge/issues/154">#154</a></dd>
+  <dt>Skills and agents</dt><dd>A catalogue of the skills installed in each agent CLI, a marketplace that keeps upstream skills current, and named agents (a set of skills) that forge loads into a task's dwarf or reviewer, chosen at plan time or on a live run. <a href="https://github.com/Giamme/forge/issues/233">#233</a></dd>
   <dt>Steering a live dwarf</dt><dd>An investigation into prompting a running dwarf from forge-ui, harness by harness. <a href="https://github.com/Giamme/forge/issues/134">#134</a></dd>
 </dl>
 
@@ -17,13 +18,13 @@ source: CHANGELOG.md
 <table>
   <thead><tr><th>Version</th><th>Highlights</th></tr></thead>
   <tbody>
+    <tr><td><code>0.22</code></td><td>forge runs on Windows: natively from Git Bash with Windows' own Python, or inside MSYS2. A retry after you clarify the brief reviews the same code again; fixes for plan reviewers, decisions, verification status and wide task ids.</td></tr>
+    <tr><td><code>0.21</code></td><td>Groundwork for Windows: locking, file opening and process handling through one cross-platform layer; correct phase times on macOS with Python 3.9; parallel tasks that start together no longer collide on their worktrees.</td></tr>
     <tr><td><code>0.20</code></td><td>Review findings you can trust and manage: one record per repository with issue states read from GitHub, <code>forge findings</code> and the Findings tab to mark, tag and file them, an optional triage agent whose proposals you approve; the sweep works per finding; add and edit learnings.</td></tr>
     <tr><td><code>0.19</code></td><td>Group review; brief answers for a wave or the whole plan, applied as a diff you approve; a retry budget per model; scripted tasks; chained plans; <code>forge handoff</code>; early stops when a fix belongs to another task, and for prompts edited mid-attempt; forge-ui runs its own commands.</td></tr>
     <tr><td><code>0.18</code></td><td>Brief mode, task summaries, retro notes, the task inspector; <code>forge du</code>, <code>forge runs compact</code> and the Disk screen.</td></tr>
     <tr><td><code>0.17</code></td><td>Outcomes recorded after every run; finding facts, paired reviews, task risk and tier analysis, all measured in shadow.</td></tr>
     <tr><td><code>0.16</code></td><td>Worktrees and Projects screens; <code>adopt</code>; reviewers say whether their tests ran.</td></tr>
-    <tr><td><code>0.15</code></td><td>Profiles; <code>forge-parallel.sh auto</code>; fast service tiers per role.</td></tr>
-    <tr><td><code>0.14</code></td><td>Infrastructure stops recover on their own; <code>forge watch</code>, <code>forge pr</code>, rerun and compare.</td></tr>
   </tbody>
 </table>
 <p>Every change, back to 0.2 on 6 October 2026, is in the <a href="https://github.com/Giamme/forge/blob/main/CHANGELOG.md">changelog</a>.</p>
