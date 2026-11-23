@@ -228,6 +228,36 @@ class PlanOpsTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertEqual(self.status(p, 'a'), 'MERGED')
 
+    def test_accept_after_verification_marks_verification_stale_until_next_run(self):
+        # #194: accept merges onto accepted.integration without running verification; any earlier PASS
+        # must flip to STALE (clearing verification.exit) so watchers never read PASS for the new tip.
+        p = self.plan_of([('a', '-', 'a.txt'), ('b', '-', 'b.txt'), ('c', '-', 'c.txt')])
+        self.scenario({'a.qa.*': {'verdict': 'FAIL', 'findings': P1},
+                       'b.qa.*': {'verdict': 'FAIL', 'findings': P1}})
+        r = self.forge('run', p, '--verify', 'true')
+        self.assertEqual(r.returncode, 5, r.stdout)
+        self.assertEqual([self.status(p, x) for x in 'abc'], ['FAIL', 'FAIL', 'MERGED'])
+        self.assertEqual(self.text(p, 'verification.status'), 'PASS')
+        self.assertEqual(self.text(p, 'verification.exit'), '0')
+        verified_commit = self.text(p, 'verification.commit')
+        self.assertEqual(self.text(p, 'accepted.integration'), verified_commit)
+
+        for task in ('a', 'b'):
+            r = self.forge('accept', p, task, '--reason', 'ship it', '--approved')
+            self.assertEqual(r.returncode, 0, r.stdout)
+            self.assertEqual(self.text(p, 'verification.status'), 'STALE')
+            self.assertFalse((p / 'verification.exit').exists())
+            self.assertEqual(self.text(p, 'verification.commit'), verified_commit)
+            self.assertNotEqual(self.text(p, 'accepted.integration'), verified_commit)
+            self.assertIn('unverified', r.stdout)
+
+        r = self.forge('run', p)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.text(p, 'verification.status'), 'PASS')
+        self.assertEqual(self.text(p, 'verification.exit'), '0')
+        self.assertEqual(self.text(p, 'verification.commit'), self.text(p, 'accepted.integration'))
+        self.assertNotEqual(self.text(p, 'verification.commit'), verified_commit)
+
     def test_accept_that_cannot_merge_exits_6_and_records_nothing(self):
         # Two tasks create a.txt with different contents from the same base: whichever merges
         # second conflicts. The one the reviewer failed is the one that is accepted.

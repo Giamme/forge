@@ -328,6 +328,34 @@ class AdoptTests(unittest.TestCase):
         self.assertEqual(self.in_wt('status', '--porcelain'), '')
         self.assertEqual(self.calls(), self.calls_before)
 
+    def test_deferred_adopt_marks_prior_verification_stale(self):
+        # #194: when adopt advances accepted.integration and defers verification because tasks remain,
+        # an earlier PASS must become STALE instead of describing the unverified adoption tip.
+        self.scenario({'c.qa.*': BLOCKING})
+        p = self.root / 'plan'; p.mkdir()
+        (p / 'tasks.tsv').write_text(
+            'a\t-\tlow\ta.txt\tsol\topus\tA\n'
+            'c\t-\tlow\tc.txt\tsol\topus\tC\n'
+            'b\tc\tlow\tb.txt\tsol\topus\tB\n'
+        )
+        for name in 'abc':
+            (p / 'tasks' / name).mkdir(parents=True)
+            (p / 'tasks' / name / 'prompt.md').write_text('Implement change. TASK_' + name)
+        self.assertEqual(self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--no-memory').returncode, 0)
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', p, '--verify', 'true').returncode, 5)
+        self.assertEqual((p / 'verification.status').read_text().strip(), 'PASS')
+        verified_commit = (p / 'verification.commit').read_text().strip()
+        self.wt = Path((p / 'wt_root').read_text().strip()) / '_integration'
+        new_tip = self.commit_on_integration()
+        self.scenario({})
+        r = self.adopt(p, '--head', '--reason', 'urgent fix')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn('verification deferred', r.stdout)
+        self.assertEqual(self.accepted(p), new_tip)
+        self.assertEqual((p / 'verification.commit').read_text().strip(), verified_commit)
+        self.assertEqual((p / 'verification.status').read_text().strip(), 'STALE')
+        self.assertFalse((p / 'verification.exit').exists())
+
     def test_a_merge_commit_is_refused(self):
         p = self.merged_plan()
         sha = self.commit_elsewhere()

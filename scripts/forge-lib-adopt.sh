@@ -236,6 +236,7 @@ do_adopt() {
   trap - INT TERM
   printf '%s\n' "$tip" > "$PLAN/.accepted.integration.tmp" && mv "$PLAN/.accepted.integration.tmp" "$PLAN/accepted.integration" \
     || { adopt_rollback; die "adopt: could not record the accepted revision" 1; }
+  mark_verification_stale "$PLAN" "$tip"
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$base" "$tip" "$verdict" "$kept" "$spec" "$(basename "$out")" "$reason" \
     >> "$PLAN/adoptions.tsv"
   python3 - "$PLAN/control.log" "$base" "$tip" "$verdict" "$kept" "$spec" "$reason" "${USER:-${LOGNAME:-unknown}}" <<'PY' \

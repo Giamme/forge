@@ -156,3 +156,18 @@ forge_link_dir() {
   fi
   ln -sfn "$src" "$dest"
 }
+
+# Mark an earlier verification result STALE when accepted.integration moves past verification.commit
+# (#194): accept and deferred merges leave the new tip unverified until run or integrate verifies it.
+mark_verification_stale() { # mark_verification_stale <plan> <new-tip>
+  local plan="$1" tip="${2:-}" cur_status cur_vc
+  cur_status="$(cat "$plan/verification.status" 2>/dev/null || true)"
+  case "$cur_status" in
+    PASS|FAIL|INTERRUPTED)
+      cur_vc="$(cat "$plan/verification.commit" 2>/dev/null || true)"
+      if [ "$cur_vc" != "$tip" ]; then
+        echo STALE > "$plan/verification.status"
+        rm -f "$plan/verification.exit"
+      fi ;;
+  esac
+}

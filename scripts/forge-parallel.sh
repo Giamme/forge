@@ -2578,13 +2578,16 @@ merge_task() { # merge_task <plan> <id> -> 0 merged, 1 conflicted
     return 1
   fi
   if (cd "$int_wt" && git merge --no-ff -m "forge: merge $id" "$reviewed" >/dev/null 2>&1); then
-    git -C "$int_wt" rev-parse HEAD > "$PLAN/accepted.integration"
+    local integration
+    integration="$(git -C "$int_wt" rev-parse HEAD)"
+    printf '%s\n' "$integration" > "$PLAN/accepted.integration"
+    mark_verification_stale "$PLAN" "$integration"
     touch "$PLAN/tasks/$id/merged"
     rm -f "$tdir/conflict.files"
     # Which of a sweep task's findings its reviewer marked fixed: what `forge issues` leaves out.
     [ ! -f "$tdir/sweep.json" ] || python3 "$SKILL_DIR/scripts/forge-sweep.py" settle "$PLAN" "$id" >/dev/null 2>&1 || true
     forge_dataset_event merge --dir "$PLAN" --task "$id" --set status=MERGED --set commit="$reviewed" \
-      --set integration="$(cat "$PLAN/accepted.integration")"
+      --set integration="$integration"
     return 0
   fi
   # Which files collided is the label for whether two tasks were coupled, and the abort
