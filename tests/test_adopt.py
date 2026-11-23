@@ -342,5 +342,132 @@ class AdoptTests(unittest.TestCase):
         self.assertEqual(self.calls(), self.calls_before)
 
 
+class ResubmitTests(unittest.TestCase):
+    """#155: a range that extends a refused one is the next submission of the same work."""
+    setUp = fixtures.ForgeTests.setUp
+    git = fixtures.ForgeTests.git
+    run_script = fixtures.ForgeTests.run_script
+    scenario = fixtures.ForgeTests.scenario
+    calls = fixtures.ForgeTests.calls
+    merged_plan = AdoptTests.merged_plan
+    in_wt = AdoptTests.in_wt
+    adopt = AdoptTests.adopt
+    accepted = AdoptTests.accepted
+
+    def on_hand(self, name, text, message):
+        """One more commit on the branch `hand`, which starts at the integration branch's tip."""
+        if b'hand' not in self.git('branch', '--list', 'hand'):
+            self.git('branch', 'hand', self.in_wt('rev-parse', 'HEAD'))
+        self.git('checkout', '-q', 'hand')
+        (self.repo / name).write_text(text)
+        self.git('add', name); self.git('commit', '-qm', message)
+        sha = self.git('rev-parse', 'HEAD').decode().strip()
+        self.git('checkout', '-q', '-')
+        return sha
+
+    def adopt_new(self, p, *args):
+        """adopt, and the directory it made."""
+        before = set(p.glob('adopt-*'))
+        r = self.adopt(p, *args)
+        made = set(p.glob('adopt-*')) - before
+        return r, (made.pop() if made else None)
+
+    def submission(self, d):
+        return dict(line.split('=', 1) for line in (d / 'submission').read_text().splitlines())
+
+    def test_a_resubmission_is_told_what_the_last_review_found_and_what_changed(self):
+        p = self.merged_plan({'change.qa.1': BLOCKING})
+        base = self.accepted(p)
+        first = self.on_hand('fix.txt', 'a fix\n', 'a fix by hand')
+        r, one = self.adopt_new(p, first, '--reason', 'r')
+        self.assertEqual(r.returncode, 5, r.stdout)
+        self.assertIn('the next review is told what this one found', r.stdout)
+        self.assertEqual(self.submission(one)['refused'], '1')
+        self.assertEqual(self.in_wt('rev-parse', 'refs/forge/adopt-refused/' + one.name), first)
+        second = self.on_hand('fix.txt', 'a better fix\n', 'answer the finding: check every input')
+        r, two = self.adopt_new(p, f'{base}..{second}', '--reason', 'r')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        sub = self.submission(two)
+        self.assertEqual((sub['n'], sub['lineage'], sub['previous'], sub['source']), ('2', one.name, one.name, second))
+        prompt = (two / 'qa.input').read_text()
+        self.assertIn('This is submission 2 of the same work', prompt)
+        self.assertIn('fix.txt:1 — wrong', prompt)                                  # the earlier finding
+        self.assertIn('answer the finding: check every input', prompt)              # how it was answered
+        self.assertIn('+a better fix', prompt.split('### Changes since that submission', 1)[1].split('```diff')[0])
+        self.assertIn('look for\nits siblings', prompt)
+        self.assertEqual(prompt.count('```diff'), 1)                                # only the range itself
+
+    def test_a_range_that_extends_no_refused_one_starts_afresh(self):
+        p = self.merged_plan({'change.qa.1': BLOCKING})
+        first = self.on_hand('fix.txt', 'a fix\n', 'a fix by hand')
+        self.assertEqual(self.adopt(p, first, '--reason', 'r').returncode, 5)
+        self.git('checkout', '-q', '-b', 'other', self.in_wt('rev-parse', 'HEAD'))
+        (self.repo / 'other.txt').write_text('other\n'); self.git('add', '.'); self.git('commit', '-qm', 'other work')
+        other = self.git('rev-parse', 'HEAD').decode().strip()
+        self.git('checkout', '-q', '-')
+        r, d = self.adopt_new(p, other, '--reason', 'r')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.submission(d)['n'], '1')
+        self.assertNotIn('This is submission', (d / 'qa.input').read_text())
+
+    def test_after_escalate_after_refusals_the_work_waits_for_a_decision(self):
+        p = self.merged_plan({'change.qa.*': BLOCKING})
+        (p / 'escalate_after').write_text('2\n')
+        base = self.accepted(p)
+        one = self.on_hand('fix.txt', 'one\n', 'try one')
+        self.assertEqual(self.adopt(p, one, '--reason', 'r').returncode, 5)
+        two = self.on_hand('fix.txt', 'two\n', 'try two')
+        r, d = self.adopt_new(p, f'{base}..{two}', '--reason', 'r')
+        self.assertEqual(r.returncode, 5, r.stdout)
+        self.assertIn('NEEDS_DECISION: this work has now been refused 2 time(s)', r.stdout)
+        self.assertIn('--decide resubmit', r.stdout)
+        self.assertTrue((d / 'needs_decision').exists())
+        three = self.on_hand('fix.txt', 'three\n', 'try three')
+        calls = list(self.calls())
+        r, d = self.adopt_new(p, f'{base}..{three}', '--reason', 'r')
+        self.assertEqual(r.returncode, 3, r.stdout)
+        self.assertIn('waits for your decision', r.stdout)
+        self.assertIsNone(d)
+        self.assertEqual(self.calls(), calls)                                       # no model was paid for
+        r, d = self.adopt_new(p, f'{base}..{three}', '--reason', 'r', '--decide', 'resubmit')
+        self.assertEqual(r.returncode, 5, r.stdout)
+        self.assertEqual(self.calls(), calls + ['qa'])
+        self.assertEqual(self.submission(d)['n'], '3')
+        self.assertIn('NEEDS_DECISION: this work has now been refused 3 time(s)', r.stdout)
+        # --approved keeps it whatever the review says, without a --decide.
+        r = self.adopt(p, f'{base}..{three}', '--reason', 'good enough', '--approved')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.in_wt('rev-parse', 'HEAD'), self.accepted(p))
+
+    def test_resubmit_names_the_earlier_review_when_history_was_rewritten(self):
+        p = self.merged_plan({'change.qa.1': BLOCKING})
+        first = self.on_hand('fix.txt', 'a fix\n', 'a fix by hand')
+        r, one = self.adopt_new(p, first, '--reason', 'r')
+        self.assertEqual(r.returncode, 5, r.stdout)
+        self.git('checkout', '-q', '-b', 'rewritten', self.in_wt('rev-parse', 'HEAD'))
+        (self.repo / 'fix.txt').write_text('a fix, amended\n'); self.git('add', '.'); self.git('commit', '-qm', 'a fix')
+        amended = self.git('rev-parse', 'HEAD').decode().strip()
+        self.git('checkout', '-q', '-')
+        calls = list(self.calls())
+        for bad in ('nowhere', 'adopt-1-1', str(self.root)):
+            with self.subTest(bad=bad):
+                r = self.adopt(p, amended, '--reason', 'r', '--resubmit', bad)
+                self.assertEqual(r.returncode, 3, r.stdout)
+        self.assertEqual(self.calls(), calls)
+        r, two = self.adopt_new(p, amended, '--reason', 'r', '--resubmit', one.name)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        prompt = (two / 'qa.input').read_text()
+        self.assertIn('This is submission 2 of the same work', prompt)
+        self.assertIn('not an ancestor of this one', prompt)
+        self.assertIn('+a fix, amended', prompt.split('### Changes since that submission', 1)[1].split('```diff')[0])
+
+    def test_decide_takes_only_resubmit(self):
+        p = self.merged_plan()
+        sha = self.on_hand('fix.txt', 'x\n', 'x')
+        r = self.adopt(p, sha, '--reason', 'r', '--decide', 'accept')
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn('--approved', r.stdout)
+
+
 if __name__ == '__main__':
     unittest.main()

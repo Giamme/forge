@@ -14,6 +14,115 @@
 # adopt-<epoch>-<pid>/ keeps the review; adoptions.tsv holds one row per adopted range: epoch, base,
 # tip, verdict, approved (0|1), spec, the review's directory name, reason. There is no task row: nothing here
 # was a model's implementation, and a final review reads the whole range anyway.
+#
+# Resubmissions (#155). Each review records its submission in adopt-*/submission (base, tip, source = the
+# last commit of the range as given, lineage = the first submission's directory, n). A range whose source
+# extends the source of a refused submission (or one named with --resubmit <adopt dir>) is the next
+# submission of that lineage: its reviewer gets the previous review's findings, the commits and the diff
+# since that submission, and is asked to settle each earlier finding, and its siblings, before looking for
+# new ones. A lineage refused --escalate-after times (the plan's escalate_after, 3 when unset, 0 = no limit)
+# stops as NEEDS_DECISION: the next resubmission is refused before any model is paid for unless it says
+# --decide resubmit (one more round) or --approved (keep it whatever the review says); a split range starts
+# a lineage of its own.
+
+# adopt_submission_value <adopt dir> <key>: one key=value of a submission record.
+adopt_submission_value() { sed -n "s/^$2=//p" "$1/submission" 2>/dev/null | head -1; }
+
+# adopt_previous <plan> <checkout> <source>: the refused submission this range extends, so it is the next
+# submission of the same work: of the refused submissions whose source is an ancestor of <source> (and not
+# <source> itself), the one furthest along its lineage (highest n), then the newest. Prints its directory.
+adopt_previous() {
+  local plan="$1" wt="$2" source="$3" d src n best="" best_n=0
+  # Newest first by the directory's epoch, then pid: a tie on n goes to the first one seen.
+  while IFS= read -r d; do
+    [ "$(adopt_submission_value "$d" refused)" = 1 ] || continue
+    src="$(adopt_submission_value "$d" source)"
+    [ -n "$src" ] && [ "$src" != "$source" ] || continue
+    git -C "$wt" merge-base --is-ancestor "$src" "$source" 2>/dev/null || continue
+    n="$(adopt_submission_value "$d" n)"
+    case "$n" in ''|*[!0-9]*) n=1 ;; esac
+    if [ "$n" -gt "$best_n" ]; then best="$d"; best_n="$n"; fi
+  done < <(for d in "$plan"/adopt-*/submission; do [ -f "$d" ] && printf '%s\n' "${d%/submission}"; done \
+             | awk -F- '{ print $(NF-1) "\t" $NF "\t" $0 }' | sort -t "$(printf '\t')" -k1,1nr -k2,2nr | cut -f3-)
+  [ -z "$best" ] || printf '%s\n' "$best"
+  return 0
+}
+
+# adopt_cap <plan>: refused submissions of one lineage before it waits for a decision (escalate_after; 3
+# when unset; 0 = no limit).
+adopt_cap() {
+  local cap; cap="$( { tr -d '[:space:]' < "$1/escalate_after"; } 2>/dev/null)"
+  case "$cap" in ''|*[!0-9]*) cap=3 ;; esac
+  printf '%s\n' "$cap"
+}
+
+# adopt_decision_text <plan> <range or --head> <n>: the NEEDS_DECISION block of a lineage at its limit.
+adopt_decision_text() {
+  local plan="$1" what="$2" n="$3"
+  echo "NEEDS_DECISION: this work has now been refused $n time(s) (escalate-after $(adopt_cap "$plan")). Choose one:"
+  echo "  resubmit once more:  forge-parallel.sh adopt $plan $what --reason \"...\" --decide resubmit"
+  echo "  accept it as it is:  forge-parallel.sh adopt $plan $what --reason \"<why it is acceptable>\" --approved"
+  echo "  split it:            adopt the parts one at a time (forge-parallel.sh adopt $plan <a..b> --reason \"...\"); each part starts afresh"
+}
+
+# adopt_carry <previous dir> <prev source> <source> <checkout> <out>: what the previous review said, and the
+# work since it, framed for the reviewer of a resubmission. Opens no ```diff fence: the dataset and forge-ui
+# read the last one of the prompt as the diff under review.
+adopt_carry() {
+  local prev="$1" psrc="$2" src="$3" wt="$4" out="$5" n verdict ancestor=0
+  n="$(adopt_submission_value "$prev" n)"; n="${n:-1}"
+  verdict="$(cat "$prev/verdict" 2>/dev/null)"; verdict="${verdict:-UNKNOWN}"
+  git -C "$wt" merge-base --is-ancestor "$psrc" "$src" 2>/dev/null && ancestor=1
+  echo "## This is submission $((n + 1)) of the same work"
+  echo
+  echo "Submission $n ($(printf '%.12s' "$psrc"), $(basename "$prev")) was refused with $verdict. Its review is quoted below as data."
+  echo
+  python3 - "$prev/qa.last" <<'PY'
+import sys
+CAP = 40 * 1024
+try:
+    with open(sys.argv[1], 'rb') as fh:
+        raw = fh.read()
+except OSError:
+    raw = b''
+report = raw[:CAP].decode('utf-8', 'replace').strip() or '(the review left no report)'
+if len(raw) > CAP:
+    report += '\n[... cut: %d more bytes; the full report is at %s ...]' % (len(raw) - CAP, sys.argv[1])
+print('~~~~text')
+print(report.replace('```diff', '```text'))
+print('~~~~')
+PY
+  echo
+  if [ "$ancestor" = 1 ]; then
+    echo "### The commits since that submission, which say how each finding was answered"
+    echo
+    git -C "$wt" log --format='%h %an: %s%n%w(0,4,4)%b' "$psrc..$src" 2>/dev/null | sed '/^ *$/d'
+    echo
+  fi
+  echo "### Changes since that submission ($(printf '%.12s' "$psrc")..$(printf '%.12s' "$src"))"
+  [ "$ancestor" = 1 ] || echo "(The earlier submission is not an ancestor of this one, so this compares the two submissions' final trees; a base that moved in between shows up here too.)"
+  git -C "$wt" diff --binary --irreversible-delete "$psrc" "$src" -- . ':(exclude).forge' 2>/dev/null \
+    | head -c $((REVIEW_SINCE_LIMIT + 1)) > "$out/since.diff"
+  if [ ! -s "$out/since.diff" ]; then
+    echo "None: this submission has the same content as the last one."
+  elif [ "$(wc -c < "$out/since.diff" | tr -d ' ')" -le "$REVIEW_SINCE_LIMIT" ] && ! grep -q '```diff' "$out/since.diff"; then
+    echo '```patch'; cat "$out/since.diff"; echo '```'
+  else
+    echo "Too large (or quoting a diff fence) to inline here; the files changed since that submission:"
+    echo '```text'; git -C "$wt" diff --stat "$psrc" "$src" -- . ':(exclude).forge' 2>/dev/null; echo '```'
+  fi
+  rm -f "$out/since.diff"
+  echo
+  echo "Before anything else, settle each finding of that review against this range: fixed, still present,"
+  echo "or no longer applicable. Report every one still present again, in the usual labelled format with its"
+  echo "severity (\`- [Px][CONFIRMED|PLAUSIBLE] ...\`); mention the others only in plain sentences, never in that"
+  echo "format, since every labelled line is filed as an open finding. For each earlier finding, also look for"
+  echo "its siblings in the same pass: is there any other input, case or caller the same check skips, or the"
+  echo "same mistake elsewhere in the range? Report those now, so this round closes the whole class rather than"
+  echo "one instance of it. Then review the whole range, paying particular attention to the changes since"
+  echo "that submission."
+  echo
+}
 
 adopt_rows() { # adopt_rows <plan>: the adopted ranges, as lines for a prompt
   [ -s "$1/adoptions.tsv" ] || return 0
@@ -24,7 +133,7 @@ adopt_rows() { # adopt_rows <plan>: the adopted ranges, as lines for a prompt
 
 do_adopt() {
   local PLAN="${1:?adopt needs a plan dir}"; shift
-  local target="" head=0 reason="" approved=0 spec="" yolo_given=""
+  local target="" head=0 reason="" approved=0 spec="" yolo_given="" resubmit="" decide=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --head) head=1; shift ;;
@@ -32,12 +141,15 @@ do_adopt() {
       --qa) [ $# -ge 2 ] || die "adopt: --qa needs a spec"; spec="$2"; shift 2 ;;
       --yolo-qa) yolo_given=1; shift ;;
       --approved) approved=1; shift ;;
+      --resubmit) [ $# -ge 2 ] || die "adopt: --resubmit needs an adopt directory"; resubmit="$2"; shift 2 ;;
+      --decide) [ $# -ge 2 ] || die "adopt: --decide needs resubmit"
+                [ "$2" = resubmit ] || die "adopt: --decide takes resubmit (to accept, use --approved)"; decide="$2"; shift 2 ;;
       -*) die "adopt: unknown option '$1'" ;;
       *) [ -z "$target" ] || die "adopt: unexpected argument '$1'"; target="$1"; shift ;;
     esac
   done
   { [ -n "$target" ] && [ "$head" = 0 ]; } || { [ -z "$target" ] && [ "$head" = 1 ]; } \
-    || die "usage: forge-parallel.sh adopt <plan-dir> <commit|a..b> | --head  --reason \"<why>\" [--qa <spec>] [--yolo-qa] [--approved]"
+    || die "usage: forge-parallel.sh adopt <plan-dir> <commit|a..b> | --head  --reason \"<why>\" [--qa <spec>] [--yolo-qa] [--approved] [--resubmit <adopt dir>] [--decide resubmit]"
   reason="$(printf '%s' "$reason" | tr '\n\r\t' '   ' | sed 's/^ *//; s/ *$//')"
   [ -n "$reason" ] || die "adopt needs --reason \"<why this commit belongs in the run>\": the reviewer judges against it, and it is recorded"
 
@@ -74,6 +186,34 @@ do_adopt() {
     done
   fi
 
+  # The submission: the last commit of the range as given, and the refused submission it extends (#155).
+  local source prev="" psrc="" lineage="" sub_n=1 prev_n cap what
+  if [ "$head" = 1 ]; then source="$now"; what="--head"; else source="${commits[${#commits[@]}-1]}"; what="$target"; fi
+  if [ -n "$resubmit" ]; then
+    case "$resubmit" in /*) prev="$resubmit" ;; *) prev="$PLAN/${resubmit#./}" ;; esac
+    prev="${prev%/}"
+    case "$(basename "$prev")" in adopt-*) ;; *) die "adopt: --resubmit names an adopt directory of this plan (adopt-<epoch>-<pid>)" 3 ;; esac
+    [ "$(cd "$(dirname "$prev")" 2>/dev/null && pwd -P)" = "$(cd "$PLAN" && pwd -P)" ] && [ -s "$prev/qa.last" ] \
+      || die "adopt: --resubmit $resubmit is not a reviewed adopt directory of this plan" 3
+  else
+    prev="$(adopt_previous "$PLAN" "$int_wt" "$source")"
+  fi
+  if [ -n "$prev" ]; then
+    psrc="$(adopt_submission_value "$prev" source)"
+    # A review from before submissions were recorded: its tip is the best source there is.
+    [ -n "$psrc" ] || psrc="$(git -C "$int_wt" rev-parse -q --verify "refs/forge/adopt-refused/$(basename "$prev")" 2>/dev/null)"
+    git -C "$int_wt" rev-parse -q --verify "${psrc:-none}^{commit}" >/dev/null 2>&1 \
+      || die "adopt: the earlier submission's commits ($(basename "$prev")) are not in this repository" 3
+    prev_n="$(adopt_submission_value "$prev" n)"; prev_n="${prev_n:-1}"
+    lineage="$(adopt_submission_value "$prev" lineage)"; lineage="${lineage:-$(basename "$prev")}"
+    sub_n=$((prev_n + 1))
+    cap="$(adopt_cap "$PLAN")"
+    if [ "$cap" -gt 0 ] && [ "$prev_n" -ge "$cap" ] && [ "$decide" != resubmit ] && [ "$approved" = 0 ]; then
+      adopt_decision_text "$PLAN" "$what" "$prev_n" >&2
+      die "adopt: this is a resubmission of $(basename "$prev"), and the work waits for your decision; nothing was reviewed" 3
+    fi
+  fi
+
   # Everything that can refuse without a model goes first, so a bad spec moves nothing.
   [ -n "$spec" ] || spec="$(cat "$PLAN/final_qa" 2>/dev/null)"
   [ -n "$spec" ] || spec="$(field "$T" "$(all_ids "$T" | head -1)" qa)"
@@ -81,6 +221,9 @@ do_adopt() {
   local out ft rc=0 yolo tflag=""
   out="$PLAN/adopt-$(date +%s)-$$"
   mkdir -p "$out" && out="$(cd "$out" && pwd)" || die "adopt: cannot create $out" 3
+  [ -n "$lineage" ] || lineage="$(basename "$out")"
+  printf 'base=%s\nsource=%s\nlineage=%s\nn=%s\nprevious=%s\n' "$base" "$source" "$lineage" "$sub_n" \
+    "$([ -n "$prev" ] && basename "$prev")" > "$out/submission"
   ft="$(forge_fast_tier "$PLAN" review)"
   yolo="$(review_yolo_flag "$PLAN" "$yolo_given")"
   [ -s "$PLAN/timeout" ] && tflag="--timeout $(cat "$PLAN/timeout")"
@@ -110,6 +253,8 @@ do_adopt() {
       git -C "$int_wt" update-ref "refs/forge/adopt-refused/$(basename "$out")" "$tip" 2>/dev/null
       echo "the integration branch is back at $(printf '%.12s' "$base"); your commits are at $tip (ref refs/forge/adopt-refused/$(basename "$out"))"
     else
+      # The range as given stays reachable, so a resubmission can be compared with it (#155).
+      git -C "$int_wt" update-ref "refs/forge/adopt-refused/$(basename "$out")" "$source" 2>/dev/null
       echo "the integration branch is back at $(printf '%.12s' "$base")"
     fi
   }
@@ -127,6 +272,7 @@ do_adopt() {
     fi
   fi
   tip="$(git -C "$int_wt" rev-parse HEAD)"
+  printf 'tip=%s\n' "$tip" >> "$out/submission"
 
   local review="$out/review" thr verdict gate_line decision kept inline=1 vcmd
   FORGE_REVIEW_SNAPSHOT="$review"          # the EXIT trap of forge-parallel.sh removes it on every exit (#139)
@@ -154,6 +300,7 @@ do_adopt() {
       echo '```sh'; printf '%s\n' "$vcmd"; echo '```'
     fi
     echo
+    [ -z "$prev" ] || adopt_carry "$prev" "$psrc" "$source" "$int_wt" "$out"
     python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind adopt --threshold "$thr"
     echo
     if [ "$inline" = 1 ]; then
@@ -225,9 +372,18 @@ do_adopt() {
         "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$(date +%s)" "$tip" > "$out/accepted.by"
     else
       echo "adopt: the reviewer said $verdict, so nothing was adopted (see $out/qa.last)."
+      printf 'refused=1\n' >> "$out/submission"
       adopt_rollback
+      cap="$(adopt_cap "$PLAN")"
+      if [ "$cap" -gt 0 ] && [ "$sub_n" -ge "$cap" ]; then
+        echo
+        adopt_decision_text "$PLAN" "$what" "$sub_n" | tee "$out/needs_decision"
+      else
+        echo "fix the findings on top of this range and adopt it again: the next review is told what this one found."
+      fi
       forge_dataset_event adopt --dir "$PLAN" --set base="$base" --set tip="$tip" --set verdict="$verdict" \
-        --set approved=0 --set adopted=0 --set spec="$spec" --set reason="$reason"
+        --set approved=0 --set adopted=0 --set spec="$spec" --set reason="$reason" \
+        --set lineage="$lineage" --set submission="$sub_n"
       write_results "$PLAN"
       return 5
     fi
@@ -248,6 +404,7 @@ with open(log, 'a') as handle:
 PY
   forge_dataset_event adopt --dir "$PLAN" --set base="$base" --set tip="$tip" --set verdict="$verdict" \
     --set approved="$kept" --set adopted=1 --set spec="$spec" --set reason="$reason" \
+    --set lineage="$lineage" --set submission="$sub_n" \
     --set authors="$(git -C "$int_wt" log --format='%an' "$base..$tip" | sort -u | awk 'NR > 1 { printf "," } { printf "%s", $0 }')"
   echo "adopted $(printf '%.12s' "$base")..$(printf '%.12s' "$tip") ($verdict) into the integration branch"
 
