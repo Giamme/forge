@@ -2,7 +2,7 @@
 #
 # Columns (tab-separated):
 #   alias    short name you type in --dwarf / --qa
-#   harness  which CLI runs it: codex | claude | openclaude | opencode | antigravity
+#   harness  which CLI runs it: codex | claude | openclaude | opencode | antigravity | grok
 #   model    the exact model id that harness expects
 #   effort   which reasoning efforts this pairing accepts, in one of four forms:
 #              <=X      any effort on the harness ladder up to and including X

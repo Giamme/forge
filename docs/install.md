@@ -180,14 +180,28 @@ with the listed check rather than trusting file placement.
 | codex | symlink into **`~/.codex/skills/`** | `codex exec "do you have a skill named forge?"` |
 | opencode | **nothing** — it scans `~/.claude/` itself | `opencode debug skill` |
 | antigravity | `agy plugin install` of a generated wrapper | `agy --print='/forge'` |
+| grok | **nothing** — it lists `~/.claude/skills` itself | `skills` in a headless `init` line |
 
 > **The one ongoing caveat:** `agy plugin install` *copies* the files instead of referencing
-> them. The other four track the source directory live, so an edit reaches them instantly —
+> them. The other five track the source directory live, so an edit reaches them instantly —
 > antigravity keeps running whatever it copied. **Re-run `forge-install.sh` after any edit**,
 > or agy silently runs a stale version.
 
 `forge-install.sh --dry-run` prints what it would do and touches nothing. It never clobbers
 a real directory that isn't a symlink.
+
+### What invoking the skill pre-approves
+
+`SKILL.md`'s `allowed-tools` lists what Claude Code may run without asking during the turn that
+invokes `/forge`: `Read`, and shell commands that start with forge's own entry points (`forge …`,
+`bash <skill dir>/scripts/…`, `python3 <skill dir>/scripts/…`, `<skill dir>/forge …`). Any other
+command, and `Edit` / `Write`, follow your normal permission settings. The field grants, it does not
+restrict: it never takes a tool away. The grant ends at your next message, so the `run` you approve
+after seeing the task table is asked for as usual.
+
+openclaude, built from Claude Code, is expected to read the field the same way. Codex, opencode,
+antigravity and grok are not known to read it, so there each command follows that harness's own approval
+settings. This has not been checked against every CLI's current version.
 
 ## Updating all harness installations
 

@@ -9,7 +9,7 @@ FORGE_TEST_FRACTAL_RUNTIME=/absolute/path/to/isolated/fractal-venv bash tests/ch
 
 The runtime must contain the pinned revision documented in
 [Fractal](../references/fractal.md). These tests create their own managed state and
-repositories, exercise all five harnesses, nested routing/ownership/dependencies,
+repositories, exercise all six harnesses, nested routing/ownership/dependencies,
 shared concurrency, dirty snapshots, source drift, deadlines, pause/resume, stop,
 worker-crash recovery, retries, QA checkpoints and decomposed integration. They
 make no paid provider requests. tmux tests need permission to create local sockets.
@@ -42,12 +42,16 @@ test class in a process of its own, several at a time (the CPU count, at most 8;
 and `python3 tests/run_tests.py PATTERN` runs only the classes whose id contains the pattern.
 A single module still runs as usual: `cd tests && python3 -m unittest test_interrupt`. PATH is restricted to those fakes and an explicit utility
 allowlist, so installed model clients cannot be used accidentally. No provider account is needed.
-`.github/workflows/test.yml` runs `tests/check.sh` on Ubuntu under Python 3.9 for every pull request. Every push to `dev`, and a run started by hand from the Actions tab, also covers Ubuntu with the latest 3.x and macOS (with the system Bash 3.2) under both, so a macOS-only break shows up after the merge. A pull request that only changes documentation (the `DOCS_ONLY` list in the workflow) runs no tests. Each OS and Python pair splits the suite into four jobs with `tests/check.sh --shard I/4` (arguments pass through to `run_tests.py`), and the `Tests passed` job sums them up: it is the check to require. Every pull request and every push to `dev` also run one Windows job (`windows-latest`, Git Bash, the latest Python 3.x, no shards). forge does not run natively on Windows yet, so `run_tests.py` leaves out there the modules and classes listed in `tests/windows-pending.txt`, each under the reason it fails; `--run-pending` runs them anyway. Delete a line once its tests pass on Windows.
+`.github/workflows/test.yml` runs `tests/check.sh` on Ubuntu under Python 3.9 for every pull request. Every push to `dev`, and a run started by hand from the Actions tab, also covers Ubuntu with the latest 3.x and macOS (with the system Bash 3.2) under both, so a macOS-only break shows up after the merge. A pull request that only changes documentation (the `DOCS_ONLY` list in the workflow) runs no tests, only the lint job (ruff and `check_links.py`). Each OS and Python pair splits the suite into four jobs with `tests/check.sh --shard I/4` (arguments pass through to `run_tests.py`), and the `Tests passed` job sums them up: it is the check to require. Every pull request and every push to `dev` also run one Windows job (`windows-latest`, Git Bash, the latest Python 3.x, no shards). forge does not run natively on Windows yet, so `run_tests.py` leaves out there the modules and classes listed in `tests/windows-pending.txt`, each under the reason it fails; `--run-pending` runs them anyway. Delete a line once its tests pass on Windows.
 
 `skill-cases.json` contains invocation and approval scenarios with expected observable behavior.
 Use these for a manual or independent skill evaluation: provide each request and SKILL.md,
-allow only fake dispatch, and compare actions with the rubric. Mechanical checks validate
-reference links and scenario structure; they do not prove a model follows the instructions.
+allow only fake dispatch, and compare actions with the rubric. Mechanical checks
+(`test_skill.py`) validate scenario structure, SKILL.md's size budget and frontmatter, each
+reference's size, and every relative link and `#anchor` in SKILL.md, the README, `references/`
+and `docs/` (`check_links.py`, which CI also runs on documentation-only pull requests). They do
+not prove a model follows the instructions. When SKILL.md changes a rule, update the case that
+covers it.
 Live model routing, authentication and provider behavior are separate, explicitly requested checks.
 
 The suite covers large Unicode prompts via regular files, stdin and FIFOs; exact context

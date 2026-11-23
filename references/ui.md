@@ -96,7 +96,7 @@ run goes on, with the same exit code.
   the page does not run it), the findings from `attribution.json` with ambiguous rows marked,
   the rounds with each member's commit and attempt, known issues, `qa.last`, and a link to the
   review transcript. The group's QA dispatch lives in `groups/<gid>/attempts`. See
-  [Groups and group review](decompose.md#groups-and-group-review-opt-in).
+  [Groups and group review](decompose-opt-in.md#groups-and-group-review-opt-in).
 - **Checks:** each attempt's tests, type checks, lints and builds, read from its dwarf's and
   reviewer's logs, with exits, times and counts, a failed one's last lines, and which of the
   commands its `## Acceptance criteria` name never ran. codex and grok logs carry no times, so

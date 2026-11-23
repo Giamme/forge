@@ -115,6 +115,10 @@ These are the things reviewers check most often:
   There are no formatting rules. To check before you push, run `ruff check .` (or
   `pipx run ruff check .`) from the repository root. ruff is a tool you run, not a dependency
   of forge.
+- **Links resolve.** The same CI job runs `python3 tests/check_links.py`: every relative link and
+  `#anchor` in `SKILL.md`, the README, `references/` and `docs/` must point at a file and a heading
+  that exist (anchors as GitHub slugs headings). It runs on documentation-only pull requests too,
+  so rename a heading together with the links to it.
 
 ## Docs and the changelog
 

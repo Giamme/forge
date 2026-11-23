@@ -400,7 +400,7 @@ is filed.
 off unless you pass it. A planner's groups, and `--groups` without `--group-review`, are names
 only (`review=task`): they show in the approval table, and each task is still reviewed on its
 own. The mechanics are in
-[Groups and group review](../references/decompose.md#groups-and-group-review-opt-in).
+[Groups and group review](../references/decompose-opt-in.md#groups-and-group-review-opt-in).
 
 **Fewer dispatches, a larger prompt.** A group is one review instead of one per member, and
 the reviewer sees those tasks together: each task's requirements, and the combined diff. The
@@ -481,7 +481,7 @@ finishes, so the most it costs is reviews and a little latency. To measure what 
 buys, list the reviewers' own model at another effort (`--shadow-qa sol:medium` beside `sol:high`):
 `forge dataset pairs` reports those pairs apart from model and family comparisons, and a shadow
 identical to its primary is recorded as a control, never as an effort comparison. See
-[decomposition](../references/decompose.md#shadow-reviews-opt-in).
+[decomposition](../references/decompose-review.md#shadow-reviews-opt-in).
 
 ## Implementer guards
 
@@ -518,7 +518,7 @@ run) when the source fingerprint is unchanged. If the rerun passes the status is
 intermittent failure can be a real bug, so it is never passed off as a clean pass. A command
 that changes the tree is never retried.
 
-With [verification lanes](../references/decompose.md#execution-checks-and-integration-verification)
+With [verification lanes](../references/decompose-integration.md#execution-checks-and-integration-verification)
 the rerun is per lane: only a lane that failed runs again, alone, and a lane that passes on its
 rerun is `flaky`. The run is then a pass, but `run`/`retry`/`integrate` print
 `FLAKY: lane <name> failed once and passed on rerun`, and `verification.flaky` records each
@@ -544,7 +544,7 @@ and against the base without it, using the per-file command in `.forge/verify-su
 the reviewer the result: `proven`, `passes_without_change`, `inconclusive` or `error`. The
 reviewer is asked for a P2 finding for every test that passes without the change. It is advice
 only: forge never changes a status or verdict from it. forge-ui shows the evidence under the
-review findings. See [fail-first evidence](../references/decompose.md#fail-first-evidence-opt-in).
+review findings. See [fail-first evidence](../references/decompose-review.md#fail-first-evidence-opt-in).
 
 ## Pre-review tests (opt-in)
 
@@ -555,4 +555,4 @@ a change to shared test infrastructure, more than 20 files or more than 120 s is
 broad. A red attempt goes back to its implementer without a review, with the failing tests and
 their output as its findings; a test that also fails on the task base is not blamed, and a failure
 that passes when rerun alone is recorded as flaky. Green, the reviewer gets the result as
-evidence. See [pre-review tests](../references/decompose.md#pre-review-tests-opt-in).
+evidence. See [pre-review tests](../references/decompose-review.md#pre-review-tests-opt-in).

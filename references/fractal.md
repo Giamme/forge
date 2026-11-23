@@ -10,6 +10,7 @@ This reference covers the exact selection, routing, lifecycle and inspection con
 
 ## Contents
 
+- [For the orchestrator](#for-the-orchestrator)
 - [Selecting a run](#selecting-a-run)
 - [Installation and provenance](#installation-and-provenance)
 - [Bridge, routing and ownership](#bridge-routing-and-ownership)
@@ -19,6 +20,25 @@ This reference covers the exact selection, routing, lifecycle and inspection con
 - [Managed data and identifiers](#managed-data-and-identifiers)
 - [Troubleshooting](#troubleshooting)
 - [Verification](#verification)
+
+## For the orchestrator
+
+- Ask **"Use Fractal for this run? [y/N]"** once before an interactive run, unless the user supplied
+  `--fractal`, `--no-fractal` or `--fractal-auto-decompose`, and pass the answer explicitly to the runner.
+  Unattended runs default off. Installation never activates Fractal. Resume and explicit retry keep the
+  recorded choice. Fractal completion never substitutes for Forge QA acceptance, and Fractal does not
+  replace planner dispatch.
+- `--fractal-auto-decompose` makes the split-or-atomic decision automatically before each eligible node
+  implements. Put the effective planner and bounds in the approval preview; child decisions inside those
+  bounds need no further approval. Forward `--fractal-planner <spec>`; when it is omitted, forward a
+  selected top-level `--planner` as `--fractal-planner`, otherwise each task's initial root model plans
+  all its descendants. Plain `--fractal` keeps worker-requested decomposition.
+- Pass the recorded choice and the requested limits to the execution runner.
+- Report the managed run ID with the Forge result. Use `<skill_dir>/forge fractal runs --repo <repo>
+  --json` and `tree RUN_ID --json` to find run, task and node IDs, and `status`, `logs` or `open` to
+  inspect. Run-level `resume` recovers the recorded pipeline; scoped controls affect only the selected
+  scope. Preserve failed work, and keep execution completion, QA acceptance and verification apart.
+  Read this reference before retrying, changing limits or exporting a portable report.
 
 ## Selecting a run
 
