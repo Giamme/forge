@@ -1918,7 +1918,7 @@ ProjectRow = {id, name, root, exists, runs, live, last, path_only (runs tied by 
 Project = {id, name, root, exists, live, last, path_only, memory_off_runs,
            checkouts: [{path, exists, branch, runs, root}], runs: [RunSummary + identity_source, dataset_uid, no_memory]}
 ProjectFindings = {id, rows: [Finding], notes: [text], runs, dataset_runs, computed, available,
-                   issues_online (true when that listing was the online one), issues_read_at (unix time the listing was read, or null)}
+                   issues_online (true when that listing was the online one and asked GitHub: false for a repository with no GitHub remote), issues_read_at (unix time the listing was read, or null)}
 Finding = {source: run|dataset, run (key or null), run_id, task, final_review (its dir name, 'final' from the
            dataset), attempt, kind: primary|shadow|final, reviewer, verdict, at, id, severity, confidence, location,
            summary, text, fp (forge issues' key, null when it cannot parse the line), record_fp (the finding

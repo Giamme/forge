@@ -916,8 +916,16 @@
         line.append(el('span', r.text == null ? '' : String(r.text)));
         if (learningManual(r)) { line.append(document.createTextNode(' '), el('span', 'added by a person', 'chip prj-manual')); }
         box.append(line);
-        if (!s.writes) { const commands = rowCommands(r); if (commands) box.append(commands); }
         return box;
+      }
+      // Read-only: a row's copyable commands open below the filters on request, one row at a time, rather than
+      // two command lines in every Learning cell (#175).
+      function openCommands(r) {
+        const commands = rowCommands(r);
+        if (!commands) return;
+        const close = el('button', 'Close'); close.type = 'button'; close.setAttribute('aria-label', 'Close commands');
+        close.addEventListener('click', () => editHost.replaceChildren());
+        editHost.replaceChildren(el('p', 'Commands for ' + (learningKey(r) || String(r.text || ''))), commands, close);
       }
       const empty = memoryEmpty(d);
       if (empty) {
@@ -968,7 +976,7 @@
         });
         lbar.append(lab, forget);
         all.append(lbar, buildAddForm(), editHost, faction, lcount, lhost);
-      } else all.append(lbar, faction, lcount, lhost);
+      } else all.append(lbar, editHost, faction, lcount, lhost);
       parts.push(all);
       body.replaceChildren(...parts);
       async function forgetSelected() {
@@ -1041,6 +1049,12 @@
           const key = learningKey(r), b = el('button', 'Edit'); b.type = 'button'; b.dataset.key = key;
           b.disabled = s.forgetting || !key; b.setAttribute('aria-label', 'Edit ' + (key || 'learning'));
           b.addEventListener('click', () => openEdit(r)); editButtons.push(b); return b;
+        } });
+        if (!s.writes) columns.push({ id: 'commands', label: '', title: 'Commands', sortable: false, hideable: false, cell: r => {
+          if (!rowCommands(r)) return '';
+          const name = learningKey(r) || String(r.text || ''), b = el('button', 'Commands'); b.type = 'button';
+          b.setAttribute('aria-label', 'Commands for ' + name);
+          b.addEventListener('click', () => openCommands(r)); return b;
         } });
         table(lhost, 'project-learnings', 'Learnings', columns, shown);
         syncForget();

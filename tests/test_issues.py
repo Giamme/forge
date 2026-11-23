@@ -220,6 +220,7 @@ class ForgeIssuesTests(unittest.TestCase):
         # a listing still works (fingerprints use an empty slug, a warning says so); filing needs a slug
         out = self.forge_issues(str(self.plan))
         self.assertEqual(out['repo'], '')
+        self.assertIs(out['online'], False, 'no GitHub name: nothing was asked of GitHub (#174)')
         self.assertTrue(any('has no GitHub origin remote; pass --repo owner/repo' in w for w in out['warnings']))
         err = self.forge_issues(str(self.plan), '--apply', code=2)
         self.assertIn('has no GitHub origin remote; pass --repo owner/repo', err)
@@ -248,6 +249,7 @@ class ForgeIssuesTests(unittest.TestCase):
         env = self.offline_env()
         out = self.run_issues(str(self.plan), '--offline', '--include-plausible', env=env)
         self.assertFalse((self.dir / 'gh-called').exists())
+        self.assertIs(out['online'], False)
         self.assertEqual(len(out['findings']), 3)
         self.assertEqual([f['severity'] for f in out['findings']], ['P2', 'P3', 'P3'])
         first = out['findings'][0]

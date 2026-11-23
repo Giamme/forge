@@ -573,7 +573,8 @@ class Screen:
                 listing, at = self._cli_unlocked_at(('issues', path, True), lambda: _issues_call(issues, path, True),
                                                     refresh, now)
                 if listing is not None:
-                    return listing, True, at
+                    # a repository with no GitHub name lists without asking GitHub, online or not (#174)
+                    return listing, not (isinstance(listing, dict) and listing.get('online') is False), at
                 online_failed = True
             listing, at = self._cli_unlocked_at(('issues', path, False), lambda: _issues_call(issues, path, False),
                                                 refresh, now)
@@ -638,6 +639,8 @@ class Screen:
                 notes.append('the dataset is off (FORGE_DATASET=off): only the run directories that still exist are read')
             if listing is None:
                 notes.append('forge issues could not be read: dismissed and filed findings show as open')
+            elif not online and isinstance(listing, dict) and listing.get('online') is False and not listing.get('repo'):
+                notes.append('the repository has no GitHub remote: issue states were not read from GitHub')
             elif not online:
                 notes.append('issue states could not be read from GitHub: filed findings may show as open')
             if modules is None or record is None:
