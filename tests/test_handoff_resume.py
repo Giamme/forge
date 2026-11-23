@@ -179,6 +179,29 @@ class ResumeTests(unittest.TestCase):
         self.assertTrue(data['recovered'][0]['attempt_rewound'])
         self.assertEqual((self.plan / 'tasks' / 'a' / 'attempt').read_text().strip(), '0')
 
+    def test_an_attempt_that_committed_keeps_its_number(self):
+        # Stopped during its review: the retry re-runs only the review, which spends no attempt.
+        wt = self.worktree('a')
+        (wt / 'a.txt').write_text('done\n')
+        git(wt, 'commit', '-qam', 'forge(a) attempt 1: A')
+        tdir = self.task_files('a', attempt=1)
+        (tdir / 'reviewed.commit').write_text(subprocess.run(['git', '-C', str(wt), 'rev-parse', 'HEAD'],
+                                                             capture_output=True, text=True).stdout)
+        data = json.loads(self.resume('--json').stdout)
+        self.assertFalse(data['recovered'][0]['attempt_rewound'])
+        self.assertEqual((tdir / 'attempt').read_text().strip(), '1')
+        self.assertEqual((wt / 'a.txt').read_text(), 'done\n')       # the committed work stays
+
+    def test_an_earlier_attempts_commit_does_not_stop_the_rewind(self):
+        wt = self.worktree('a')
+        git(wt, 'commit', '-q', '--allow-empty', '-m', 'forge(a) attempt 1: A')
+        tdir = self.task_files('a', attempt=2, rows=[1])
+        (tdir / 'reviewed.commit').write_text(subprocess.run(['git', '-C', str(wt), 'rev-parse', 'HEAD'],
+                                                             capture_output=True, text=True).stdout)
+        data = json.loads(self.resume('--json').stdout)
+        self.assertTrue(data['recovered'][0]['attempt_rewound'])
+        self.assertEqual((tdir / 'attempt').read_text().strip(), '1')
+
     def assert_untouched(self, wt, result):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)['recovered'], [])

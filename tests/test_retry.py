@@ -164,6 +164,34 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(self.text(p, 'tasks/a/status'), 'INVALIDATED')
         self.assertEqual(self.calls(), ['dwarf', 'qa'])
 
+    def test_a_run_stopped_during_the_review_retries_only_the_review(self):
+        # #146: stopped after the attempt committed, before a verdict. A new implementer would keep
+        # the code and be refused as identical to the previous attempt, unreviewed.
+        p = self.plan_of([('a', '-', 'a.txt')])
+        self.scenario({'a.qa.1': {'verdict': 'none', 'findings': 'no verdict'}})
+        self.run_script('forge-parallel.sh', 'run', p)
+        t = p / 'tasks/a'
+        (t / 'status').write_text('INTERRUPTED\n')   # what a stop during the review leaves:
+        (t / 'attempts.tsv').unlink()                 # the attempt never ended
+        (t / 'qa.last').unlink()
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn('the run stopped during its review', r.stdout)
+        self.assertEqual(self.calls(), ['dwarf', 'qa', 'qa'])
+        self.assertEqual(self.text(p, 'tasks/a/attempt'), '1')
+        self.assertTrue((t / 'merged').exists())
+
+    def test_a_run_stopped_after_its_review_ended_runs_the_implementer_again(self):
+        p = self.plan_of([('a', '-', 'a.txt')])
+        self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — broken'},
+                       'a.dwarf.2': {'content': 'fixed'}})
+        self.run_script('forge-parallel.sh', 'run', p)
+        (p / 'tasks/a/status').write_text('INTERRUPTED\n')   # attempt 1 has its row: it was judged
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.calls(), ['dwarf', 'qa', 'dwarf', 'qa'])
+        self.assertEqual(self.text(p, 'tasks/a/attempt'), '2')
+
     def test_a_stale_resume_marker_falls_back_to_the_full_task(self):
         p = self.plan_of([('a', '-', 'a.txt')])
         self.scenario({'a.qa.1': {'verdict': 'none', 'findings': 'no verdict line here'},
