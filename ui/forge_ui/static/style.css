@@ -769,7 +769,7 @@ p.ui-outcome { display: flex; align-items: flex-start; gap: 7px; margin: 6px 0 0
 /* an inline confirm: a strip with Confirm and Cancel keys, its lamp the route lamp (red for a destructive change) */
 .ui-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin: var(--s-2) 0 0; padding: 6px var(--s-2); border: 1px solid var(--route); border-radius: var(--r-key); background: var(--key); }
 .ui-confirm.danger { border-color: var(--lamp-red); }
-.ui-confirm-text { flex: 1 1 14em; min-width: 0; font-size: var(--t-sm); overflow-wrap: anywhere; }
+.ui-confirm-text { flex: 1 1 14em; min-width: 0; font-size: var(--t-sm); overflow-wrap: anywhere; white-space: pre-line; }
 .ui-confirm button { min-height: 28px; }
 button.ui-danger { background: var(--lamp-red); border-color: var(--lamp-red); color: light-dark(#fff, #111613); }
 button.ui-danger:hover:not(:disabled) { background: var(--lamp-red); color: light-dark(#fff, #111613); opacity: .9; }
@@ -1498,7 +1498,7 @@ table.wt-grid { width: max-content; min-width: 100%; }
 .prj-findings td { white-space: nowrap; }
 .prj-findings td.prj-wide { white-space: normal; min-width: 26em; }
 .prj-summary { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; max-width: 46em; }
-.prj-learning { display: inline-block; max-width: 48em; }
+.prj-learning { display: inline-block; max-width: 48em; white-space: normal; }
 .prj-actions { margin-top: var(--s-2); }
 .prj-actions .fnd-picked { min-width: 8em; font-size: var(--t-sm); font-variant-numeric: tabular-nums; }
 .prj-findings td:first-child input[type=checkbox] { margin: 0; }
