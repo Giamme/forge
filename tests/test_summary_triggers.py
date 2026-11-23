@@ -93,6 +93,16 @@ class SummaryTriggerTests(unittest.TestCase):
         lines = path.read_text().splitlines() if path.exists() else []
         return [line for line in lines if task is None or line.split()[0] == task]
 
+    def wait_for_handoff(self, task):
+        """Wait for the detached summarize that an admission check still blocked at the end hands off
+        to. settle() alone can return before it has started, and if it writes into the plan while
+        the temporary directory is removed, cleanup fails with "Directory not empty"."""
+        import time
+        end = time.monotonic() + 15
+        while not self.calls(task) and time.monotonic() < end:
+            time.sleep(0.1)
+        self.settle()
+
     def settle(self):
         """The triggers are detached: let the last one record itself."""
         import time
@@ -160,6 +170,7 @@ class SummaryTriggerTests(unittest.TestCase):
             result = self.run_scheduler()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.plan / 'tasks/a/merged').exists())
+        self.wait_for_handoff('a')   # the check still blocked at the end goes on detached (next test)
 
     def test_an_admission_check_still_blocked_at_the_end_is_handed_to_a_detached_summarize(self):
         import fcntl
@@ -170,7 +181,7 @@ class SummaryTriggerTests(unittest.TestCase):
             result = self.run_scheduler()
         # The scheduler's own check threads die with it; the final transition (MERGED) must not be lost.
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.settle()
+        self.wait_for_handoff('a')
         self.assertTrue(self.calls('a'), 'the blocked admission check was dropped at shutdown')
         self.assertTrue((self.plan / 'summaries.out').exists())
 
