@@ -1,6 +1,113 @@
 {
   "versions": [
     {
+      "version": "0.22",
+      "date": "2026-11-23",
+      "summary": "Forge runs on Windows: natively from Git Bash, or inside MSYS2 if you prefer. Plus fixes for plan reviewers, retries after a brief edit, decisions and verification status.",
+      "entries": [
+        {
+          "type": "added",
+          "text": "Forge now runs natively on Windows, from Git Bash with the regular Windows Python 3.9 or later. Start it with `forge` after an npm install, or with `forge.cmd` from CMD or PowerShell. `forge install` links skills with directory junctions instead of symlinks, and a run's processes are stopped together through Windows Job Objects. If the Microsoft Store alias hijacks `python3`, forge sets up its own shim. Thanks to Kratoswer-byte for the port.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": true,
+          "commits": [
+            "0454e6d0"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "On Windows you can choose MSYS2 mode instead: forge then runs inside MSYS2, where process groups, signals, file locks and symlinks behave as on Linux. Set `FORGE_WIN_MODE=msys2` and start forge from Git Bash as usual, or start it from an MSYS2 shell. Setup and limits are in [Install](docs/install.md#windows-msys2-mode). Thanks to Bardugo624.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": true,
+          "commits": [
+            "a95ca8a5"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "Approval, status and results tables stay aligned when task ids are longer than 14 characters: the `id` column now fits the plan's longest id.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "36d81b24"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "A `plan` that was refused because tasks were `UNASSIGNED` no longer leaves the fallback `opus` reviewer stuck on them, so a following `plan --qa ...` picks the reviewer you ask for. `plan` also tells you when `--qa` leaves reviewers you set explicitly unchanged.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "5eadafe5"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "While a new verification is running, forge no longer shows the previous verification's result next to the new commit.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "cc92633b"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "In forge-ui's 3D view, tasks with 8 or more attempts now show every attempt's boxes at full height when opened, instead of the later ones stopping short or staying hidden.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "6793eeab"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "On Windows, running `forge install` again no longer re-creates links it already made when Git Bash shows the same folder under a different path (such as `/tmp` or a short `PROGRA~1` name).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "f74e9390"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "Escalations and group operations no longer print stray `No such file or directory` messages when an optional plan file is missing.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "282ec96e"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "After you resume or accept a `NEEDS_DECISION` task, its old decision is cleared, so a task that later ends `FAIL` no longer points you at a `--decide` that doesn't apply. Running `--decide` on a `FAIL` or `UNKNOWN` task now tells you to use `retry` without it.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "7879a02d"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "Retrying a task after you clarify its `prompt.md`, `approach.md` or `qa_threshold` now reviews the same code again against the new brief, instead of refusing it as an identical diff. With an unchanged brief, an identical diff is still refused.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "dcb315a7"
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.21",
       "date": "2026-11-19",
       "summary": "Groundwork for native Windows support, plus fixes for macOS with Python 3.9 and for parallel tasks that start at the same moment.",
