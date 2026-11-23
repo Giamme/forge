@@ -166,19 +166,18 @@ class GateTableTests(unittest.TestCase):
                      '**FORGE_TESTS: RAN — FAILED: test_one**',
                      '- FORGE_TESTS: RAN -- FAILED: test_one\r',
                      'FORGE_TESTS: RAN — FAILED',
-                     'FORGE_TESTS: RAN (2 passed, 1 failed)',
                      'FORGE_TESTS: FAILED — test_one',
                      'FORGE_TESTS: RAN\nFORGE_TESTS_FAILED: test_one, test_two',
                      'FORGE_TESTS_FAILED: test_one'):
             with self.subTest(line=line):
                 self.assertTrue(contract.tests_failed(p3_reply + line + '\nFORGE_VERDICT: FAIL'))
-                self.assertEqual(decide('FAIL', p3_reply + line + '\nFORGE_VERDICT: FAIL', 'P2'),
-                                 ('keep', 'P3', 1, 0, 1))
-                self.assertEqual(decide('PASS', p3_reply + line + '\nFORGE_VERDICT: PASS', 'P2'),
-                                 ('fail', 'P3', 1, 0, 1))
+                fail_res = contract.gate('FAIL', p3_reply + line + '\nFORGE_VERDICT: FAIL', 'P2')
+                self.assertEqual((fail_res.decision, fail_res.reason), ('keep', 'tests'))
+                pass_res = contract.gate('PASS', p3_reply + line + '\nFORGE_VERDICT: PASS', 'P2')
+                self.assertEqual((pass_res.decision, pass_res.reason), ('fail', 'tests'))
         for ok_line in ('FORGE_TESTS: RAN',
                         'FORGE_TESTS: RAN (3 passed)',
-                        'FORGE_TESTS: RAN (3 passed, 0 failed)',
+                        'FORGE_TESTS: RAN — 2 tests that failed before this change now pass',
                         'FORGE_TESTS: RAN — FAILED: none',
                         'FORGE_TESTS: COULD NOT RUN — docker setup failed',
                         'FORGE_TESTS: NOT NEEDED — docs only',
@@ -188,13 +187,20 @@ class GateTableTests(unittest.TestCase):
                         ''):
             with self.subTest(ok_line=ok_line):
                 self.assertIsNone(contract.tests_failed(p3_reply + ok_line + '\nFORGE_VERDICT: FAIL'))
-                self.assertEqual(decide('FAIL', p3_reply + ok_line + '\nFORGE_VERDICT: FAIL', 'P2'),
-                                 ('accept', 'P3', 1, 0, 1))
+                acc = contract.gate('FAIL', p3_reply + ok_line + '\nFORGE_VERDICT: FAIL', 'P2')
+                self.assertEqual((acc.decision, acc.reason), ('accept', '-'))
                 self.assertEqual(decide('PASS', p3_reply + ok_line + '\nFORGE_VERDICT: PASS', 'P2'),
                                  ('keep', 'P3', 1, 0, 1))
-        # Echoing the FAILED placeholder after a real failing report leaves the failure intact.
+        # Echoing the FAILED placeholder or a bare `  FORGE_TESTS: RAN` after a real failure keeps the block.
         after_echo = p3_reply + 'FORGE_TESTS: RAN — FAILED: test_one\n  FORGE_TESTS: RAN — FAILED: <names>\nFORGE_VERDICT: FAIL'
         self.assertEqual(decide('FAIL', after_echo, 'P2'), ('keep', 'P3', 1, 0, 1))
+        after_ran = p3_reply + 'FORGE_TESTS: RAN — FAILED: test_one\n  FORGE_TESTS: RAN\nFORGE_VERDICT: FAIL'
+        self.assertEqual(contract.tests_failed(after_ran), 'test_one')
+        self.assertEqual(contract.gate('FAIL', after_ran, 'P2').decision, 'keep')
+        # An UNSTATED mild finding plus failing tests reports reason `tests`, not `findings`.
+        unstated_and_fail = '- [P3] a.py:1 — unstated\nFORGE_TESTS: RAN — FAILED: test_one\nFORGE_VERDICT: PASS\n'
+        res = contract.gate('PASS', unstated_and_fail, 'P2')
+        self.assertEqual((res.decision, res.worst, res.n_unlabelled, res.reason), ('fail', '-', 1, 'tests'))
 
     def test_default_is_p2_and_none_is_p3(self):
         self.assertEqual(contract.DEFAULT_THRESHOLD, 'P2')
@@ -459,7 +465,7 @@ class KnownIssuesFileTests(unittest.TestCase):
     def test_written_verbatim_under_threshold_heading(self):
         result = self.gate('FAIL', 'P1')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, 'accept\tP2\t2\t0\t2\n')
+        self.assertEqual(result.stdout, 'accept\tP2\t2\t0\t2\t-\n')
         text = self.out.read_text(encoding='utf-8')
         self.assertTrue(text.startswith('## Known issues (QA findings below blocking threshold P1)\n'))
         self.assertIn('- [P3][CONFIRMED] a.py:1 — nit\n  more detail ß\n', text)
@@ -469,7 +475,7 @@ class KnownIssuesFileTests(unittest.TestCase):
         self.assertFalse(any(line != line.rstrip() for line in text.splitlines()))
 
     def test_only_the_tolerated_ones_are_listed(self):
-        self.assertEqual(self.gate('FAIL', 'P2').stdout, 'keep\tP2\t2\t0\t1\n')
+        self.assertEqual(self.gate('FAIL', 'P2').stdout, 'keep\tP2\t2\t0\t1\tfindings\n')
         text = self.out.read_text(encoding='utf-8')
         self.assertIn('a.py:1', text); self.assertNotIn('b.py:2', text)
 
@@ -478,23 +484,23 @@ class KnownIssuesFileTests(unittest.TestCase):
             with self.subTest(verdict=verdict):
                 if self.out.exists():
                     self.out.unlink()
-                self.assertEqual(self.gate(verdict, 'P1').stdout, 'keep\tP2\t2\t0\t2\n')
+                self.assertEqual(self.gate(verdict, 'P1').stdout, 'keep\tP2\t2\t0\t2\t-\n')
                 self.assertTrue(self.out.exists())
 
     def test_written_for_a_pass_turned_into_fail(self):
         # Default threshold P2: the CONFIRMED P2 blocks the PASS, the P3 is still recorded.
-        self.assertEqual(self.gate('PASS', None).stdout, 'fail\tP2\t2\t0\t1\n')
+        self.assertEqual(self.gate('PASS', None).stdout, 'fail\tP2\t2\t0\t1\tfindings\n')
         text = self.out.read_text(encoding='utf-8')
         self.assertTrue(text.startswith('## Known issues (QA findings below blocking threshold P2)\n'))
         self.assertIn('a.py:1', text); self.assertNotIn('b.py:2', text)
 
     def test_not_created_without_tolerated_findings(self):
-        self.assertEqual(self.gate('FAIL', 'P3').stdout, 'keep\tP2\t2\t0\t0\n')
-        self.assertEqual(self.gate('PASS', 'none').stdout, 'fail\tP2\t2\t0\t0\n')
+        self.assertEqual(self.gate('FAIL', 'P3').stdout, 'keep\tP2\t2\t0\t0\tfindings\n')
+        self.assertEqual(self.gate('PASS', 'none').stdout, 'fail\tP2\t2\t0\t0\tfindings\n')
         self.assertFalse(self.out.exists())
         self.qa.write_text('- [P1][CONFIRMED] a.py:1 — bad\n', encoding='utf-8')
-        self.assertEqual(self.gate('FAIL', 'P2').stdout, 'keep\tP1\t1\t0\t0\n')
-        self.assertEqual(self.gate('FAIL', None).stdout, 'keep\tP1\t1\t0\t0\n')
+        self.assertEqual(self.gate('FAIL', 'P2').stdout, 'keep\tP1\t1\t0\t0\tfindings\n')
+        self.assertEqual(self.gate('FAIL', None).stdout, 'keep\tP1\t1\t0\t0\tfindings\n')
         self.assertFalse(self.out.exists())
 
     def test_unwritable_destination_is_exit_3(self):
@@ -625,8 +631,9 @@ class PromptTextTests(unittest.TestCase):
         self.assertIn('(P3) is recorded', contract.qa_text('tail', 'task', 'P2'))
         for kind in contract.KINDS:
             for threshold in contract.SEVERITIES:
-                tail = contract.qa_text('tail', kind, threshold)
-                self.assertIn('File failing tests as a CONFIRMED finding at %s or worse (they block), not only in prose.' % threshold, tail)
+                tail = ' '.join(contract.qa_text('tail', kind, threshold).split())
+                self.assertIn('Use FAILED only for tests failing because of this change; mention unrelated failures in prose.', tail)
+                self.assertIn('File tests that fail with this change (new, or passed without it) as a CONFIRMED finding at %s or worse (they block); mention unrelated failures in prose.' % threshold, tail)
 
     def test_deterministic_clean_text(self):
         for part in ('head', 'tail'):
@@ -679,15 +686,23 @@ class PromptTextTests(unittest.TestCase):
         # Task head and sweep head stay byte-identical to v0.18. Tails gained `{outside=…}` (#149,
         # task only) and the #171 failing-tests contract lines; the pin strips those exact additions.
         outside = '\n' + '\n'.join(contract._OUTSIDE) + '\n'
-        failed_form = '  FORGE_TESTS: RAN — FAILED: <names>\n'
+        verify_extra = (
+            'Use FAILED only for tests failing because of this change; mention unrelated failures in\n'
+            'prose.\n'
+        )
         for (kind, part, threshold), digest in _V018.items():
             with self.subTest(kind=kind, part=part, threshold=threshold):
                 text = contract.qa_text(part, kind, threshold)
                 if part == 'tail':
-                    self.assertEqual(text.count(failed_form), 1)
-                    text = text.replace(failed_form, '', 1)
+                    self.assertEqual(text.count('  FORGE_TESTS: RAN — FAILED: <names>\n'), 1)
+                    text = text.replace('  FORGE_TESTS: RAN — FAILED: <names>\n', '', 1)
+                    self.assertEqual(text.count(verify_extra), 1)
+                    text = text.replace(verify_extra, '', 1)
                     rank = threshold or contract.DEFAULT_THRESHOLD
-                    failed_rule = 'File failing tests as a CONFIRMED finding at %s or worse (they block), not only in prose.\n' % rank
+                    failed_rule = (
+                        'File tests that fail with this change (new, or passed without it) as a CONFIRMED\n'
+                        'finding at %s or worse (they block); mention unrelated failures in prose.\n' % rank
+                    )
                     self.assertEqual(text.count(failed_rule), 1)
                     text = text.replace(failed_rule, '', 1)
                 if kind == 'task' and part == 'tail':
@@ -774,23 +789,23 @@ class CommandLineTests(unittest.TestCase):
             last = Path(tmp) / 'qa.last'
             last.write_bytes(b'- [P3][CONFIRMED] a.py:1 \xe2\x80\x94 nit\r\n\r\nFORGE_VERDICT: FAIL\r\n')
             result = run('gate', '--verdict', 'FAIL', '--qa-last', last, '--threshold', 'P2')
-            self.assertEqual((result.returncode, result.stdout), (0, 'accept\tP3\t1\t0\t1\n'))
+            self.assertEqual((result.returncode, result.stdout), (0, 'accept\tP3\t1\t0\t1\t-\n'))
             result = run('gate', '--verdict', 'FAIL', '--qa-last', last, '--threshold', 'none')
-            self.assertEqual((result.returncode, result.stdout), (0, 'keep\tP3\t1\t0\t0\n'))
+            self.assertEqual((result.returncode, result.stdout), (0, 'keep\tP3\t1\t0\t0\tfindings\n'))
             result = run('gate', '--verdict', 'PASS', '--qa-last', last, '--threshold', 'NONE')
-            self.assertEqual((result.returncode, result.stdout), (0, 'fail\tP3\t1\t0\t0\n'))
+            self.assertEqual((result.returncode, result.stdout), (0, 'fail\tP3\t1\t0\t0\tfindings\n'))
             last.write_bytes(b'\xff\xfe- [P3][CONFIRMED] a.py:1 invalid utf-8\n')
             self.assertEqual(run('gate', '--verdict', 'FAIL', '--qa-last', last, '--threshold', 'P2').returncode, 0)
             last.write_bytes(b'')
             self.assertEqual(run('gate', '--verdict', 'UNKNOWN', '--qa-last', last, '--threshold', 'p2').stdout,
-                             'keep\t-\t0\t0\t0\n')
+                             'keep\t-\t0\t0\t0\t-\n')
 
     def test_gate_without_a_threshold_is_p2(self):
         with tempfile.TemporaryDirectory() as tmp:
             last = Path(tmp) / 'qa.last'
-            for reply, verdict, line in (('- [P2][CONFIRMED] a.py:1 — x\n', 'PASS', 'fail\tP2\t1\t0\t0\n'),
-                                         ('- [P3][CONFIRMED] a.py:1 — x\n', 'PASS', 'keep\tP3\t1\t0\t1\n'),
-                                         ('- [P3][CONFIRMED] a.py:1 — x\n', 'FAIL', 'accept\tP3\t1\t0\t1\n')):
+            for reply, verdict, line in (('- [P2][CONFIRMED] a.py:1 — x\n', 'PASS', 'fail\tP2\t1\t0\t0\tfindings\n'),
+                                         ('- [P3][CONFIRMED] a.py:1 — x\n', 'PASS', 'keep\tP3\t1\t0\t1\t-\n'),
+                                         ('- [P3][CONFIRMED] a.py:1 — x\n', 'FAIL', 'accept\tP3\t1\t0\t1\t-\n')):
                 with self.subTest(reply=reply, verdict=verdict):
                     last.write_text(reply, encoding='utf-8')
                     self.assertEqual(run('gate', '--verdict', verdict, '--qa-last', last).stdout, line)

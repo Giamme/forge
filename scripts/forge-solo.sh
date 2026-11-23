@@ -445,14 +445,11 @@ if [ -z "$NATIVE" ]; then
       accept) verdict=PASS; gate_note=" (accepted with known issues: $RUN/known_issues.md)" ;;
       fail)
         verdict=FAIL
-        g_worst="$(printf '%s' "$gate_line" | awk -F'\t' '{print $2}')"
-        g_unlab="$(printf '%s' "$gate_line" | awk -F'\t' '{print $4}')"
-        case "$g_worst:${g_unlab:-0}:$THR" in
-          -:0:*|P[123]:0:P0|P[23]:0:P1|P3:0:P2)
-            gate_note=" (the reviewer said PASS, but reported failing tests — forge made it FAIL)" ;;
-          *)
-            gate_note=" (the reviewer said PASS, but listed a CONFIRMED finding at or above the $THR threshold — forge made it FAIL)" ;;
-        esac ;;
+        if [ "$(printf '%s' "$gate_line" | awk -F'\t' '{print $6}')" = tests ]; then
+          gate_note=" (the reviewer said PASS, but reported failing tests — forge made it FAIL)"
+        else
+          gate_note=" (the reviewer said PASS, but listed a CONFIRMED finding at or above the $THR threshold — forge made it FAIL)"
+        fi ;;
     esac
   fi
 fi

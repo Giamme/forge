@@ -15,12 +15,13 @@ FORGE_VERDICT: FAIL   — at least one CONFIRMED finding at the blocking thresho
 
 forge decides the verdict from the findings, at a blocking threshold: `P2` unless
 `--qa-threshold` sets another. A CONFIRMED finding at the threshold or worse, or one with no
-severity, blocks: a PASS that lists one becomes FAIL. Reporting failing tests blocks the same way:
-a FAIL whose reply reports failing tests (`FORGE_TESTS: RAN — FAILED: <names>`, `FORGE_TESTS:
-FAILED — <names>`, or `FORGE_TESTS_FAILED: <names>`) stays FAIL even when every CONFIRMED finding
-is below the threshold, and a PASS that reports failing tests becomes FAIL. The prompt asks the
-reviewer to file failing tests as a blocking CONFIRMED finding at the threshold or worse rather
-than leaving them in prose alone. A CONFIRMED finding below the threshold never blocks on its own:
+severity, blocks: a PASS that lists one becomes FAIL. Reporting failing tests caused by the
+change blocks the same way: a FAIL whose reply reports failing tests (`FORGE_TESTS: RAN —
+FAILED: <names>`, `FORGE_TESTS: FAILED — <names>`, or `FORGE_TESTS_FAILED: <names>`) stays FAIL
+even when every CONFIRMED finding is below the threshold, and a PASS that reports failing tests
+becomes FAIL. The prompt asks the reviewer to file tests failing because of this change as a
+blocking CONFIRMED finding at the threshold or worse, while pre-existing unrelated failures stay
+in prose. A CONFIRMED finding below the threshold never blocks on its own:
 a FAIL made only of those (with no failing tests reported) is accepted, and either way they are
 recorded in `known_issues.md`, which `forge issues` and the sweep pick up. PLAUSIBLE findings never
 block. `--qa-threshold P3` (or `none`) makes every CONFIRMED finding block.

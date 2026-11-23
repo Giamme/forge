@@ -15,8 +15,8 @@ Subcommands, stdlib only, no network:
       dwarf's text mentions writing .forge/retro-inbox.jsonl when a hard blocker hits.
   gate --verdict PASS|FAIL|UNKNOWN --qa-last FILE [--threshold Pn|none] [--known-issues OUT]
       Prints ONE tab-separated line
-          decision <TAB> worst_confirmed <TAB> n_confirmed <TAB> n_unlabelled <TAB> n_below
-      and, when findings were tolerated, writes them to OUT.
+          decision <TAB> worst_confirmed <TAB> n_confirmed <TAB> n_unlabelled <TAB> n_below <TAB> reason
+      (reason is findings, tests, or -) and, when findings were tolerated, writes them to OUT.
   outside --qa-last FILE [--threshold Pn|none]
       Prints a JSON list, one object per parsed finding: n (1-based), severity (P0-P3
       or null), status, blocking (the gate's per-finding rule at the threshold) and
@@ -111,10 +111,10 @@ Finding.__doc__ = (
     'tagged block with neither status word). severity: 0-3 or None. line: 1-based '
     'line number of the block start in the original text. text: the block, verbatim.')
 GateResult = collections.namedtuple(
-    'GateResult', 'decision worst n_confirmed n_unlabelled n_below tolerated')
+    'GateResult', 'decision worst n_confirmed n_unlabelled n_below tolerated reason')
 GateResult.__doc__ = (
-    'decision accept|fail|keep, worst most severe confirmed label or "-", counters, and the '
-    'tuple of tolerated Findings (CONFIRMED, labelled, below the threshold).')
+    'decision accept|fail|keep, worst most severe confirmed label or "-", counters, tolerated '
+    'Findings tuple, and reason (findings|tests|-).')
 
 
 # --- prompt text -----------------------------------------------------------------
@@ -215,6 +215,8 @@ _VERIFY = [
     '  FORGE_TESTS: RAN — FAILED: <names>',
     '  FORGE_TESTS: NOT NEEDED — why',
     '  FORGE_TESTS: COULD NOT RUN — why',
+    'Use FAILED only for tests failing because of this change; mention unrelated failures in',
+    'prose.',
 ]
 
 _SEVERITY = [
@@ -307,7 +309,8 @@ def _threshold_clause(rank: int, kind: str = 'task') -> list:
                  'finding is blocking.']
         if kind == 'sweep':                 # the verdict lines below say when a sweep fails
             lines[-2:] = ['not by itself justify FAIL.']
-    lines += ['File failing tests as a CONFIRMED finding at %s or worse (they block), not only in prose.' % name]
+    lines += ['File tests that fail with this change (new, or passed without it) as a CONFIRMED',
+              'finding at %s or worse (they block); mention unrelated failures in prose.' % name]
     return lines + ['A CONFIRMED finding without a severity tag counts as blocking.']
 
 
@@ -640,14 +643,15 @@ def gate(verdict: str, text: str, threshold=None) -> GateResult:
         decision = 'accept'
     else:
         decision = 'keep'
-    return GateResult(decision, worst, len(confirmed), unlabelled, len(below), below)
+    reason = 'findings' if blocking else ('tests' if failed_tests else '-')
+    return GateResult(decision, worst, len(confirmed), unlabelled, len(below), below, reason)
 
 
 # A reviewer's own word on whether its tests ran (#117) and whether any failed (#171). Only a
-# line of its own counts, the last one when it repeats: a quoted example in prose is not its
-# report. Plain `RAN`, `NOT NEEDED` and `COULD NOT RUN` change no verdict, while reporting failing
-# tests prevents `accept` and turns `PASS` into `FAIL`. The prompt's own `why` / `<names>` are
-# skipped as echoes.
+# line of its own counts, the last one when `tests_report` repeats: a quoted example in prose is
+# not its report. Plain `RAN`, `NOT NEEDED` and `COULD NOT RUN` change no verdict, while any
+# non-echo failing-tests report (`RAN — FAILED: <names>`, `FAILED — <names>`, or
+# `FORGE_TESTS_FAILED: <names>`) blocks `accept` and turns `PASS` into `FAIL`.
 _TESTS_LINE = re.compile(r'^[ \t>*_`+-]*FORGE_TESTS:[ \t*_`]*(.*?)[ \t*_`]*$', re.M)
 _TESTS_FAILED_LINE = re.compile(r'^[ \t>*_`+-]*FORGE_TESTS_FAILED:[ \t*_`]*(.*?)[ \t*_`]*$', re.M)
 _TESTS_VALUE = re.compile(r'(RAN|NOT[ _]NEEDED|COULD[ _]NOT[ _]RUN)\b(.*)$', re.I)
@@ -655,7 +659,6 @@ _TESTS_STATUS = {'RAN': 'ran', 'NOT NEEDED': 'not_needed', 'COULD NOT RUN': 'cou
 _TESTS_TRIM = ' \t—–-:()'
 _TESTS_REASON_MAX = 300
 _TESTS_FAILED_HEAD = re.compile(r'^FAILED(?:\b[ \t—–-]*:?[ \t—–-]*(.*))?$', re.I)
-_TESTS_FAILED_COUNT = re.compile(r'\b([1-9]\d*)[ \t]+(?:[A-Za-z_-]+[ \t]+)*failed\b', re.I)
 _TESTS_NO_FAIL = re.compile(r'^(?:none|no|0|nothing|<names>|-)$', re.I)
 
 
@@ -712,21 +715,25 @@ def tests_report(text) -> dict | None:
 
 
 def tests_failed(text) -> str | None:
-    """Failing test names (or a short summary) when the reply reports failing tests, else None."""
+    """Failing test names (or a short summary) when any non-echo line reports failing tests, else None."""
     normalized = (text or '').replace('\r\n', '\n')
-    report = tests_report(normalized)
-    if report and report['status'] in ('ran', 'unclear') and report['reason']:
-        reason = report['reason']
-        match = _TESTS_FAILED_HEAD.match(reason)
-        if match:
-            detail = _tests_reason(match.group(1) or '')
-            if not (detail and _TESTS_NO_FAIL.match(detail)):
-                return detail or 'FAILED'
-        elif report['status'] == 'ran':
-            count = _TESTS_FAILED_COUNT.search(reason)
-            if count:
-                return count.group(0)
-    for raw in reversed(_TESTS_FAILED_LINE.findall(normalized)):
+    for value in _TESTS_LINE.findall(normalized):
+        match = _TESTS_VALUE.match(value)
+        if not match:
+            status = 'unclear'
+            reason = _tests_reason(value)
+        else:
+            status = _TESTS_STATUS[match.group(1).upper().replace('_', ' ')]
+            reason = _tests_reason(match.group(2))
+            if _is_echoed_tests_reason(reason):
+                continue
+        if status in ('ran', 'unclear') and reason:
+            failed = _TESTS_FAILED_HEAD.match(reason)
+            if failed:
+                detail = _tests_reason(failed.group(1) or '')
+                if not (detail and _TESTS_NO_FAIL.match(detail)):
+                    return detail or 'FAILED'
+    for raw in _TESTS_FAILED_LINE.findall(normalized):
         detail = _tests_reason(raw)
         if detail and not _TESTS_NO_FAIL.match(detail):
             return detail
@@ -815,7 +822,7 @@ def _parser() -> argparse.ArgumentParser:
     retro.add_argument('--role', required=True, choices=RETRO_ROLES,
                        help='dwarf also hears about .forge/retro-inbox.jsonl')
     gate_parser = sub.add_parser(
-        'gate', help='print: decision (accept|fail|keep), worst_confirmed, n_confirmed, n_unlabelled, n_below')
+        'gate', help='print: decision (accept|fail|keep), worst_confirmed, n_confirmed, n_unlabelled, n_below, reason')
     gate_parser.add_argument('--verdict', required=True, choices=('PASS', 'FAIL', 'UNKNOWN'))
     gate_parser.add_argument('--qa-last', required=True, metavar='FILE', help="the QA reply")
     gate_parser.add_argument('--threshold', type=_threshold_arg, default=None, metavar='P0..P3|none',
@@ -825,6 +832,7 @@ def _parser() -> argparse.ArgumentParser:
                              help='write tolerated findings here when there are any')
     tests = sub.add_parser('tests', help='print what the reply says about its tests: status, a tab, the reason')
     tests.add_argument('--qa-last', required=True, metavar='FILE', help='the QA reply')
+    tests.add_argument('--failed', action='store_true', help='print reported failing test names, if any')
     outside = sub.add_parser('outside', help='print each finding\'s outside paths as JSON')
     outside.add_argument('--qa-last', required=True, metavar='FILE', help='the QA reply')
     outside.add_argument('--threshold', type=_threshold_arg, default=None, metavar='P0..P3|none',
@@ -850,6 +858,11 @@ def main(argv=None) -> int:
     if text is None:
         return 3
     if args.command == 'tests':
+        if args.failed:
+            failed = tests_failed(text)
+            if failed:
+                _emit(failed + '\n')
+            return 0
         report = tests_report(text)
         if report:
             _emit('%s\t%s\n' % (report['status'], report['reason'] or ''))
@@ -874,8 +887,8 @@ def main(argv=None) -> int:
             except OSError:
                 pass
             return 3
-    _emit('%s\t%s\t%d\t%d\t%d\n' % (result.decision, result.worst, result.n_confirmed,
-                                    result.n_unlabelled, result.n_below))
+    _emit('%s\t%s\t%d\t%d\t%d\t%s\n' % (result.decision, result.worst, result.n_confirmed,
+                                        result.n_unlabelled, result.n_below, result.reason))
     return 0
 
 

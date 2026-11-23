@@ -596,13 +596,8 @@ final_review_body() {
       fail)
         if [ "$verdict" = PASS ]; then
           verdict=FAIL
-          local g_worst g_unlab
-          g_worst="$(printf '%s' "$gate_line" | awk -F'\t' '{print $2}')"
-          g_unlab="$(printf '%s' "$gate_line" | awk -F'\t' '{print $4}')"
-          case "$g_worst:${g_unlab:-0}:$thr" in
-            -:0:*|P[123]:0:P0|P[23]:0:P1|P3:0:P2) gate_forced=tests ;;
-            *) gate_forced=finding ;;
-          esac
+          gate_forced="$(printf '%s' "$gate_line" | awk -F'\t' '{print $6}')"
+          : "${gate_forced:=finding}"
         fi ;;
     esac
   fi
