@@ -6,7 +6,8 @@
 # (Git Bash, latest Python 3.x): see the windows job below. Pushes to dev, and runs started by
 # hand (Actions → Tests → Run workflow, on any branch), also run Linux with the latest 3.x and
 # macOS (with the system Bash 3.2) with both: macOS runners are slow and GitHub runs few of them
-# at once. A pull request that only changes documentation (DOCS_ONLY below) runs no tests at all.
+# at once. A pull request that only changes documentation (DOCS_ONLY below) runs no tests at all;
+# one that only changes the website (site/) is checked by its own build in pages.yml instead.
 # Pull requests are merged into dev, and main only receives releases from dev, so a push to main
 # runs nothing more: its commits already passed on dev.
 #
@@ -52,10 +53,11 @@ jobs:
         run: |
           python3 - >> "$GITHUB_OUTPUT" <<'PY'
           import fnmatch, json, os, subprocess, sys
-          # Files no test reads. SKILL.md, references/ and site/ are not here: the suite checks them.
+          # Files no test reads. SKILL.md and references/ are not here: the suite checks them. site/ is: a
+          # pull request's site build (pages.yml, --strict) checks it, and the push to dev runs the suite.
           DOCS_ONLY = ['docs/*', '.changelog/*', 'README.md', 'CONTRIBUTING.md', 'SECURITY.md',
                        'CHANGELOG.md', 'LICENSE', 'tests/README.md', '.github/ISSUE_TEMPLATE/*',
-                       '.github/PULL_REQUEST_TEMPLATE.md']
+                       '.github/PULL_REQUEST_TEMPLATE.md', 'site/*']
           run = True
           if os.environ['EVENT'] == 'pull_request':
               changed = subprocess.run(['git', 'diff', '--name-only', '-z', 'HEAD^1', 'HEAD'], check=True,
