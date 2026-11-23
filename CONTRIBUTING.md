@@ -5,8 +5,8 @@ mostly about making a change easy to review and safe to merge.
 
 - [Before you start](#before-you-start)
 - [Set up](#set-up)
-- [Run the tests](#run-the-tests)
-- [Rules the code follows](#rules-the-code-follows)
+- [Testing](#testing)
+- [Code style and rules](#code-style-and-rules)
 - [Docs and the changelog](#docs-and-the-changelog)
 - [Commits and pull requests](#commits-and-pull-requests)
 - [Reporting bugs and security issues](#reporting-bugs-and-security-issues)
@@ -49,10 +49,10 @@ You don't need a model provider account to work on forge. The tests never call a
 [Development](docs/development.md) has the repository layout, and
 [`references/`](references/) holds the contracts the skill itself reads.
 
-## Run the tests
+## Testing
 
 ```bash
-bash tests/check.sh
+bash tests/check.sh        # or: npm test
 ```
 
 This syntax-checks every shell script, runs the forge suite and the forge-ui suite with every
@@ -90,7 +90,7 @@ listed in [`tests/windows-pending.txt`](tests/windows-pending.txt), which need p
 Windows port that have not landed yet. If your change makes one of them pass on Windows, delete
 its line.
 
-## Rules the code follows
+## Code style and rules
 
 These are the things reviewers check most often:
 
