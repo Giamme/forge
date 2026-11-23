@@ -1,6 +1,6 @@
 <!--
 title: Install
-description: Install forge from npm or a git checkout, check which agent CLIs it can reach, and keep it current.
+description: Install forge from npm or a git checkout on macOS, Linux or Windows, check which agent CLIs it can reach, and keep it current.
 source: docs/install.md
 station: install
 -->
@@ -9,7 +9,7 @@ station: install
 
 <h2>What you need</h2>
 <ul>
-  <li>macOS or Linux, with bash, git and Python 3.9 or later.</li>
+  <li>macOS, Linux or Windows, with bash, git and Python 3.9 or later. On Windows that means <a href="https://gitforwindows.org/">Git for Windows</a>, for git and Git Bash, and the regular Windows Python: no WSL needed (see <a href="#windows">On Windows</a>).</li>
   <li>At least one agent CLI to send work to: Claude Code (<code>claude</code>), Codex (<code>codex</code>), OpenClaude, OpenCode, Antigravity (<code>agy</code>) or Grok. forge uses the ones you already have; npm installs none of them.</li>
 </ul>
 
@@ -24,6 +24,16 @@ station: install
 <pre><span class="p">$ </span>git clone https://github.com/Giamme/forge.git ~/.claude/skills/forge
 <span class="p">$ </span>bash ~/.claude/skills/forge/scripts/forge-install.sh</pre>
 <p>Clone it anywhere; <code>~/.claude/skills/forge</code> is just the tidiest home, because Claude Code reads it directly. <code>--dry-run</code> shows what the installer would do. It never overwrites a real folder.</p>
+
+<h2 id="windows">On Windows</h2>
+<p>forge runs natively: in Git Bash, with Windows' own Python 3.9 or later on <code>PATH</code> (or reachable as <code>py -3</code>). Install it from npm as above, then start it with <code>forge</code> from Git Bash, or with <code>forge.cmd</code> from CMD or PowerShell.</p>
+<ul>
+  <li><code>forge install</code> links forge into each agent CLI with directory junctions instead of symlinks, so it needs neither Administrator rights nor Developer Mode.</li>
+  <li>If <code>python3</code> opens the Microsoft Store, forge writes its own small <code>python3</code> wrapper that points at your real Python.</li>
+  <li>If Git Bash isn't where Git for Windows normally puts it, set <code>FORGE_BASH</code> to your <code>bash.exe</code>.</li>
+  <li>A run's processes are stopped together through Windows Job Objects. That's forceful rather than graceful: on a timeout or Ctrl-C, helpers are ended at once instead of being asked to shut down.</li>
+</ul>
+<div class="callout"><span class="lamp is-amber"></span><div><p><strong>Prefer Linux behaviour?</strong> MSYS2 mode runs forge inside <a href="https://www.msys2.org/">MSYS2</a>, where process groups, signals, file locks and symlinks work as on Linux. Set <code>FORGE_WIN_MODE=msys2</code> and start forge from Git Bash as usual, or start it from an MSYS2 shell. It needs a little setup (packages, Git 2.48 or newer, Developer Mode) and has only been tried from a git checkout: the steps are in the <a href="https://github.com/Giamme/forge/blob/main/docs/install.md#windows-msys2-mode">full reference</a>.</p></div></div>
 
 <h2>Check which CLIs forge can reach</h2>
 <pre><span class="p">$ </span>bash "$(npm root -g)/@giamme/forge/scripts/forge-dispatch.sh" doctor

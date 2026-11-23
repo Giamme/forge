@@ -278,8 +278,7 @@ FORGE_VERDICT: <span class="bad">FAIL</span></div>
     <div>
       <h2>Built with forge</h2>
       <p class="lede">forge develops itself. Its own history is full of runs: tasks attempted, reviewed, retried and merged by forge, then checked by a person.</p>
-      <ol class="releases" aria-label="Releases, oldest first"><li><b>0.2</b></li><li><b>0.3</b></li><li><b>0.4</b></li><li><b>0.5</b></li><li><b>0.6</b></li><li><b>0.7</b></li><li><b>0.7.1</b></li><li><b>0.8</b></li><li><b>0.9</b></li><li><b>0.10</b></li><li><b>0.11</b></li><li><b>0.11.1</b></li><li><b>0.12</b></li><li><b>0.12.1</b></li><li><b>0.13</b></li><li><b>0.13.1</b></li><li><b>0.14</b></li><li><b>0.14.1</b></li><li><b>0.15</b></li><li><b>0.16</b></li><li><b>0.17</b></li><li><b>0.18</b></li><li><b>0.19</b></li><li><b>0.20</b></li></ol>
-      <p class="releases-note">24 releases since 6 October 2026.</p>
+      {{releases}}
     </div>
 <pre class="gitlog" data-nocopy><span class="c"># git log on forge's dev branch</span>
 <span class="h">d8a6eed</span> forge: merge sweep-1
@@ -297,17 +296,17 @@ FORGE_VERDICT: <span class="bad">FAIL</span></div>
   <div class="band-inner">
     <div class="band-head">
       <h2>What's coming</h2>
-      <p class="lede">forge moves fast and in the open. Here is what 0.20 brought and what's planned next, straight from the issue tracker.</p>
+      <p class="lede">forge moves fast and in the open. Here is what 0.22 brought and what's planned next, straight from the issue tracker.</p>
     </div>
     <div class="next">
       <div class="next-col">
-        <h3><span class="lamp is-green"></span>New in 0.20</h3>
+        <h3><span class="lamp is-green"></span>New in 0.22</h3>
         <ul>
-          <li><b>Findings you can trust</b><span>A filed, fixed, dismissed or swept finding no longer shows as open: one record per repository, issue states read from GitHub.</span><a href="https://github.com/Giamme/forge/issues/160">#160</a></li>
-          <li><b>Manage findings</b><span>Mark, tag, note and file them with <code>forge findings</code> or from forge-ui's Findings tab.</span><a href="https://github.com/Giamme/forge/issues/161">#161</a></li>
-          <li><b>A triage agent</b><span>On a model you name, it proposes duplicates, issues and fix plans; nothing changes until you approve.</span><a href="https://github.com/Giamme/forge/issues/161">#161</a></li>
-          <li><b>A sweep per finding</b><span>A plan that keeps growing sweeps its new findings in later rounds, never the same one twice.</span><a href="https://github.com/Giamme/forge/issues/152">#152</a></li>
-          <li><b>Edit memory from forge-ui</b><span>Add and edit learnings next to Forget, or with <code>forge memory add</code> and <code>edit</code>.</span><a href="https://github.com/Giamme/forge/issues/161">#161</a></li>
+          <li><b>forge runs on Windows</b><span>Natively from Git Bash with Windows' own Python: <code>forge</code> after an npm install, or <code>forge.cmd</code> from CMD or PowerShell.</span><a href="https://github.com/Giamme/forge/pull/168">#168</a></li>
+          <li><b>Or inside MSYS2</b><span>Set <code>FORGE_WIN_MODE=msys2</code> and process groups, signals, locks and symlinks behave as on Linux.</span><a href="https://github.com/Giamme/forge/pull/164">#164</a></li>
+          <li><b>Retry after a clearer brief</b><span>Edit a task's prompt, approach or threshold and the retry reviews the same code again against the new text.</span></li>
+          <li><b>Reviewers you asked for</b><span>A <code>plan</code> refused for unassigned tasks no longer leaves the fallback <code>opus</code> reviewer stuck on them.</span><a href="https://github.com/Giamme/forge/issues/178">#178</a></li>
+          <li><b>Tables that line up</b><span>Approval, status and results tables fit the plan's longest task id.</span><a href="https://github.com/Giamme/forge/issues/179">#179</a></li>
         </ul>
       </div>
       <div class="next-col">
@@ -317,6 +316,7 @@ FORGE_VERDICT: <span class="bad">FAIL</span></div>
           <li><b>Decomposition at every level</b><span>Goal to plans to tasks to subtasks, native to forge, each split a recorded decision within limits you set.</span><a href="https://github.com/Giamme/forge/issues/153">#153</a></li>
           <li><b>One way to split</b><span>The optional Fractal runtime goes once decomposition is native.</span><a href="https://github.com/Giamme/forge/issues/154">#154</a></li>
           <li><b>Steering a live dwarf</b><span>Prompting a running dwarf from forge-ui, harness by harness.</span><a href="https://github.com/Giamme/forge/issues/134">#134</a></li>
+          <li><b>Skills and agents</b><span>A catalogue of the skills you have installed, a marketplace, and named agents forge loads into each task.</span><a href="https://github.com/Giamme/forge/issues/233">#233</a></li>
         </ul>
       </div>
     </div>
