@@ -339,9 +339,12 @@ pre:hover .copy, .copy:focus-visible, .copy[data-state] { opacity: 1; }
 .tag .lamp { width: 7px; height: 7px; }
 .tag .model { color: var(--muted); }
 
+/* The hero's modules keep to the header's 1600px row (.desk-head-inner), so on a wide screen they
+   line up with the brand plate instead of the screen's edges. */
+.stage { --rail: max(24px, calc((100% - 1600px) / 2 + 24px)); }
 .float { position: absolute; z-index: 2; }
 .intro {
-  left: 24px;
+  left: var(--rail);
   top: 24px;
   width: min(520px, calc(100% - 48px));
   padding: 24px 26px 22px;
@@ -373,7 +376,7 @@ pre:hover .copy, .copy:focus-visible, .copy[data-state] { opacity: 1; }
 .intro-keys .works { font-size: 0.84rem; color: var(--muted); }
 
 .session {
-  right: 24px;
+  right: var(--rail);
   bottom: 24px;
   width: min(560px, calc(100% - 48px));
   overflow: hidden;
@@ -697,6 +700,12 @@ pre:hover .copy, .copy:focus-visible, .copy[data-state] { opacity: 1; }
 .index-cols li span { display: block; color: var(--ink-2); font-size: 0.9rem; }
 
 /* ---------- small screens ---------- */
+
+/* Centred on the stage's left side once the intro and the session no longer share columns;
+   narrower, the intro stays at the top so it clears the session in the bottom right. */
+@media (min-width: 1180px) {
+  .intro { top: 50%; transform: translateY(-50%); }
+}
 
 @media (max-width: 1100px) {
   .never-wrap, .steer, .measure, .selfbuilt, .close-inner { grid-template-columns: minmax(0, 1fr); }
