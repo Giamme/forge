@@ -23,8 +23,10 @@ forge runs agent CLIs on your machine and changes your repositories, so these ar
 
 - forge changing, committing to or pushing a branch without the approval
   [Safety](docs/safety.md) says it needs
-- a dwarf or reviewer escaping the sandbox or worktree forge gives it, other than through the
-  `--yolo-*` flags that ask for exactly that
+- a dwarf or reviewer getting more access than [Safety](docs/safety.md#what-each-role-can-do-per-harness)
+  says it has on its harness (escaping codex's sandbox, a reviewer changing the tree it judges
+  without forge noticing, a dwarf leaving its worktree), other than through the `--yolo-*` flags
+  that ask for exactly that
 - forge-ui serving files outside the run it was asked for, being reachable from another
   machine, or running script from run data
 - the installer or the npm package writing outside the places [Install](docs/install.md)
