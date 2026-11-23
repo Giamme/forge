@@ -5,7 +5,6 @@ subprocess, the way `forge runs rm` does, except the confirmation prompt, which 
 """
 import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
 import contextlib
-import fcntl
 import importlib.util
 import io
 import json

@@ -14,8 +14,8 @@ from test_forge import FAKE, ROOT
 import test_fractal as fixtures
 from forge_fractal import read_json, write_json
 from forge_fractal.cli import parser
-from forge_fractal.decomposition import DecisionStage, capacity, parse_decision, reserved_nodes
-from forge_fractal.execution import Tree, Halt
+from forge_fractal.decomposition import DecisionStage, parse_decision, reserved_nodes
+from forge_fractal.execution import Tree
 from forge_fractal.pipeline import retry
 from forge_fractal.selection import decomposition_settings, select
 

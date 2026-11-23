@@ -244,7 +244,7 @@ class AnswerTests(unittest.TestCase):
             self.assertEqual(set(after) - set(before), {'brief.late.json'}, tid)
             for name, body in before.items():
                 self.assertEqual(after[name], body, '%s %s' % (tid, name))
-            self.assertEqual((tdir_answers := self.plan / 'tasks' / tid / 'brief.answers.json').read_bytes(),
+            self.assertEqual((self.plan / 'tasks' / tid / 'brief.answers.json').read_bytes(),
                              sentinel)
             late = self.answers(tid, 'brief.late.json')
             self.assertEqual(set(late), {'q1'})
@@ -364,7 +364,7 @@ class AnswerTests(unittest.TestCase):
         # Not merged yet: a diff with an undeclared file still flags nothing.
         waiting = self.task('waiting', files='src/waiting.py', status='RUNNING', questions=('q1',))
         (waiting / 'changes.diff').write_text(diff_of('src/waiting.py', 'notes/extra.md'))
-        held = self.task('held', deps='waiting', questions=('q1',))
+        self.task('held', deps='waiting', questions=('q1',))
         held_before = self.files('held')
 
         result = self.cli('stale', self.plan, 'up')

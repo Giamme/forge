@@ -7,7 +7,6 @@ the skill directory whose scripts/ links back to the real ones. Fixtures are bor
 inherited, so ForgeTests does not run twice."""
 import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
 import importlib.util
-import json
 import os
 from pathlib import Path
 import subprocess

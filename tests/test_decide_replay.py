@@ -25,7 +25,7 @@ import forge_dataset as dataset  # noqa: E402
 import forge_decide  # noqa: E402
 from forge_decide import cli, providers, replay, sites  # noqa: E402
 from forge_jev import client, questions  # noqa: E402
-from test_decide_transports import KEY, QUESTIONS, Server, TransportCase  # noqa: E402
+from test_decide_transports import KEY, QUESTIONS, TransportCase  # noqa: E402
 
 T0 = 1_760_000_000.0
 # src/b.py and src/c.py are edited by every task's passing attempt; d and e never are.

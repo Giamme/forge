@@ -2,7 +2,6 @@
 the dataset says, and read by `forge du`, `forge runs compact` and forge-ui as the index of where to look."""
 import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
 import fcntl
-import json
 import os
 from pathlib import Path
 import shutil

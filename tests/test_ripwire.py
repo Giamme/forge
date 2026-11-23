@@ -26,7 +26,6 @@ print('<context>条件 fresh evidence</context>')
 
 
 class RipwireIntegrationTests(unittest.TestCase):
-    setUp = fixtures.ForgeTests.setUp
     git = fixtures.ForgeTests.git
     run_script = fixtures.ForgeTests.run_script
     solo = fixtures.ForgeTests.solo

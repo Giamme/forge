@@ -6,7 +6,7 @@ import threading
 import time
 import uuid
 
-from . import SCRIPTS, read_json, write_json
+from . import read_json, write_json
 import forge_proc
 
 

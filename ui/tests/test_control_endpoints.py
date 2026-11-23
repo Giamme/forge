@@ -2,16 +2,14 @@
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
-import tempfile
 import time
 import unittest
 from unittest.mock import patch
 
-from forge_ui import control, reader, server as ui_server
-from test_control_api import ControlApiCase, FIXTURES, ROOT
+from forge_ui import control, server as ui_server
+from test_control_api import ControlApiCase, ROOT
 
 FP = 'a1b2c3d4e5f6'
 FP2 = '0123456789ab'

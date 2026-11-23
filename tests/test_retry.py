@@ -3,7 +3,6 @@
 Uses the same fake agent CLI as test_forge.py, driven per call through SCENARIO. The
 fixtures are borrowed rather than inherited: subclassing ForgeTests would run all of its
 tests again under this class."""
-import json
 from pathlib import Path
 import unittest
 

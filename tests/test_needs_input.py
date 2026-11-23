@@ -6,7 +6,6 @@ cases drive forge-parallel.sh with the fake agent CLI from test_forge.py; the sc
 the stand-in worker from test_control_requests.py. Fixtures are borrowed, not inherited."""
 import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
 import os
-from pathlib import Path
 import unittest
 
 import test_control_requests as control_fixtures

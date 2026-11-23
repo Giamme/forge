@@ -280,8 +280,6 @@ class ConfinementTests(ProposalCase):
         proposals.reject(self.plan, 'p1', actor='ada', reason='not now')
         self.propose(change('b', prompt=NEW_B))
         proposals.apply(self.plan, 'p3', self.digest('p3'))
-        body = lambda pid, state, tasks, group='g1': {   # noqa: E731
-            'name': 'brief_diff', 'pid': pid, 'scope': 'wave', 'group': group, 'state': state, 'tasks': tasks}
         events = [{key: value for key, value in item.items() if key != 'task'} for item in self.brief_diffs()]
         self.assertEqual(
             [(item['pid'], item['state'], item['tasks']) for item in events],

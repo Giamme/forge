@@ -18,7 +18,6 @@ import test_triage
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-import forge_side  # noqa: E402
 from forge_findings import apply as approval, store, triage  # noqa: E402
 
 PLAN = test_triage.PLAN

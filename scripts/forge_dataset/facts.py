@@ -25,11 +25,10 @@ from __future__ import annotations
 import json
 import os
 import re
-import sys
 from collections import Counter, defaultdict
 
 from . import connect, dataset_dir, is_side_role
-from .export import Runs, Store, _ending_qa, _gate_decision, not_an_attempt, shadow_pairs
+from .export import Runs, Store, _ending_qa, not_an_attempt, shadow_pairs
 
 FACTS = {'reach': ('main', 'realistic', 'unusual'), 'origin': ('new', 'existing'),
          'evidence': ('ran', 'traced', 'suspected')}

@@ -7,7 +7,6 @@ outcome is `INFRA <cause> <harness> <model> [retry_after]`. The real routing and
 exercised in test_infra_fallback.py."""
 import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 import json
-from pathlib import Path
 import subprocess
 import time
 import unittest
@@ -256,7 +255,7 @@ class AskTests(RecoveryBase):
         (self.plan / 'nopeer').write_text('')
         self.env['FORGE_INFRA_BACKOFF'] = '3'
         self.task('a', [f'INFRA provider_down {SOL}', 'PASS'], dwarf='sol')
-        self.task('b', [f'INFRA usage_limit codex gpt-6-astra 8', 'PASS'], dwarf='astra', hold=True)
+        self.task('b', ['INFRA usage_limit codex gpt-6-astra 8', 'PASS'], dwarf='astra', hold=True)
         scheduler, scopes = self.live('--infra-retries', 2)
         self.assertEqual((scopes[0]['class'], scopes[0]['tasks']), ('provider_down', ['a']))
         started = time.time()

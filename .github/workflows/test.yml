@@ -12,7 +12,8 @@
 #
 # The whole suite takes about 40 minutes on one runner, so each OS and Python pair splits it into
 # 4 shards (tests/run_tests.py --shard). The "Tests passed" job at the end is the one check to
-# require for merging: it fails when any shard did, and passes for a documentation-only change.
+# require for merging: it fails when the lint job or any test job did, and passes for a
+# documentation-only change that lints clean.
 # The msys2 job (Windows MSYS2 mode, a short list of tests) runs with the windows job but is not
 # part of "Tests passed" yet: it becomes required once it has been reliable for a while.
 
@@ -71,6 +72,15 @@ jobs:
           print('run=' + ('true' if run else 'false'))
           print('matrix=' + json.dumps({'include': include}))
           PY
+
+  # Pyflakes rules only (ruff.toml): unused imports and variables, undefined names, repeated dict
+  # keys. Takes seconds, and runs on every event, documentation-only pull requests included.
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: pipx run ruff==0.16.9 check --output-format github .
 
   check:
     name: ${{ matrix.os }} · Python ${{ matrix.python }} · ${{ matrix.shard }}/4
@@ -166,18 +176,20 @@ jobs:
   passed:
     name: Tests passed
     if: always()
-    needs: [plan, check, windows]
+    needs: [plan, lint, check, windows]
     runs-on: ubuntu-latest
     steps:
       - name: Every shard passed
         env:
           PLAN: ${{ needs.plan.result }}
+          LINT: ${{ needs.lint.result }}
           RUN: ${{ needs.plan.outputs.run }}
           CHECK: ${{ needs.check.result }}
           WINDOWS: ${{ needs.windows.result }}
         run: |
-          echo "plan: $PLAN, tests needed: $RUN, shards: $CHECK, windows: $WINDOWS"
+          echo "plan: $PLAN, lint: $LINT, tests needed: $RUN, shards: $CHECK, windows: $WINDOWS"
           [ "$PLAN" = success ] || exit 1
+          [ "$LINT" = success ] || exit 1
           if [ "$RUN" = false ]; then echo "documentation only: no tests to run"; exit 0; fi
           [ "$CHECK" = success ] || exit 1
           [ "$WINDOWS" = success ]

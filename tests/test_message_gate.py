@@ -9,7 +9,6 @@ STUB_REQUESTS, the way tests/test_decide_wire.py spies on client._canonical.
 """
 import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys

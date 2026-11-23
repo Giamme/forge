@@ -7,7 +7,6 @@ dispatch gets, which is how the frozen gates are observed.
 import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
 import importlib.util
 import json
-import os
 from pathlib import Path
 import re
 import shutil

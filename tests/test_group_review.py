@@ -7,13 +7,11 @@ import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of 
 import json
 import os
 from pathlib import Path
-import re
 import sqlite3
 import subprocess
 import sys
 import unittest
 
-import test_forge as fixtures
 from test_group_member import MemberCase
 
 ROOT = Path(__file__).resolve().parents[1]

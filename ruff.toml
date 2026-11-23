@@ -1,0 +1,6 @@
+# `ruff check .` from the repository root. CI runs it too (.github/workflows/test.yml, "Lint").
+# Only the pyflakes rules: mistakes such as unused imports or undefined names, no style rules.
+target-version = "py39"
+
+[lint]
+select = ["F"]

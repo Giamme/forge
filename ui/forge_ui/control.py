@@ -1646,7 +1646,6 @@ def _findings_action(ctx):
     `--text-file`). `findings_lock` makes a second write 409 `busy`. Exit 3 is 409 with the CLI's
     message. A successful call drops the project screen's issues listings and its run cache.
     """
-    from forge_ui import projects
     op = ctx.parts[0]
     ctx.route = 'findings ' + op
     try:

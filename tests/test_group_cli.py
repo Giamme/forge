@@ -195,7 +195,7 @@ class GroupCliTests(unittest.TestCase):
 
     def test_set_refuses_groups_that_changed_since_plan_and_bad_input(self):
         self.put('groups.tsv', HEADER + 'w1\tgroup\topus:high\ta,b,c\tWave 1\t-\n')
-        fg = self.freeze()
+        self.freeze()
         before = (self.plan / 'groups.frozen').read_text()
         self.put('groups.tsv', HEADER + 'w1\tgroup\topus:high\ta,b\tWave 1\t-\n')    # a member taken out by hand
         refused = self.group('set', self.plan, 'w1', '--goal', 'G')
