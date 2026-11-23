@@ -82,7 +82,7 @@ do_group() (
   # qa.round-<n>.last stay: the next prompt quotes them.
   rm -f "$G/qa.last" "$G/qa.input" "$G/qa.out" "$G/qa.gate" "$G/known_issues.md" "$G/infra.txt" "$G/decision.md" \
         "$G/conflict.files" "$G/candidate.base" "$G/candidate.commit" "$G/fingerprint" "$G/combined.diff" \
-        "$G/merge.out" "$G/members.paths" "$G/review.base" "$G/invalidated.reason"
+        "$G/merge.out" "$G/members.paths" "$G/review.base" "$G/review.deps" "$G/invalidated.reason"
   group_set_status "$G" REVIEWING
   REPO="$(cat "$PLAN/repo")"; run_id="$(cat "$PLAN/run_id")"; wt_root="$(cat "$PLAN/wt_root")"
   # --timeout given to run/retry is kept in the plan and wins over the environment, as for a task.
@@ -176,6 +176,8 @@ do_group() (
     note "group $gid: could not make the review snapshot"
     group_end "$G" "$round" ERROR "$qa"; return 0
   fi
+  run_worktree_setup "$PLAN" "$REPO" "$cand" "$G" "group-$gid"
+  forge_review_deps "$cand" "$snap" "$G/review.deps"
   cand_fp="$(forge_fingerprint "$cand")" || { group_end "$G" "$round" ERROR "$qa"; return 0; }
   # A commit: an untracked file the reviewer leaves behind merges nothing, so only tracked content counts (#95).
   snap_fp="$(forge_fingerprint "$snap" --tracked)" || { group_end "$G" "$round" ERROR "$qa"; return 0; }
