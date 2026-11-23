@@ -437,6 +437,25 @@ window.ForgePanel = (() => {
     muted(s, line);
     if (run.retro.text != null) details(s, 'Report', run.retro.text, 'run-retro');
   }
+  // the Handoff section (forge handoff): which session drives the run, then the notes sessions left, newest first.
+  // Notes are plain text, like the retro report.
+  function handoffSection(host, run) {
+    const h = run.handoff;
+    if (!h || typeof h !== 'object') return;
+    const s = section(host, 'Handoff');
+    muted(s, 'Driver: ' + (RM.handoffDriverLine(h.driver) || 'none recorded'));
+    const notes = list(h.notes);
+    if (!notes.length) return;
+    const ul = el('ul', undefined, 'handoff-notes');
+    for (const n of notes) {
+      const li = el('li');
+      li.append(el('span', time(n.at) + (n.actor ? ' · ' + n.actor : ''), 'muted'), el('div', n.text));
+      ul.append(li);
+    }
+    s.append(ul);
+    const total = num(h.notes_total);
+    if (total !== null && total > notes.length) muted(s, `${total - notes.length} older notes in handoff.notes.jsonl`);
+  }
   // the run's record: what it was asked, how it was set up, and what verification printed (the header names and counts it)
   function runRecord(host, ctx) {
     const run = ctx.run, solo = run.kind === 'solo';
@@ -450,6 +469,7 @@ window.ForgePanel = (() => {
       ['Command', run.verification && run.verification.command, true]]);
     details(host, 'Request', display(run.request), 'run-request');
     retroSection(host, run);
+    handoffSection(host, run);
     if (!solo) details(host, 'Waves', list(run.waves).map((ids, i) => `${i + 1}: ${list(ids).join(', ')}`).join('\n') || '—', 'waves');
     if (run.verification && run.verification.log_tail != null) details(host, 'Verification output', run.verification.log_tail, 'verification-output');
   }

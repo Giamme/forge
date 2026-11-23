@@ -110,6 +110,9 @@ already started` when the task had already started. The marker's reason (`change
 `dependent`) is the badge's tooltip. The summaries switch sits with that list.
 A run with a retro report or notes shows a Retro section in its run details: the note counts on one line,
 then the report, collapsed.
+A run someone drove with `forge handoff` shows a Handoff section there too: the driver (harness,
+session, since when, last seen, and *stale* once it is over 12 hours old, when another session may
+claim the run), then the session notes, newest first.
 
 A task that stopped `NEEDS_INPUT` opens *Waiting for you*: the question from `tasks/<id>/needs_input.md`,
 and a `forge-parallel.sh retry … --answer` command to copy. On a plan, when the server can write, an

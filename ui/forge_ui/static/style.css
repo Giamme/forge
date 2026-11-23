@@ -608,6 +608,9 @@ body[data-tasks=closed] .tasks-module .module-head { border-bottom: 0; }
 .insp-section { margin: var(--s-5) 0 0; }
 .inspector > .insp-section:first-child { margin-top: var(--s-1); }
 .insp-section h3 { margin: 0 0 var(--s-2); }
+.handoff-notes { list-style: none; margin: var(--s-2) 0 0; padding: 0; }
+.handoff-notes li { margin: 0 0 var(--s-2); }
+.handoff-notes li > div { white-space: pre-wrap; overflow-wrap: anywhere; }
 .fields { display: grid; grid-template-columns: minmax(96px, 128px) minmax(0, 1fr); gap: 5px var(--s-4); margin: 0 0 var(--s-3); font-size: var(--t-sm); }
 dt { color: var(--muted); }
 dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; font-variant-numeric: tabular-nums; }
