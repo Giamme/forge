@@ -8,6 +8,7 @@ ready for GitHub Pages.
     python3 site/build.py            # build into site/_site
     python3 site/build.py --serve    # build, then serve it on http://localhost:8000
     python3 site/build.py --out DIR  # build somewhere else
+    python3 site/build.py --strict   # also fail on a warning, such as a page behind VERSION
 """
 
 from __future__ import annotations
@@ -74,6 +75,9 @@ STATION_PAGE = {
 }
 
 HEADER_RE = re.compile(r"\A\s*<!--(.*?)-->\s*", re.S)
+RELEASE_RE = re.compile(r"^## \[(\d+(?:\.\d+)+)\] - (\d{4}-\d{2}-\d{2})", re.M)
+MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September",
+          "October", "November", "December"]
 
 
 def read_page(path: Path) -> tuple[dict[str, str], str]:
@@ -155,7 +159,50 @@ def registry_json() -> list[dict[str, str]]:
     return rows
 
 
-def build() -> int:
+def releases() -> list[tuple[str, str]]:
+    """Every release in CHANGELOG.md as (version, date), oldest first."""
+    text = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+    return list(reversed(RELEASE_RE.findall(text)))
+
+
+def render_releases() -> str:
+    """The home page's release strip and its note, from CHANGELOG.md, so a release needs no edit here."""
+    found = releases()
+    if not found:
+        return ""
+    items = "".join(f"<li><b>{html.escape(version)}</b></li>" for version, _ in found)
+    year, month, day = found[0][1].split("-")
+    first = f"{int(day)} {MONTHS[int(month) - 1]} {year}"
+    return (
+        f'<ol class="releases" aria-label="Releases, oldest first">{items}</ol>\n'
+        f'      <p class="releases-note">{len(found)} releases since {first}.</p>'
+    )
+
+
+def minor(version: str) -> str:
+    """0.22.1 -> 0.22: the hand-written pages name the minor release a patch belongs to."""
+    return ".".join(version.split(".")[:2])
+
+
+def stale_pages(version: str) -> list[str]:
+    """Hand-written parts that still describe an older release than VERSION."""
+    want = minor(version)
+    problems = []
+    home = (SITE / "pages" / "index.html").read_text(encoding="utf-8")
+    match = re.search(r"New in (\d+(?:\.\d+)+)", home)
+    if not match or minor(match.group(1)) != want:
+        problems.append(f'pages/index.html: "New in {match.group(1) if match else "?"}" should be New in {want}')
+    roadmap = (SITE / "pages" / "docs" / "roadmap.html").read_text(encoding="utf-8")
+    match = re.search(r"<tbody>\s*<tr><td><code>(\d+(?:\.\d+)+)</code>", roadmap)
+    if not match or minor(match.group(1)) != want:
+        problems.append(
+            f"pages/docs/roadmap.html: the newest release listed is {match.group(1) if match else '?'}, "
+            f"not {want}"
+        )
+    return problems
+
+
+def build(strict: bool = False) -> int:
     layout = (SITE / "layout.html").read_text(encoding="utf-8")
     version = (REPO / "VERSION").read_text(encoding="utf-8").strip()
 
@@ -164,6 +211,7 @@ def build() -> int:
     OUT.mkdir(parents=True)
 
     known = {slug for slug, _ in docs_order()}
+    warnings = 0
     built = 0
     for path in sorted((SITE / "pages").rglob("*.html")):
         rel = path.relative_to(SITE / "pages")
@@ -174,6 +222,7 @@ def build() -> int:
 
         if is_doc and slug not in known:
             print(f"warning: {rel} is not in the docs sidebar", file=sys.stderr)
+            warnings += 1
 
         if is_doc:
             # tables scroll sideways on a narrow screen instead of squeezing their code
@@ -208,6 +257,7 @@ def build() -> int:
             .replace("{{nav_home}}", "" if is_doc else ' aria-current="page"')
             .replace("{{nav_docs}}", ' aria-current="page"' if is_doc else "")
             .replace("{{version}}", html.escape(version))
+            .replace("{{releases}}", render_releases())
             .replace("{{github}}", GITHUB)
             .replace("{{root}}", root)
         )
@@ -228,9 +278,14 @@ def build() -> int:
     problems = check_links()
     for problem in problems:
         print(f"broken link: {problem}", file=sys.stderr)
+    # A warning, not an error: the site still deploys after a release, but the suite
+    # (tests/test_site.py) and a pull request's site build (--strict) fail until the pages catch up.
+    for problem in stale_pages(version):
+        print(f"warning: behind VERSION {version}: {problem}", file=sys.stderr)
+        warnings += 1
     where = OUT.relative_to(REPO) if OUT.is_relative_to(REPO) else OUT
     print(f"built {built} pages into {where}")
-    return 1 if problems else 0
+    return 1 if problems or (strict and warnings) else 0
 
 
 def check_links() -> list[str]:
@@ -252,11 +307,13 @@ def main() -> int:
     parser.add_argument("--serve", action="store_true", help="serve the built site on localhost")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--out", type=Path, help="build here instead of site/_site (the tests use a temp dir)")
+    parser.add_argument("--strict", action="store_true",
+                        help="fail on any warning, such as a page that describes an older release than VERSION")
     args = parser.parse_args()
     if args.out:
         global OUT
         OUT = args.out.resolve()
-    status = build()
+    status = build(strict=args.strict)
     if args.serve:
         import functools
         import http.server

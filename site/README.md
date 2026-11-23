@@ -54,8 +54,18 @@ track. A new docs page also needs an entry in `DOCS_NAV`.
 
 Nothing on the site is a screenshot: the run plate, the run cloud, the diff, the approval table
 and the leaderboard are built in the page, from labelled demo data. The spec composer reads
-`registry.tsv`, the version comes from `VERSION`, and the display face is forge-ui's own, so none
-of them need updating here.
+`registry.tsv`, the version comes from `VERSION`, the home page's release strip comes from
+`CHANGELOG.md`'s headings, and the display face is forge-ui's own, so none of them need updating
+here.
+
+## On every release
+
+Two parts are written by hand and need a line each release: the home page's "New in X.Y" list
+and the "Recently released" table on `docs/roadmap.html` (and "Planned", when it changed). The
+build warns when either still names an older minor release than `VERSION`; `tests/test_site.py`
+fails on that warning and so does a pull request's site build (`--strict`), so a release PR can't
+merge with the site behind. The deploy after a release only warns, so the site still goes out.
+Update them in the release PR, next to the changelog.
 
 The design follows forge-ui's [DESIGN.md](../DESIGN.md). The site's direction contracts (built with
 the Impeccable skill) are in `.impeccable/surfaces/site-pages-*.md`.
