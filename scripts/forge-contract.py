@@ -37,11 +37,14 @@ DEFAULT_THRESHOLD, P2, and `none` (any case) means P3, nothing tolerated.
 
 The gate. A finding is BLOCKING when it is CONFIRMED with a severity at the threshold or
 worse, CONFIRMED with no severity, or UNSTATED with a severity at the threshold or worse.
-PLAUSIBLE findings never block. decision is one of:
-  - `fail` when the verdict is PASS and at least one finding is blocking;
-  - `accept` when ALL of these hold: the verdict is FAIL; at least one CONFIRMED finding
-    exists (a FAIL with none stays a FAIL); n_unlabelled == 0, and every CONFIRMED
-    finding carries a P0-P3 label strictly less severe than the threshold;
+PLAUSIBLE findings never block. Reported failing tests (`FORGE_TESTS: RAN — FAILED: <names>`,
+`FORGE_TESTS: FAILED — <names>`, or `FORGE_TESTS_FAILED: <names>`) also block, regardless of
+finding severities. decision is one of:
+  - `fail` when the verdict is PASS and at least one finding is blocking or failing tests
+    are reported;
+  - `accept` when ALL of these hold: the verdict is FAIL; no failing tests are reported;
+    at least one CONFIRMED finding exists (a FAIL with none stays a FAIL); n_unlabelled == 0,
+    and every CONFIRMED finding carries a P0-P3 label strictly less severe than the threshold;
   - `keep` otherwise, and always for UNKNOWN.
 The decision is a statement about the findings only; wiring it into a verdict is the
 caller's job. Fail-safe means blocking: anything the parser cannot read confidently
@@ -73,8 +76,9 @@ them, and still when the facts brace is what closes the line. `{outside=…}` is
 way, on its own or beside `{tasks=…}`, in either order.
 
 Phantom findings. A reviewer may echo the contract it was given. Three layers keep that
-from creating findings or blocking: (1) FORGE_VERDICT, FORGE_LEARNING, FORGE_TESTS, FORGE_RETRO and
-FORGE_BLOCKED text is removed before parsing (the verdict line itself says "CONFIRMED"); (2) any line that is a
+from creating findings or blocking: (1) FORGE_VERDICT, FORGE_LEARNING, FORGE_TESTS,
+FORGE_TESTS_FAILED, FORGE_RETRO and FORGE_BLOCKED text is removed before parsing (the verdict
+line itself says "CONFIRMED"); (2) any line that is a
 contiguous fragment of this module's own contract text (all parts, kinds and thresholds,
 whitespace-collapsed, at least 25 characters, list marker ignored) is removed, which
 covers the example bullet, the severity definitions and the instructions even when
@@ -208,6 +212,7 @@ _VERIFY = [
     'it elsewhere and do not install anything: report that it could not run.',
     'Say whether tests ran, on a line of its own before the verdict, in exactly one of these forms:',
     '  FORGE_TESTS: RAN',
+    '  FORGE_TESTS: RAN — FAILED: <names>',
     '  FORGE_TESTS: NOT NEEDED — why',
     '  FORGE_TESTS: COULD NOT RUN — why',
 ]
@@ -302,6 +307,7 @@ def _threshold_clause(rank: int, kind: str = 'task') -> list:
                  'finding is blocking.']
         if kind == 'sweep':                 # the verdict lines below say when a sweep fails
             lines[-2:] = ['not by itself justify FAIL.']
+    lines += ['File failing tests as a CONFIRMED finding at %s or worse (they block), not only in prose.' % name]
     return lines + ['A CONFIRMED finding without a severity tag counts as blocking.']
 
 
@@ -419,7 +425,7 @@ def dwarf_text(pre_review: bool = False, verify_after_merge: bool = False) -> st
 
 # --- parsing ---------------------------------------------------------------------
 
-_PROTOCOL = re.compile(r'FORGE_(?:VERDICT|LEARNING|TESTS|RETRO|BLOCKED):.*$')
+_PROTOCOL = re.compile(r'FORGE_(?:VERDICT|LEARNING|TESTS(?:_FAILED)?|RETRO|BLOCKED):.*$')
 _QUOTE = re.compile(r'^\s*(?:>[ \t]?)+')
 _MARKER = re.compile(r'^(?:[-*+•–]|\d{1,3}[.)]|#{1,6})\s+')
 _HEADING = re.compile(r'^ {0,3}#{1,6}[ \t]+\S')
@@ -616,7 +622,7 @@ def finding_blocks(finding, threshold=None) -> bool:
 
 def gate(verdict: str, text: str, threshold=None) -> GateResult:
     """Check a QA verdict against its findings: a FAIL may be accepted as
-    PASS-with-known-issues, a PASS that lists a blocking finding fails."""
+    PASS-with-known-issues, a PASS that lists a blocking finding or failing tests fails."""
     rank = _rank(threshold)
     findings = parse_findings(text)
     confirmed = [f for f in findings if f.status == 'CONFIRMED']
@@ -625,10 +631,11 @@ def gate(verdict: str, text: str, threshold=None) -> GateResult:
                   + sum(1 for f in findings if f.status == 'UNSTATED'))
     worst = 'P%d' % min(f.severity for f in labelled) if labelled else '-'
     below = tuple(f for f in labelled if f.severity > rank)
+    failed_tests = bool(tests_failed(text))
     blocking = any(finding_blocks(f, threshold) for f in findings)
-    if verdict == 'PASS' and blocking:
+    if verdict == 'PASS' and (blocking or failed_tests):
         decision = 'fail'
-    elif (verdict == 'FAIL' and confirmed and unlabelled == 0
+    elif (verdict == 'FAIL' and not failed_tests and confirmed and unlabelled == 0
           and len(below) == len(confirmed)):
         decision = 'accept'
     else:
@@ -636,19 +643,32 @@ def gate(verdict: str, text: str, threshold=None) -> GateResult:
     return GateResult(decision, worst, len(confirmed), unlabelled, len(below), below)
 
 
-# A reviewer's own word on whether its tests ran (#117). Only a line of its own counts, the last one
-# when it repeats: a quoted example in prose is not its report. Unlike the verdict, nothing gates on
-# this line and it exists to be seen, so markup and any separator are forgiven, and a line that says
-# something else is `unclear` rather than silence. The forms' own "why" is the prompt echoed.
+# A reviewer's own word on whether its tests ran (#117) and whether any failed (#171). Only a
+# line of its own counts, the last one when it repeats: a quoted example in prose is not its
+# report. Plain `RAN`, `NOT NEEDED` and `COULD NOT RUN` change no verdict, while reporting failing
+# tests prevents `accept` and turns `PASS` into `FAIL`. The prompt's own `why` / `<names>` are
+# skipped as echoes.
 _TESTS_LINE = re.compile(r'^[ \t>*_`+-]*FORGE_TESTS:[ \t*_`]*(.*?)[ \t*_`]*$', re.M)
+_TESTS_FAILED_LINE = re.compile(r'^[ \t>*_`+-]*FORGE_TESTS_FAILED:[ \t*_`]*(.*?)[ \t*_`]*$', re.M)
 _TESTS_VALUE = re.compile(r'(RAN|NOT[ _]NEEDED|COULD[ _]NOT[ _]RUN)\b(.*)$', re.I)
 _TESTS_STATUS = {'RAN': 'ran', 'NOT NEEDED': 'not_needed', 'COULD NOT RUN': 'could_not_run'}
 _TESTS_TRIM = ' \t—–-:()'
 _TESTS_REASON_MAX = 300
+_TESTS_FAILED_HEAD = re.compile(r'^FAILED(?:\b[ \t—–-]*:?[ \t—–-]*(.*))?$', re.I)
+_TESTS_FAILED_COUNT = re.compile(r'\b([1-9]\d*)[ \t]+(?:[A-Za-z_-]+[ \t]+)*failed\b', re.I)
+_TESTS_NO_FAIL = re.compile(r'^(?:none|no|0|nothing|<names>|-)$', re.I)
 
 
 def _tests_reason(text: str) -> str | None:
     return ''.join(ch for ch in text.strip(_TESTS_TRIM) if ch.isprintable())[:_TESTS_REASON_MAX] or None
+
+
+def _is_echoed_tests_reason(reason: str | None) -> bool:
+    low = (reason or '').strip().lower()
+    if low == 'why':
+        return True
+    match = _TESTS_FAILED_HEAD.match(low)
+    return bool(match and (match.group(1) or '').strip() == '<names>')
 
 
 # An implementer's report that a fix lives outside the task's files (#149). Same leading
@@ -686,9 +706,31 @@ def tests_report(text) -> dict | None:
             report = dict(status='unclear', reason=_tests_reason(value))
             continue
         reason = _tests_reason(match.group(2))
-        if (reason or '').lower() != 'why':
+        if not _is_echoed_tests_reason(reason):
             report = dict(status=_TESTS_STATUS[match.group(1).upper().replace('_', ' ')], reason=reason)
     return report
+
+
+def tests_failed(text) -> str | None:
+    """Failing test names (or a short summary) when the reply reports failing tests, else None."""
+    normalized = (text or '').replace('\r\n', '\n')
+    report = tests_report(normalized)
+    if report and report['status'] in ('ran', 'unclear') and report['reason']:
+        reason = report['reason']
+        match = _TESTS_FAILED_HEAD.match(reason)
+        if match:
+            detail = _tests_reason(match.group(1) or '')
+            if not (detail and _TESTS_NO_FAIL.match(detail)):
+                return detail or 'FAILED'
+        elif report['status'] == 'ran':
+            count = _TESTS_FAILED_COUNT.search(reason)
+            if count:
+                return count.group(0)
+    for raw in reversed(_TESTS_FAILED_LINE.findall(normalized)):
+        detail = _tests_reason(raw)
+        if detail and not _TESTS_NO_FAIL.match(detail):
+            return detail
+    return None
 
 
 def outside_report(text: str, threshold=None) -> list:

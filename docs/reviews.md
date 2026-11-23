@@ -15,10 +15,15 @@ FORGE_VERDICT: FAIL   — at least one CONFIRMED finding at the blocking thresho
 
 forge decides the verdict from the findings, at a blocking threshold: `P2` unless
 `--qa-threshold` sets another. A CONFIRMED finding at the threshold or worse, or one with no
-severity, blocks: a PASS that lists one becomes FAIL. A CONFIRMED finding below the threshold
-never blocks: a FAIL made only of those is accepted, and either way they are recorded in
-`known_issues.md`, which `forge issues` and the sweep pick up. PLAUSIBLE findings never block.
-`--qa-threshold P3` (or `none`) makes every CONFIRMED finding block.
+severity, blocks: a PASS that lists one becomes FAIL. Reporting failing tests blocks the same way:
+a FAIL whose reply reports failing tests (`FORGE_TESTS: RAN — FAILED: <names>`, `FORGE_TESTS:
+FAILED — <names>`, or `FORGE_TESTS_FAILED: <names>`) stays FAIL even when every CONFIRMED finding
+is below the threshold, and a PASS that reports failing tests becomes FAIL. The prompt asks the
+reviewer to file failing tests as a blocking CONFIRMED finding at the threshold or worse rather
+than leaving them in prose alone. A CONFIRMED finding below the threshold never blocks on its own:
+a FAIL made only of those (with no failing tests reported) is accepted, and either way they are
+recorded in `known_issues.md`, which `forge issues` and the sweep pick up. PLAUSIBLE findings never
+block. `--qa-threshold P3` (or `none`) makes every CONFIRMED finding block.
 
 Only a standalone final line counts, and the parser is shared by every runner (solo,
 decomposed, Fractal's QA checkpoint). The prompt shows each verdict with a dash and its
@@ -29,10 +34,12 @@ failure — excluded from integration and flagged. Merging a diff whose reviewer
 a conclusion would defeat the point of reviewing it, so the ambiguous case fails safe.
 
 Before the verdict, a reviewer says whether its tests ran: `FORGE_TESTS: RAN`,
-`FORGE_TESTS: NOT NEEDED — why` or `FORGE_TESTS: COULD NOT RUN — why`. This never changes the
-verdict. `COULD NOT RUN` prints a note, and forge-ui and the dataset record all three, so a review
-that judged the diff by reading alone can be told apart. Markup and any separator are accepted,
-because nothing gates on this line, and a line that says something else is recorded as `unclear`.
+`FORGE_TESTS: RAN — FAILED: <names>`, `FORGE_TESTS: NOT NEEDED — why` or
+`FORGE_TESTS: COULD NOT RUN — why`. Plain `RAN`, `NOT NEEDED` and `COULD NOT RUN` never change the
+verdict, while `RAN — FAILED: <names>` (or a `FORGE_TESTS_FAILED: <names>` line) stops the gate
+from accepting a FAIL and turns a PASS into FAIL. `COULD NOT RUN` prints a note, and forge-ui and
+the dataset record the status, so a review that judged the diff by reading alone can be told apart.
+Markup and any separator are accepted, and a line that says something else is recorded as `unclear`.
 An older reply has no such line.
 
 A failing task is excluded and **its branch and worktree are preserved**; the rest of the run

@@ -593,7 +593,17 @@ final_review_body() {
     printf '%s\t%s\n' "$thr" "$gate_line" > "$out/qa.gate"
     case "$(printf '%s' "$gate_line" | awk -F'\t' '{print $1}')" in
       accept) verdict=ACCEPTED ;;
-      fail) [ "$verdict" = PASS ] && { verdict=FAIL; gate_forced=1; } ;;
+      fail)
+        if [ "$verdict" = PASS ]; then
+          verdict=FAIL
+          local g_worst g_unlab
+          g_worst="$(printf '%s' "$gate_line" | awk -F'\t' '{print $2}')"
+          g_unlab="$(printf '%s' "$gate_line" | awk -F'\t' '{print $4}')"
+          case "$g_worst:${g_unlab:-0}:$thr" in
+            -:0:*|P[123]:0:P0|P[23]:0:P1|P3:0:P2) gate_forced=tests ;;
+            *) gate_forced=finding ;;
+          esac
+        fi ;;
     esac
   fi
   printf '%s\n' "$verdict" > "$out/verdict"
@@ -608,7 +618,9 @@ final_review_body() {
       echo "  known issues: $out/known_issues.md"
       echo "  report: $out/qa.last" ;;
     FAIL)
-      if [ -n "$gate_forced" ]; then
+      if [ "$gate_forced" = tests ]; then
+        echo "final review ($spec): verdict FAIL (blocking) — the reviewer said PASS, but reported failing tests — forge made it FAIL."
+      elif [ -n "$gate_forced" ]; then
         echo "final review ($spec): verdict FAIL (blocking) — the reviewer said PASS, but listed a CONFIRMED finding at or above the $thr threshold — forge made it FAIL."
       else
         echo "final review ($spec): verdict FAIL (blocking) — the reviewer confirmed at least one defect in the combined result."

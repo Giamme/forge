@@ -129,6 +129,11 @@ class GateTableTests(unittest.TestCase):
                 ('the last one counts', 'FORGE_TESTS: COULD NOT RUN — x\nFORGE_TESTS: RAN', dict(status='ran', reason=None)),
                 ('the prompt echoed after its own word', 'FORGE_TESTS: COULD NOT RUN — no deps\n  FORGE_TESTS: NOT NEEDED — why', could_not),
                 ('another word', 'FORGE_TESTS: MAYBE', dict(status='unclear', reason='MAYBE')),
+                ('ran with failed names', 'FORGE_TESTS: RAN — FAILED: test_one, test_two',
+                 dict(status='ran', reason='FAILED: test_one, test_two')),
+                ('the prompt echoed after FAILED',
+                 'FORGE_TESTS: RAN — FAILED: test_one\n  FORGE_TESTS: RAN — FAILED: <names>',
+                 dict(status='ran', reason='FAILED: test_one')),
                 ('an older reply', 'all fine', None),
                 ('quoted in prose', 'the form is `FORGE_TESTS: RAN`', None)):
             with self.subTest(name):
@@ -138,6 +143,7 @@ class GateTableTests(unittest.TestCase):
         for kind in contract.KINDS:
             with self.subTest(kind):
                 tail = contract.qa_text('tail', kind)
+                self.assertIn('FORGE_TESTS: RAN — FAILED: <names>', tail)
                 self.assertIn('FORGE_TESTS: COULD NOT RUN', tail)
                 self.assertIn('do not install anything', tail)     # report it, rather than hunt for dependencies
         reply = '- [P3][CONFIRMED] a.py:1 — x\n  more about x\nFORGE_TESTS: COULD NOT RUN — path/b.py:2 needs a display\nFORGE_VERDICT: PASS'
@@ -146,6 +152,49 @@ class GateTableTests(unittest.TestCase):
         self.assertNotIn('display', findings[0].text)
         bold = contract.parse_findings('- [P3][CONFIRMED] a.py:1 — x\n**FORGE_TESTS: RAN**\nFORGE_VERDICT: PASS')
         self.assertNotIn('*', bold[0].text)
+        failed_line = contract.parse_findings(
+            '- [P3][CONFIRMED] a.py:1 — x\nFORGE_TESTS: RAN — FAILED: path/b.py:2\n'
+            'FORGE_TESTS_FAILED: path/c.py:3\nFORGE_VERDICT: FAIL')
+        self.assertEqual(len(failed_line), 1)
+        self.assertNotIn('b.py', failed_line[0].text)
+        self.assertNotIn('c.py', failed_line[0].text)
+
+    def test_failing_tests_keep_fail_and_block_pass(self):
+        # #171: a FAIL with only milder findings still stays FAIL when tests failed; none reported accepts as before.
+        p3_reply = 'The three new tests fail: test_one, test_two.\n\n- [P3][CONFIRMED] a.py:1 — docstring nit\n\n'
+        for line in ('FORGE_TESTS: RAN — FAILED: test_one, test_two',
+                     '**FORGE_TESTS: RAN — FAILED: test_one**',
+                     '- FORGE_TESTS: RAN -- FAILED: test_one\r',
+                     'FORGE_TESTS: RAN — FAILED',
+                     'FORGE_TESTS: RAN (2 passed, 1 failed)',
+                     'FORGE_TESTS: FAILED — test_one',
+                     'FORGE_TESTS: RAN\nFORGE_TESTS_FAILED: test_one, test_two',
+                     'FORGE_TESTS_FAILED: test_one'):
+            with self.subTest(line=line):
+                self.assertTrue(contract.tests_failed(p3_reply + line + '\nFORGE_VERDICT: FAIL'))
+                self.assertEqual(decide('FAIL', p3_reply + line + '\nFORGE_VERDICT: FAIL', 'P2'),
+                                 ('keep', 'P3', 1, 0, 1))
+                self.assertEqual(decide('PASS', p3_reply + line + '\nFORGE_VERDICT: PASS', 'P2'),
+                                 ('fail', 'P3', 1, 0, 1))
+        for ok_line in ('FORGE_TESTS: RAN',
+                        'FORGE_TESTS: RAN (3 passed)',
+                        'FORGE_TESTS: RAN (3 passed, 0 failed)',
+                        'FORGE_TESTS: RAN — FAILED: none',
+                        'FORGE_TESTS: COULD NOT RUN — docker setup failed',
+                        'FORGE_TESTS: NOT NEEDED — docs only',
+                        '  FORGE_TESTS: RAN — FAILED: <names>',
+                        'FORGE_TESTS_FAILED: <names>',
+                        'The rule says `FORGE_TESTS: RAN — FAILED: test_one`.',
+                        ''):
+            with self.subTest(ok_line=ok_line):
+                self.assertIsNone(contract.tests_failed(p3_reply + ok_line + '\nFORGE_VERDICT: FAIL'))
+                self.assertEqual(decide('FAIL', p3_reply + ok_line + '\nFORGE_VERDICT: FAIL', 'P2'),
+                                 ('accept', 'P3', 1, 0, 1))
+                self.assertEqual(decide('PASS', p3_reply + ok_line + '\nFORGE_VERDICT: PASS', 'P2'),
+                                 ('keep', 'P3', 1, 0, 1))
+        # Echoing the FAILED placeholder after a real failing report leaves the failure intact.
+        after_echo = p3_reply + 'FORGE_TESTS: RAN — FAILED: test_one\n  FORGE_TESTS: RAN — FAILED: <names>\nFORGE_VERDICT: FAIL'
+        self.assertEqual(decide('FAIL', after_echo, 'P2'), ('keep', 'P3', 1, 0, 1))
 
     def test_default_is_p2_and_none_is_p3(self):
         self.assertEqual(contract.DEFAULT_THRESHOLD, 'P2')
@@ -574,6 +623,10 @@ class PromptTextTests(unittest.TestCase):
                 self.assertIn('blocking threshold (%s or worse)' % threshold, tail)
         self.assertIn('recorded as a known issue', contract.qa_text('tail', 'task', 'P2'))
         self.assertIn('(P3) is recorded', contract.qa_text('tail', 'task', 'P2'))
+        for kind in contract.KINDS:
+            for threshold in contract.SEVERITIES:
+                tail = contract.qa_text('tail', kind, threshold)
+                self.assertIn('File failing tests as a CONFIRMED finding at %s or worse (they block), not only in prose.' % threshold, tail)
 
     def test_deterministic_clean_text(self):
         for part in ('head', 'tail'):
@@ -623,12 +676,20 @@ class PromptTextTests(unittest.TestCase):
         self.assertNotIn('immediately before the facts', contract.qa_text('tail', 'sweep'))
         self.assertEqual(tail.splitlines()[-2:], contract.qa_text('tail', 'task').splitlines()[-2:])
         self.assertIn('List every CONFIRMED finding you find', tail)
-        # Task head and sweep stay byte-identical to v0.18. Task tails gained the
-        # {outside=…} paragraph (#149); the pin is that tail with the paragraph removed.
+        # Task head and sweep head stay byte-identical to v0.18. Tails gained `{outside=…}` (#149,
+        # task only) and the #171 failing-tests contract lines; the pin strips those exact additions.
         outside = '\n' + '\n'.join(contract._OUTSIDE) + '\n'
+        failed_form = '  FORGE_TESTS: RAN — FAILED: <names>\n'
         for (kind, part, threshold), digest in _V018.items():
             with self.subTest(kind=kind, part=part, threshold=threshold):
                 text = contract.qa_text(part, kind, threshold)
+                if part == 'tail':
+                    self.assertEqual(text.count(failed_form), 1)
+                    text = text.replace(failed_form, '', 1)
+                    rank = threshold or contract.DEFAULT_THRESHOLD
+                    failed_rule = 'File failing tests as a CONFIRMED finding at %s or worse (they block), not only in prose.\n' % rank
+                    self.assertEqual(text.count(failed_rule), 1)
+                    text = text.replace(failed_rule, '', 1)
                 if kind == 'task' and part == 'tail':
                     self.assertEqual(text.count(outside), 1)
                     text = text.replace(outside, '', 1)

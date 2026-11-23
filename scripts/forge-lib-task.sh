@@ -1353,7 +1353,7 @@ forge_now() { python3 -c 'import time; print("%.3f" % time.time())' 2>/dev/null 
 # prompt; when given it is used as-is, so a change to the files between the prompt and the
 # gate cannot split one attempt across two thresholds. Absent (or empty), the files are read.
 qa_gate() { # qa_gate <plan> <id> <tdir> <verdict> [threshold]
-  local plan="$1" id="$2" tdir="$3" verdict="$4" thr="${5:-}" line worst
+  local plan="$1" id="$2" tdir="$3" verdict="$4" thr="${5:-}" line worst n_unlab
   rm -f "$tdir/qa.gate" "$tdir/known_issues.md"
   [ -n "$thr" ] || thr="$(qa_threshold_for "$plan" "$id")"
   line="$(python3 "$SKILL_DIR/scripts/forge-contract.py" gate --verdict "${verdict:-UNKNOWN}" \
@@ -1367,7 +1367,13 @@ qa_gate() { # qa_gate <plan> <id> <tdir> <verdict> [threshold]
     fail)
       echo FAIL > "$tdir/status"
       worst="$(printf '%s' "$line" | awk -F'\t' '{print $2}')"
-      note "$id: the reviewer said PASS but listed a CONFIRMED finding at or above the $thr threshold (worst $worst) — forge made it FAIL"
+      n_unlab="$(printf '%s' "$line" | awk -F'\t' '{print $4}')"
+      case "$worst:${n_unlab:-0}:$thr" in
+        -:0:*|P[123]:0:P0|P[23]:0:P1|P3:0:P2)
+          note "$id: the reviewer said PASS but reported failing tests — forge made it FAIL" ;;
+        *)
+          note "$id: the reviewer said PASS but listed a CONFIRMED finding at or above the $thr threshold (worst $worst) — forge made it FAIL" ;;
+      esac
       # A scheduled task's notes go to its task.out, and a later attempt replaces qa.gate: this
       # log is what lets the run's summary say forge overrode a verdict (report_gate_flips).
       printf '%s\t%s\t%s\t%s\n' "$(forge_now)" "$(cat "$tdir/attempt" 2>/dev/null || echo 0)" "$thr" "$worst" \

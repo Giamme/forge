@@ -107,6 +107,28 @@ class QaGateOnceTests(unittest.TestCase):
         (self.tdir / 'qa_threshold').write_text('high\n')
         self.assertEqual(self.resolved(), ('P1', 'set'))
 
+    def test_qa_gate_never_accepts_failing_tests_and_flips_pass_to_fail(self):
+        # #171: a FAIL with only P3 findings still stays FAIL under P2 when tests failed,
+        # and a PASS reporting failing tests flips to FAIL with the failing-tests note.
+        (self.tdir / 'qa.last').write_text(
+            'Review.\n\n- [P3][CONFIRMED] a.py:1 — nit\n\n'
+            'FORGE_TESTS: RAN — FAILED: test_one\nFORGE_VERDICT: FAIL\n',
+            encoding='utf-8')
+        self.gate('P2')
+        self.assertEqual(self.status(), 'FAIL')
+        self.assertTrue((self.tdir / 'qa.gate').read_text(encoding='utf-8').startswith('P2\tkeep\tP3\t'))
+
+        (self.tdir / 'qa.last').write_text(
+            'Review.\n\n- [P3][CONFIRMED] a.py:1 — nit\n\n'
+            'FORGE_TESTS: RAN — FAILED: test_one\nFORGE_VERDICT: PASS\n',
+            encoding='utf-8')
+        (self.tdir / 'status').write_text('PASS\n', encoding='utf-8')
+        result = self.sh('note() { echo "$*"; }; qa_gate \'%s\' t1 \'%s\' PASS P2' % (self.plan, self.tdir))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.status(), 'FAIL')
+        self.assertIn('reported failing tests', result.stdout)
+        self.assertNotIn('at or above the P2 threshold', result.stdout)
+
     def test_garbage_in_both_files_is_the_default(self):
         (self.plan / 'qa_threshold').write_text('P9\n')
         (self.tdir / 'qa_threshold').write_text('high\n')

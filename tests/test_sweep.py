@@ -440,6 +440,23 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual([d['findings'][0] for d in issues['drafts']],
                          ['[P3][CONFIRMED] a.txt:1 — The greeting is lower case.'])
 
+    def test_a_fix_task_reporting_failing_tests_with_only_p3_findings_stays_fail_and_does_not_merge(self):
+        # #171: the reviewer runs the tests, sees failures, files only a P3 finding and FORGE_TESTS: RAN — FAILED.
+        # Under --qa-threshold P2 the gate must keep FAIL rather than accepting, leaving the swept finding open.
+        plan, result, issues = self.sweep_run({
+            'findings': ('The three new tests fail: test_one, test_two.\n\n'
+                         '- [P3][CONFIRMED] a.txt:1 — a misleading docstring\n'
+                         '- S1: NOT FIXED — tests still fail\n'
+                         'FORGE_TESTS: RAN — FAILED: test_one, test_two'),
+            'verdict': 'FAIL',
+        })
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual((plan / 'tasks/sweep-1/status').read_text().strip(), 'FAIL')
+        self.assertFalse((plan / 'tasks/sweep-1/merged').exists())
+        self.assertTrue((plan / 'tasks/sweep-1/qa.gate').read_text().startswith('P2\tkeep\tP3\t'))
+        self.assertEqual([d['findings'][0] for d in issues['drafts']],
+                         ['[P3][CONFIRMED] a.txt:1 — The greeting is lower case.'])
+
     def test_sweep_ahead_hands_a_later_task_the_open_findings_in_its_files(self):
         self.scenario({'a.qa.1': {'findings': '- [P3][CONFIRMED] a.txt:1 — The greeting is lower case.', 'verdict': 'FAIL'}})
         plan = self.plan('a', ('a.txt', 'a.txt,b.txt'))
