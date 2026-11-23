@@ -175,3 +175,21 @@ test('a chained run links the plan it follows and the plans that follow it', () 
   assert.equal(labels(plain).includes('Followed by'), false);
   assert.ok(labels(plain).includes('Integration'));
 });
+
+test('the Handoff section names the driver and lists the notes, newest first; a run without a handoff has none', () => {
+  const sections = host => host.querySelectorAll('section.insp-section').filter(s => s.children[0] && s.children[0].textContent === 'Handoff');
+  const now = Date.now() / 1000;
+  const host = render(planRun({ handoff: {
+    driver: { harness: 'codex', session: null, since: now - 600, last_seen: now - 60, stale: false },
+    notes: [{ at: now - 30, actor: 'cli', text: 'took over from claude-code' }, { at: now - 900, actor: null, text: 'user accepted task a' }],
+    notes_total: 3 } }));
+  const [section] = sections(host);
+  assert.ok(section, 'a Handoff section');
+  assert.match(section.textContent, /Driver: codex · since 10m00s · seen 1m00s ago/);
+  assert.deepEqual(section.querySelectorAll('ul.handoff-notes li').map(li => li.children[1].textContent),
+    ['took over from claude-code', 'user accepted task a']);
+  assert.match(section.textContent, /1 older notes in handoff\.notes\.jsonl/);
+  const none = render(planRun({ handoff: { driver: null, notes: [], notes_total: 0 } }));
+  assert.match(sections(none)[0].textContent, /Driver: none recorded/);
+  assert.equal(sections(render(planRun({ handoff: null }))).length, 0);
+});

@@ -592,3 +592,13 @@ test('a task in INFRA reads with its cause; without a cause it reads INFRA, and 
   assert.equal(RM.statusText({ status: 'MERGED', accepted: true }), 'ACCEPTED');
   assert.equal(RM.statusText(null), 'PENDING');
 });
+
+test('the handoff driver reads as one line; a long session id is cut; a stale driver says so; no driver, no line', () => {
+  const d = { harness: 'claude-code', session: '1da3e1ef-0d0c-4240-a4b3-5a7abc56c62d', since: 1000, last_seen: 7000, stale: false };
+  assert.equal(RM.handoffDriverLine(d, 7250), 'claude-code · session 1da3e1ef… · since 1h44m · seen 4m10s ago');
+  assert.equal(RM.handoffDriverLine({ ...d, session: 'short' }, 7250), 'claude-code · session short · since 1h44m · seen 4m10s ago');
+  assert.equal(RM.handoffDriverLine({ ...d, session: null, stale: true }, 7250),
+    'claude-code · since 1h44m · seen 4m10s ago (stale: another session can claim the run)');
+  assert.equal(RM.handoffDriverLine(null, 0), null);
+  assert.equal(RM.handoffDriverLine({ harness: '' }, 0), null);
+});

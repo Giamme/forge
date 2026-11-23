@@ -225,6 +225,9 @@ keep one meaning everywhere (amber running, green merged or passed, red failed, 
 - **Retro:** a run with a retro report or retro notes has a Retro section in *Run details*: its note
   counts on one line (for example *5 notes: 3 you can fix, 2 for forge · 4 verified, 1 claimed · 1
   blocking*), then the report, collapsed.
+- **Handoff:** a run with `handoff.driver.json` or `handoff.notes.jsonl` (`forge handoff claim` /
+  `note`) has a Handoff section in *Run details*: the driver on one line (harness, session, since,
+  last seen, *stale* past 12 hours), then the notes, newest first (the newest 50).
 - **Read-only:** a server started with `--read-only` shows all of this, without the switches or the
   answer boxes.
 - **Now and checks:** a running task's *Now* names the agent at work and its attempt, the phase

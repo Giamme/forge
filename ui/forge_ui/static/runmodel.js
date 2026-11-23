@@ -937,6 +937,20 @@
     return `${word(n('notes'), 'note', 'notes')}: ${fixable.join(', ')} · ${n('verified')} verified, ${n('claimed')} claimed · ${n('blocking')} blocking`;
   }
 
+  /* ---------- the handoff (forge handoff: handoff.driver.json, handoff.notes.jsonl) ---------- */
+  // RunDetail.handoff.driver → one line, e.g. "claude-code · session 1da3e1ef… · since 2h05m · seen 4m10s ago".
+  // A stale driver (last seen over 12 hours ago) says another session may claim the run. Null when no driver.
+  function handoffDriverLine(driver, nowSec) {
+    if (!driver || typeof driver !== 'object' || typeof driver.harness !== 'string' || !driver.harness) return null;
+    const now = num(nowSec) === null ? Date.now() / 1000 : nowSec, since = num(driver.since), seen = num(driver.last_seen);
+    const parts = [driver.harness];
+    if (typeof driver.session === 'string' && driver.session) parts.push('session ' + (driver.session.length > 12 ? driver.session.slice(0, 8) + '…' : driver.session));
+    if (since !== null) parts.push('since ' + fmtDur(now - since));
+    if (seen !== null) parts.push('seen ' + fmtDur(now - seen) + ' ago');
+    const line = parts.join(' · ');
+    return driver.stale ? line + ' (stale: another session can claim the run)' : line;
+  }
+
   /* ---------- Fractal: a task's child tasks as a tidy tree (depth across, siblings down) ---------- */
   // nodes: TaskFractal.nodes (tree order, parent ids); returns {pos: {id: {col, row, depth}}, edges: [[parent, child]], cols, rows}
   function fractalTree(nodes) {
@@ -965,5 +979,5 @@
     finalStatus, runReviewStatus, reviewSinceLine, reviewAt, taskStatus, statusText, statusLabel, causeLabel, resetText, taskVerdict, attemptStatus, attemptNote, attemptFailed, isWaiting,
     attributionLine, taskParts,
     taskTimes, metricValue, overlap, projectSchedule, execModel, verifyLeds, criticalPath, concurrency, stateAt, timeRange, events, lineage, structureKey, innerKey,
-    fmtDur, alias, basename, weight, searchIndex, searchRank, statusEvents, fractalTree, sweepLine, sweepState, retroSummary };
+    fmtDur, alias, basename, weight, searchIndex, searchRank, statusEvents, fractalTree, sweepLine, sweepState, retroSummary, handoffDriverLine };
 });

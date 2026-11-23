@@ -2265,6 +2265,7 @@ def _solo_detail(reader, source):
     request = reader.text('request.md')
     result['request'] = reader.cap(request, 'request')
     result['retro'] = _retro(reader)
+    result['handoff'] = _handoff(reader)
     result['summaries'] = None  # generated summaries are for plan tasks only
     result['brief'] = None  # brief mode is a plan's questions, not a solo run's
     result['settings'] = dict.fromkeys(_SOLO_SETTINGS)
@@ -2385,6 +2386,59 @@ def _retro(reader):
     return dict(text=reader.cap(reader.text('retro.md'), 'retro'), **counts)
 
 
+# --- handoff: who drives the run, and the notes sessions left for the next one (forge handoff, #146) ----
+
+_DRIVER_STALE_S = 12 * 3600      # forge-handoff.py DRIVER_STALE_S: past this, another session may claim the run
+_HANDOFF_NOTES_MAX = 50          # newest first; older ones stay in handoff.notes.jsonl
+_HANDOFF_NOTE_CHARS = 2000       # forge-handoff.py NOTE_MAX
+
+
+def _short(value, size):
+    return value if isinstance(value, str) and value and len(value) <= size else None
+
+
+def _handoff(reader):
+    """RunDetail.handoff from handoff.driver.json and handoff.notes.jsonl, or null when the run has neither.
+
+    driver: {harness, session, since, last_seen, stale} or null (absent or not a driver record, warned); stale
+    when last_seen is over 12 hours ago, so another session may claim the run without --take-over.
+    notes: [{at, actor, text}], newest first, at most 50; a line that is not a note is skipped with one warning."""
+    has_driver, has_notes = reader.exists('handoff.driver.json'), reader.exists('handoff.notes.jsonl')
+    if not (has_driver or has_notes):
+        return None
+    driver = None
+    if has_driver:
+        name = 'handoff.driver.json'
+        obj = reader.object(name)
+        since, seen = (obj.get('since'), obj.get('last_seen')) if obj is not None else (None, None)
+        harness, session = (obj.get('harness'), obj.get('session')) if obj is not None else (None, None)
+        if (_short(harness, 40) and (session is None or _short(session, 200))
+                and _finite(since) is not None and _finite(seen) is not None):
+            driver = dict(harness=harness, session=session, since=_finite(since), last_seen=_finite(seen),
+                          stale=time.time() - _finite(seen) > _DRIVER_STALE_S)
+        elif obj is not None:
+            reader.warn(name, 'not a driver record')
+    notes, skipped = [], 0
+    for line in (reader.text('handoff.notes.jsonl') or '').split('\n'):
+        if not line.strip():
+            continue
+        try:
+            note = json.loads(line)
+        except (ValueError, RecursionError):
+            note = None
+        text = note.get('text') if isinstance(note, dict) else None
+        if not (isinstance(text, str) and text.strip()):
+            skipped += 1
+            continue
+        if len(text) > _HANDOFF_NOTE_CHARS:
+            text = text[:_HANDOFF_NOTE_CHARS] + '…'
+        notes.append(dict(at=_finite(note.get('at')),
+                          actor=_short(note.get('actor'), 40), text=text))
+    if skipped:
+        reader.warn('handoff.notes.jsonl', f'{skipped} malformed line{"" if skipped == 1 else "s"} skipped')
+    return dict(driver=driver, notes=notes[::-1][:_HANDOFF_NOTES_MAX], notes_total=len(notes))
+
+
 def detail(path, source='plan') -> dict:
     reader = _Read(path)
     if _kind(reader.path) == 'solo':
@@ -2393,6 +2447,7 @@ def detail(path, source='plan') -> dict:
     request = reader.text('request.md')
     result['request'] = reader.cap(request, 'request')
     result['retro'] = _retro(reader)
+    result['handoff'] = _handoff(reader)
     threshold = _threshold(reader)
     result['settings'] = dict(explore=reader.number('explore'), shadow_rate=reader.number('shadow_rate'),
                               shadow_qa=_list(reader.text('shadow_qa') or ''), timeout=reader.number('timeout', int),

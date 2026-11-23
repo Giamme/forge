@@ -302,6 +302,20 @@ test('summaryText counts a dry run and names each skip with its reason', () => {
   ] }), /1 worktree would be removed\. Failed: \/wt\/b \(permission denied\)\./);
 });
 
+test('the dry-run summary says when merged branches or leftover folders go too; the confirm counts in the singular', () => {
+  assert.equal(W.summaryText({ rows: [
+    { path: '/wt/a', action: 'remove', status: 'would-remove' },
+    { path: '/wt/b', action: 'remove+branch', status: 'would-remove' },
+    { path: '/wt/c', action: 'remove+branch', status: 'would-remove' },
+    { path: '/wt/d', action: 'delete-folder', status: 'would-remove' },
+    { path: '/wt/e', action: 'none', status: 'skipped', reason: 'in use' },
+  ] }), '4 worktrees would be removed (2 merged branches deleted, 1 leftover folder deleted). Skipped: /wt/e (in use).');
+  assert.equal(W.summaryText({ rows: [{ path: '/wt/b', action: 'remove+branch', status: 'would-remove' }] }),
+    '1 worktree would be removed (1 merged branch deleted).');
+  assert.equal(W.confirmQuestion(1), 'Remove 1 worktree?');
+  assert.equal(W.confirmQuestion(3), 'Remove 3 worktrees?');
+});
+
 test('resultLines keeps one line per path for a mixed removal', () => {
   assert.deepEqual(W.resultLines({ ok: false, dry_run: false, rows: [
     { path: '/wt/a', action: 'remove', status: 'removed', reason: null },
@@ -541,7 +555,7 @@ test('a removal dry-runs, confirms, then posts, and never before the confirm', a
     assert.equal(posts(host).length, 1);
     assert.deepEqual(posts(host)[0].body, { paths: [target], branches: true, dry_run: true });
     const strip = host.querySelector('.ui-confirm');
-    assert.match(strip.textContent, /Remove 1 worktrees\?/);
+    assert.match(strip.textContent, /Remove 1 worktree\?/);
     assert.match(host.textContent, /1 worktree would be removed/);
     assert.match(host.textContent, /<b>locked<\/b>/);
     assert.equal(host.querySelector('img'), null);

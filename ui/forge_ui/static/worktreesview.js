@@ -89,8 +89,12 @@
   // One sentence for the dry run: how many would go, then each skip (and any failure) with its reason.
   function summaryText(answer) {
     const rows = answerRows(answer);
-    const n = rows.filter(r => r.status === 'would-remove').length;
-    let text = (n === 1 ? '1 worktree' : n + ' worktrees') + ' would be removed.';
+    const going = rows.filter(r => r.status === 'would-remove'), n = going.length;
+    const branches = going.filter(r => r.action === 'remove+branch').length, folders = going.filter(r => r.action === 'delete-folder').length;
+    const plural = (count, one, many) => count + ' ' + (count === 1 ? one : many);
+    const extra = [branches && plural(branches, 'merged branch deleted', 'merged branches deleted'),
+      folders && plural(folders, 'leftover folder deleted', 'leftover folders deleted')].filter(Boolean);
+    let text = plural(n, 'worktree', 'worktrees') + ' would be removed' + (extra.length ? ' (' + extra.join(', ') + ')' : '') + '.';
     const skipped = rows.filter(r => r.status === 'skipped');
     const failed = rows.filter(r => r.status === 'failed');
     if (skipped.length) text += ' Skipped: ' + skipped.map(rowBit).join('; ') + '.';
@@ -113,7 +117,7 @@
     if (line.status === 'failed') return 'failed' + reason;
     return (line.status || '') + reason;
   }
-  const confirmQuestion = n => 'Remove ' + n + ' worktrees?';
+  const confirmQuestion = n => n === 1 ? 'Remove 1 worktree?' : 'Remove ' + n + ' worktrees?';
 
   /* ---------- DOM ---------- */
   function render(host, ctx) {
@@ -467,5 +471,5 @@
     };
   }
 
-  return { render, filterRows, totals, humanBytes, repoName, shortPath, label, removable, blockReason, selectable, summaryText, resultLines, STATUSES, LABEL };
+  return { render, filterRows, totals, humanBytes, repoName, shortPath, label, removable, blockReason, selectable, summaryText, confirmQuestion, resultLines, STATUSES, LABEL };
 });

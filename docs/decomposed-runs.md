@@ -250,7 +250,8 @@ harness that outlived its dispatch. A task that had already finished is reaped f
 still merges); only the tasks still running become `INTERRUPTED`, with their partial work kept
 in the worktree. Verification is skipped, or stopped if it had started (`verification.status`
 `INTERRUPTED`, not rerun). The summary lists each interrupted task with its `retry` command,
-the plan lock is released, and `run` exits 130.
+the plan lock is released, and `run` exits 130. A task stopped while its committed attempt was
+under review is retried with that review only, when its worktree still matches the commit.
 
 Run `run` again to skip MERGED tasks, merge saved PASS results after fingerprint checks,
 and dispatch eligible pending tasks. Tasks paused on an infrastructure failure (`INFRA`) are
@@ -290,8 +291,11 @@ on `forge/<run_id>/<id>` and any leftover `dwarf.harness` or `qa.harness` has be
 the uncommitted work, untracked files included, is saved to
 `tasks/<id>/interrupted-<epoch>.diff`, and only then is the worktree reset and cleaned, the
 status set to `INTERRUPTED`, and the attempt counter rewound when `attempts.tsv` has no row
-for that attempt, so the attempt is not counted twice. A guard that fails leaves that
-worktree untouched. Every `INTERRUPTED` task, including one that was already interrupted,
+for that attempt, so the attempt is not counted twice. An attempt that had already committed
+its work was stopped during its review: it keeps its number, and the retry re-runs only the
+review (as for a reviewer that gave no verdict), so its unchanged code is not refused as
+identical to the previous attempt. A guard that fails leaves that worktree untouched.
+Every `INTERRUPTED` task, including one that was already interrupted,
 is prepared with `retry --no-dispatch`. `run` then starts again, detached, from
 `run.flags.json`. Output goes to `resume-<epoch>.log`; the exit code is written to
 `resume-<epoch>.done` when the run ends. A launch that fails exits 1.

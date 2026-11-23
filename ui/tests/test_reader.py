@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -860,6 +861,54 @@ class ReaderTests(unittest.TestCase):
         F.make_retro(run)
         self.assertEqual(detail(run)['retro'], dict(text=F.RETRO_REPORT, notes=6, user=2, forge=2, unsure=1,
                                                     verified=3, claimed=3, blocking=3))
+
+    def test_handoff_reads_the_driver_and_the_notes_newest_first(self):
+        plan = self.copy_plan()
+        self.assertIsNone(detail(plan)['handoff'])
+        now = time.time()
+        self.write(plan / 'handoff.driver.json', json.dumps(
+            dict(harness='claude-code', session='s-1', since=now - 600, last_seen=now - 60)))
+        self.write(plan / 'handoff.notes.jsonl',
+                   json.dumps(dict(at=now - 500, actor='cli', text='first')) + '\n'
+                   + 'not json\n\n'
+                   + json.dumps(dict(at='later', actor=7, text='second')) + '\n'
+                   + json.dumps(dict(at=now - 100, actor='cli', text='')) + '\n')
+        data = detail(plan)
+        handoff = data['handoff']
+        self.assertEqual(handoff['driver'], dict(harness='claude-code', session='s-1', since=now - 600,
+                                                 last_seen=now - 60, stale=False))
+        self.assertEqual(handoff['notes'], [dict(at=None, actor=None, text='second'),
+                                            dict(at=now - 500, actor='cli', text='first')])
+        self.assertEqual(handoff['notes_total'], 2)
+        self.assertIn('handoff.notes.jsonl: 2 malformed lines skipped', data['warnings'])
+
+    def test_handoff_driver_is_stale_after_twelve_hours_and_null_when_malformed(self):
+        plan = self.copy_plan()
+        now = time.time()
+        self.write(plan / 'handoff.driver.json', json.dumps(
+            dict(harness='codex', session=None, since=now - 50000, last_seen=now - 12 * 3600 - 5)))
+        self.assertEqual(detail(plan)['handoff'], dict(
+            driver=dict(harness='codex', session=None, since=now - 50000, last_seen=now - 12 * 3600 - 5, stale=True),
+            notes=[], notes_total=0))
+        for bad in (dict(harness='', since=1.0, last_seen=1.0), dict(harness='x', since=True, last_seen=1.0),
+                    dict(harness='x', session=' ' * 0, since=1.0, last_seen=1.0), [1]):
+            with self.subTest(bad=bad):
+                self.write(plan / 'handoff.driver.json', json.dumps(bad))
+                data = detail(plan)
+                self.assertIsNone(data['handoff']['driver'])
+                self.assertTrue(any(w.startswith('handoff.driver.json') for w in data['warnings']))
+
+    def test_handoff_keeps_the_newest_fifty_notes_and_cuts_long_ones(self):
+        plan = self.copy_plan()
+        lines = [json.dumps(dict(at=float(i), actor='cli', text=f'n{i}')) for i in range(60)]
+        lines.append(json.dumps(dict(at=60.0, actor='cli', text='x' * 2001)))
+        self.write(plan / 'handoff.notes.jsonl', '\n'.join(lines) + '\n')
+        handoff = detail(plan)['handoff']
+        self.assertIsNone(handoff['driver'])
+        self.assertEqual(handoff['notes_total'], 61)
+        self.assertEqual(len(handoff['notes']), 50)
+        self.assertEqual(handoff['notes'][0]['text'], 'x' * 2000 + '…')
+        self.assertEqual([n['text'] for n in handoff['notes'][1:3]], ['n59', 'n58'])
 
     def test_the_export_leaves_the_question_out_unless_texts_are_chosen(self):
         plan = self.copy_plan()

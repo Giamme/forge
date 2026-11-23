@@ -32,7 +32,9 @@
       otherwise each task left RUNNING by a dead scheduler has its worktree diff saved to
       tasks/<id>/interrupted-<epoch>.diff, the worktree reset and cleaned (only after it passes a
       guard: exactly <wt_root>/<id>, a git worktree on forge/<run_id>/<id>), the status set to
-      INTERRUPTED and the attempt counter rewound when attempts.tsv has no row for it. Every
+      INTERRUPTED and the attempt counter rewound when attempts.tsv has no row for it (unless
+      the attempt reached its commit: it was stopped during its review, and the retry re-runs
+      only that review). Every
       INTERRUPTED task is prepared with `forge-parallel.sh retry --no-dispatch`, and the run is
       started again, detached, from run.flags.json (log: resume-<epoch>.log; the exit code goes to
       resume-<epoch>.done). Without run.flags.json it prints the run command to finish by hand.
@@ -883,8 +885,23 @@ def save_diff(wt, dest):
         shutil.rmtree(scratch, ignore_errors=True)
 
 
-def attempt_rewound(ctrl, plan, task):
-    """Write the attempt counter back by one when attempts.tsv has no row for it. Whether it did."""
+def attempt_committed(ctrl, plan, task, wt, number):
+    """Whether attempt NUMBER reached its commit: reviewed.commit is "forge(<task>) attempt NUMBER: ...".
+
+    Such an attempt was stopped during its review. It keeps its number: the retry re-runs only the
+    review (forge-lib-task.sh unjudged_attempt_commit), which spends no attempt.
+    """
+    commit = (ctrl.read_file(plan, f'tasks/{task}/reviewed.commit') or '').strip()
+    if not commit:
+        return False
+    result = git(wt, 'log', '-1', '--format=%s', commit)
+    subject = result.stdout.decode('utf-8', 'replace').strip() if result.returncode == 0 else ''
+    return subject.startswith(f'forge({task}) attempt {number}: ')
+
+
+def attempt_rewound(ctrl, plan, task, wt):
+    """Write the attempt counter back by one when attempts.tsv has no row for it and the attempt
+    never reached its commit. Whether it did."""
     text = ctrl.read_file(plan, f'tasks/{task}/attempt')
     word = (text or '').split()
     if not word or not word[0].isdigit() or int(word[0]) < 1:
@@ -895,6 +912,8 @@ def attempt_rewound(ctrl, plan, task):
         cols = row.split('\t')
         if len(cols) > 1 and cols[1].strip() == str(number):
             return False
+    if attempt_committed(ctrl, plan, task, wt, number):
+        return False
     ctrl.write_atomic(plan, f'tasks/{task}/attempt', f'{number - 1}\n')
     return True
 
@@ -965,7 +984,7 @@ def recover_task(ctrl, plan, wt_root, run_id, task, warn):
     try:
         ctrl.write_atomic(str(plan), f'tasks/{task}/status', 'INTERRUPTED\n')
         interrupted_event(plan, task)
-        row['attempt_rewound'] = attempt_rewound(ctrl, str(plan), task)
+        row['attempt_rewound'] = attempt_rewound(ctrl, str(plan), task, wt)
     except (OSError, ctrl.Invalid) as error:
         warn(f'{task}: could not update its status or attempt counter ({error})')
     return row

@@ -148,6 +148,22 @@ reviewed_state_matches() { # reviewed_state_matches <tdir> <wt>
   [ "$(forge_fingerprint "$wt")" = "$(cat "$tdir/source.fingerprint")" ]
 }
 
+# True when the run stopped during the review of the task's last attempt (#146): reviewed.commit is
+# that attempt's commit ("forge(<id>) attempt N: ..."), N is the attempt counter, and attempts.tsv
+# has no row for N, since a row is written only when an attempt ends. Its code was never judged, so
+# what it needs is the review, not a new implementer that keeps the code and is then refused as
+# "identical to the previous attempt".
+unjudged_attempt_commit() { # unjudged_attempt_commit <plan> <tdir>
+  local plan="$1" tdir="$2" commit n subject
+  [ -s "$tdir/reviewed.commit" ] || return 1
+  commit="$(cat "$tdir/reviewed.commit")"
+  n="$(tr -d '[:space:]' < "$tdir/attempt" 2>/dev/null)"
+  case "$n" in ''|*[!0-9]*|0) return 1 ;; esac
+  subject="$(git -C "$(cat "$plan/repo" 2>/dev/null)" log -1 --format=%s "$commit" 2>/dev/null)" || return 1
+  case "$subject" in "forge($(basename "$tdir")) attempt $n: "*) ;; *) return 1 ;; esac
+  ! awk -F'\t' -v n="$n" '$2 == n { found = 1 } END { exit !found }' "$tdir/attempts.tsv" 2>/dev/null
+}
+
 # A QA-only resume is trusted only while the worktree is still exactly what was
 # reviewed. Anything else clears the marker and the full path runs.
 resume_valid() { # resume_valid <tdir> <wt>
@@ -935,6 +951,10 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf [decided]]
     # honest than paying an implementer to rewrite unjudged work; the marker is validated
     # against the worktree below before it is believed (a changed worktree runs the full task).
     echo qa > "$tdir/resume"
+  elif [ "$st" = INTERRUPTED ] && unjudged_attempt_commit "$PLAN" "$tdir"; then
+    # The run stopped while this attempt's committed work was under review: ask the reviewer again,
+    # with the same worktree check as above.
+    echo qa > "$tdir/resume"
   elif [ "$st" = FAIL ] && [ -f "$tdir/prereview.failed" ] && [ -s "$tdir/prereview.md" ]; then
     # No reviewer ran: forge's own pre-review tests failed (#85), and their output is the finding.
     carry_prereview "$tdir"
@@ -969,6 +989,7 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf [decided]]
     qa_only=1
     [ "$st" = UNKNOWN ] && note "$id: the reviewer gave no verdict — re-running QA on the unchanged work"
     [ "$st" = INVALIDATED ] && note "$id: the last review was voided — re-running QA on the unchanged work"
+    [ "$st" = INTERRUPTED ] && note "$id: the run stopped during its review — re-running QA on the committed work"
   fi
   # Who decides the next implementer, in this order: an explicit --dwarf (the human's call,
   # source `retry`), a pin (the human's call, applied once, source `pin`), then the retry
