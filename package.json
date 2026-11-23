@@ -8,6 +8,7 @@
   "repository": { "type": "git", "url": "git+https://github.com/Giamme/forge.git" },
   "homepage": "https://giamme.github.io/forge/",
   "bin": { "forge": "bin/forge.js" },
+  "scripts": { "test": "bash tests/check.sh", "lint": "ruff check ." },
   "os": ["darwin", "linux", "win32"],
   "files": [
     "forge",

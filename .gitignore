@@ -11,8 +11,8 @@ __pycache__/
 # tests/run_tests.py: how long each test class took last time, to start the slowest first
 tests/.durations.json
 
-# npm: forge has no dependencies to lock, and `npm pack` leaves its tarball here
-package-lock.json
+# npm: `npm pack` leaves its tarball here. package-lock.json is committed: forge has no
+# dependencies, but the lockfile records its version (changelogger refreshes it on release).
 giamme-forge-*.tgz
 
 # Impeccable's working files: review screenshots, decision-page logs and its edit hook's cache
