@@ -103,6 +103,20 @@ class RetryPerModelRunTests(unittest.TestCase):
         self.assertNotIn('retry per model:', removed.stdout)
         self.assertNotIn('worst case with retry-per-model', removed.stdout)
 
+    def test_a_hand_edited_value_outside_1_to_99_is_named_as_ignored(self):
+        # #158: the scheduler and the route treat such a file as absent, so the table must not show it
+        # as the setting, nor a worst case computed as if it were one.
+        plan, _first = self.planned(flags=('--retry-per-model', '2'))
+        for bad in ('abc', '0', '100'):
+            with self.subTest(bad=bad):
+                (plan / 'retry_per_model').write_text(bad + '\n')
+                again = self.plan_cmd(plan)
+                self.assertEqual(again.returncode, 0, again.stdout)
+                self.assertIn('retry per model: ignored, ', again.stdout)
+                self.assertIn("retry_per_model holds '%s' and not a number from 1 to 99" % bad, again.stdout)
+                self.assertNotIn(RETRY_LINE % (bad, bad), again.stdout)
+                self.assertNotIn('worst case with retry-per-model', again.stdout)
+
     def test_the_table_says_nothing_without_the_file(self):
         _plan, result = self.planned()
         self.assertNotIn('retry per model:', result.stdout)
