@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from . import (BUSY_TIMEOUT_S, DatasetError, config_runs_dir, connect, data_home, dataset_dir, enabled,
+from . import (BUSY_TIMEOUT_S, DatasetError, config_runs_dir, connect, dataset_dir, enabled,
                location_refused, put_blob, put_file, record, record_strict, repo_id, sha256, watch_blob_failures)
 from . import harvest as h
 from . import capture

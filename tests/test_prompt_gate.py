@@ -19,7 +19,7 @@ from forge_dataset import export  # noqa: E402
 from forge_decide import label_prompt, report  # noqa: E402
 from forge_jev import gates, plan_gates, questions  # noqa: E402
 from test_decide_labels import LabelsCase, T0, noul  # noqa: E402
-from test_drift_gate import DriftCase, HEADER, row  # noqa: E402
+from test_drift_gate import DriftCase, row  # noqa: E402
 
 VAGUE = 'Make the error messages better'
 

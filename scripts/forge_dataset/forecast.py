@@ -31,7 +31,7 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from . import SKILL, connect, dataset_dir, record
+from . import connect, dataset_dir, record
 from .export import Runs, Store
 from .names import registry_models  # noqa: F401  (forge-route, forge-compare and efforts import it from here)
 from .routing import tasks as routing_tasks, wilson

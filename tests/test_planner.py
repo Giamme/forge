@@ -1,5 +1,4 @@
 """scripts/forge-planner.py: the prompt, the strict reply parse, the pre-plan gate, one-task."""
-import copy
 import json
 import os
 from pathlib import Path

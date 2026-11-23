@@ -110,6 +110,11 @@ These are the things reviewers check most often:
 - **Platform-specific code stays behind a check** for the platform, so the code path on macOS
   and Linux is unchanged.
 - **Add a test with the change.** A bug fix comes with a test that fails without it.
+- **Lint clean.** CI runs [ruff](https://docs.astral.sh/ruff/) with only the pyflakes rules
+  ([`ruff.toml`](ruff.toml)): unused imports and variables, undefined names, repeated dict keys.
+  There are no formatting rules. To check before you push, run `ruff check .` (or
+  `pipx run ruff check .`) from the repository root. ruff is a tool you run, not a dependency
+  of forge.
 
 ## Docs and the changelog
 

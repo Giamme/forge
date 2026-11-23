@@ -6,7 +6,6 @@ for the shape); the scheduler cases use the stand-in worker from test_control_re
 are borrowed, not inherited. `converge_window` is set to 2 (or 3) to keep the scenarios short."""
 import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
 import json
-import os
 from pathlib import Path
 import subprocess
 import time

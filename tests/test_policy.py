@@ -4,7 +4,6 @@ contract and the verify-coverage warning, through forge-parallel.sh with the fak
 Unit coverage of the gate/contract/coverage modules lives in test_qa.py and
 test_verify_coverage.py; this file proves they are wired in, at the default P2 threshold and at a set one."""
 import json
-from pathlib import Path
 import unittest
 
 import test_forge as fixtures

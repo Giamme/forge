@@ -187,7 +187,7 @@ class EveryRunTests(IdentityCase):
         self.assertTrue(any('no GitHub origin remote' in w for w in out['warnings']), out['warnings'])
         mod = load_issues()
         f = out['findings'][0]
-        self.assertEqual(f['fp'], mod.fingerprint('', {'file': f"src/bare-run.py", 'text': f['text']}))
+        self.assertEqual(f['fp'], mod.fingerprint('', {'file': "src/bare-run.py", 'text': f['text']}))
         self.assertEqual(len(out['drafts']), 1)
         # online listing needs no GitHub either, and asks it nothing
         online = self.cli(str(run))

@@ -14,7 +14,6 @@ The assertions pin exit codes, artifacts and exact dwarf/QA call counts, so a ch
 quietly spends an extra model call fails here."""
 import json
 import os
-from pathlib import Path
 import unittest
 
 import test_forge as fixtures

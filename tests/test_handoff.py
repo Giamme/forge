@@ -179,7 +179,7 @@ class ShowTests(HandoffCase):
         (plan / 'fractal-selection.json').write_text(json.dumps({'enabled': True}))
         data = self.data(plan)
         self.assertEqual(data['run']['kind'], 'fractal')
-        self.assertIn(f'forge fractal resume demo', [s['command'] for s in data['next']])
+        self.assertIn('forge fractal resume demo', [s['command'] for s in data['next']])
         self.assertEqual(self.data(self.make(name='forge-plain', tasks=[('a', 'FAIL')]))['run']['kind'], 'decomposed')
 
     def test_missing_flags_file_warns(self):

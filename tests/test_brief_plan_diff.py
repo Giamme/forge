@@ -16,7 +16,7 @@ import unittest
 
 import test_forge
 from test_brief import says
-from test_brief_proposals import ProposalCase, HEADER, change
+from test_brief_proposals import ProposalCase, change
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))

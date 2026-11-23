@@ -75,7 +75,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import errno
 import hashlib
 import importlib.util
 import json

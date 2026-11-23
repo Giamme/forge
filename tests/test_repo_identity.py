@@ -5,7 +5,6 @@ survives the worktree's removal. Uses the fake agent CLI of test_forge.py; its f
 borrowed rather than inherited, so its tests do not run a second time here."""
 import json
 import os
-from pathlib import Path
 import subprocess
 import unittest
 

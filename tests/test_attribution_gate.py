@@ -21,7 +21,7 @@ import test_forge as fixtures
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 import forge_dataset as dataset  # noqa: E402
-from forge_decide import label_attribution, sites  # noqa: E402
+from forge_decide import sites  # noqa: E402
 from forge_jev import attribution, questions  # noqa: E402
 from test_decide_labels import LabelsCase, T0  # noqa: E402
 

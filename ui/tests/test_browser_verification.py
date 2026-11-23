@@ -2,7 +2,6 @@
 without it), on the run fixture's lanes verifications served by the real server, and in an export."""
 from __future__ import annotations
 
-import re
 import tempfile
 import unittest
 from pathlib import Path

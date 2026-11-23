@@ -3,8 +3,6 @@ in rounds under the same parallel and group rules; a pass on a rerun is flaky. L
 that must survive a rerun (how many times a lane ran) lives in marker files outside the
 checkout, so the checkout itself is never changed."""
 import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
-import json
-import os
 import signal
 import subprocess
 import time

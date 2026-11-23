@@ -3,10 +3,8 @@
 The unit tests source forge-lib-task.sh like test_escalation_pin; the end-to-end ones drive
 forge-parallel.sh with the fake agent CLI of test_forge and read the argv the backend was
 given from qa.cmd (claude's `--resume <id>`, codex's `exec resume <id>`)."""
-import os
 import shlex
 import shutil
-import subprocess
 import sys
 import unittest
 from pathlib import Path

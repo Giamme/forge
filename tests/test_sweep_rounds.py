@@ -6,14 +6,12 @@ isolated per test."""
 import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
-import tempfile
 import unittest
 from unittest.mock import patch
 
-from test_sweep import ISSUES, ROOT, SWEEP, PlanBase, known
+from test_sweep import ROOT, SWEEP, PlanBase, known
 
 sys.path.insert(0, str(ROOT / 'scripts'))
 import forge_identity  # noqa: E402

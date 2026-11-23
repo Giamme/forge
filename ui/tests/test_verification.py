@@ -1,7 +1,6 @@
 """RunDetail.verification while a verification runs and once it ran in lanes (#33): its state,
 mode, live step and output, each lane with its runs and tests, and every failing test."""
 import json
-import os
 from pathlib import Path
 import tempfile
 import time

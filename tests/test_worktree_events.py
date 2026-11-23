@@ -6,7 +6,6 @@ writes one event with its path, branch and kind, and none is written with FORGE_
 """
 import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys

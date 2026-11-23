@@ -7,7 +7,6 @@ from pathlib import Path
 import re
 import selectors
 import shutil
-import signal
 import subprocess
 import tempfile
 import threading

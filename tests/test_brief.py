@@ -462,7 +462,6 @@ class SelectionTests(BriefCase):
 
     def test_a_task_skipped_midway_does_not_let_a_later_wave_overtake_an_earlier_one(self):
         import contextlib
-        import threading
         import time
         (self.plan / 'waves.tsv').write_text('1\ta\n2\tb\n3\tc\n')
         self.all_say()
