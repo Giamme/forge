@@ -43,7 +43,7 @@ adopt_previous() {
     case "$n" in ''|*[!0-9]*) n=1 ;; esac
     if [ "$n" -gt "$best_n" ]; then best="$d"; best_n="$n"; fi
   done < <(for d in "$plan"/adopt-*/submission; do [ -f "$d" ] && printf '%s\n' "${d%/submission}"; done \
-             | awk -F- '{ print $(NF-1) "\t" $NF "\t" $0 }' | sort -t "$(printf '\t')" -k1,1nr -k2,2nr | cut -f3-)
+             | awk -F- '{ print $(NF-1) "\t" $NF "\t" $0 }' | sort -t "$(printf '\t')" -k1,1nr -k2,2nr | awk -F'\t' '{ sub(/^[^\t]*\t[^\t]*\t/, ""); print }')
   [ -z "$best" ] || printf '%s\n' "$best"
   return 0
 }
