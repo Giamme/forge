@@ -250,11 +250,11 @@ test('the new keys are checked before they are sent', () => {
 test('each infrastructure pause is one line with its countdown, or its spent budget', () => {
   const now = 1000;
   const c = show({ run: { infra_paused: [
-    { scope: 'model:codex/gpt-6.1-sol', class: 'rate_limit', harness: 'codex', model: 'gpt-6.1-sol', tasks: ['graph', 'docs'], cycle: 2, until: 1185, exhausted: false },
+    { scope: 'model:codex/gpt-6.2-sol', class: 'rate_limit', harness: 'codex', model: 'gpt-6.2-sol', tasks: ['graph', 'docs'], cycle: 2, until: 1185, exhausted: false },
     { scope: 'harness:claude', class: 'quota', harness: 'claude', model: '', tasks: ['page'], cycle: 4, until: null, exhausted: true },
     { scope: 'all', class: 'network', harness: null, model: null, tasks: [], cycle: 1, until: 999, exhausted: false }] } });
   assert.deepEqual(C.pauseLines(c, now).map(l => l.text), [
-    'model gpt-6.1-sol on codex · rate_limit · tasks graph, docs · wait 2 · resumes in 3m05s',
+    'model gpt-6.2-sol on codex · rate_limit · tasks graph, docs · wait 2 · resumes in 3m05s',
     'harness claude · quota · tasks page · wait 4 · budget used up',
     'every task · network · wait 1 · resuming']);
   assert.equal(C.pauseLines(c, now + 180)[0].text.endsWith('resumes in 5s'), true);       // ticks with the clock

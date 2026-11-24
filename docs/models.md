@@ -150,8 +150,8 @@ columns, plus an optional fifth:
 
 ```
 # alias	harness	model	effort	[timeout]
-sol	codex	gpt-6.1-sol	<=ultra
-sol	openclaude	gpt-6.1-sol	<=max
+sol	codex	gpt-6.2-sol	<=ultra
+sol	openclaude	gpt-6.2-sol	<=max
 gemini-pro	antigravity	gemini-3.1-pro	low,high
 opus	antigravity	claude-opus-4-6-thinking	none
 grok	grok	grok-4.7	<=xhigh
@@ -177,7 +177,8 @@ elsewhere.
 Adding a model is one line in this file. Nothing else needs to change.
 
 **Moving an alias to a newer model.** Keep the old model under a versioned alias, as
-`terra-5.6` keeps gpt-5.6-terra now that `terra` is gpt-6.1-terra. Each dispatch records
+`terra-5.6` keeps gpt-5.6-terra now that `terra` is gpt-6.1-terra, and `sol-6.1` and `astra-6`
+keep gpt-6.1-sol and gpt-6-astra now that `sol` and `astra` are the 6.2 models. Each dispatch records
 the model id it ran, so the statistics that count by alias (`forge dataset reviewers`, review
 history, forge-ui's model leaderboard) count an old `terra` dispatch under `terra-5.6`, the
 alias that resolves to its model today, and never under the newer `terra`. Without a versioned

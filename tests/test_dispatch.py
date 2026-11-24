@@ -218,7 +218,7 @@ class ContinueSessionTests(DispatchBase):
         self.assertEqual(result.returncode, 0, result.stdout)
         argv, _tmp = read_only_codex(self.run_dir, self.argv(), 'qa')
         self.assertEqual(argv[:4], ['codex', 'exec', 'resume', self.SESSION])
-        self.assertEqual(argv[4:], ['--json', '-m', 'gpt-6.1-sol', '--skip-git-repo-check', '-o', str(self.run_dir / 'qa.last'),
+        self.assertEqual(argv[4:], ['--json', '-m', 'gpt-6.2-sol', '--skip-git-repo-check', '-o', str(self.run_dir / 'qa.last'),
                                     '-c', 'model_reasoning_effort=high', *read_only_tail(self.run_dir, 'qa'), '-'])
         for flag in ('-C', '-s', '--cd'):
             self.assertNotIn(flag, argv)
@@ -1034,7 +1034,7 @@ class FastTierTests(DispatchBase):
     def test_without_the_option_the_command_resolved_and_exit_stay(self):
         # Pinned to the argv a dispatch builds today. A fast dispatch may add only its own flag.
         codex = [
-            'codex', 'exec', '--json', '-m', 'gpt-6.1-sol', '-C', str(self.repo), '--skip-git-repo-check',
+            'codex', 'exec', '--json', '-m', 'gpt-6.2-sol', '-C', str(self.repo), '--skip-git-repo-check',
             '-o', str(self.run_dir / 'dwarf.last'), '-c', 'model_reasoning_effort=medium', '--approve-for-me', '-',
         ]
         claude = [
@@ -1189,7 +1189,7 @@ class SideRoleTests(DispatchBase):
 
     def test_codex_and_claude_are_read_only_at_effort_low(self):
         codex = [
-            'codex', 'exec', '--json', '-m', 'gpt-6.1-sol', '-C', str(self.repo), '--skip-git-repo-check',
+            'codex', 'exec', '--json', '-m', 'gpt-6.2-sol', '-C', str(self.repo), '--skip-git-repo-check',
             '-o', str(self.run_dir / 'side.last'), '-c', 'model_reasoning_effort=low',
             *read_only_tail(self.run_dir, 'side'), '-',
         ]

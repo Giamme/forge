@@ -130,11 +130,11 @@ class ControlTests(unittest.TestCase):
 
     def test_an_infra_task_shows_its_cause_in_the_table_and_its_stop_in_json(self):
         self.put('tasks/a/status', 'INFRA\n')
-        self.put('tasks/a/infra.txt', 'class=budget\nharness=codex\nmodel=gpt-6.1-sol\nstage=dwarf\nrc=1\n')
+        self.put('tasks/a/infra.txt', 'class=budget\nharness=codex\nmodel=gpt-6.2-sol\nstage=dwarf\nrc=1\n')
         self.assertRegex(self.ok('show', self.plan).stdout, r'\ba\s+INFRA \(budget\)\s')
         shown = self.show()
         self.assertEqual(shown['tasks']['a']['infra'],
-                         dict(cause='budget', harness='codex', model='gpt-6.1-sol', stage='dwarf', reset_at=None,
+                         dict(cause='budget', harness='codex', model='gpt-6.2-sol', stage='dwarf', reset_at=None,
                               needs_you=True, hint='add credits, or check the billing of codex'))
         self.assertNotIn('infra', shown['tasks']['b'])          # only an INFRA task carries a stop
 

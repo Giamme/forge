@@ -3,7 +3,7 @@
 Two tables, kept apart because they answer different questions:
 
 - **Observational**: every task's first attempt, by declared tier and the model and effort
-  that ran it (resolved, so `sol` and `gpt-6.1-sol:medium:codex` are one row). First-pass rate
+  that ran it (resolved, so `sol` and `gpt-6.2-sol:medium:codex` are one row). First-pass rate
   (Wilson 95%), the share that passed review at some attempt (or that a human accepted),
   unfinished tasks, attempts per task and the implementer's runtime. Routing chose who ran what, so a model sent the hard tasks looks
   worse here than it is. Fractal runs are left out: their dispatches have their own identities

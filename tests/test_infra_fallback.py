@@ -44,16 +44,16 @@ class PickTests(unittest.TestCase):
 
     def test_excluded_pairs_and_harnesses_are_skipped(self):
         pool = ['sol', 'astra', 'sonnet']
-        self.assertEqual(self.pick('sol', pool, 'codex/gpt-6-astra'), 'sonnet')
+        self.assertEqual(self.pick('sol', pool, 'codex/gpt-6.2-astra'), 'sonnet')
         self.assertEqual(self.pick('sol', pool, 'codex/*'), 'sonnet')
-        self.assertIsNone(self.pick('sol', pool, 'codex/gpt-6-astra,claude/sonnet'))
+        self.assertIsNone(self.pick('sol', pool, 'codex/gpt-6.2-astra,claude/sonnet'))
 
     def test_a_model_of_another_tier_is_never_picked(self):
         pools = {'low': ['sonnet'], 'medium': ['sol', 'astra'], 'high': ['opus']}
         pick = lambda current, excluded, tier='medium': route.fallback_pick(  # noqa: E731
             current, pools, self.registry, route.parse_excluded(excluded), tier)
         self.assertEqual(pick('sol', ''), 'astra')
-        self.assertIsNone(pick('sol', 'codex/gpt-6-astra'))     # sonnet and opus are free, but not peers
+        self.assertIsNone(pick('sol', 'codex/gpt-6.2-astra'))     # sonnet and opus are free, but not peers
         self.assertIsNone(pick('sol', 'codex/*'))
         self.assertIsNone(pick('opus', '', 'high'))              # a pool of one has no peer
         self.assertIsNone(pick('sonnet', '', 'low'))
@@ -96,8 +96,8 @@ class RunningTierTests(unittest.TestCase):
 
     def test_the_command_prints_the_pick_or_exits_1(self):
         pools = {'medium': ['sol', 'astra']}
-        self.assertEqual(self.fallback('sol', 'medium', pools, exclude='codex/gpt-6.1-sol'), 'astra')
-        self.assertIsNone(self.fallback('sol', 'medium', pools, exclude='codex/gpt-6-astra'))
+        self.assertEqual(self.fallback('sol', 'medium', pools, exclude='codex/gpt-6.2-sol'), 'astra')
+        self.assertIsNone(self.fallback('sol', 'medium', pools, exclude='codex/gpt-6.2-astra'))
 
     def test_the_tasks_reviewer_is_never_its_implementers_peer(self):
         # The final review of run 1: sol stopped and the move landed on astra, the task's own reviewer.
@@ -240,13 +240,13 @@ class QaPickTests(unittest.TestCase):
                                       route.parse_excluded(excluded), 'medium')
 
     def test_the_implementers_model_on_another_harness_is_still_the_implementer(self):
-        # sol is gpt-6.1-sol on codex and github-copilot/gpt-6.1-sol on opencode: one model, two ids
+        # sol is gpt-6.2-sol on codex and github-copilot/gpt-6.2-sol on opencode: one model, two ids
         self.assertIsNone(self.pick('opus', 'sol', ['opus', 'sol:high:opencode']))
         self.assertIsNone(self.pick('opus', 'sol:high:opencode', ['opus', 'sol']))
         self.assertEqual(self.pick('opus', 'sol', ['opus', 'sol:high:opencode', 'astra']), 'astra')
 
     def test_a_literal_id_of_the_implementers_model_is_the_implementer(self):
-        self.assertIsNone(self.pick('opus', 'gpt-6.1-sol', ['opus', 'sol:high:opencode']))
+        self.assertIsNone(self.pick('opus', 'gpt-6.2-sol', ['opus', 'sol:high:opencode']))
 
     def test_another_model_listed_under_the_implementers_alias_is_a_peer(self):
         # the bundled gemini alias is Flash on antigravity and Pro on opencode: two models, one alias

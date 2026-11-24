@@ -108,6 +108,11 @@ class ReviewerReportTests(unittest.TestCase):
         # No harness recorded: compared with the alias's default row.
         self.assertEqual(dispatch_name(dict(alias='terra', model='gpt-5.6-terra')), 'terra-5.6')
         self.assertEqual(dispatch_name(dict(alias='terra', model='gpt-6.1-terra')), 'terra')
+        # sol and astra moved to 6.2 the same way (#180): the old models are sol-6.1 and astra-6.
+        self.assertEqual(dispatch_name(dict(alias='sol', model='gpt-6.1-sol', harness='codex')), 'sol-6.1')
+        self.assertEqual(dispatch_name(dict(alias='sol', model='github-copilot/gpt-6.1-sol', harness='opencode')), 'sol-6.1')
+        self.assertEqual(dispatch_name(dict(alias='astra', model='gpt-6-astra', harness='openclaude')), 'astra-6')
+        self.assertEqual(dispatch_name(dict(alias='sol', model='gpt-6.2-sol', harness='codex')), 'sol')
         # An alias forge does not know, or a dispatch with no model, keeps its name.
         self.assertEqual(dispatch_name(dict(alias='mine', model='x', harness='codex')), 'mine')
         self.assertEqual(dispatch_name(dict(alias='terra')), 'terra')
