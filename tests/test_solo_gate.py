@@ -54,6 +54,12 @@ class SoloGateTests(unittest.TestCase):
         self.assertIn('verdict: PASS (accepted with known issues: %s)' % (run / 'known_issues.md'), r.stdout)
         self.assertIn('cosmetic problem', (run / 'known_issues.md').read_text())
 
+    def test_partial_tests_and_qa_test_minutes_surface_in_solo_run(self):
+        run, r = self.review('FORGE_TESTS: PARTIAL — typecheck stopped', 'PASS', '--qa-test-minutes', '0')
+        self.assertEqual(self.verdict(run), 'PASS', r.stdout)
+        self.assertIn('partial: typecheck stopped', r.stdout)
+        self.assertIn('no separate test-minute cap', (run / 'qa.input').read_text())
+
     def test_the_flag_sets_the_threshold(self):
         for value in ('P3', 'none'):
             with self.subTest(value=value):

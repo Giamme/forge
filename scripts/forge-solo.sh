@@ -19,7 +19,7 @@
 #   forge-solo.sh <run-dir> --repo <dir> --dwarf <spec> [--qa <spec>]
 #                 [--approach <file>] [--yolo-dwarf] [--yolo-qa]
 #                 [--native-review] [--no-memory] [--timeout <s>] [--dry-run] [--ui]
-#                 [--fail-first] [--qa-threshold P0|P1|P2|P3|none]
+#                 [--fail-first] [--qa-threshold P0|P1|P2|P3|none] [--qa-test-minutes N]
 #                 [--fast ROLES]   dwarf, qa or none (planner, review and all are refused);
 #                                  kept in <run-dir>/fast. none removes it; omitting it keeps it
 #                 [--profile NAME | --no-profile]   a named profile (forge config profile list) picks
@@ -117,7 +117,7 @@ shift
 forge_profile_py() { PYTHONPATH="$SKILL_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 -m forge_decide.profiles "$@"; }
 
 OUTPUT=summary
-REPO="$PWD"; DWARF=""; QA="opus"; APPROACH=""; YD=""; YQ=""; NATIVE=""; TIMEOUT=""; DRY=0; FAIL_FIRST=0; QA_THR=
+REPO="$PWD"; DWARF=""; QA="opus"; APPROACH=""; YD=""; YQ=""; NATIVE=""; TIMEOUT=""; DRY=0; FAIL_FIRST=0; QA_THR=; QA_TEST_MINS=
 FAST_GIVEN=0; FAST_PARSED=""; QA_GIVEN=0; PF_NAME=""; PF_NONE=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -144,6 +144,10 @@ while [ $# -gt 0 ]; do
     --qa-threshold)
       QA_THR="$(printf '%s' "${2:?--qa-threshold needs P0, P1, P2, P3 or none}" | tr 'a-z' 'A-Z')"
       case "$QA_THR" in P0|P1|P2|P3) ;; NONE) QA_THR=none ;; *) die "--qa-threshold must be P0, P1, P2, P3 or none, got '$2'" 2 ;; esac
+      shift 2 ;;
+    --qa-test-minutes)
+      case "${2:-}" in ''|*[!0-9]*) die "--qa-test-minutes needs a non-negative integer, got '${2:-}'" 2 ;; esac
+      QA_TEST_MINS="$2"
       shift 2 ;;
     --ui|--no-ui) forge_ui_flag "$1"; shift ;;
     *)
@@ -362,7 +366,11 @@ fi
   [ -s "$RUN/failfirst.txt" ] || echo "Forge ran no tests of its own on this attempt, so nothing here stands in for yours."
   echo
   if [ -s "$RUN/failfirst.txt" ]; then cat "$RUN/failfirst.txt"; echo; fi
-  python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind solo --threshold "$THR"
+  [ -z "$QA_TEST_MINS" ] || printf '%s\n' "$QA_TEST_MINS" > "$RUN/qa_test_minutes"
+  _SOLO_TM="$(head -1 "$RUN/qa_test_minutes" 2>/dev/null | tr -d ' \r')"
+  _SOLO_TM_FLAG=()
+  case "$_SOLO_TM" in ''|*[!0-9]*) ;; *) _SOLO_TM_FLAG=(--test-minutes "$_SOLO_TM") ;; esac
+  python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind solo --threshold "$THR" ${_SOLO_TM_FLAG[@]+"${_SOLO_TM_FLAG[@]}"}
   echo
   # --irreversible-delete: a deleted file shows as a header, not every line it had (one deleted
   # data directory once made a 7.1M-character prompt that the reviewer's CLI refused).
@@ -397,7 +405,7 @@ dur_qa="$(sed -n 's/^duration_s=//p' "$RUN/qa.resolved" 2>/dev/null | tail -1)"
 # that cannot run (no output) keeps the reviewer's verdict.
 gate_note=""
 tests_note="$(forge_tests_note "$RUN/qa.last")"
-[ -z "$tests_note" ] || note "the reviewer's tests could not run: $tests_note"
+[ -z "$tests_note" ] || note "the reviewer's tests did not complete: $tests_note"
 if [ -z "$NATIVE" ]; then
   gate_line="$(python3 "$SKILL_DIR/scripts/forge-contract.py" gate --verdict "${verdict:-UNKNOWN}" \
       --qa-last "$RUN/qa.last" --threshold "$THR" --known-issues "$RUN/known_issues.md" 2>/dev/null)" || gate_line=""

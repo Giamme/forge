@@ -3,7 +3,7 @@
 
 Subcommands, stdlib only, no network:
 
-  qa --part head|tail [--kind task|final|solo|sweep|adopt|group|script] [--threshold P0|P1|P2|P3|none]
+  qa --part head|tail [--kind task|final|solo|sweep|adopt|group|script] [--threshold P0|P1|P2|P3|none] [--test-minutes N]
       Prints one piece of the QA prompt. The caller prints everything between and
       after the pieces itself (scope notes, the diff fence, the memory note and the
       "Place any learning notes before the final FORGE_VERDICT ..." sentence).
@@ -201,23 +201,46 @@ _SOLO_EXTRA = ['If the diff is correct, say so plainly rather than inventing som
 
 # The reviewer's own verification, bounded to the change (#89): one reviewer re-ran a whole
 # repository suite to review a one-file patch. The evidence is what the caller prints between
-# the head and the tail (fail-first, pre-review tests).
-_VERIFY = [
-    'Verify within the change: run only the tests that touch the changed code (the tests the',
-    'diff adds or edits, and the tests of the modules it changes), never the whole suite, and',
-    'spend at most about %d minutes running tests. Use any test evidence forge gives you above' % QA_TEST_MINUTES,
-    'before running a test yourself. When the targeted tests would take longer, or the change',
-    'touches shared infrastructure (a test helper, a build file, a lockfile), say so instead of',
-    'running everything. If a test needs a dependency your checkout does not have, do not look for',
-    'it elsewhere and do not install anything: report that it could not run.',
-    'Say whether tests ran, on a line of its own before the verdict, in exactly one of these forms:',
-    '  FORGE_TESTS: RAN',
-    '  FORGE_TESTS: RAN — FAILED: <names>',
-    '  FORGE_TESTS: NOT NEEDED — why',
-    '  FORGE_TESTS: COULD NOT RUN — why',
-    'Use FAILED only for tests failing because of this change; mention unrelated failures in',
-    'prose.',
-]
+# the head and the tail (fail-first, pre-review tests). Checks in a brief's acceptance criteria
+# take priority over the default test-minute guideline; stopped/skipped checks report PARTIAL (#223).
+def _verify_lines(minutes: int = QA_TEST_MINUTES) -> list:
+    if minutes <= 0:
+        head = [
+            'Verify within the change: run only the tests that touch the changed code (the tests the',
+            'diff adds or edits, and the tests of the modules it changes), plus every check named in',
+            "the task's acceptance criteria, with no separate test-minute cap (only the review",
+            'timeout bounds it). Use any test evidence forge gives you above before running a test',
+            'yourself. When a check touches shared infrastructure (a test helper, a build file, a',
+            'lockfile) or cannot complete, report what stayed unchecked with PARTIAL instead of RAN.',
+            'If a test needs a dependency your checkout does not have, do not look for it elsewhere',
+            'and do not install anything: report that it could not run.',
+        ]
+    else:
+        head = [
+            'Verify within the change: run only the tests that touch the changed code (the tests the',
+            'diff adds or edits, and the tests of the modules it changes), never the whole suite, and',
+            "spend at most about %d minutes running tests. Checks named in the task's acceptance" % minutes,
+            'criteria take priority over that %d-minute guideline: run them unless the review' % minutes,
+            'timeout stops them, and never report an unrun or stopped acceptance check as RAN. Use',
+            'any test evidence forge gives you above before running a test yourself. When a targeted',
+            'or required check is stopped at a time limit or skipped (such as shared infrastructure),',
+            'report what stayed unchecked with PARTIAL instead of RAN. If a test needs a dependency',
+            'your checkout does not have, do not look for it elsewhere and do not install anything:',
+            'report that it could not run.',
+        ]
+    return head + [
+        'Say whether tests ran, on a line of its own before the verdict, in exactly one of these forms:',
+        '  FORGE_TESTS: RAN',
+        '  FORGE_TESTS: RAN — FAILED: <names>',
+        '  FORGE_TESTS: PARTIAL — <what stopped or was skipped>',
+        '  FORGE_TESTS: NOT NEEDED — why',
+        '  FORGE_TESTS: COULD NOT RUN — why',
+        'Use FAILED only for tests failing because of this change; mention unrelated failures in',
+        'prose.',
+    ]
+
+
+_VERIFY = _verify_lines(QA_TEST_MINUTES)
 
 _SEVERITY = [
     'Label every finding with its severity at the start of its own bullet, in exactly this form:',
@@ -314,7 +337,7 @@ def _threshold_clause(rank: int, kind: str = 'task') -> list:
     return lines + ['A CONFIRMED finding without a severity tag counts as blocking.']
 
 
-def qa_text(part: str, kind: str = 'task', threshold=None) -> str:
+def qa_text(part: str, kind: str = 'task', threshold=None, test_minutes=None) -> str:
     """One shared piece of the QA prompt, newline-terminated, no leading/trailing blank."""
     if kind not in KINDS:
         raise ValueError('kind must be one of ' + ', '.join(KINDS))
@@ -323,10 +346,13 @@ def qa_text(part: str, kind: str = 'task', threshold=None) -> str:
         return '\n'.join(_HEAD[kind]) + '\n'
     if part != 'tail':
         raise ValueError('part must be head or tail')
+    minutes = QA_TEST_MINUTES if test_minutes is None else int(test_minutes)
+    if minutes < 0:
+        raise ValueError('test_minutes must be non-negative')
     lines = list(_SWEEP_FINDINGS if kind == 'sweep' else _FINDINGS)
     if kind in ('task', 'solo', 'adopt', 'group', 'script'):
         lines += _ALL_CONFIRMED + _SOLO_EXTRA
-    lines += [''] + _VERIFY
+    lines += [''] + _verify_lines(minutes)
     lines += [''] + _SEVERITY
     if kind in ('task', 'solo', 'group', 'script'):
         lines += [''] + _OUTSIDE
@@ -654,8 +680,8 @@ def gate(verdict: str, text: str, threshold=None) -> GateResult:
 # `FORGE_TESTS_FAILED: <names>`) blocks `accept` and turns `PASS` into `FAIL`.
 _TESTS_LINE = re.compile(r'^[ \t>*_`+-]*FORGE_TESTS:[ \t*_`]*(.*?)[ \t*_`]*$', re.M)
 _TESTS_FAILED_LINE = re.compile(r'^[ \t>*_`+-]*FORGE_TESTS_FAILED:[ \t*_`]*(.*?)[ \t*_`]*$', re.M)
-_TESTS_VALUE = re.compile(r'(RAN|NOT[ _]NEEDED|COULD[ _]NOT[ _]RUN)\b(.*)$', re.I)
-_TESTS_STATUS = {'RAN': 'ran', 'NOT NEEDED': 'not_needed', 'COULD NOT RUN': 'could_not_run'}
+_TESTS_VALUE = re.compile(r'(RAN|PARTIAL|NOT[ _]NEEDED|COULD[ _]NOT[ _]RUN)\b(.*)$', re.I)
+_TESTS_STATUS = {'RAN': 'ran', 'PARTIAL': 'partial', 'NOT NEEDED': 'not_needed', 'COULD NOT RUN': 'could_not_run'}
 _TESTS_TRIM = ' \t—–-:()'
 _TESTS_REASON_MAX = 300
 _TESTS_FAILED_HEAD = re.compile(r'^FAILED(?:\b[ \t—–-]*:?[ \t—–-]*(.*))?$', re.I)
@@ -668,7 +694,7 @@ def _tests_reason(text: str) -> str | None:
 
 def _is_echoed_tests_reason(reason: str | None) -> bool:
     low = (reason or '').strip().lower()
-    if low == 'why':
+    if low in ('why', '<what stopped or was skipped>', 'what stopped or was skipped'):
         return True
     match = _TESTS_FAILED_HEAD.match(low)
     return bool(match and (match.group(1) or '').strip() == '<names>')
@@ -701,7 +727,7 @@ def blocked_lines(message: str) -> list:
 
 
 def tests_report(text) -> dict | None:
-    """{status: ran|not_needed|could_not_run|unclear, reason} from a QA reply, or None when it does not say."""
+    """{status: ran|partial|not_needed|could_not_run|unclear, reason} from a QA reply, or None when it does not say."""
     report = None
     for value in _TESTS_LINE.findall((text or '').replace('\r\n', '\n')):
         match = _TESTS_VALUE.match(value)
@@ -727,7 +753,7 @@ def tests_failed(text) -> str | None:
             reason = _tests_reason(match.group(2))
             if _is_echoed_tests_reason(reason):
                 continue
-        if status in ('ran', 'unclear') and reason:
+        if status in ('ran', 'partial', 'unclear') and reason:
             failed = _TESTS_FAILED_HEAD.match(reason)
             if failed:
                 detail = _tests_reason(failed.group(1) or '')
@@ -795,6 +821,16 @@ def _read_text(path: str):
         return None
 
 
+def _nonneg_int_arg(value: str) -> int:
+    try:
+        num = int(value)
+    except ValueError:
+        num = -1
+    if num < 0:
+        raise argparse.ArgumentTypeError('invalid non-negative integer %r' % value.strip())
+    return num
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog='forge-contract.py', formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -814,6 +850,9 @@ def _parser() -> argparse.ArgumentParser:
                          'forge) or group (one review over several tasks; attribute each finding)')
     qa.add_argument('--threshold', type=_threshold_arg, default=None, metavar='P0..P3|none',
                     help='least severe level that still blocks; none = P3 (default: %s)' % DEFAULT_THRESHOLD)
+    qa.add_argument('--test-minutes', type=_nonneg_int_arg, default=None, metavar='N',
+                    help='reviewer test-time guideline in minutes, 0 = no minute cap (default: %d)'
+                         % QA_TEST_MINUTES)
     dwarf = sub.add_parser('dwarf', help='print the implementer rules block')
     dwarf.add_argument('--pre-review', action='store_true', help='forge runs the affected tests before the review')
     dwarf.add_argument('--verify-after-merge', action='store_true',
@@ -846,7 +885,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = _parser().parse_args(argv)
     if args.command == 'qa':
-        _emit(qa_text(args.part, args.kind, args.threshold))
+        _emit(qa_text(args.part, args.kind, args.threshold, args.test_minutes))
         return 0
     if args.command == 'dwarf':
         _emit(dwarf_text(args.pre_review, args.verify_after_merge))

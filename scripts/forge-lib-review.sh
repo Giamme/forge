@@ -489,7 +489,12 @@ final_review_body() {
     adopt_rows "$plan"
     cat "$out/notes.md"
     [ -s "$out/previous.md" ] && cat "$out/previous.md"
-    python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind final --threshold "$thr"
+    local _tm="" _tm_flag=()
+    if [ -f "$plan/qa_test_minutes" ]; then
+      _tm="$(head -1 "$plan/qa_test_minutes" 2>/dev/null | tr -d ' \r')"
+      case "$_tm" in ''|*[!0-9]*) ;; *) _tm_flag=(--test-minutes "$_tm") ;; esac
+    fi
+    python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind final --threshold "$thr" ${_tm_flag[@]+"${_tm_flag[@]}"}
     echo
     if [ "$inline" = 1 ]; then
       echo '```diff'; cat "$out/combined.diff"; echo '```'
@@ -581,7 +586,7 @@ final_review_body() {
   verdict="${verdict:-UNKNOWN}"
   local tests_note
   tests_note="$(forge_tests_note "$out/qa.last")"
-  [ -z "$tests_note" ] || note "final review: the reviewer's tests could not run: $tests_note"
+  [ -z "$tests_note" ] || note "final review: the reviewer's tests did not complete: $tests_note"
   # Same gate as per-task QA, both ways: a FAIL made only of labelled findings below the
   # threshold is accepted with known issues; a PASS listing a blocking CONFIRMED finding fails.
   gate_line="$(python3 "$SKILL_DIR/scripts/forge-contract.py" gate --verdict "$verdict" \

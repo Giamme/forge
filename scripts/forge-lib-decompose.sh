@@ -417,7 +417,7 @@ do_next() {
   new="$out"
   # What the plan before it was made with applies to this one: options, pools, limits.
   for f in no_ripwire no_memory yolo_dwarf yolo_qa reviewer_session implementer_session fast pre_review_tests \
-           pre_review_parallel fail_first qa_threshold timeout verify_retries verify_cmd verify_parallel setup_cmd final_qa \
+           pre_review_parallel fail_first qa_threshold qa_test_minutes timeout verify_retries verify_cmd verify_parallel setup_cmd final_qa \
            explore escalate_after retry_per_model max_attempts profile.json retro_mode summaries summaries_model \
            auto_split split_planner; do
     [ ! -f "$PLAN/$f" ] || cp -p "$PLAN/$f" "$new/$f" || die "could not write $new/$f" 3

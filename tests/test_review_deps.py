@@ -207,6 +207,23 @@ class ReviewDepsTests(unittest.TestCase):
         self.assertIn('the browser suite needs a display', r.stdout)
         self.assertNotIn('decided.left', r.stdout)                    # no decision governs it, so no noise about one
 
+    def test_partial_tests_and_qa_test_minutes_flag_reach_prompt_and_output(self):
+        self.scenario({'a.qa.*': {'verdict': 'PASS',
+                                  'findings': 'FORGE_TESTS: PARTIAL — typecheck:tests stopped after 5m'}})
+        p = self.plan_a('--qa-test-minutes', '15')
+        self.assertEqual((p / 'qa_test_minutes').read_text().strip(), '15')
+        r = self.run_script('forge-parallel.sh', 'run', p)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn('partial: typecheck:tests stopped after 5m', r.stdout)
+        self.assertIn('15 minutes', (p / 'tasks/a/qa.input').read_text())
+
+        # --qa-test-minutes 0 removes the separate minute guideline from later reviews.
+        r_rev = self.run_script('forge-parallel.sh', 'review', p, '--qa-test-minutes', '0')
+        self.assertEqual(r_rev.returncode, 0, r_rev.stdout)
+        self.assertIn('partial: typecheck:tests stopped after 5m', r_rev.stdout)
+        out = sorted(p.glob('final-review-*'))[-1]
+        self.assertIn('no separate test-minute cap', (out / 'qa.input').read_text())
+
 
 if __name__ == '__main__':
     unittest.main()

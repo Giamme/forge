@@ -2519,7 +2519,14 @@ for r in json.load(sys.stdin):
       echo "matters because another task may own those files."
       echo
     fi
-    python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind "$qa_kind" --threshold "$qa_thr"
+    local qa_test_mins="" qa_test_mins_flag=()
+    for _tmf in "$tdir/qa_test_minutes" "$PLAN/qa_test_minutes"; do
+      if [ -f "$_tmf" ]; then
+        qa_test_mins="$(head -1 "$_tmf" 2>/dev/null | tr -d ' \r')"
+        case "$qa_test_mins" in ''|*[!0-9]*) qa_test_mins="" ;; *) qa_test_mins_flag=(--test-minutes "$qa_test_mins") ; break ;; esac
+      fi
+    done
+    python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind "$qa_kind" --threshold "$qa_thr" ${qa_test_mins_flag[@]+"${qa_test_mins_flag[@]}"}
     echo
     if [ "$qa_inline" = 1 ]; then
       echo '```diff'; cat "$tdir/.qa.diff"; echo '```'
@@ -2793,7 +2800,7 @@ report_untested() { # report_untested <plan> <id>...: verdicts that rest on read
   for id in "$@"; do
     tests_note="$(forge_tests_note "$plan/tasks/$id/qa.last")"
     if [ -n "$tests_note" ]; then
-      [ "$untested" = 0 ] && echo "reviews whose tests could not run:"
+      [ "$untested" = 0 ] && echo "reviews whose tests did not complete:"
       untested=1
       printf '  %-*s %s\n' "$id_w" "$id" "$tests_note"
     fi

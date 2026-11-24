@@ -38,6 +38,8 @@
 #   --qa-threshold Pn|none|default  plan run retry review  $PLAN/qa_threshold  least severe CONFIRMED
 #                                                                  finding that still blocks; none (or off) =
 #                                                                  P3, default removes the file (P2)
+#   --qa-test-minutes N|default  plan run retry review $PLAN/qa_test_minutes  reviewer test-time guideline
+#                                                                  in minutes (0 = no cap; default removes, 5)
 #   --verify-retries N      run retry integrate verify $PLAN/verify_retries  reruns of a failed verify command
 #   --escalate-after N      run retry         $PLAN/escalate_after failed attempts on one model before the
 #                                                                  next goes a tier up (default 3; 0 = off)
@@ -132,6 +134,14 @@ forge_pp_flag() {
         default) rm -f "$plan/qa_threshold" ;;
         *) die "--qa-threshold needs P0, P1, P2, P3, none or default" ;;
       esac ;;
+    --qa-test-minutes)
+      case "$cmd" in plan|run|retry|review) ;; *) return 1 ;; esac
+      if [ "${2:-}" = default ]; then
+        rm -f "$plan/qa_test_minutes"
+      else
+        pp_nonneg --qa-test-minutes "${2:-}"
+        printf '%s\n' "$2" > "$plan/qa_test_minutes" || die "could not write $plan/qa_test_minutes"
+      fi ;;
     --escalate-after)
       case "$cmd" in run|retry) ;; *) return 1 ;; esac
       pp_nonneg --escalate-after "${2:-}"

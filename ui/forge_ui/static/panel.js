@@ -256,13 +256,14 @@ window.ForgePanel = (() => {
     wrap.append(table);
     parent.append(wrap);
   }
-  // What a reviewer said about its own tests (FORGE_TESTS). A review that could not run them stands out: its verdict
-  // rests on reading alone. A reply that says nothing shows nothing.
-  const TESTS_WORDS = { ran: 'Reviewer ran tests', not_needed: 'Reviewer needed no tests', could_not_run: 'Reviewer could not run tests', unclear: 'Reviewer\'s word on its tests is unclear' };
+  // What a reviewer said about its own tests (FORGE_TESTS). Reviews that could not run them or only finished partly stand out:
+  // their verdict rests on reading or partial checks alone. A reply that says nothing shows nothing.
+  const TESTS_WORDS = { ran: 'Reviewer ran tests', partial: 'Reviewer stopped or skipped some tests', not_needed: 'Reviewer needed no tests', could_not_run: 'Reviewer could not run tests', unclear: 'Reviewer\'s word on its tests is unclear' };
   function testsLine(parent, tests) {
     if (!tests || !TESTS_WORDS[tests.status]) return;
     const text = TESTS_WORDS[tests.status] + (tests.reason ? `: ${tests.reason}` : '');
-    parent.append(el('p', text, tests.status === 'could_not_run' ? 'warn tests-line' : 'muted tests-line'));
+    const warn = tests.status === 'could_not_run' || tests.status === 'partial';
+    parent.append(el('p', text, warn ? 'warn tests-line' : 'muted tests-line'));
   }
   // An attempt's chip. A failed attempt is red whatever its words; a send-back says what forge did in its title.
   function attemptChip(word) {
