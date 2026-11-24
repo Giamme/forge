@@ -337,7 +337,14 @@ else
   # never seen, and guessing wrong burns a real dispatch.
   [ -n "$HARNESS" ] || die "'$ALIAS' is not a known alias. Either add it to $REGISTRY or name the harness explicitly, e.g. --dwarf $ALIAS:high:opencode"
   if [ -n "$(awk -F'\t' -v a="$ALIAS" '!/^#/ && $1 == a {print; exit}' "$REGISTRY")" ]; then
-    note "alias '$ALIAS' has no row for harness '$HARNESS' — using it as a literal model id"
+    # An alias is one model on every harness (#187): another version a harness serves has a
+    # versioned alias of its own (opus-4.6 on antigravity). Name those, so the fix is one word.
+    VERSIONED="$(awk -F'\t' -v a="$ALIAS-" -v h="$HARNESS" '!/^#/ && index($1, a) == 1 && $2 == h {printf "%s%s", sep, $1; sep=", "}' "$REGISTRY")"
+    if [ -n "$VERSIONED" ]; then
+      note "alias '$ALIAS' has no row for harness '$HARNESS' — using it as a literal model id ($HARNESS serves $VERSIONED)"
+    else
+      note "alias '$ALIAS' has no row for harness '$HARNESS' — using it as a literal model id"
+    fi
   else
     note "'$ALIAS' is not in the registry — using it as a literal model id on $HARNESS"
   fi

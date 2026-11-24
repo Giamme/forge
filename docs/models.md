@@ -153,9 +153,9 @@ columns, plus an optional fifth:
 sol	codex	gpt-6.2-sol	<=ultra
 sol	openclaude	gpt-6.2-sol	<=max
 gemini-pro	antigravity	gemini-3.1-pro	low,high
-opus	antigravity	claude-opus-4-6-thinking	none
+opus-4.6	antigravity	claude-opus-4-6-thinking	none
 grok	grok	grok-4.7	<=xhigh
-grok	opencode	github-copilot/grok-4.6	-
+grok-4.6	opencode	github-copilot/grok-4.6	-
 ```
 
 | `effort` form | Means |
@@ -173,6 +173,15 @@ or absent = the built-in default). It applies only when neither `--timeout` nor
 **Row order is meaningful:** the *first* row for an alias is that alias's default harness.
 `--dwarf sol` means sol on codex; `--dwarf sol:high:openclaude` moves the same model
 elsewhere.
+
+**An alias is one model on every harness.** Every row of an alias names the same model family
+and version; only a provider prefix (`github-copilot/`) or a `-preview` suffix may differ. A
+harness that serves only another version gets an alias of its own: Antigravity's Claude models
+are `opus-4.6` and `sonnet-4.6`, GitHub Copilot's older Fable and Grok are `fable-5.1` and
+`grok-4.6`, and Gemini Pro on opencode is a second `gemini-pro` row, never a `gemini` one. So
+`opus::antigravity` no longer picks a different Opus under the same name: it passes `opus` as a
+literal model id, with a note that Antigravity serves `opus-4.6`, and the statistics that count by alias never mix two models. `tests/test_model_registry.py` fails on an
+alias whose rows disagree.
 
 Adding a model is one line in this file. Nothing else needs to change.
 
