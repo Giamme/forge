@@ -473,7 +473,7 @@ REQUESTS = 'control.requests'
 REQUEST_MAX = 64 * 1024
 ANSWER_MAX = 8000   # characters of a NEEDS_INPUT answer a request may carry (#147)
 # What `forge control retry --decide` may carry: retry=N (1 to 20) or threshold=Pn.
-DECISION = re.compile(r'retry=(?:[1-9]|1[0-9]|20)|threshold=P[0-3]|split(?:=keep|=fresh)?')
+DECISION = re.compile(r'retry=(?:[1-9]|1[0-9]|20)|threshold=P[0-3]|split(?:=keep|=fresh)?|files\+=[^\s,]+(?:,[^\s,]+)*')
 SPLIT_DECISIONS = ('split', 'split=keep', 'split=fresh')   # #153: the task becomes a sub-plan of subtasks
 # NEEDS_INPUT is in neither: a task stopped for the user's answer resumes only through
 # `retry <plan> <id> --answer`, whose preparation refuses without one. Nor is NEEDS_DECISION (#69):
@@ -1374,7 +1374,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             # Only a person's explicit decision resumes it: a choice, a reason, and --approved.
             if not decide and not dwarf:
                 return 'refused', (name + ' is waiting for your decision, and only a decision resumes it: '
-                                   + decision_head(plan, name) + ' (retry --decide retry=N | threshold=Pn, or --dwarf SPEC,'
+                                   + decision_head(plan, name) + ' (retry --decide retry=N | threshold=Pn | files+=PATH, or --dwarf SPEC,'
                                    + ' with --reason and --approved)')
             if not (reason or '').strip() or not approved:
                 return 'refused', name + ' is waiting for your decision: a decision needs --reason and --approved'
@@ -1394,6 +1394,9 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         rc = subprocess.run(command).returncode
         if rc and splitting:
             return 'refused', 'the task was not split (exit ' + str(rc) + '; the run output says why)'
+        if rc == 6:
+            return 'refused', ('the paths were not added to its files: another task declares one, or it owns them '
+                               'already (the run output says which); nothing was written')
         if rc == 3:
             try:
                 why = (plan / 'tasks' / name / 'split.suggested').read_text().strip()

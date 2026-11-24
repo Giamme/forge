@@ -579,6 +579,8 @@ dialog.keys-sheet::backdrop { background: light-dark(rgb(17 22 19 / .35), rgb(0 
 .tasks-switch .sum-msgs { flex-basis: 100%; }
 .tasks-switch .sum-model { display: inline-flex; }
 .tasks-switch .sum-state { font-weight: 600; }
+.tasks-switch .sum-model-form { display: inline-flex; gap: var(--s-1); align-items: center; }
+.tasks-switch .sum-model-form input { width: 14ch; font-family: var(--mono, monospace); }
 body[data-tasks=closed] .tasks-module :is(.run-tasks, .splitter, .dt-tools, .tasks-switch, .run-questions) { display: none; }
 body[data-tasks=closed] .tasks-module .module-head { border-bottom: 0; }
 .run-tasks .dt, .run-tasks .dt-frame, .run-tasks .table-scroll { height: 100%; }

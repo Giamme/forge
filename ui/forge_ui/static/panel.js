@@ -756,12 +756,13 @@ window.ForgePanel = (() => {
     }
     return seg;
   }
-  // Asks, sends and answers one change to a summaries switch (`forge control set summaries`). `slot` takes the question
+  // Asks, sends and answers one change to a summaries switch (`forge control set summaries`, or `change.key`
+  // summaries-model). `slot` takes the question
   // and the answer. `held` is the section that holds a task's switch (null for the run's): it is kept as it is while the
   // question is open or the answer pends, the way controls.js keeps its own sections.
   function changeSummaries(slot, held, runKey, change, done) {
     const C = window.ForgeControls, U = window.ForgeUI, node = held || slot;
-    const plan = C.prepare({ kind: 'set', key: 'summaries', input: change.input, task: change.task });
+    const plan = C.prepare({ kind: 'set', key: change.key || 'summaries', input: change.input, task: change.task });
     if (!plan.ok) { U.outcome(slot, { ok: false, status: 400, error: 'invalid', detail: plan.error }); return; }
     if (node.dataset.busy) return;
     node.dataset.editing = '1';

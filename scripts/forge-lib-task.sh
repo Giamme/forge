@@ -756,6 +756,19 @@ for item in json.load(open(sys.argv[1], encoding="utf-8")):
         print("  %s \u2014 declared by no task" % item["path"])
 PYEOF
         echo
+        local unowned
+        unowned="$(python3 -c 'import json, sys
+items = json.load(open(sys.argv[1], encoding="utf-8"))
+print(",".join(i["path"] for i in items) if items and not any(i.get("owner") for i in items) else "")' "$tdir/outside.json" 2>/dev/null)"
+        if [ -n "$unowned" ]; then
+          # #199: no task declares any of them, so the simplest plan choice is one command, on a live run too.
+          echo "Add the path to this task's files and resume it, on a live run too (no task declares it):"
+          echo "  forge control retry $PLAN $id --decide files+=$unowned --reason \"...\" --approved"
+          echo "  (with no run live: forge-parallel.sh retry $PLAN $id --decide files+=$unowned --reason \"...\" --approved)"
+          echo "If the finding is not a change you want (it describes another module's behaviour, say), clarify the"
+          echo "brief instead and retry with --decide retry=1, as below."
+          echo
+        fi
         echo "Plan choices (this is a change of the plan, edit $PLAN/tasks.tsv):"
         echo "  1. add the path to this task's files"
         echo "  2. make this task depend on the owner (edit its deps)"
@@ -765,6 +778,9 @@ PYEOF
         echo
       fi ;;
     esac
+    echo "On a live run, give each choice below as forge control retry $PLAN $id with the same arguments"
+    echo "(forge-parallel.sh retry refuses while the run holds the plan); accept is forge control accept."
+    echo
     echo "Choices (each needs your reason; --approved says the decision is yours):"
     echo "  N more attempts:        forge-parallel.sh retry $PLAN $id --decide retry=N --reason \"...\" --approved"
     case ",${reasons// /}," in
@@ -852,11 +868,46 @@ read $PLAN/tasks/$id/decision.md, then retry with --decide retry=N, --decide thr
              [ "${#n}" -le 3 ] && [ "$n" -ge 1 ] && [ "$n" -le 20 ] || die "retry: --decide retry=N takes N from 1 to 20" ;;
     threshold=P[0-3]) ;;
     split|split=keep|split=fresh) ;;
-    *) die "retry: --decide takes retry=N (1 to 20), threshold=P0|P1|P2|P3 or split (split=fresh), not '$decide'" ;;
+    files+=?*) ;;   # #199: checked by files_add_decision, before anything is recorded
+    *) die "retry: --decide takes retry=N (1 to 20), threshold=P0|P1|P2|P3, files+=PATH[,PATH] or split (split=fresh), not '$decide'" ;;
   esac
   reason="$(printf '%s' "$reason" | tr '\n\r\t' '   ' | sed 's/^ *//; s/ *$//')"
   [ -n "$reason" ] || die "retry: a decision needs --reason \"<why>\": it is recorded with the task"
   [ "$approved" = 1 ] || die "retry: a decision needs --approved: it resumes a task forge stopped, and is only given on the user's instruction"
+}
+
+# Whether a task's brief changed since its last dispatch (#220): true, false, or nothing when no attempt
+# recorded what it was given.
+brief_changed_word() { # brief_changed_word <tdir>
+  local tdir="$1" f cur
+  [ -f "$tdir/prompt.dispatched" ] || return 0
+  for f in prompt approach; do
+    cur="$tdir/$f.md"; [ -f "$cur" ] || cur=/dev/null
+    [ -f "$tdir/$f.dispatched" ] || continue
+    cmp -s "$tdir/$f.dispatched" "$cur" || { echo true; return 0; }
+  done
+  echo false
+}
+
+# #199: `--decide files+=<path>[,<path>]` adds paths no task declares to the task's files in tasks.tsv
+# (forge-control.py files_add: refused, with nothing written, when another task declares one). With check,
+# only checks. A refusal says why on the run output, and the caller exits 6.
+files_add_decision() { # files_add_decision <plan> <id> <decide> <reason> [check]
+  python3 - "$SKILL_DIR/scripts/forge-control.py" "$@" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('forge_control', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules['forge_control'] = module
+spec.loader.exec_module(module)
+plan, task, decide, reason = sys.argv[2:6]
+try:
+    files = module.files_add(plan, task, decide, reason, check=len(sys.argv) > 6)
+except (module.Invalid, module.Refused) as error:
+    print('forge: %s: %s' % (task, error), file=sys.stderr)
+    sys.exit(3)
+if len(sys.argv) <= 6:
+    print('forge: %s: now owns %s' % (task, files), file=sys.stderr)
+PY
 }
 
 # The decision of a NEEDS_DECISION task, recorded and then the retry prepared as `retry` does.
@@ -868,6 +919,8 @@ retry_decided() { # retry_decided <plan> <id> <decide> <new-dwarf> <reason>
   choice="$decide"; [ -z "$newdwarf" ] || choice="${choice:+$choice }dwarf=$newdwarf"
   reason="$(printf '%s' "$reason" | tr '\n\r\t' '   ' | sed 's/^ *//; s/ *$//')"
   attempt="$(cat "$tdir/attempt" 2>/dev/null || echo 0)"
+  local brief; brief="$(brief_changed_word "$tdir")"
+  case "$decide" in files+=*) files_add_decision "$PLAN" "$id" "$decide" "$reason" check || return 6 ;; esac
   rm -rf "${undo:?}"; mkdir "$undo" 2>/dev/null || { note "$id: could not record the decision; nothing was retried"; return 1; }
   for f in decisions.tsv qa_threshold escalation.stop split.suggested escalation.next decided.left; do
     if [ -f "$tdir/$f" ]; then cp -p "$tdir/$f" "$undo/$f"; else : > "$undo/$f.absent"; fi
@@ -881,13 +934,16 @@ retry_decided() { # retry_decided <plan> <id> <decide> <new-dwarf> <reason>
   rm -f "${tdir:?}/escalation.stop" "${tdir:?}/split.suggested" "${tdir:?}/escalation.next"
   [ "$rc" != 0 ] || decided_left_set "$tdir" $(( $(decided_attempts "$decide") - 1 )) || rc=$?
   [ "$rc" != 0 ] || prepare_retry "$PLAN" "$id" "$newdwarf" decided || rc=$?
+  # The row is written once the retry is prepared, so a refused preparation leaves tasks.tsv as it was.
+  case "$decide" in files+=*) [ "$rc" != 0 ] || files_add_decision "$PLAN" "$id" "$decide" "$reason" || rc=6 ;; esac
   if [ "$rc" != 0 ]; then
     for f in decisions.tsv qa_threshold escalation.stop split.suggested escalation.next decided.left; do
       if [ -f "$undo/$f" ]; then cp -p "$undo/$f" "$tdir/$f"; else rm -f "${tdir:?}/${f:?}"; fi
     done
   else
     forge_dataset_event decision --dir "$PLAN" --task "$id" --set "choice=$choice" --set "reason=$reason" \
-      --set "attempt=$attempt"
+      --set "attempt=$attempt" ${brief:+--set "brief_changed=$brief"}
+    [ "$brief" != true ] || note "$id: its brief changed since attempt $attempt was dispatched; the next attempt gets the new text"
   fi
   rm -rf "${undo:?}"
   return $rc
@@ -1230,7 +1286,15 @@ prepare_prompt_retry() { # prepare_prompt_retry <plan> <id>
     printf '```diff\n'
     cat "$tdir/stale.diff" 2>/dev/null
     printf '```\n'
+    # Changed during the review (#212): that review judged the old text, so its verdict did not count, but
+    # what it found may still hold.
+    if [ -s "$tdir/qa.stale.last" ]; then
+      printf '\nThe review of your previous work finished after the change, so it judged the old text and its verdict does not count. What it said, for reference (check each point against the new requirements):\n\n'
+      cat "$tdir/qa.stale.last"
+      printf '\n'
+    fi
   } > "$tdir/.retry_findings.md.tmp" && mv "$tdir/.retry_findings.md.tmp" "$tdir/retry_findings.md" || return 1
+  rm -f "$tdir/qa.stale.last"
   printf 'prompt\n' > "$tdir/.retry_findings.source.tmp" && mv "$tdir/.retry_findings.source.tmp" "$tdir/retry_findings.source" || return 1
   rm -f "$tdir/retry_findings.commit" "$tdir/resume" "$tdir/retry_findings.session" "$tdir/retry_findings.resolved"
   if [ -f "$PLAN/implementer_session" ]; then

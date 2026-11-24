@@ -10,7 +10,9 @@
                                                  needs --confirm: raising the cap is a person's decision),
                                                  converge-window (reviews the non-converging signal looks at),
                                                  summaries (on/off; with --task also inherit; on for a finished run
-                                                 also starts `forge summarize` detached, output in summaries.out)
+                                                 also starts `forge summarize` detached, output in summaries.out;
+                                                 refused while the plan has no summaries model),
+                                                 summaries-model SPEC|default, brief-model SPEC|default
   pin   <plan> <task> <spec>                     the model the task's next FULL implementer retry uses
   models <plan> <tier> [--dwarf SPECS] [--qa SPECS]
                                                  the implementer and/or reviewer of every task of one difficulty
@@ -79,6 +81,7 @@ import contextlib
 import errno
 import json
 import os
+import posixpath
 import re
 import shlex
 import stat
@@ -100,6 +103,7 @@ import forge_legacy  # noqa: E402
 import forge_models  # noqa: E402
 import forge_posix  # noqa: E402
 import forge_proc  # noqa: E402
+import forge_side  # noqa: E402
 
 SKILL = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 LOCK_WAIT = 5.0
@@ -121,6 +125,7 @@ NEXT_INFRA_WAIT = 'at the next infrastructure wait'
 NEXT_INFRA_STOP = 'at the next infrastructure stop'
 NEXT_DISPATCH = "at the scheduler's next dispatch decision"
 NEXT_CHANGE = "at the task's next change"
+NEXT_BRIEF = 'at the next brief change proposal'
 
 
 class Invalid(Exception):
@@ -666,6 +671,40 @@ def _summaries_model(value, _task):
     return value
 
 
+def _brief_model(value, _task):
+    """The model of a plan's brief-change dispatches (#163): as summaries-model."""
+    return _summaries_model(value, _task)
+
+
+def summaries_on_anywhere(plan, rows):
+    """Whether summaries are on for the plan or for any one task's override."""
+    if forge_side.settings(plan)['summaries']['mode'] == 'on':
+        return True
+    return any(text_of(plan, f'tasks/{row[0]}/summaries') == 'on' for row in rows if valid_task_id(row[0]))
+
+
+def refuse_model_gap(args, plan, rows, value):
+    """#163: summaries switched on, or a side model dropped while its feature is on, with no model left
+    for the plan. A planned plan does not read `forge config set ...model` again, so this names the key
+    that sets the model for this plan instead of letting every dispatch be skipped with `no-model`."""
+    where = shlex.quote(args.plan)
+    if args.key == 'summaries' and value == 'on' and not forge_side.settings(plan)['summaries']['model']:
+        raise Refused('summaries need a model and this plan has none (a planned plan keeps the settings it was '
+                      'planned with, so forge config set summaries.model does not reach it); set one first: '
+                      f'forge control set {where} summaries-model SPEC, then switch summaries on')
+    if value != 'default':
+        return
+    if args.key == 'summaries-model' and not forge_side.fallback_model(plan, 'summaries') \
+            and summaries_on_anywhere(plan, rows):
+        raise Refused('summaries are on and default would leave this plan with no model (a planned plan does not '
+                      'read forge config set summaries.model); give another spec, or switch summaries off first: '
+                      f'forge control set {where} summaries off')
+    if args.key == 'brief-model' and not forge_side.fallback_model(plan, 'brief') \
+            and forge_side.settings(plan)['brief']['level'] != 'off':
+        raise Refused('brief is on and default would leave this plan with no brief model (a planned plan does not '
+                      'read forge config set brief.model); give another spec')
+
+
 # key -> (plan only or both, validator, file, live only, when it applies)
 KEYS = {
     'qa-threshold': ('both', _qa, 'qa_threshold', False, NEXT_ATTEMPT),
@@ -684,6 +723,7 @@ KEYS = {
     'converge-window': ('plan', _int, 'converge_window', False, NEXT_DECISION),
     'summaries': ('both', _summaries, 'summaries', False, NEXT_CHANGE),
     'summaries-model': ('plan', _summaries_model, 'summaries_model', False, NEXT_CHANGE),
+    'brief-model': ('plan', _brief_model, 'brief_model', False, NEXT_BRIEF),
 }
 
 
@@ -751,6 +791,7 @@ def cmd_set(args):
         value = check(args.value, task)
     except Invalid as error:
         raise Invalid(f'{args.key}: {error}')
+    refuse_model_gap(args, plan, rows, value)
     rel = f'tasks/{task}/{name}' if task else name
     drop = (value in ('inherit', 'default') or (args.key in ('escalate-effort', 'pre-review-tests') and value == 'off')
             or (args.key == 'infra-backoff' and value == 'none'))
@@ -1023,6 +1064,25 @@ def check_row(plan, rows, task):
     return dwarf, qa
 
 
+def brief_changed(plan, task):
+    """#220: whether tasks/<task>/prompt.md or approach.md differs from what its last attempt was given
+    (prompt.dispatched, approach.dispatched), or None when no attempt recorded that."""
+    root = Path(plan) / 'tasks' / task
+    if not (root / 'prompt.dispatched').is_file():
+        return None
+    for name in ('prompt', 'approach'):
+        given = root / (name + '.dispatched')
+        if not given.is_file():
+            continue
+        try:
+            now = (root / (name + '.md')).read_bytes() if (root / (name + '.md')).is_file() else b''
+            if given.read_bytes() != now:
+                return True
+        except OSError:
+            return None
+    return False
+
+
 def queue(args, plan, verb, task, dwarf, decision=None, accept_reason=None, answer=None, subtasks=None):
     """Write the request under the control lock, live only; log it with its id.
     decision: a retry's (--decide choice or None, reason, approved) for a NEEDS_DECISION task.
@@ -1051,6 +1111,8 @@ def queue(args, plan, verb, task, dwarf, decision=None, accept_reason=None, answ
         if answer is not None:
             request['answer'] = answer
             extra['answer_chars'] = len(answer)
+        if decision:
+            extra['brief_changed'] = brief_changed(plan, task)
         body = json.dumps(request) + '\n'
         if len(body.encode('utf-8')) > REQUEST_MAX:
             raise Refused(f'the answer does not fit in a request ({len(body.encode("utf-8"))} bytes, the scheduler reads '
@@ -1068,9 +1130,72 @@ def queue(args, plan, verb, task, dwarf, decision=None, accept_reason=None, answ
     return 0
 
 
-DECISION = re.compile(r'retry=(?:[1-9]|1[0-9]|20)|threshold=P[0-3]')
+DECISION = re.compile(r'retry=(?:[1-9]|1[0-9]|20)|threshold=P[0-3]|files\+=[^\s,]+(?:,[^\s,]+)*')
+FILES_ADD = 'files+='
+
+
+def files_paths(decide):
+    """#199: the paths of a `files+=<path>[,<path>]` decision, normalized, or Invalid. Repo-relative paths
+    only: no absolute path, no `..`, no `.forge`, at most 20."""
+    paths = []
+    for raw in decide[len(FILES_ADD):].split(','):
+        path = posixpath.normpath(raw)
+        if raw.startswith('/') or path in ('.', '..') or path.startswith('../') or '\0' in raw \
+                or any(c.isspace() for c in raw) or path == '.forge' or path.startswith('.forge/'):
+            raise Invalid(f'--decide files+=: {raw!r} is not a path inside the repository')
+        if path not in paths:
+            paths.append(path)
+    if not paths or len(paths) > 20:
+        raise Invalid('--decide files+= takes 1 to 20 paths, comma-separated')
+    return paths
+
+
+def files_add(plan, task, decide, reason, check=False):
+    """#199: add paths to a stopped task's files in tasks.tsv, the simplest plan choice for reason `plan`, on a live
+    run or not. Refused (nothing written) when another task declares a path, or the task already owns every one.
+    No path any task declares means no new overlap: the waves `plan` computed stay valid. With check, only checks.
+    Logs `files-added` in control.log (the paths, the files before, the reason). Returns the new files column."""
+    paths = files_paths(decide)
+    schedule = schedule_module()
+    for _ in range(5):
+        text = read_file(plan, 'tasks.tsv', strict=True) or ''
+        lines = text.splitlines()
+        rows = [line.split('\t') for line in lines if line.strip() and not line.startswith('#')]
+        mine = next((row for row in rows if row[0] == task), None)
+        if mine is None or len(mine) < 7:
+            raise Invalid(f'task {task!r} is not in this plan')
+        for row in rows:
+            if row[0] != task and len(row) > 3:
+                owned = [path for path in paths if schedule.overlap(path, row[3])]
+                if owned:
+                    raise Refused(f'{", ".join(owned)} overlaps the files of task {row[0]} ({row[3]}): that is a real '
+                                  f'ownership conflict and needs the plan (make {task} depend on {row[0]}, or merge the rows)')
+        before = mine[3].strip()
+        current = [] if before in ('', '-') else [f for f in before.split(',') if f]
+        new = [path for path in paths if not any(schedule.overlap(path, f) for f in current)]
+        if not new:
+            raise Refused(f'task {task} already owns {", ".join(paths)}')
+        files = ','.join(current + new)
+        if check:
+            return files
+        out = []
+        for line in lines:
+            cells = line.split('\t')
+            if not line.startswith('#') and cells[0] == task:
+                cells[3] = files
+                line = '\t'.join(cells)
+            out.append(line)
+        if read_file(plan, 'tasks.tsv', strict=True) != text:
+            continue
+        write_atomic(plan, 'tasks.tsv', '\n'.join(out) + '\n')
+        audit(plan, 'scheduler', 'files-added', task, 'files', ','.join(new), before or '-', reason=reason)
+        return files
+    raise Refused('tasks.tsv kept changing under the change; try again')
+
+
 SPLIT = re.compile(r'split(?:=keep|=fresh)?')   # a split into subtasks (#153): not only for a NEEDS_DECISION task
-DECIDE_TAKES = '--decide takes retry=N (1 to 20), threshold=P0|P1|P2|P3, or split | split=fresh with --subtasks FILE'
+DECIDE_TAKES = ('--decide takes retry=N (1 to 20), threshold=P0|P1|P2|P3, files+=PATH[,PATH] (paths no task declares), '
+                'or split | split=fresh with --subtasks FILE')
 
 
 def decision_of(plan, args, dwarf):
@@ -1108,6 +1233,10 @@ def decision_of(plan, args, dwarf):
                       '(retry --decide retry=N | threshold=Pn | split, or --dwarf SPEC, each with --reason TEXT --approved)')
     if args.decide is not None and not DECISION.fullmatch(args.decide):
         raise Invalid(DECIDE_TAKES)
+    if args.decide is not None and args.decide.startswith(FILES_ADD):
+        # #199: checked now, so a path another task declares is refused with nothing queued. The scheduler writes
+        # the row when it applies the request, and checks again.
+        files_add(plan, args.task, args.decide, decision_words(args), check=True)
     return args.decide, decision_words(args), True
 
 
@@ -1406,7 +1535,10 @@ def parser():
                        'retry-budget, infra-retries and max-parallel change only while a run is live. '
                        'qa-threshold, retry-budget and summaries also take --task (value inherit drops the override; at run level, default drops the file and none means P3). '
                        'summaries on|off turns generated task summaries on or off; on for a finished run also starts them. '
-                       'summaries-model SPEC changes the model they use (default follows forge config set summaries.model).')
+                       'summaries-model SPEC changes the model they use (default drops the plan\'s own: before planning it '
+                       'follows forge config set summaries.model, once planned it leaves none, so it is refused while '
+                       'summaries are on; summaries on is refused while the plan has no model). '
+                       'brief-model SPEC changes the model of brief change proposals the same way.')
     common(p)
     p.add_argument('key', choices=list(KEYS))
     p.add_argument('value')

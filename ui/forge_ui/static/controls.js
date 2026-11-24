@@ -30,6 +30,8 @@
     'infra-backoff': { label: 'Infra backoff', run: 'at the next infrastructure wait', planOnly: true },
     'escalate-effort': { label: 'Effort step', run: 'at the next retry decision', planOnly: true },
     'summaries': { label: 'Summaries', run: "at each task's next change", task: 'at its next change' },
+    'summaries-model': { label: 'Summaries model', run: "at each task's next change", planOnly: true },
+    'brief-model': { label: 'Brief model', run: 'at the next brief change proposal', planOnly: true },
   };
   const BACKOFF_FORMS = 'exp:<base>[,<cap>], linear:<start>,<step>[,<cap>] or list:<a>,<b>,… (seconds)';
   // A task status after which "Retry now" applies (or the policy stopped it).
@@ -140,6 +142,11 @@
       return text === 'on' || text === 'off' || (task && text === 'inherit') ? { ok: true, value: text }
         : bad(task ? 'on, off or inherit' : 'on or off');
     }
+    if (key === 'summaries-model' || key === 'brief-model') {
+      // One spec as forge-control.py `_summaries_model` takes it (the doctor checks the rest), or default.
+      return text && !/[\s,\u0000-\u001f\u007f]/.test(text) && !text.startsWith('-') && text.length <= MAX_FIELD
+        ? { ok: true, value: text } : bad('one model spec such as haiku:low, or default');
+    }
     if (key === 'escalate-effort') return text === 'on' || text === 'off' ? { ok: true, value: text } : bad('on or off');
     if (key === 'infra-backoff') {
       // The shape itself is the CLI's to check; here only what can never be one. "default" drops the setting.
@@ -174,7 +181,8 @@
   const shown = (key, value, task) => key === 'timeout' ? `${minutesOf(Number(value))} min`
     : key === 'qa-threshold' && value === 'none' ? (task ? 'P3 for this task' : 'P3 (nothing tolerated)')
     : key === 'qa-threshold' && value === 'default' ? 'the default (P2)'
-    : key === 'infra-backoff' && value === 'none' ? 'the default (exp:60)' : value;
+    : key === 'infra-backoff' && value === 'none' ? 'the default (exp:60)'
+    : (key === 'summaries-model' || key === 'brief-model') && value === 'default' ? 'the default (the plan drops its own)' : value;
   const inTask = task => task ? ` for task \`${task}\`` : '';
 
   // A draft change → {ok, body, confirm} or {ok: false, error}. change: {kind: 'set', key, input, task?} |

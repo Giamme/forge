@@ -246,6 +246,19 @@ test('the new keys are checked before they are sent', () => {
   assert.equal(C.canEdit(show(), 'max-parallel').enabled, true);
 });
 
+test('the summaries and brief models are one spec or default, for the whole run (#163)', () => {
+  const set = (key, input, task) => C.prepare({ kind: 'set', key, input, task });
+  for (const key of ['summaries-model', 'brief-model']) {
+    assert.deepEqual(set(key, ' haiku:low ').body, { action: 'set', key, value: 'haiku:low' });
+    assert.deepEqual(set(key, 'default').body, { action: 'set', key, value: 'default' });
+    assert.match(set(key, 'default').confirm, /drops its own/);
+    for (const v of ['', 'two words', 'a,b', '-x', 'x'.repeat(300)]) assert.equal(set(key, v).ok, false, `${key} ${v}`);
+    assert.equal(set(key, 'haiku:low', 'graph').ok, false);   // plan-wide
+  }
+  assert.match(set('summaries-model', 'sol').confirm, /^Set Summaries model to sol\? Takes effect at each task's next change/);
+  assert.equal(C.logLine({ actor: 'ui', key: 'summaries-model', value: 'sol', previous: null }).what, 'Summaries model');
+});
+
 test('each infrastructure pause is one line with its countdown, or its spent budget', () => {
   const now = 1000;
   const c = show({ run: { infra_paused: [

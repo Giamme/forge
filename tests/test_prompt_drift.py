@@ -153,6 +153,91 @@ class PromptDriftCase(unittest.TestCase):
         self.assertFalse((p / 'tasks/a/resume').exists())
 
 
+class BriefDuringReviewTests(PromptDriftCase):
+    """#212: a brief edited while the review runs: the verdict judged the old text, so it does not count."""
+
+    def test_an_edit_during_the_review_makes_the_attempt_stale_and_carries_the_findings(self):
+        p = self.plan_of()
+        self.scenario({'a.qa.1': {'writes': {str(p / 'tasks/a/prompt.md'): 'Implement change. TASK_a\nNEW_LINE\n'},
+                                  'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 FINDING_OLD_TEXT'},
+                       'a.dwarf.2': {'content': 'written for the new text'}})
+        r = self.run_script('forge-parallel.sh', 'run', p)
+        self.assertEqual(self.calls(), ['dwarf', 'qa', 'dwarf', 'qa'], r.stdout)
+        self.assertEqual(self.read(p, 'status').strip(), 'PASS', r.stdout)
+        rows = [line.split('\t') for line in self.read(p, 'attempts.tsv').splitlines()]
+        self.assertEqual([row[1:3] for row in rows], [['1', 'STALE'], ['1', 'PASS']])   # the FAIL did not count
+        findings = self.read(p, 'retry_findings.md')
+        self.assertIn('+NEW_LINE', findings)
+        self.assertIn('its verdict does not count', findings)
+        self.assertIn('FINDING_OLD_TEXT', findings)
+        self.assertFalse((p / 'tasks/a/qa.stale.last').exists())       # read once, by the attempt it was for
+        changed = [e for e in self.control_log(p) if e['action'] == 'prompt-changed']
+        self.assertEqual([(e['value'], e['during'], e['files']) for e in changed], [(1, 'review', ['prompt.md'])])
+        self.assertIn('prompt.md changed during the review of attempt 1 — its verdict does not count', self.read(p, 'task.out'))
+
+
+class BriefBetweenAttemptsTests(PromptDriftCase):
+    """#220: every change to a brief after `plan` is in control.log, whenever it lands."""
+
+    def changes(self, p):
+        if not (p / 'control.log').exists():
+            return []
+        return [(e['value'], e.get('during'), e['files']) for e in self.control_log(p) if e['action'] == 'prompt-changed']
+
+    def test_an_edit_before_the_first_dispatch_is_logged_when_it_starts(self):
+        p = self.plan_of()
+        (p / 'tasks/a/approach.md').write_text('a design rule\n')
+        r = self.run_script('forge-parallel.sh', 'run', p)
+        self.assertEqual(self.read(p, 'status').strip(), 'PASS', r.stdout)
+        self.assertEqual(self.changes(p), [(1, 'dispatch', ['approach.md'])])
+        self.assertIn('+a design rule', self.read(p, 'brief.diff'))
+
+    def test_an_edit_between_attempts_is_logged_once_at_the_next_dispatch(self):
+        p = self.plan_of()
+        self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 wrong'},
+                       'a.dwarf.2': {'content': 'second try'}})
+        self.run_script('forge-parallel.sh', 'run', p)
+        self.assertEqual(self.read(p, 'status').strip(), 'FAIL')
+        self.assertEqual(self.changes(p), [])
+        (p / 'tasks/a/prompt.md').write_text('Implement change. TASK_a\nNARROWED\n')
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a')
+        self.assertEqual(self.read(p, 'status').strip(), 'PASS', r.stdout)
+        self.assertEqual(self.changes(p), [(2, 'dispatch', ['prompt.md'])])
+        diff = self.read(p, 'brief.diff')
+        self.assertIn('-OLD_LINE', diff)
+        self.assertIn('+NARROWED', diff)
+
+    def test_an_edit_during_the_attempt_is_one_entry_not_two(self):
+        p = self.plan_of()
+        self.scenario(self.edit_during_dwarf(p, 'prompt.md', 'Implement change. TASK_a\nNEW_LINE\n'))
+        self.run_script('forge-parallel.sh', 'run', p)
+        self.assertEqual(self.changes(p), [(1, 'attempt', ['prompt.md'])])
+        self.assertFalse((p / 'tasks/a/brief.diff').exists())
+
+    def test_a_drifted_path_the_brief_names_is_labelled(self):
+        p = self.plan_of()
+        (p / 'tasks/a/prompt.md').write_text('Implement change. TASK_a\nAlso update docs/guide.md.\n')
+        self.scenario({'a.dwarf.1': {'files': {'docs/guide.md': 'guide\n', 'other.txt': 'x\n'}}})
+        r = self.run_script('forge-parallel.sh', 'run', p)
+        line = next(x for x in r.stdout.splitlines() if 'docs/guide.md' in x and 'other.txt' in x)
+        self.assertIn('docs/guide.md (named in the brief)', line)
+        self.assertNotIn('other.txt (named', line)
+
+    def test_brief_changed_for_a_decision_audit(self):
+        spec = importlib.util.spec_from_file_location('forge_control_brief', ROOT / 'scripts' / 'forge-control.py')
+        control = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(control)
+        t = self.root / 'p' / 'tasks' / 'a'
+        t.mkdir(parents=True)
+        (t / 'prompt.md').write_text('x\n')
+        self.assertIsNone(control.brief_changed(self.root / 'p', 'a'))   # never dispatched
+        (t / 'prompt.dispatched').write_text('x\n')
+        (t / 'approach.dispatched').write_text('')
+        self.assertFalse(control.brief_changed(self.root / 'p', 'a'))
+        (t / 'approach.md').write_text('new rule\n')
+        self.assertTrue(control.brief_changed(self.root / 'p', 'a'))
+
+
 class StaleCountingTests(unittest.TestCase):
     route = load_route()
 

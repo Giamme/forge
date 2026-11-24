@@ -164,6 +164,16 @@ def settings(plan) -> dict:
     return resolved
 
 
+def fallback_model(plan, feature) -> str:
+    """The model `feature` (`brief` or `summaries`) would have without the plan's own `<feature>_model`
+    file (#163): the user setting before the plan is planned, `''` once it is (a planned plan is frozen)."""
+    if feature not in ('brief', 'summaries'):
+        raise ValueError('feature must be brief or summaries, not %r' % (feature,))
+    if (Path(plan) / 'waves.tsv').exists():
+        return ''
+    return _model_of(_mapping(_user_features().get(feature)).get('model'))
+
+
 def plan_files(plan) -> dict:
     """The six plan files that freeze `plan`'s choices as they stand, for a plan made from it.
 

@@ -404,8 +404,11 @@ live run which `forge control` command to use instead.
 
 Editing a task's `prompt.md` or `approach.md` while a run is going is allowed. An attempt
 already running is not reviewed against the new text: it is marked `STALE` and re-dispatched
-with the new requirements, and the attempt is not spent. `control.log` records `prompt-changed`
-with actor `scheduler`. See [failures that are the plan's](reviews.md#failures-that-are-the-plans).
+with the new requirements, and the attempt is not spent. An edit made while the attempt is
+being reviewed is treated the same way: that review's verdict does not count, and its findings go to
+the next attempt for reference. `control.log` records `prompt-changed` with actor `scheduler` for
+every brief change, whenever it lands: one made between attempts or while the task waits is logged
+when its next attempt starts. See [failures that are the plan's](reviews.md#failures-that-are-the-plans).
 
 Each change is validated, written under `control.lock`, and says when it applies:
 
@@ -581,8 +584,11 @@ in the summary and in the QA prompt:
 
 ```
 scope drift (touched files the task did not declare):
-  auth           src/db.py
+  auth           src/db.py docs/auth.md (named in the brief)
 ```
+
+A path the task's brief names, as when you added it to `prompt.md` mid-run, is marked
+`(named in the brief)`, so an approved scope change reads apart from drift nothing explains.
 
 Never a failure — a dwarf that genuinely needed one more file did the right thing. What it
 buys is that a merge `CONFLICT` two waves later arrives with its cause already named.

@@ -1684,6 +1684,7 @@ known or a spec runs is for the CLI to say (its `400` or `409` comes back as abo
 | `{"action": "set", "key": "qa-threshold", "value": "P2"}` (`default` at run level removes the setting, `none` is P3; for a task `inherit` drops the override) | `control set <dir> qa-threshold P2 --actor ui --json` |
 | `{"action": "set", "key": "retry-budget", "value": "inherit", "task": "reader"}` | `control set <dir> retry-budget inherit --task reader --actor ui --json` |
 | `{"action": "set", "key": "summaries", "value": "on"}` (or `off`) | `control set <dir> summaries on --actor ui --json` |
+| `{"action": "set", "key": "summaries-model", "value": "haiku:low"}` (or `default`) | `control set <dir> summaries-model haiku:low --actor ui --json` |
 | `{"action": "set", "key": "summaries", "value": "inherit", "task": "reader"}` (`on` or `off` with `task` too) | `control set <dir> summaries inherit --task reader --actor ui --json` |
 | `{"action": "pin", "task": "graph", "spec": "sol:high:codex"}` | `control pin <dir> graph sol:high:codex --actor ui --json` |
 | `{"action": "unpin", "task": "graph"}` | `control unpin <dir> graph --actor ui --json` |

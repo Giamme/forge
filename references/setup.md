@@ -78,7 +78,9 @@ What the other answers change:
 Brief, summaries and retro are copied into a plan when it is planned, so changing them reaches
 later plans only. Setup and `forge config set` say so when you change one. For a plan that is
 already running, `forge control set <plan> summaries on|off` and
-`forge control set <plan> summaries-model <spec>` change it now.
+`forge control set <plan> summaries-model <spec>` change it now (and
+`forge control set <plan> brief-model <spec>` the brief model). `summaries on` is refused while the
+plan has no summaries model.
 
 ## Another machine
 
