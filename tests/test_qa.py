@@ -370,6 +370,69 @@ class GateTableTests(unittest.TestCase):
         self.assertEqual([f.severity for f in result.tolerated], [3])
 
 
+class RecapTests(unittest.TestCase):
+    """#254: a retry round's recap of the last round is not a finding of this round."""
+
+    E3 = ('**Verdict: PASS.** Both findings from the last round are fixed, and I found nothing new.\n\n'
+          '**Previous findings**\n'
+          '- **P1, surname match beating the flipped exact name (fixed).** It runs the name + dates step '
+          '(`load_book.py:265-268`) first.\n'
+          '- **P2, date filtering after a limited, leading-wildcard query (fixed).** `load_book.py:270` '
+          'filters before the limit now.\n\n'
+          'FORGE_VERDICT: PASS\n')
+
+    def test_the_e3_recap_keeps_a_pass(self):
+        self.assertEqual(contract.parse_findings(self.E3), [])
+        self.assertEqual(decide('PASS', self.E3, 'P2'), ('keep', '-', 0, 0, 0))
+        self.assertEqual(decide('PASS', self.E3, 'P3'), ('keep', '-', 0, 0, 0))
+
+    def test_the_command_line_keeps_the_e3_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            qa = Path(tmp) / 'qa.last'
+            qa.write_text(self.E3, encoding='utf-8')
+            known = Path(tmp) / 'ki.md'
+            res = run('gate', '--verdict', 'PASS', '--qa-last', qa, '--threshold', 'P2', '--known-issues', known)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(res.stdout.split('\t')[0], 'keep')
+
+    def test_recap_titles(self):
+        item = '- **P1, a thing (done).** `a.py:3` changed.\n'
+        for title in ('## Previous findings', '**Previous findings:**', 'Previous round:',
+                      '### Findings from the previous round', '__Recap__', 'Earlier findings:',
+                      '**Last review\'s findings**'):
+            with self.subTest(title=title):
+                text = title + '\n' + item + '\nFORGE_VERDICT: PASS\n'
+                self.assertEqual(contract.parse_findings(text), [])
+                self.assertEqual(decide('PASS', text, 'P2')[0], 'keep')
+
+    def test_a_fixed_marker_without_a_title(self):
+        for first in ('- **P1, x (fixed).** `a.py:3`', '- P1 a.py:3 — x [resolved]', '- [P1][CONFIRMED] a.py:3 — x (now fixed)'):
+            with self.subTest(first=first):
+                self.assertEqual(decide('PASS', first + '\nFORGE_VERDICT: PASS\n', 'P2')[0], 'keep')
+
+    def test_a_finding_still_open_stays_blocking(self):
+        for text in ('**Previous findings**\n- **P1, x (not fixed).** `a.py:3` still wrong.\n',
+                     '**Previous findings**\n- **P1, x.** `a.py:3` is still present.\n',
+                     '- **P1, x (partially fixed).** `a.py:3`\n',
+                     '## Previous findings\n- [P1][CONFIRMED] a.py:3 — the fix regressed y\n'):
+            with self.subTest(text=text):
+                self.assertEqual(decide('PASS', text + 'FORGE_VERDICT: PASS\n', 'P2')[0], 'fail')
+
+    def test_a_new_confirmed_finding_in_the_recap_list_still_blocks(self):
+        text = ('**Previous findings**\n- **P2, old thing (fixed).** `a.py:3`\n'
+                '- [P1][CONFIRMED] b.py:9 — the fix breaks empty names\nFORGE_VERDICT: PASS\n')
+        self.assertEqual(decide('PASS', text, 'P2'), ('fail', 'P1', 1, 0, 0))
+
+    def test_findings_after_the_recap_count(self):
+        new = '- [P1][CONFIRMED] b.py:9 — new bug\n'
+        for sep in ('\n## New findings\n', '\n**This round**\n', '\nNew findings:\n', '\nI also found one bug.\n\n'):
+            with self.subTest(sep=sep):
+                text = self.E3.replace('FORGE_VERDICT: PASS\n', '') + sep + new + 'FORGE_VERDICT: PASS\n'
+                self.assertEqual(decide('PASS', text, 'P2'), ('fail', 'P1', 1, 0, 0))
+        # Without the recap, an untagged located finding still blocks a PASS.
+        self.assertEqual(decide('PASS', '- P1 a.py:3 — x\nFORGE_VERDICT: PASS\n', 'P2')[0], 'fail')
+
+
 class FactsTests(unittest.TestCase):
     """#119: a finding's reach, origin and evidence, in a suffix at the end of its line, decide nothing."""
     ALL = dict(reach='unusual', origin='new', evidence='traced')

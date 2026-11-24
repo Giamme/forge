@@ -50,6 +50,14 @@ The decision is a statement about the findings only; wiring it into a verdict is
 caller's job. Fail-safe means blocking: anything the parser cannot read confidently
 pushes toward `keep` for a FAIL and toward `fail` for a PASS, never toward `accept`.
 
+Recaps (#254). A retry round's reviewer may recap the last round before its own review. A block
+whose first line marks it `(fixed)`, `(resolved)` or `(addressed)`, and every block in the list
+under a recap title (a heading, a bold line of its own or a short `Title:` line such as
+"Previous findings", "Findings from the last round" or "Recap"), is not a finding of this round
+and is skipped. A block that says the finding is not fixed, still present or regressed stays a
+finding, and so does a CONFIRMED block under a recap title that never says it was fixed,
+resolved, addressed, rejected or withdrawn. The recap's list ends at the next title or at a flush-left line that is not a bullet.
+
 Fields: worst_confirmed is the most severe label among CONFIRMED labelled findings
 (`-` if none); n_confirmed counts CONFIRMED findings; n_unlabelled counts CONFIRMED
 findings with no recognisable severity, plus located findings carrying a severity but
@@ -485,10 +493,41 @@ def _starts_block(line: str) -> bool:
     return bool(_LEAD.match(line) and _LOCATION.search(line))
 
 
+# A retry round's reviewer often recaps the last round before its own review (#254). A recap is
+# not a finding of this round: a block under a recap heading ("Previous findings", "Findings from
+# the last round", ...) or one whose first line says `(fixed)` is skipped, unless it says the
+# finding is still there. Fail-safe: anything that reads as still open stays a finding.
+_RECAP_TITLE = re.compile(
+    r'^(?:recap\b|(?:previous|prior|earlier|last|past)\s+(?:round\'?s?\s+|review\'?s?\s+)?'
+    r'(?:findings?|issues?|round|review|feedback)\b'
+    r'|(?:findings?|issues?|feedback)\s+(?:from|of)\s+(?:the\s+)?(?:previous|prior|earlier|last)\b)',
+    re.IGNORECASE)
+# A bold line of its own, `**Previous findings**` or `__Previous findings:__`, titles a section.
+_BOLD_TITLE = re.compile(r'^\s*(\*\*|__)(?P<title>[^*_\n]+?)\1[ \t]*:?[ \t]*$')
+_PLAIN_TITLE = re.compile(r'^(?P<title>[^\s*_#|>-][^:\n]{0,60}):[ \t]*$')
+_FIXED = re.compile(r'[(\[][ \t]*(?:now[ \t]+|all[ \t]+)?(?:fixed|resolved|addressed)[ \t]*[.!]?[ \t]*[)\]]',
+                    re.IGNORECASE)
+_STILL_OPEN = re.compile(r'\b(?:not|un|partially|partly)[ \t-]*(?:fixed|resolved|addressed)\b|'
+                         r'\bstill[ \t]+(?:present|open|there|broken|happens|fails|reproduces)\b|'
+                         r'\bregress', re.IGNORECASE)
+
+
+def _section_title(line: str):
+    """The title a heading, a bold line of its own or a short `Title:` line gives, else None."""
+    if _HEADING.match(line):
+        return re.sub(r'^\s*#+\s*', '', line).strip(' \t*_:')
+    if _BULLET.match(line):
+        return None
+    match = _BOLD_TITLE.match(line) or _PLAIN_TITLE.match(line)
+    return match.group('title').strip(' \t*_:') if match else None
+
+
 def _blocks(lines: list) -> list:
-    blocks = []  # [start number, indent, [lines]]
+    """[start number, indent, [lines], recap] per block; recap: it opened inside a recap section."""
+    blocks = []
     current = None
     blank = False
+    recap = False
     for number, line in lines:
         if not line.strip():
             blank = True
@@ -496,13 +535,23 @@ def _blocks(lines: list) -> list:
                 current[2].append('')
             continue
         indent = len(line) - len(line.lstrip(' '))
+        title = _section_title(line)
+        if title is not None:
+            recap = bool(_RECAP_TITLE.match(title))
+            if recap and not _HEADING.match(line):
+                current = None      # the recap's title closes the block before it
+                blank = False
+                continue
+        elif recap and indent == 0 and not _BULLET.match(line) and (blank or current is None
+                                                                     or _starts_block(line)):
+            recap = False           # a flush paragraph or finding ends the recap's list
         if _starts_block(line):
             nested = (current is not None and indent > current[1]
                       and not _HEADING.match(line))
             if nested:
                 current[2].append(line)
             else:
-                current = [number, indent, [line]]
+                current = [number, indent, [line], recap]
                 blocks.append(current)
         elif current is not None:
             if blank and indent <= current[1]:
@@ -511,6 +560,25 @@ def _blocks(lines: list) -> list:
                 current[2].append(line)
         blank = False
     return blocks
+
+
+_SETTLED = re.compile(r'\b(?:fixed|resolved|addressed|rejected|withdrawn)\b', re.IGNORECASE)
+
+
+def _recap(lines: list, in_recap: bool) -> bool:
+    """Whether a block recaps an earlier round instead of reporting a finding of this one.
+
+    A CONFIRMED block under a recap title stays a finding unless it also says it was settled:
+    a new finding listed with the recap must not be lost."""
+    body = '\n'.join(lines)
+    if _STILL_OPEN.search(body):
+        return False
+    if _FIXED.search(lines[0]):
+        return True
+    if not in_recap:
+        return False
+    confirmed = _CONFIRMED.search(_NOT_CONFIRMED.sub('', body)) or _CONFIRMED_TAG.search(lines[0])
+    return not confirmed or bool(_SETTLED.search(body))
 
 
 def _severity(first_line: str):
@@ -607,7 +675,8 @@ def outside_paths(finding_text: str) -> list:
 
 def parse_findings(text: str) -> list:
     """Finding blocks of a QA reply, in order; see the module docstring for the rules."""
-    found = (_finding(start, lines) for start, _, lines in _blocks(_clean(text)))
+    found = (_finding(start, lines) for start, _, lines, recap in _blocks(_clean(text))
+             if not _recap(lines, recap))
     return [finding for finding in found if finding is not None]
 
 

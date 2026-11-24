@@ -19,8 +19,8 @@ QA_ROUND_NOTE = """\
 Check each finding above first: is it fixed, still present, or validly rejected by the
 implementer (see their reply below)? Report a finding that is still present again, in the
 usual labelled format with its severity. Mention a fixed or rejected finding only in a plain
-sentence, never as a `- [Px][CONFIRMED]` or `- [Px][PLAUSIBLE]` line: every labelled line is
-counted as an open finding. This round's threshold, in the contract below, governs; it may
+sentence without its severity, never as a `- [Px][CONFIRMED]` or `- [Px][PLAUSIBLE]` line or
+a bullet that leads with P0-P3: every labelled line is counted as an open finding. This round's threshold, in the contract below, governs; it may
 differ from the last round's. Then review the full task diff below: the changes since that
 round are where new problems are most likely."""
 

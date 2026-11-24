@@ -279,6 +279,7 @@ do_adopt() {
   forge_review_snapshot "$int_wt" "$base" "$tip" "$review" > "$out/snapshot.log" 2>&1 \
     || { adopt_rollback; die "adopt: cannot build the review snapshot (see $out/snapshot.log)" 3; }
   forge_review_deps "$int_wt" "$review" "$out/review.deps"
+  forge_review_submodules "$int_wt" "$review" "$out/review.deps"
   source_fp="$(forge_fingerprint "$int_wt")" && review_fp="$(forge_fingerprint "$review" --tracked)" \
     || { adopt_rollback; die "adopt: cannot fingerprint the checkouts" 3; }
   thr="$(qa_threshold_for "$PLAN" __adopt__)"

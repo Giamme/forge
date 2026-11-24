@@ -414,6 +414,7 @@ final_review_body() {
   forge_review_snapshot "$src" "$base" "$tip" "$review" > "$out/snapshot.log" 2>&1 ||
     { note "final review: cannot build the review snapshot (see $out/snapshot.log)"; return 3; }
   forge_review_deps "$src" "$review" "$out/review.deps"
+  forge_review_submodules "$src" "$review" "$out/review.deps"
   source_fp="$(forge_fingerprint "$src")" && review_fp="$(forge_fingerprint "$review" --tracked)" ||
     { note "final review: cannot fingerprint the checkouts"; return 3; }
   printf '%s\n' "$source_fp" > "$out/source.fingerprint"

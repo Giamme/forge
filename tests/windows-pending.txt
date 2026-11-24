@@ -83,6 +83,7 @@ forge:test_retry_sources
 forge:test_review
 forge:test_review_continuity
 forge:test_review_deps
+forge:test_review_submodules
 forge:test_review_large_diff
 forge:test_review_sessions
 forge:test_ripwire

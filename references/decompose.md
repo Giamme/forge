@@ -544,7 +544,10 @@ becomes one task, id `combined`:
 
 The original `tasks.tsv` bytes are kept as `tasks.precollapse.tsv`. Each `tasks/<id>/`
 moves to `tasks.precollapse/<id>/`. `collapsed.json` is `from` (the ids in wave order),
-`into` `combined`, and `shape`. A one-task or branching plan is left as it is. A plan that
+`into` `combined`, and `shape`. A `groups.tsv` is kept as `groups.precollapse.tsv` and
+rewritten: the parts become `combined`, and a group made only of parts is dropped (the file
+goes when no group is left); `collapsed.json` then also has `groups`, with `kept_as` and the
+`dropped` group ids (#257). A one-task or branching plan is left as it is. A plan that
 already has `tasks.precollapse.tsv` or `collapsed.json` is not an error. The table
 announces a collapse only when this call did it:
 
