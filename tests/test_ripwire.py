@@ -12,13 +12,22 @@ from unittest.mock import patch
 import test_forge as fixtures
 ROOT = fixtures.ROOT
 
+
+def fake_api(root, tag):
+    """A file:// stand-in for the GitHub releases API: FORGE_RIPWIRE_API points at it."""
+    api = Path(root) / 'api'
+    latest = api / 'repos/redhat-et/ripwire/releases/latest'
+    latest.parent.mkdir(parents=True, exist_ok=True)
+    latest.write_text(json.dumps({'tag_name': tag}))
+    return api.as_uri()
+
 spec = importlib.util.spec_from_file_location('ripwire', ROOT / 'scripts/forge-ripwire.py')
 rw = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rw)
 FAKE_RW = '''#!/usr/bin/env python3
 import json, os, pathlib, sys
 if '--version' in sys.argv:
- print('ripwire 0.4.0'); sys.exit()
+ print('ripwire 0.7.0'); sys.exit()
 with open(os.environ['RW_CALLS'], 'a') as f:
  f.write(json.dumps({'argv':sys.argv, 'cwd':os.getcwd()})+'\\n')
 print('<context>条件 fresh evidence</context>')
@@ -129,9 +138,10 @@ class RipwireBoundsTests(unittest.TestCase):
             root = Path(tmp); prompt = root / 'prompt'; binary = root / 'ripwire'
             args = argparse.Namespace(repo=tmp, role='dwarf', prompt=str(prompt), query='',
                                       baseline='', artifacts=tmp, native='0')
-            for body, reason in [('echo ripwire 9.0.0', 'incompatible'),
-                                 ('if [ "$1" = --version ]; then echo 0.4.0; else exit 6; fi', 'exit 6'),
-                                 ('if [ "$1" = --version ]; then echo 0.4.0; fi', 'empty')]:
+            for body, reason in [('echo ripwire 0.4.0', 'incompatible'),
+                                 ('echo ripwire', 'incompatible'),
+                                 ('if [ "$1" = --version ]; then echo 0.6.0; else exit 6; fi', 'exit 6'),
+                                 ('if [ "$1" = --version ]; then echo 0.7.0; fi', 'empty')]:
                 prompt.write_bytes(b'original\r\n')
                 binary.write_text('#!/bin/sh\n' + body); binary.chmod(0o755)
                 with patch.object(rw, 'resolve', return_value=str(binary)), patch.dict(os.environ, {'FORGE_RIPWIRE': ''}):
@@ -181,6 +191,8 @@ class RipwireInstallTests(unittest.TestCase):
         self.env = dict(os.environ, HOME=str(self.home), PATH=str(self.bin) + ':/usr/bin:/bin',
                         DOWNLOADS=str(self.root / 'downloads'), FIXTURE=str(ROOT / 'tests/fixtures/ripwire-install-v0.4.0.sh'))
         self.env.pop('FORGE_RIPWIRE', None)
+        self.env.pop('FORGE_RIPWIRE_VERSION', None)
+        self.env['FORGE_RIPWIRE_API'] = fake_api(self.root, 'v0.6.10')
         curl = self.bin / 'curl'
         curl.write_text('''#!/bin/bash
 printf 'download\\n' >> "$DOWNLOADS"
@@ -210,11 +222,11 @@ if [ -n "${dest:-}" ]; then cp "$FIXTURE" "$dest"; else echo 'mock metadata down
         self.assertEqual(dest.read_text(), 'preserved')
         self.assertFalse((self.root / 'downloads').exists())
 
-    def test_checksum_and_upstream_failure_propagate(self):
+    def test_a_file_that_is_not_the_release_installer_is_never_run_and_upstream_failure_propagates(self):
         self.env['BAD_INSTALLER'] = '1'
         result = self.run_install('--yes')
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('checksum mismatch', result.stdout)
+        self.assertIn('not the Ripwire release installer', result.stdout)
         self.env.pop('BAD_INSTALLER')
         result = self.run_install('--yes')
         self.assertNotEqual(result.returncode, 0)
@@ -260,9 +272,9 @@ if [ -n "${dest:-}" ]; then cp "$FIXTURE" "$dest"; else echo 'mock metadata down
         archive_root = self.root / 'release'
         os_name = 'macos' if platform.system() == 'Darwin' else 'linux'
         arch = 'arm64' if platform.machine() in ('arm64', 'aarch64') else 'x64'
-        name = f'ripwire-0.4.0-{os_name}-{arch}'
+        name = f'ripwire-0.6.10-{os_name}-{arch}'
         bundle = archive_root / name; bundle.mkdir(parents=True)
-        binary = bundle / 'ripwire'; binary.write_text('#!/bin/sh\necho ripwire 0.4.0\n'); binary.chmod(0o755)
+        binary = bundle / 'ripwire'; binary.write_text('#!/bin/sh\necho ripwire 0.6.10\n'); binary.chmod(0o755)
         skills = bundle / 'skills'; skills.mkdir()
         (skills / 'install.sh').write_text('#!/bin/sh\ntouch "$HOME/ACTIVATED"\n')
         (self.home / '.claude').mkdir()
@@ -277,7 +289,7 @@ a=sys.argv[1:]
 with open(os.environ['DOWNLOADS'], 'a') as f: f.write('download\\n')
 archive=pathlib.Path(os.environ['ARCHIVE'])
 if '-o' not in a:
- print(json.dumps({'tag_name':'v0.4.0', 'assets':[{'browser_download_url':'https://example.test/'+archive.name}]}, indent=2))
+ print(json.dumps({'tag_name':'v0.6.10', 'assets':[{'browser_download_url':'https://example.test/'+archive.name}]}, indent=2))
 else:
  dest=pathlib.Path(a[a.index('-o')+1])
  if dest.name == 'install.sh': shutil.copyfile(os.environ['FIXTURE'], dest)
@@ -294,3 +306,182 @@ else:
         self.assertTrue((self.home / '.local/bin/ripwire').exists())
         self.assertTrue((self.home / '.local/share/ripwire/skills/install.sh').exists())
         self.assertFalse((self.home / 'ACTIVATED').exists())
+
+
+class RipwireUpgradeTests(RipwireInstallTests):
+    """--upgrade replaces only the Ripwire forge installed (#170)."""
+
+    def release(self, version):
+        import hashlib
+        import platform
+        import tarfile
+        os_name = 'macos' if platform.system() == 'Darwin' else 'linux'
+        arch = 'arm64' if platform.machine() in ('arm64', 'aarch64') else 'x64'
+        name = f'ripwire-{version}-{os_name}-{arch}'
+        bundle = self.root / 'release' / name; bundle.mkdir(parents=True)
+        binary = bundle / 'ripwire'; binary.write_text(f'#!/bin/sh\necho ripwire {version}\n'); binary.chmod(0o755)
+        (bundle / 'skills').mkdir()
+        archive = self.root / (name + '.tar.gz')
+        with tarfile.open(archive, 'w:gz') as tar:
+            tar.add(bundle, arcname=name)
+        self.env.update(ARCHIVE=str(archive), CHECKSUM=hashlib.sha256(archive.read_bytes()).hexdigest(), TAG='v' + version)
+        (self.bin / 'curl').write_text('''#!PYTHON
+import json, os, pathlib, shutil, sys
+a=sys.argv[1:]
+with open(os.environ['DOWNLOADS'], 'a') as f: f.write(' '.join(a) + '\\n')
+archive=pathlib.Path(os.environ['ARCHIVE'])
+if '-o' not in a:
+ print(json.dumps({'tag_name':os.environ['TAG'], 'assets':[{'browser_download_url':'https://example.test/'+archive.name}]}, indent=2))
+else:
+ dest=pathlib.Path(a[a.index('-o')+1])
+ if dest.name == 'install.sh': shutil.copyfile(os.environ['FIXTURE'], dest)
+ elif dest.name.endswith('.sha256'): dest.write_text(os.environ['CHECKSUM']+'  '+archive.name+'\\n')
+ else: shutil.copyfile(archive, dest)
+'''.replace('PYTHON', sys.executable)); (self.bin / 'curl').chmod(0o755)
+
+    def installed(self, version):
+        dest = self.home / '.local/bin/ripwire'
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(f'#!/bin/sh\necho ripwire {version}\n'); dest.chmod(0o755)
+        return dest
+
+    def test_upgrade_replaces_the_ripwire_forge_installed_with_the_latest_release(self):
+        dest = self.installed('0.4.0')
+        self.env['PATH'] = str(dest.parent) + ':' + self.env['PATH']
+        self.release('0.6.10')
+        result = self.run_install('--upgrade', '--yes')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('0.6.10', subprocess.run([str(dest), '--version'], text=True, stdout=subprocess.PIPE).stdout)
+        # The installer was fetched at the resolved tag, not a pinned one.
+        self.assertIn('/v0.6.10/scripts/install.sh', (self.root / 'downloads').read_text())
+
+    def test_without_upgrade_an_existing_ripwire_is_kept(self):
+        dest = self.installed('0.4.0')
+        self.release('0.6.10')
+        self.assertEqual(self.run_install('--yes').returncode, 0)
+        self.assertIn('0.4.0', dest.read_text())
+        self.assertFalse((self.root / 'downloads').exists())
+
+    def test_a_ripwire_installed_elsewhere_is_reported_and_never_replaced(self):
+        foreign = self.bin / 'ripwire'
+        foreign.write_text('#!/bin/sh\necho ripwire 0.4.0\n'); foreign.chmod(0o755)
+        self.release('0.6.10')
+        result = self.run_install('--upgrade', '--yes')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('was not installed by forge', result.stdout)
+        self.assertIn('0.4.0', foreign.read_text())
+        self.assertFalse((self.home / '.local/bin/ripwire').exists())
+        self.assertFalse((self.root / 'downloads').exists())
+
+    def test_an_up_to_date_ripwire_downloads_nothing(self):
+        self.installed('0.6.10')
+        self.release('0.6.10')
+        result = self.run_install('--upgrade', '--yes')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('nothing to update', result.stdout)
+        self.assertFalse((self.root / 'downloads').exists())
+
+    def test_a_pinned_version_is_installed_and_a_bad_one_refused(self):
+        self.release('0.6.2')
+        result = self.run_install('--yes', '--version', '0.6.2')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('0.6.2', (self.home / '.local/bin/ripwire').read_text())
+        self.assertEqual(self.run_install('--yes', '--version', 'latest-ish').returncode, 2)
+
+
+class RipwireReleaseCheckTests(unittest.TestCase):
+    """The latest release, the version gate, the daily cache and the end-of-run notice (#170)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.home = self.root / 'home'
+        env = {'HOME': str(self.home), 'XDG_STATE_HOME': str(self.root / 'state'),
+               'FORGE_RIPWIRE_API': fake_api(self.root, 'v0.7.0'), 'FORGE_RIPWIRE': '',
+               'FORGE_UPDATE_CHECK': 'on', 'CI': ''}
+        patcher = patch.dict(os.environ, env)
+        patcher.start(); self.addCleanup(patcher.stop)
+
+    def binary(self, version, where=None):
+        path = where or (self.home / '.local/bin/ripwire')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f'#!/bin/sh\necho ripwire {version}\n'); path.chmod(0o755)
+        return path
+
+    def test_the_gate_accepts_0_6_and_later(self):
+        for text, ok in [('ripwire 0.6.0', True), ('ripwire 0.7.0', True), ('ripwire 0.10.1', True),
+                         ('ripwire 0.5.9', False), ('ripwire 0.4.0', False), ('ripwire', False), ('', False)]:
+            self.assertEqual(rw.supported(text), ok, text)
+
+    def test_the_latest_tag_comes_from_the_releases_api_and_stops_at_0_6_1_on_an_intel_mac(self):
+        self.assertEqual(rw.latest_tag(), 'v0.7.0')
+        with patch.object(rw.platform, 'system', return_value='Darwin'), \
+                patch.object(rw.platform, 'machine', return_value='x86_64'):
+            self.assertEqual(rw.latest_tag(), 'v0.6.1')
+        with patch.object(rw.platform, 'system', return_value='Darwin'), \
+                patch.object(rw.platform, 'machine', return_value='arm64'):
+            self.assertEqual(rw.latest_tag(), 'v0.7.0')
+        os.environ['FORGE_RIPWIRE_API'] = (self.root / 'nowhere').as_uri()
+        with self.assertRaises(RuntimeError):
+            rw.latest_tag()
+
+    def test_the_check_is_cached_for_a_day_and_offline_keeps_the_last_answer(self):
+        self.assertEqual(rw.cached_latest()[0], 'v0.7.0')
+        fake_api(self.root, 'v0.8.0')
+        self.assertEqual(rw.cached_latest()[0], 'v0.7.0')          # within the day: not asked again
+        self.assertEqual(rw.cached_latest(force=True)[0], 'v0.8.0')
+        os.environ['FORGE_RIPWIRE_API'] = (self.root / 'nowhere').as_uri()
+        latest, state = rw.cached_latest(force=True)
+        self.assertEqual(latest, 'v0.8.0')
+        self.assertFalse(state['reached'])
+
+    def notice(self, answer=None):
+        printed = []
+        with patch.object(rw, '_ask', return_value=answer) as ask, \
+                patch.object(rw.subprocess, 'run', wraps=rw.subprocess.run) as run, \
+                patch('builtins.print', lambda *a, **k: printed.append(' '.join(map(str, a)))):
+            rw.notice('/nonexistent/installer.sh')
+        installs = [c for c in run.call_args_list if c.args and c.args[0][0] == '/bin/bash']
+        return printed, ask.called, installs
+
+    def test_without_a_terminal_the_notice_prints_the_command_once_a_day(self):
+        self.binary('0.4.0')
+        with patch.object(rw, 'resolve', return_value=str((self.home / '.local/bin/ripwire').resolve())):
+            printed, asked, installs = self.notice(answer=None)
+            self.assertEqual(printed, ['forge: Ripwire 0.7.0 is available (you have 0.4.0): forge ripwire update'])
+            self.assertEqual(installs, [])
+            self.assertEqual(self.notice(answer=None)[0], [])          # told today already
+
+    def test_on_a_terminal_a_yes_runs_the_upgrade_and_a_no_changes_nothing(self):
+        self.binary('0.4.0')
+        with patch.object(rw, 'resolve', return_value=str((self.home / '.local/bin/ripwire').resolve())):
+            printed, asked, installs = self.notice(answer=False)
+            self.assertTrue(asked)
+            self.assertEqual((printed, installs), ([], []))
+            rw.state_file().unlink()
+            printed, asked, installs = self.notice(answer=True)
+            self.assertEqual(installs[0].args[0], ['/bin/bash', '/nonexistent/installer.sh', '--upgrade', '--yes',
+                                                   '--version', 'v0.7.0'])
+
+    def test_the_notice_is_silent_when_off_in_ci_up_to_date_offline_or_missing(self):
+        managed = str((self.home / '.local/bin/ripwire'))
+        cases = [('off', dict(FORGE_RIPWIRE='off'), '0.4.0'), ('no update check', dict(FORGE_UPDATE_CHECK='off'), '0.4.0'),
+                 ('ci', dict(CI='true'), '0.4.0'), ('up to date', {}, '0.7.0'),
+                 ('offline', dict(FORGE_RIPWIRE_API=(self.root / 'nowhere').as_uri()), '0.4.0')]
+        for label, env, version in cases:
+            with self.subTest(label), patch.dict(os.environ, env):
+                rw.state_file().unlink(missing_ok=True)
+                self.binary(version)
+                with patch.object(rw, 'resolve', return_value=str(Path(managed).resolve())):
+                    printed, asked, installs = self.notice(answer=True)
+                self.assertEqual((printed, asked, installs), ([], False, []))
+        with patch.object(rw, 'resolve', return_value=None):
+            self.assertEqual(self.notice(answer=True)[:2], ([], False))
+
+    def test_a_ripwire_installed_outside_forge_is_reported_never_updated(self):
+        foreign = self.binary('0.4.0', where=self.root / 'opt/ripwire')
+        with patch.object(rw, 'resolve', return_value=str(foreign)):
+            printed, asked, installs = self.notice(answer=True)
+        self.assertFalse(asked)
+        self.assertEqual(installs, [])
+        self.assertIn('installed outside forge', printed[0])
