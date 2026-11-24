@@ -144,7 +144,7 @@ def cmd_capture_after(checkout: Path, before_file: Path, out_file: Path | None, 
         target = gdir / 'forge-setup-generated'
     if created:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text('\n'.join(created) + '\n', encoding='utf-8', errors='surrogateescape', newline='\n')
+        target.write_bytes(('\n'.join(created) + '\n').encode('utf-8', 'surrogateescape'))
     elif target.exists():
         target.unlink()
     return 0
