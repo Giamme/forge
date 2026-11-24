@@ -150,12 +150,12 @@ columns, plus an optional fifth:
 
 ```
 # alias	harness	model	effort	[timeout]
-sol	codex	gpt-6.1-sol	<=ultra
-sol	openclaude	gpt-6.1-sol	<=max
+sol	codex	gpt-6.2-sol	<=ultra
+sol	openclaude	gpt-6.2-sol	<=max
 gemini-pro	antigravity	gemini-3.1-pro	low,high
-opus	antigravity	claude-opus-4-6-thinking	none
+opus-4.6	antigravity	claude-opus-4-6-thinking	none
 grok	grok	grok-4.7	<=xhigh
-grok	opencode	github-copilot/grok-4.6	-
+grok-4.6	opencode	github-copilot/grok-4.6	-
 ```
 
 | `effort` form | Means |
@@ -174,10 +174,32 @@ or absent = the built-in default). It applies only when neither `--timeout` nor
 `--dwarf sol` means sol on codex; `--dwarf sol:high:openclaude` moves the same model
 elsewhere.
 
+**An alias is one model on every harness.** Every row of an alias names the same model family
+and version; only a provider prefix (`github-copilot/`) or a `-preview` suffix may differ. A
+harness that serves only another version gets an alias of its own: Antigravity's Claude models
+are `opus-4.6` and `sonnet-4.6`, GitHub Copilot's older Fable and Grok are `fable-5.1` and
+`grok-4.6`, and Gemini Pro on opencode is a second `gemini-pro` row, never a `gemini` one. So
+`opus::antigravity` no longer picks a different Opus under the same name: it passes `opus` as a
+literal model id, with a note that Antigravity serves `opus-4.6`, and the statistics that count by alias never mix two models. `tests/test_model_registry.py` fails on an
+alias whose rows disagree.
+
+**The approval table says which model each spec runs.** Under the waves, a `models` block lists
+every spec of the plan with the model id it resolves to today (`sol:high  gpt-6.2-sol on codex`),
+so a moved alias is never a surprise. `python3 scripts/forge_models.py describe SPEC` prints
+the same line for any spec.
+
+**Claude models are named by exact id.** The claude and openclaude rows pass
+`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5` and `claude-fable-5-2`, not the
+claude CLI's own `opus` or `sonnet`, which the CLI moves to a newer model on its own. So the
+version that runs is the one the registry, the approval table and the statistics show, and a
+new Claude release is a registry edit like any other: move the alias and keep the old model
+under a versioned alias.
+
 Adding a model is one line in this file. Nothing else needs to change.
 
 **Moving an alias to a newer model.** Keep the old model under a versioned alias, as
-`terra-5.6` keeps gpt-5.6-terra now that `terra` is gpt-6.1-terra. Each dispatch records
+`terra-5.6` keeps gpt-5.6-terra now that `terra` is gpt-6.1-terra, and `sol-6.1` and `astra-6`
+keep gpt-6.1-sol and gpt-6-astra now that `sol` and `astra` are the 6.2 models. Each dispatch records
 the model id it ran, so the statistics that count by alias (`forge dataset reviewers`, review
 history, forge-ui's model leaderboard) count an old `terra` dispatch under `terra-5.6`, the
 alias that resolves to its model today, and never under the newer `terra`. Without a versioned

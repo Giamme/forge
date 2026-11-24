@@ -247,7 +247,7 @@ class InfraTests(unittest.TestCase):
         self.scenario({'a.dwarf.1': BUDGET})
         r = self.run_script('forge-parallel.sh', 'run', p)
         self.assertEqual(r.returncode, 8, r.stdout)
-        self.assertIn(summary_line('a', 'budget on codex/gpt-6.1-sol (dwarf stage) — needs you: add credits, '
+        self.assertIn(summary_line('a', 'budget on codex/gpt-6.2-sol (dwarf stage) — needs you: add credits, '
                                         'or check the billing of codex'), r.stdout)
         self.assertIn("fix what is marked 'needs you', then re-run", r.stdout)
 
@@ -334,10 +334,10 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(self.summary(), '')
 
     def test_a_budget_stop_with_no_peer_names_the_harness_model_and_who_must_act(self):
-        self.stop('a', {'class': 'budget', 'stage': 'dwarf', 'harness': 'codex', 'model': 'gpt-6.1-sol'})
+        self.stop('a', {'class': 'budget', 'stage': 'dwarf', 'harness': 'codex', 'model': 'gpt-6.2-sol'})
         out = self.summary()
         self.assertIn('paused on an infrastructure failure (not a task failure, no attempt spent):\n', out)
-        self.assertIn(summary_line('a', 'budget on codex/gpt-6.1-sol (dwarf stage) — needs you: add credits, '
+        self.assertIn(summary_line('a', 'budget on codex/gpt-6.2-sol (dwarf stage) — needs you: add credits, '
                                        'or check the billing of codex'), out)
         self.assertIn("  fix what is marked 'needs you', then re-run: forge-parallel.sh run %s\n" % self.plan, out)
         self.assertNotIn('fix the cause', out)
@@ -345,16 +345,16 @@ class SummaryTests(unittest.TestCase):
     def test_a_usage_limit_names_its_reset_on_the_local_clock(self):
         # Whether a person must act depends on how far off the reset is, which depends on the hour the test
         # runs at; that is the cap's business, tested by the scope and needs-you tests. Here only the clock.
-        self.stop('a', {'class': 'usage_limit', 'stage': 'dwarf', 'harness': 'codex', 'model': 'gpt-6.1-sol',
+        self.stop('a', {'class': 'usage_limit', 'stage': 'dwarf', 'harness': 'codex', 'model': 'gpt-6.2-sol',
                         'reset_at': utc_today_at(12, 34)})
-        self.assertIn('usage_limit on codex/gpt-6.1-sol (dwarf stage), resets 12:34', self.summary())
+        self.assertIn('usage_limit on codex/gpt-6.2-sol (dwarf stage), resets 12:34', self.summary())
 
     def test_a_reset_on_another_day_names_the_day_and_asks_when_the_wait_is_too_long(self):
         reset = utc_today_at(12, 34) + 2 * 86400
-        self.stop('a', {'class': 'usage_limit', 'stage': 'dwarf', 'harness': 'codex', 'model': 'gpt-6.1-sol',
+        self.stop('a', {'class': 'usage_limit', 'stage': 'dwarf', 'harness': 'codex', 'model': 'gpt-6.2-sol',
                         'reset_at': reset})
         day = time.strftime('%Y-%m-%d', time.gmtime(reset))
-        self.assertIn(summary_line('a', f"usage_limit on codex/gpt-6.1-sol (dwarf stage), resets {day} 12:34"
+        self.assertIn(summary_line('a', f"usage_limit on codex/gpt-6.2-sol (dwarf stage), resets {day} 12:34"
                                         " — needs you: wait for the reset, or add another harness to this tier's pool"),
                       self.summary())
 
@@ -365,16 +365,16 @@ class SummaryTests(unittest.TestCase):
 
     def test_the_pause_that_names_the_task_says_whether_a_person_must_act(self):
         # A rate limit needs nobody by its cause; the scheduler's pause for the task says otherwise.
-        self.stop('a', {'class': 'rate_limit', 'stage': 'dwarf', 'harness': 'codex', 'model': 'gpt-6.1-sol'})
+        self.stop('a', {'class': 'rate_limit', 'stage': 'dwarf', 'harness': 'codex', 'model': 'gpt-6.2-sol'})
         (self.plan / 'infra.paused').write_text(json.dumps({'scopes': [{
-            'scope': 'model:codex/gpt-6.1-sol', 'class': 'rate_limit', 'harness': 'codex', 'model': 'gpt-6.1-sol',
+            'scope': 'model:codex/gpt-6.2-sol', 'class': 'rate_limit', 'harness': 'codex', 'model': 'gpt-6.2-sol',
             'tasks': ['a'], 'cycle': 0, 'until': None, 'exhausted': True, 'needs_you': True,
             'hint': 'ask the team to lift the limit', 'reset_at': None}]}))
-        self.assertIn(summary_line('a', 'rate_limit on codex/gpt-6.1-sol (dwarf stage) — needs you: '
+        self.assertIn(summary_line('a', 'rate_limit on codex/gpt-6.2-sol (dwarf stage) — needs you: '
                                         'ask the team to lift the limit'), self.summary())
 
     def test_the_closing_line_keeps_its_wording_when_no_task_needs_a_person(self):
-        self.stop('a', {'class': 'rate_limit', 'stage': 'dwarf', 'harness': 'codex', 'model': 'gpt-6.1-sol'})
+        self.stop('a', {'class': 'rate_limit', 'stage': 'dwarf', 'harness': 'codex', 'model': 'gpt-6.2-sol'})
         out = self.summary()
         self.assertIn("  fix the cause (quota, login, network), then re-run: forge-parallel.sh run %s\n" % self.plan, out)
         self.assertNotIn('needs you', out)

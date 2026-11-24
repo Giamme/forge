@@ -61,9 +61,11 @@ apart. Offer the leftover findings as issues ([findings](references/findings.md)
   machine needs the user's explicit word: offer it, never add it. That covers every flag below,
   `--yolo-dwarf` / `--yolo-qa` (only for the role they name; Bash can still mutate files with editing
   tools disabled) and `--fast` (offer only when the user asks for speed).
-- Ask **"Open forge-ui to watch this run? [y/N]"** once at the start of every new interactive run,
-  unless a flag answered it, and pass the answer on ([forge-ui](references/ui.md)). Never ask on
-  resume or retry; unattended runs leave it off. Relay the `forge-ui:` URL; a UI failure never changes the run.
+- **Setup.** If `forge setup show --json` says `done: false`, offer `forge setup` once before the first
+  run. Its saved answers ([setup](references/setup.md)) are the user's word for what they cover.
+- Ask **"Open forge-ui to watch this run? [y/N]"** once when a new interactive run starts,
+  unless a flag or setup answered it, and pass the answer on ([forge-ui](references/ui.md)). Never ask on
+  resume or retry; unattended runs leave it off. Relay the `forge-ui:` URL; a UI failure never changes a run.
 - One implementer per tree. Solo edits stay uncommitted; decomposed runs commit only on forge's task and
   integration branches. Updating the user's branch needs separate authorization and `integrate
   --approved`. Never push.
@@ -89,7 +91,7 @@ apart. Offer the leftover findings as issues ([findings](references/findings.md)
 | `--sweep Pn` / `--sweep-ahead` | `run` | fix tolerated findings at Pn or worse once all merged, one task per file / hand a task the open findings in its files |
 | `--fail-first` | solo, `plan` | new tests also run without the non-test changes; ones that still pass are P2; needs `.forge/verify-subset` |
 | `--pre-review-tests` | `plan` | run the affected tests before review; a red attempt goes back unreviewed |
-| `--auto-split`; `--split-depth\|children\|nodes N` | `run`; `plan` | the planner splits a task that stops on `split`; the limits of any split, shown with the table ([subtasks](references/decompose.md#subtasks-a-task-split-at-any-level)) |
+| `--auto-split`; `--split-depth\|children\|nodes N` | `run`; `plan` | the planner splits a task stopped on `split`; split limits, shown with the table ([subtasks](references/decompose.md#subtasks-a-task-split-at-any-level)) |
 | `--groups`, `--group-review` | `plan` | one review for several small, related, low-risk tasks; keep high-risk tasks per task ([groups](references/decompose-opt-in.md#groups-and-group-review-opt-in)) |
 | `--fast ROLES` | any | faster service tier, billed higher ([fast tier](references/harnesses.md#fast-service-tier)): a run without it on the account stays standard and prints a note, not a failure; openclaude, opencode, antigravity and grok exit 3; solo takes only `dwarf`, `qa`, `none` |
 | retro, brief, summaries | `plan` | [opt-in modes](references/decompose-opt-in.md); brief and summaries need a model the user names |
@@ -108,9 +110,9 @@ apart. Offer the leftover findings as issues ([findings](references/findings.md)
 - A task at `NEEDS_DECISION` waits for the user: present `tasks/<id>/decision.md`'s reasons and choices.
   Run `retry --decide`, `retry --dwarf` or `accept` (`--reason`, `--approved`) only on the user's explicit
   word, never to keep a run going; on a live run use `forge control retry … --decide` or `forge control
-  accept`. The split choice is `--decide split` with the subtasks; the task is then reviewed on all their work
+  accept`. The split choice is `--decide split` with the subtasks; the task is then reviewed on their work
   ([when reviews don't converge](references/decompose-recovery.md#when-reviews-dont-converge)).
-- `waiting for their subtasks:` is a split task whose subtask failed or waits: act in its `tasks/<id>/sub` plan, then `run`.
+- `waiting for their subtasks:` a subtask failed or waits: act in its `tasks/<id>/sub` plan, then `run`.
 - A group at `NEEDS_DECISION`: present `forge group show <plan>`; run `forge group retry <plan> <gid>
   --tasks <ids>` only on the user's word. An oversized group is split in `groups.tsv` and planned again,
   not retried.

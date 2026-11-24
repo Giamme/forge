@@ -226,6 +226,7 @@ fi
 # same run dir restores it rather than re-reading whatever flags are passed then.
 [ "$JEV_OPTS" = 1 ] && { forge_jev_restore "$RUN" || true; forge_jev_record "$RUN"; }
 REPO="$(cd "$REPO" && pwd)"
+forge_repo_memory_off "$REPO" && export FORGE_MEMORY=off   # forge setup: memory off here
 # Before any decision-model step: the privacy floor and the run budget read these.
 [ "$JEV_OPTS" = 1 ] && forge_decide_env "$REPO" "$RUN"
 if [ "$DRY" != 1 ] && [ "$(forge_posix_path "${FORGE_SOLO_LOCK:-}")" != "$RUN" ]; then

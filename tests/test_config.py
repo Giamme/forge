@@ -472,6 +472,10 @@ class ConfigTests(unittest.TestCase):
         plain = self.run_cfg('set', 'retro', 'off')
         self.assertEqual(plain.returncode, 0, plain.stderr)
         self.assertIn('retro: set\n', plain.stdout)
+        self.assertIn('applies to runs planned from now on', plain.stdout)   # #162
+        model = self.run_cfg('set', 'summaries.model', 'sol:high')
+        self.assertIn('forge control set <plan> summaries-model <spec>', model.stdout)
+        self.assertNotIn('applies', self.run_cfg('set', 'storage.compact', 'off').stdout)
         replaced = json.loads(self.run_cfg('set', 'retro', 'on', '--json').stdout)
         self.assertEqual((replaced['previous'], replaced['value']), ('off', 'on'))
 

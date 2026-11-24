@@ -258,7 +258,7 @@ yolo. This is the one harness where the non-yolo dwarf genuinely cannot verify i
 | `gemini-3.7-flash`, `-3.6-flash`, `-3.5-flash` | `low`, `medium`, `high` |
 | `gemini-3.1-pro` | `low`, `high` — **no medium** |
 | `gpt-oss-120b` | `medium` only |
-| `claude-sonnet-4-6`, `claude-opus-4-6-thinking` | none; passing `--effort` errors |
+| `claude-sonnet-4-6`, `claude-opus-4-6-thinking` (aliases `sonnet-4.6`, `opus-4.6`) | none; passing `--effort` errors |
 
 Two traps here. `agy models` lists effort-suffixed ids (`gemini-3.7-flash-low`), but a
 suffixed id **conflicts** with `--effort`: *"--model gemini-3.7-flash-low conflicts with
@@ -296,8 +296,8 @@ grok --model <model> --prompt-file <prompt> --output-format streaming-messages-j
 
 The xAI Grok Build CLI, signed in with `grok login` (or `XAI_API_KEY`); `grok models` lists
 what the account can use and each model's efforts live in `~/.grok/models_cache.json`. The
-`grok` alias runs `grok-4.7` here and keeps its opencode route (`grok:high:opencode`, 4.6 via
-GitHub Copilot) as a second row.
+`grok` alias runs `grok-4.7` here. Grok 4.6 through GitHub Copilot on opencode is a different
+model, so it has its own alias, `grok-4.6` (an alias is one model on every harness).
 
 - **A headless run cannot ask, so it refuses and exits 0.** In the default mode an edit that
   needs approval is skipped with `permission required: Edit calc.py was not run` on stderr:

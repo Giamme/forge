@@ -137,7 +137,7 @@ class ScriptPlanTests(unittest.TestCase):
         registry = self.root / 'registry.tsv'
         registry.write_text(
             'script\tcodex\tscript-model\t<=ultra\n'
-            'sol\tcodex\tgpt-6.1-sol\t<=ultra\n'
+            'sol\tcodex\tgpt-6.2-sol\t<=ultra\n'
             'opus\tclaude\topus\t<=max\n')
         self.env['FORGE_REGISTRY'] = str(registry)
         self.env['XDG_CONFIG_HOME'] = str(self.root / 'cfg')

@@ -75,6 +75,8 @@ class ModelsTests(unittest.TestCase):
         # terra moved to gpt-6.1-terra; a run recorded on gpt-5.6-terra is terra-5.6 on the leaderboard.
         self.assertEqual(models._named(dict(alias='terra', model='gpt-5.6-terra', harness='codex')), 'terra-5.6')
         self.assertEqual(models._named(dict(alias='terra', model='gpt-6.1-terra', harness='codex')), 'terra')
+        self.assertEqual(models._named(dict(alias='sol', model='gpt-6.1-sol', harness='codex')), 'sol-6.1')
+        self.assertEqual(models._named(dict(alias='astra', model='gpt-6-astra', harness='codex')), 'astra-6')
         self.assertEqual(models._named(dict(alias='opus', model='opus', harness='claude')), 'opus')
         self.assertIsNone(models._named(None))
 

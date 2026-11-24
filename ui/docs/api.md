@@ -1647,7 +1647,11 @@ for them only unknown keys and runs the catalog does not hold are `404`. Every w
 `forge control show <plan dir> --json`: `200` with its object (`plan`, `run_id`, `live`, `removed` (`"Fractal"` for a plan made with it, else `null`),
 `decomposition` (`{limits: {depth, children, nodes, frozen}, nodes: [{id, plan, task, level, status, title, decision, reason, by, …}]}`, every node of the tree in order),
 `run` (the plan-wide controls; `qa_threshold` is the effective level and `qa_threshold_source` is `set` or `default`), `tasks` (per task: `status`, `dwarf`, `qa`, `qa_threshold`,
-`retry_budget`, `retries_used`, `pin`, `escalation_stop`, `escalation_next`) and `log`). No token
+`retry_budget`, `retries_used`, `pin`, `escalation_stop`, `escalation_next`), `log`, `tiers` (per
+difficulty `low`/`medium`/`high`: `tasks`, `pending` (not started yet) and the `dwarf` and `qa` specs those
+pending tasks use), `models` ({spec: "gpt-6.2-sol on codex"} for every spec the tasks name) and
+`registry` ({alias: [[harness, model], ...]}, the first row the alias's default), from which the page
+resolves a spec typed in a picker before it is applied). No token
 is needed to read it. Of `run` the page also reads `max_parallel` (1–64 or `null`), `infra_backoff`
 (the shape, `exp:60` when unset), `escalate_effort` (`on`/`off`), `drained` and `stopping`
 (`graceful`, `now` or `null`) while live, and `infra_paused` while live: one
@@ -1672,6 +1676,7 @@ known or a spec runs is for the CLI to say (its `400` or `409` comes back as abo
 | `{"action": "set", "key": "summaries", "value": "inherit", "task": "reader"}` (`on` or `off` with `task` too) | `control set <dir> summaries inherit --task reader --actor ui --json` |
 | `{"action": "pin", "task": "graph", "spec": "sol:high:codex"}` | `control pin <dir> graph sol:high:codex --actor ui --json` |
 | `{"action": "unpin", "task": "graph"}` | `control unpin <dir> graph --actor ui --json` |
+| `{"action": "models", "tier": "low", "dwarf": "haiku:xhigh,sonnet", "qa": "opus"}` (`dwarf`, `qa` or both; each one spec or a comma-separated pool) | `control models <dir> low --dwarf haiku:xhigh,sonnet --qa opus --actor ui --json` |
 | `{"action": "drain"}` | `control drain <dir> --actor ui --json` |
 | `{"action": "resume"}` | `control resume <dir> --actor ui --json` |
 | `{"action": "stop"}` (or `"now": false`) | `control stop <dir> --actor ui --json` |
@@ -1689,6 +1694,9 @@ hand, so its CLI is the place to queue it. A success is
 (`409`) when no scheduler is live. A `retry` only queues: `200 {"queued": true, "request": "<id>"}`.
 Its refusals before queueing (not live, a MERGED task, a spec that fails doctor) are the CLI's
 `409`/`400`; the scheduler applies or refuses it later, in the `log` line with that `request` id.
+A `models` change answers like `set`, plus `tasks` (each changed task with its `dwarf` and `qa` as
+`[before, after]`), `kept` ({task: status} of the tier's tasks that had already started and keep their
+model) and `models` (the label of each spec given).
 
 ### `POST /api/runs/<key>/tasks/<id>/brief/<qid>`
 

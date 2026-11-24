@@ -22,6 +22,8 @@ usage() {
     '' \
     'commands:' \
     '  install   link forge into each agent harness on this machine; --dry-run previews' \
+    '  setup     what forge needs to get started, asked once: models, reviews, add-ons; show, export' \
+    '  ripwire   the optional Ripwire context engine: status [--check], install, update [--version TAG]' \
     '  decide    decision-model gates: status, gate, provider, budget, privacy, doctor, migrate, report, replay' \
     '  jev       the old decision-model commands, replaced by decide (kept for one release)' \
     '  dataset   every run'"'"'s inputs and outcomes: status, dump, import, export, outcomes, ...' \
@@ -74,6 +76,26 @@ case "${1:-}" in
   install)
     shift
     exec /bin/bash "$ROOT/scripts/forge-install.sh" "$@"
+    ;;
+  setup)
+    shift
+    exec python3 "$ROOT/scripts/forge-setup.py" "$@"
+    ;;
+  ripwire)
+    shift
+    case "${1:-}" in
+      status) shift; exec python3 "$ROOT/scripts/forge-ripwire.py" --doctor "$@" ;;
+      install) shift; exec /bin/bash "$ROOT/scripts/forge-install-ripwire.sh" "$@" ;;
+      update) shift; exec /bin/bash "$ROOT/scripts/forge-install-ripwire.sh" --upgrade "$@" ;;
+      ''|-h|--help|help)
+        printf '%s\n' 'usage: forge ripwire status [--check] | install [--yes] [--version TAG] | update [--yes] [--version TAG]' \
+          '  status   the installed Ripwire, whether forge can use it (0.6 or later) and the newest release' \
+          '  install  install the latest release into ~/.local/bin (asks first)' \
+          '  update   replace the Ripwire forge installed with the latest release (asks first)'
+        [ -n "${1:-}" ] && exit 0
+        exit 2 ;;
+      *) printf 'forge ripwire: unknown command: %s (status, install, update)\n' "$1" >&2; exit 2 ;;
+    esac
     ;;
   fractal)
     # Removed in forge 0.23 (#154): one line and exit 2, like a removed flag.

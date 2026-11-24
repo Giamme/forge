@@ -29,7 +29,9 @@ run goes on, with the same exit code.
 - **Controls:** change a live plan from its inspector: QA threshold, timeout, escalate-after,
   the effort step, verify retries, the infrastructure backoff, and (while a scheduler is live)
   the retry and infra-retry budgets, max parallel, Drain/Resume, Stop and Stop now; per task, a
-  threshold override (`None` exempts it), a retry budget, a one-shot model pin and, on a live run,
+  threshold override (`None` exempts it), a retry budget, a one-shot model pin (each spec shows the
+  model id it runs), the implementer and reviewer per difficulty tier for tasks not started yet
+  (`forge control models`) and, on a live run,
   *Retry now* for a stopped or failed task (optionally on a chosen model), which shows its queued
   request until the scheduler applies or refuses it. Each infrastructure pause gets a line: what
   is paused, why, its tasks and the time left. Each is one `forge control` call; the change is
@@ -242,7 +244,7 @@ random token and puts it in the page it serves; every change must send it back, 
 it is refused before any CLI runs. There are no CORS headers, so another site in your browser
 can neither send nor read a change. Any process that can fetch the page can read the token, as
 it can read the runs, so on a shared machine start the server **read-only**: `--read-only`
-(`python3 -m forge_ui`) or `FORGE_UI_READONLY=1` (also for `forge ui open`). A read-only server
+(`python3 -m forge_ui`), `FORGE_UI_READONLY=1` (also for `forge ui open`), or `forge setup set ui_controls off`. A read-only server
 issues no token and answers every change with 405; its `/api/health` says `"controls": false`.
 No Remove, Forget selected, Compact or Send answer button is shown, and every copy button stays.
 `forge ui open` never reuses a server in the other mode: it replaces it, as it does one running

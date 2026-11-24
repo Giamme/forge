@@ -828,7 +828,7 @@ class PinEndToEndTests(unittest.TestCase):
         self.assertEqual((p / 'tasks/a/escalation.next').read_text(), 'astra\n')   # `--check` after the attempt
         r = self.run_script('forge-parallel.sh', 'retry', p, 'a')
         self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertIn('model=gpt-6-astra', (p / 'tasks/a/dwarf.resolved').read_text())
+        self.assertIn('model=gpt-6.2-astra', (p / 'tasks/a/dwarf.resolved').read_text())
         self.assertEqual(tsv(p / 'tasks/a/escalations.tsv')[0][1:], ['1', 'sol', 'astra', 'pin'])
         self.assertEqual(sorted(x.name for x in (p / 'tasks/a').glob('escalation.*')), [])
 
@@ -839,7 +839,7 @@ class PinEndToEndTests(unittest.TestCase):
         r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 1)
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertEqual(self.calls().count('dwarf'), 2)
-        self.assertIn('model=gpt-6-astra', (p / 'tasks/a/dwarf.resolved').read_text())
+        self.assertIn('model=gpt-6.2-astra', (p / 'tasks/a/dwarf.resolved').read_text())
         self.assertEqual(tsv(p / 'tasks/a/escalations.tsv')[0][2:], ['sol', 'astra', 'pin'])
         self.assertEqual(sorted(x.name for x in (p / 'tasks/a').glob('escalation.*')), [])
 
@@ -879,7 +879,7 @@ class PinEndToEndTests(unittest.TestCase):
         self.assertIn('waiting', out)
         self.assertNotIn('automatic retry', out)                 # a resume, not a retry
         self.assertEqual(self.calls(), ['dwarf', 'dwarf', 'qa'])
-        self.assertIn('model=gpt-6-astra', (p / 'tasks/a/dwarf.resolved').read_text())
+        self.assertIn('model=gpt-6.2-astra', (p / 'tasks/a/dwarf.resolved').read_text())
         self.assertEqual(tsv(p / 'tasks/a/escalations.tsv')[0][1:], ['0', 'sol', 'astra', 'pin'])
         self.assertEqual(sorted(x.name for x in (p / 'tasks/a').glob('escalation.*')), [])
         self.assertEqual([r[4] for r in tsv(p / 'tasks/a/attempts.tsv')], ['sol', 'astra'])
@@ -907,7 +907,7 @@ class PinEndToEndTests(unittest.TestCase):
         (p / 'tasks/a/escalation.pin').write_text('astra\n')
         r = self.run_script('forge-parallel.sh', 'run', p)
         self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertIn('model=gpt-6-astra', (p / 'tasks/a/dwarf.resolved').read_text())
+        self.assertIn('model=gpt-6.2-astra', (p / 'tasks/a/dwarf.resolved').read_text())
         self.assertEqual(tsv(p / 'tasks/a/escalations.tsv')[0][2:], ['sol', 'astra', 'pin'])
 
     # --- an unreviewed verdict whose worktree changed ---------------------------------------
@@ -926,7 +926,7 @@ class PinEndToEndTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertIn('no longer matches the worktree', r.stdout)
         self.assertEqual(self.calls(), ['dwarf', 'qa', 'dwarf', 'qa'])
-        self.assertIn('model=gpt-6-astra', (p / 'tasks/a/dwarf.resolved').read_text())
+        self.assertIn('model=gpt-6.2-astra', (p / 'tasks/a/dwarf.resolved').read_text())
         self.assertEqual(tsv(p / 'tasks/a/escalations.tsv')[0][1:], ['1', 'sol', 'astra', 'pin'])
         self.assertFalse((p / 'tasks/a/escalation.pin').exists())
 

@@ -64,7 +64,7 @@ class EffortsTests(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout), (0, 'low\nhigh\n'), result.stderr)
 
     def test_none_and_a_missing_ladder_print_nothing(self):
-        for spec in ('opus:medium:antigravity', 'kimi'):   # none, and opencode's `-` with no ladder
+        for spec in ('opus-4.6:medium:antigravity', 'kimi'):   # none, and opencode's `-` with no ladder
             with self.subTest(spec=spec):
                 result = self.efforts(spec)
                 self.assertEqual((result.returncode, result.stdout), (0, ''), result.stderr)

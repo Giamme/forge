@@ -249,11 +249,11 @@ test('the new keys are checked before they are sent', () => {
 test('each infrastructure pause is one line with its countdown, or its spent budget', () => {
   const now = 1000;
   const c = show({ run: { infra_paused: [
-    { scope: 'model:codex/gpt-6.1-sol', class: 'rate_limit', harness: 'codex', model: 'gpt-6.1-sol', tasks: ['graph', 'docs'], cycle: 2, until: 1185, exhausted: false },
+    { scope: 'model:codex/gpt-6.2-sol', class: 'rate_limit', harness: 'codex', model: 'gpt-6.2-sol', tasks: ['graph', 'docs'], cycle: 2, until: 1185, exhausted: false },
     { scope: 'harness:claude', class: 'quota', harness: 'claude', model: '', tasks: ['page'], cycle: 4, until: null, exhausted: true },
     { scope: 'all', class: 'network', harness: null, model: null, tasks: [], cycle: 1, until: 999, exhausted: false }] } });
   assert.deepEqual(C.pauseLines(c, now).map(l => l.text), [
-    'model gpt-6.1-sol on codex · rate_limit · tasks graph, docs · wait 2 · resumes in 3m05s',
+    'model gpt-6.2-sol on codex · rate_limit · tasks graph, docs · wait 2 · resumes in 3m05s',
     'harness claude · quota · tasks page · wait 4 · budget used up',
     'every task · network · wait 1 · resuming']);
   assert.equal(C.pauseLines(c, now + 180)[0].text.endsWith('resumes in 5s'), true);       // ticks with the clock
@@ -297,4 +297,54 @@ test('qa-threshold accepts default at run level and none at both', () => {
   assert.equal(C.valueFor('qa-threshold', 'none', 'x').ok, true);
   assert.match(C.prepare({ kind: 'set', key: 'qa-threshold', input: 'none' }).confirm, /to P3 \(nothing tolerated\)\?/);
   assert.match(C.prepare({ kind: 'set', key: 'qa-threshold', input: 'default' }).confirm, /to the default \(P2\)\?/);
+});
+
+// #169 / #187: what a spec runs, and the models of a difficulty tier's tasks that have not started
+const REGISTRY = { sol: [['codex', 'gpt-6.2-sol'], ['opencode', 'github-copilot/gpt-6.2-sol']], opus: [['claude', 'claude-opus-5-5']] };
+
+test('a spec resolves through the registry the way dispatch does', () => {
+  assert.deepEqual(C.resolveSpec(REGISTRY, 'sol'), { model: 'gpt-6.2-sol', harness: 'codex', known: true });
+  assert.deepEqual(C.resolveSpec(REGISTRY, 'sol:high:opencode'), { model: 'github-copilot/gpt-6.2-sol', harness: 'opencode', known: true });
+  assert.deepEqual(C.resolveSpec(REGISTRY, 'kimi-x::opencode'), { model: 'kimi-x', harness: 'opencode', known: false });
+  for (const spec of ['', 'nosuch', 'sol,opus', 'script', null]) assert.equal(C.resolveSpec(REGISTRY, spec), null, String(spec));
+  assert.equal(C.resolveSpec(undefined, 'sol'), null);
+});
+
+test('a model label prefers the CLI\'s, then the registry', () => {
+  const c = show({ registry: REGISTRY, models: { 'sol:xhigh': 'gpt-6.2-sol on codex' } });
+  assert.equal(C.modelLabel(c, 'sol:xhigh'), 'gpt-6.2-sol on codex');
+  assert.equal(C.modelLabel(c, 'opus:high'), 'claude-opus-5-5 on claude');
+  assert.equal(C.modelLabel(c, 'mine::opencode'), 'mine on opencode (literal id, not in the registry)');
+  assert.equal(C.modelLabel(c, 'nosuch'), 'not a known model');
+});
+
+test('a pool is specs separated by commas', () => {
+  assert.deepEqual(C.poolOf(' haiku:xhigh , sonnet '), { ok: true, specs: ['haiku:xhigh', 'sonnet'], text: 'haiku:xhigh,sonnet' });
+  assert.deepEqual(C.poolOf(''), { ok: true, specs: [], text: '' });
+  for (const bad of ['a,,b', 'so l', '-x', 'a,-b', 'x'.repeat(300)]) assert.equal(C.poolOf(bad).ok, false, bad);
+});
+
+test('the tier values come from show\'s tiers', () => {
+  const c = show({ tiers: { low: { tasks: 4, pending: 2, dwarf: ['sol'], qa: ['opus', 5] } } });
+  assert.deepEqual(C.tierValues(c, 'low'), { tier: 'low', tasks: 4, pending: 2, dwarf: ['sol'], qa: ['opus'] });
+  assert.deepEqual(C.tierValues(c, 'high'), { tier: 'high', tasks: 0, pending: 0, dwarf: [], qa: [] });
+});
+
+test('a models change becomes its body and asks with the models it runs', () => {
+  const c = show({ registry: REGISTRY });
+  const p = C.prepare({ kind: 'models', tier: 'low', dwarf: 'sol, opus', qa: '', pending: 3, controls: c });
+  assert.equal(p.ok, true);
+  assert.deepEqual(p.body, { action: 'models', tier: 'low', dwarf: 'sol,opus' });
+  assert.match(p.confirm, /implementer `sol` \(gpt-6\.2-sol on codex\), `opus` \(claude-opus-5-5 on claude\) for the 3 low tasks/);
+  assert.match(p.confirm, /A pool is handed out in task order/);
+  assert.deepEqual(C.prepare({ kind: 'models', tier: 'high', qa: 'opus', controls: c }).body, { action: 'models', tier: 'high', qa: 'opus' });
+  assert.equal(C.prepare({ kind: 'models', tier: 'low', controls: c }).ok, false);
+  assert.equal(C.prepare({ kind: 'models', tier: 'huge', dwarf: 'sol' }).ok, false);
+  assert.equal(C.prepare({ kind: 'models', tier: 'low', dwarf: 'a,,b' }).ok, false);
+  assert.equal(C.logLine({ actor: 'ui', action: 'models', key: 'low', value: 'dwarf=sol', previous: null }).what, 'Models · low');
+});
+
+test('a pin asks with the model the spec runs', () => {
+  const p = C.prepare({ kind: 'pin', task: 'page', alias: 'sol', effort: 'xhigh', controls: show({ registry: REGISTRY }) });
+  assert.match(p.confirm, /`sol:xhigh` \(gpt-6\.2-sol on codex\)/);
 });

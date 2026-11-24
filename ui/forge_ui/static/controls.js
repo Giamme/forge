@@ -64,6 +64,47 @@
     return { ok: true, spec };
   }
 
+  // What a spec runs (#169, #187): {model, harness, known} from the registry `forge control show` carries
+  // ({alias: [[harness, model], ...]}, the first row the default), resolved as forge-dispatch.sh does; an unknown
+  // alias with a harness is a literal model id; null when it cannot be resolved (or is a pool).
+  function resolveSpec(registry, spec) {
+    const text = String(spec === undefined || spec === null ? '' : spec).trim();
+    if (!text || text.includes(',') || text === 'script' || text === '-') return null;
+    const parts = text.split(':'), alias = parts[0], harness = parts.slice(2).join(':');
+    const rows = Array.isArray(obj(registry)[alias]) ? registry[alias] : [];
+    const row = rows.find(r => Array.isArray(r) && (!harness || r[0] === harness));
+    if (row) return { model: String(row[1]), harness: String(row[0]), known: true };
+    return harness ? { model: alias, harness, known: false } : null;
+  }
+  // "gpt-6.2-sol on codex" for a spec: the label the CLI gave (controls.models), else resolved from the registry.
+  function modelLabel(controls, spec) {
+    const c = obj(controls), given = obj(c.models)[spec];
+    if (typeof given === 'string' && given) return given;
+    const r = resolveSpec(c.registry, spec);
+    if (!r) return 'not a known model';
+    return `${r.model} on ${r.harness}${r.known ? '' : ' (literal id, not in the registry)'}`;
+  }
+  // One spec or a comma-separated pool, as `forge control models` takes it: {ok, specs, text} or {ok: false, error}.
+  function poolOf(input) {
+    const text = String(input === undefined || input === null ? '' : input).trim();
+    if (!text) return { ok: true, specs: [], text: '' };
+    const specs = text.split(',').map(x => x.trim());
+    if (specs.some(x => !x)) return bad('a pool is specs separated by commas, such as haiku:xhigh,sonnet');
+    for (const x of specs) {
+      if (/[\s\u0000-\u001f\u007f]/.test(x)) return bad('a spec cannot hold spaces');
+      if (x.startsWith('-')) return bad('a spec cannot start with "-"');
+    }
+    const joined = specs.join(',');
+    return joined.length > MAX_FIELD ? bad(`the specs are longer than ${MAX_FIELD} characters`) : { ok: true, specs, text: joined };
+  }
+  const TIERS = ['low', 'medium', 'high'];
+  // The tiers block of `forge control show` for one tier: {tasks, pending, dwarf: [specs], qa: [specs]}.
+  function tierValues(controls, tier) {
+    const t = obj(obj(obj(controls).tiers)[tier]);
+    const list = v => Array.isArray(v) ? v.filter(x => typeof x === 'string' && x) : [];
+    return { tier, tasks: num(t.tasks) || 0, pending: num(t.pending) || 0, dwarf: list(t.dwarf), qa: list(t.qa) };
+  }
+
   // A count the CLI takes: 1 to 9 digits (control.py `_int`).
   function countOf(text) {
     const t = String(text === undefined || text === null ? '' : text).trim();
@@ -118,6 +159,12 @@
     }
     if (action === 'pin') return { action: 'pin', task: a.task, spec: a.spec };
     if (action === 'unpin') return { action: 'unpin', task: a.task };
+    if (action === 'models') {
+      const body = { action: 'models', tier: a.tier };
+      if (a.dwarf) body.dwarf = a.dwarf;
+      if (a.qa) body.qa = a.qa;
+      return body;
+    }
     if (action === 'drain' || action === 'resume') return { action };
     if (action === 'stop') return a && a.now ? { action: 'stop', now: true } : { action: 'stop' };
     if (action === 'retry') return a.dwarf ? { action: 'retry', task: a.task, dwarf: a.dwarf } : { action: 'retry', task: a.task };
@@ -145,11 +192,23 @@
       if (!c.task) return bad('no task');
       const s = specOf(c);
       return s.ok ? { ok: true, body: bodyFor('pin', { task: c.task, spec: s.spec }),
-        confirm: `Pin task \`${c.task}\`'s next retry to \`${s.spec}\`? Takes effect ${PIN_APPLIES}` } : s;
+        confirm: `Pin task \`${c.task}\`'s next retry to \`${s.spec}\`${c.controls ? ` (${modelLabel(c.controls, s.spec)})` : ''}? Takes effect ${PIN_APPLIES}` } : s;
     }
     if (c.kind === 'unpin') {
       return c.task ? { ok: true, body: bodyFor('unpin', { task: c.task }),
         confirm: `Remove the pin on task \`${c.task}\`? Its next retry goes back to the escalation policy` } : bad('no task');
+    }
+    if (c.kind === 'models') {
+      if (!TIERS.includes(c.tier)) return bad('the tier is low, medium or high');
+      const d = poolOf(c.dwarf), q = poolOf(c.qa);
+      if (!d.ok) return bad('implementer: ' + d.error);
+      if (!q.ok) return bad('reviewer: ' + q.error);
+      if (!d.text && !q.text) return bad('name an implementer, a reviewer or both');
+      const said = p => p.specs.map(x => `\`${x}\` (${modelLabel(c.controls, x)})`).join(', ');
+      const n = num(c.pending), tasks = n === null ? `the ${c.tier} tasks` : `the ${n} ${c.tier} task${n === 1 ? '' : 's'}`;
+      const roles = [d.text ? `implementer ${said(d)}` : null, q.text ? `reviewer ${said(q)}` : null].filter(Boolean).join(' and ');
+      return { ok: true, body: bodyFor('models', { tier: c.tier, dwarf: d.text, qa: q.text }),
+        confirm: `Use ${roles} for ${tasks} that ${n === 1 ? 'has' : 'have'} not started? ${d.specs.length > 1 || q.specs.length > 1 ? 'A pool is handed out in task order. ' : ''}Takes effect when each task starts; started tasks keep their model` };
     }
     if (c.kind === 'drain') return { ok: true, body: bodyFor('drain'), confirm: 'Drain the run? Running tasks finish; nothing new starts until you resume' };
     if (c.kind === 'resume') return { ok: true, body: bodyFor('resume'), confirm: 'Resume the run? The scheduler starts tasks again' };
@@ -261,7 +320,8 @@
   // One line of the change log (`control.log`): who, what, previous → new, when.
   function logLine(entry) {
     const e = obj(entry), key = typeof e.key === 'string' ? e.key : '';
-    const label = e.action === 'pin' || e.action === 'unpin' || key === 'pin' ? 'Pin' : KEYS[key] ? KEYS[key].label : key || String(e.action || '?');
+    const label = e.action === 'pin' || e.action === 'unpin' || key === 'pin' ? 'Pin' : e.action === 'models' ? `Models · ${key}`
+      : KEYS[key] ? KEYS[key].label : key || String(e.action || '?');
     const empty = key === 'pin' ? 'no pin' : 'unset';
     const show = v => v === null || v === undefined || v === '' ? empty : key === 'timeout' && minutesOf(Number(v)) !== null ? `${minutesOf(Number(v))} min` : String(v);
     return { who: String(e.actor || '?'), what: e.task ? `${label} · ${e.task}` : label, from: show(e.previous), to: show(e.value), at: num(e.at) };
@@ -529,6 +589,65 @@
     return r.box;
   }
 
+  // A spec with what it runs: its plate and, muted, the model id and harness.
+  function specWithModel(c, spec) {
+    const u = ui(), box = u.el('span', undefined, 'ctl-spec');
+    box.append(plateOf(spec), u.el('span', modelLabel(c, spec), 'muted ctl-model'));
+    return box;
+  }
+  // What a typed spec (or pool) runs, redrawn as it is typed.
+  function resolvedLine(c, text) {
+    const p = poolOf(text);
+    if (!p.ok) return p.error;
+    return p.specs.map(x => `${x} → ${modelLabel(c, x)}`).join('; ');
+  }
+
+  // Models per difficulty (#169): the implementer and reviewer of the tier's tasks that have not started yet.
+  function tierRow(view, c, tier) {
+    const u = ui(), t = tierValues(c, tier), r = shell(view, 'tier-' + tier, tier, false);
+    const line = u.el('div', undefined, 'ctl-tier-now');
+    line.append(u.el('span', `${t.pending} of ${t.tasks} not started`, t.pending ? 'tag' : 'muted'));
+    for (const [role, specs] of [['dwarf', t.dwarf], ['qa', t.qa]]) {
+      if (!specs.length) continue;
+      line.append(u.el('span', role, 'ctl-role'));
+      for (const x of specs) line.append(specWithModel(c, x));
+    }
+    r.status.append(line);
+    if (!t.pending) { help(r, t.tasks ? 'Every task of this tier has started: a pin or a retry changes its model.' : 'No task of this tier.'); return r.box; }
+    const form = u.el('form', undefined, 'ctl-pin ctl-tier');
+    form.noValidate = true;
+    const input = (name, caption, placeholder) => {
+      const i = u.el('input'); i.type = 'text'; i.autocomplete = 'off'; i.spellcheck = false; i.placeholder = placeholder;
+      const key = `tier.${tier}.${name}`;
+      i.value = field(view, key, '');
+      i.addEventListener('input', () => { touch(view, key, i.value); paint(); clearOutcome(view, r); });
+      const l = u.el('label', undefined, 'filter ctl-alias'); l.append(u.el('span', caption), i);
+      return { i, l, key };
+    };
+    const d = input('dwarf', 'Implementer', t.dwarf.join(',') || 'e.g. haiku:xhigh'), q = input('qa', 'Reviewer', t.qa.join(',') || 'e.g. opus');
+    const hint = u.el('p', undefined, 'ctl-help ctl-resolved');
+    const paint = () => {
+      const lines = [d.i.value.trim() ? 'implementer: ' + resolvedLine(c, d.i.value) : null, q.i.value.trim() ? 'reviewer: ' + resolvedLine(c, q.i.value) : null].filter(Boolean);
+      hint.textContent = lines.length ? lines.join(' · ') : 'One spec, or a pool separated by commas.';
+    };
+    paint();
+    const go = u.el('button', 'Apply', 'primary'); go.type = 'submit';
+    form.append(d.l, q.l, go);
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      commit(view, r, { kind: 'models', tier, dwarf: d.i.value, qa: q.i.value, pending: t.pending, controls: c }, [d.key, q.key], go);
+    });
+    r.control.append(form, hint);
+    return r.box;
+  }
+  function tierBox(view, c) {
+    const u = ui(), box = u.el('div', undefined, 'ctl-tiers');
+    box.append(u.el('span', 'Models per difficulty', 'ctl-label'));
+    box.append(u.el('p', 'The implementer and reviewer of the tasks that have not started yet, by difficulty.', 'ctl-help'));
+    for (const tier of TIERS) box.append(tierRow(view, c, tier));
+    return box;
+  }
+
   function changeLog(c) {
     const u = ui(), log = Array.isArray(c.log) ? c.log : [];
     const box = u.el('div', undefined, 'ctl-log');
@@ -574,6 +693,7 @@
     body.append(switchRow(view, c, { key: 'escalate-effort', label: 'Effort step', current: v.escalateEffort, perm: perm('escalate-effort'),
       help: v.escalateEffort === 'on' ? 'On: at the top tier, a task is retried once more at the next effort its model accepts before it stops.'
         : 'Off: at the top tier, a task that used up its escalation stops with a split suggestion.' }));
+    body.append(tierBox(view, c));
     body.append(changeLog(c));
     return body;
   }
@@ -660,12 +780,12 @@
       const un = u.el('button', 'Unpin'); un.type = 'button';
       un.title = 'Drop the pin: the next retry goes back to the escalation policy';
       un.addEventListener('click', () => commit(view, r, { kind: 'unpin', task: id }, ['pin.alias', 'pin.effort', 'pin.harness'], un));
-      now.append(u.el('span', 'pinned', 'tag'), plateOf(v.pin), un);
+      now.append(u.el('span', 'pinned', 'tag'), specWithModel(c, v.pin), un);
     } else now.append(u.el('span', 'no pin', 'muted'));
     r.status.append(now);
     if (v.next) {
       const next = u.el('p', undefined, 'ctl-help');
-      next.append(textNode('the policy picked '), plateOf(v.next), textNode(' for the next retry'));
+      next.append(textNode('the policy picked '), specWithModel(c, v.next), textNode(' for the next retry'));
       r.status.append(next);
     }
     if (v.stop) {
@@ -681,9 +801,18 @@
     form.append(...picker.nodes, go);
     form.addEventListener('submit', e => {
       e.preventDefault();
-      commit(view, r, Object.assign({ kind: 'pin', task: id }, picker.read()), picker.fields, go);
+      commit(view, r, Object.assign({ kind: 'pin', task: id, controls: c }, picker.read()), picker.fields, go);
     });
-    r.control.append(form);
+    // What the typed spec runs, before it is applied: a pin never changes the model generation silently (#180).
+    const hint = u.el('p', undefined, 'ctl-help ctl-resolved');
+    const paint = () => {
+      const s = specOf(picker.read());
+      hint.textContent = s.ok ? `${s.spec} runs ${modelLabel(c, s.spec)}` : '';
+    };
+    form.addEventListener('input', paint);
+    form.addEventListener('click', () => setTimeout(paint, 0));
+    paint();
+    r.control.append(form, hint);
     help(r, 'Applies at the next full retry, not a QA-only resume.');
     return r.box;
   }
@@ -811,7 +940,7 @@
     } };
   }
 
-  return { LEVELS, EFFORTS, KEYS, specOf, countOf, secondsOf, minutesOf, valueFor, bodyFor, prepare, savedText, effective, canEdit, logLine, agoText,
+  return { LEVELS, EFFORTS, KEYS, TIERS, resolveSpec, modelLabel, poolOf, tierValues, specOf, countOf, secondsOf, minutesOf, valueFor, bodyFor, prepare, savedText, effective, canEdit, logLine, agoText,
     aliasesOf, scopeOf, typing, isEditing, keepEditing, redrawDue, countdown, pauseLines, requestState, requestText, canRetry,
     mountRun, mountTask, hold };
 });

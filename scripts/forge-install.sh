@@ -177,24 +177,18 @@ report_opencode
 say
 say "Verify with: bash $SKILL_DIR/scripts/forge-dispatch.sh doctor"
 
-# Optional context engine; failure never prevents Forge setup.
+# What a first run needs (models, reviews, forge-ui, memory, Ripwire, decision models),
+# asked once on a terminal and saved as defaults (#162). `forge update` re-runs this installer with
+# FORGE_SETUP=off: an update never asks again. Setup failing never fails the install.
 if [ "$DRY" = 1 ]; then
-  /bin/bash "$SKILL_DIR/scripts/forge-install-ripwire.sh" --dry-run
-else
-  /bin/bash "$SKILL_DIR/scripts/forge-install-ripwire.sh" || true
+  say "  would: run forge setup on a terminal (models, reviews, forge-ui, memory, Ripwire; skipped once done)"
+elif [ "${FORGE_SETUP:-}" = off ]; then
+  :
+elif [ -t 0 ] && [ -t 1 ]; then
+  say
+  python3 "$SKILL_DIR/scripts/forge-setup.py" --after-install || true
+elif ! python3 "$SKILL_DIR/scripts/forge_prefs.py" done 2>/dev/null; then
+  say "Next: forge setup (models, reviews and add-ons, asked once), or forge setup --defaults"
 fi
-
-# Optional advisory judgments; sends task/diff/test/memory excerpts to an external
-# API. Off unless configured and enabled. Failure never prevents Forge setup.
-if [ "$DRY" = 1 ]; then
-  say "  would: offer optional Jev setup (sends data to an external API; declined by default)"
-elif [ -t 0 ]; then
-  printf 'Set up optional Jev advisory judgments? Sends task/diff excerpts to an external API. [y/N] '
-  read -r jev_answer
-  if [ "$jev_answer" = y ] || [ "$jev_answer" = Y ]; then
-    python3 "$SKILL_DIR/scripts/forge-jev.py" setup || true
-  fi
-fi
-say "Jev CLI: $SKILL_DIR/forge jev --help (optional; disabled until configured)"
 
 exit "$RESULT"

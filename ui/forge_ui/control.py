@@ -306,6 +306,7 @@ def validate_body(body):
     shapes = {'set': ({'action', 'key', 'value', 'task'}, ('key', 'value')),
               'pin': ({'action', 'task', 'spec'}, ('task', 'spec')),
               'unpin': ({'action', 'task'}, ('task',)),
+              'models': ({'action', 'tier', 'dwarf', 'qa'}, ('tier',)),
               'retry': ({'action', 'task', 'dwarf'}, ('task',)),
               'drain': ({'action'}, ()),
               'resume': ({'action'}, ()),
@@ -321,6 +322,12 @@ def validate_body(body):
         tail += ['--task', _text(body, 'task')]
     if action == 'retry' and 'dwarf' in body:
         tail += ['--dwarf', _text(body, 'dwarf')]
+    if action == 'models':
+        if 'dwarf' not in body and 'qa' not in body:
+            raise BadBody('models needs dwarf, qa or both')
+        for role in ('dwarf', 'qa'):
+            if role in body:
+                tail += ['--' + role, _text(body, role)]
     if action == 'stop' and 'now' in body:
         if not isinstance(body['now'], bool):
             raise BadBody('now must be true or false')

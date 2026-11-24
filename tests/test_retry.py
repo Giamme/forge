@@ -234,7 +234,7 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertEqual(self.spent_on(p), [('1', 'FAIL', 'sol'), ('2', 'FAIL', 'sol'), ('3', 'FAIL', 'sol'),
                                             ('4', 'PASS', 'astra')])
-        self.assertIn('model=gpt-6-astra', (p / 'tasks/a/dwarf.resolved').read_text())
+        self.assertIn('model=gpt-6.2-astra', (p / 'tasks/a/dwarf.resolved').read_text())
         self.assertEqual((p / 'tasks/a/escalations.tsv').read_text().split('\t')[1:], ['3', 'sol', 'astra', 'policy\n'])
         self.assertIn('escalating from sol to astra', r.stdout)
         self.assertNotIn('No such file or directory', r.stdout)

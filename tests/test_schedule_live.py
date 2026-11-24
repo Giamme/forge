@@ -37,7 +37,7 @@ case "$cmd" in
       PASS|FAIL|UNKNOWN) echo "$outcome" > "$t/status" ;;
       INFRA) echo INFRA > "$t/status"; printf 'class=quota\nstage=dwarf\n' > "$t/infra.txt" ;;
       INFRA_LONG) echo INFRA > "$t/status"; printf 'class=quota\nretry_after=600\nstage=dwarf\n' > "$t/infra.txt" ;;
-      INFRA_RATE) echo INFRA > "$t/status"; printf 'class=rate_limit\nharness=codex\nmodel=gpt-6-astra\nstage=dwarf\n' > "$t/infra.txt" ;;
+      INFRA_RATE) echo INFRA > "$t/status"; printf 'class=rate_limit\nharness=codex\nmodel=gpt-6.2-astra\nstage=dwarf\n' > "$t/infra.txt" ;;
     esac
     echo "$name end $outcome" >> "$plan/events.log"
     ;;

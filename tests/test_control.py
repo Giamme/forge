@@ -130,11 +130,11 @@ class ControlTests(unittest.TestCase):
 
     def test_an_infra_task_shows_its_cause_in_the_table_and_its_stop_in_json(self):
         self.put('tasks/a/status', 'INFRA\n')
-        self.put('tasks/a/infra.txt', 'class=budget\nharness=codex\nmodel=gpt-6.1-sol\nstage=dwarf\nrc=1\n')
+        self.put('tasks/a/infra.txt', 'class=budget\nharness=codex\nmodel=gpt-6.2-sol\nstage=dwarf\nrc=1\n')
         self.assertRegex(self.ok('show', self.plan).stdout, r'\ba\s+INFRA \(budget\)\s')
         shown = self.show()
         self.assertEqual(shown['tasks']['a']['infra'],
-                         dict(cause='budget', harness='codex', model='gpt-6.1-sol', stage='dwarf', reset_at=None,
+                         dict(cause='budget', harness='codex', model='gpt-6.2-sol', stage='dwarf', reset_at=None,
                               needs_you=True, hint='add credits, or check the billing of codex'))
         self.assertNotIn('infra', shown['tasks']['b'])          # only an INFRA task carries a stop
 
@@ -521,6 +521,75 @@ class ControlTests(unittest.TestCase):
         self.assertIsNone(unpinned['controls']['tasks']['a']['pin'])
         self.assertEqual([e['actor'] for e in self.log()], ['ui', 'ui'])
 
+    # ------------------------------------------------------------------------------------ models per tier (#169)
+
+    def tiered(self):
+        (self.plan / 'tasks.tsv').write_text(
+            '# id\tdeps\tdifficulty\tfiles\tdwarf\tqa\ttitle\n'
+            'l1\t-\tlow\tsrc\tsol:high\topus\tOne\n'
+            'l2\t-\tlow\tsrc\tscript\topus\tTwo\n'
+            'l3\t-\tlow\tsrc\tsol\topus\tThree\n'
+            'l4\t-\tlow\tsrc\tsol\topus\tFour\n'
+            'm1\t-\tmedium\tsrc\tsol\topus\tFive\n'
+            'h1\t-\thigh\tsrc\tsol\topus\tSix\n')
+        self.put('tasks/l3/status', 'RUNNING\n')
+        self.put('tasks/l3/attempt', '1\n')
+        self.put('tasks/l4/merged', '')
+
+    def columns(self):
+        rows = [line.split('\t') for line in (self.plan / 'tasks.tsv').read_text().splitlines() if not line.startswith('#')]
+        return {r[0]: (r[4], r[5]) for r in rows}
+
+    def test_models_changes_only_the_not_started_tasks_of_the_tier_and_hands_out_a_pool_in_order(self):
+        self.tiered()
+        done = json.loads(self.ok('models', self.plan, 'low', '--dwarf', 'astra:xhigh,haiku', '--qa', 'sonnet',
+                                  '--actor', 'ui', '--json').stdout)
+        self.assertEqual(self.columns(), {'l1': ('astra:xhigh', 'sonnet'), 'l2': ('script', 'sonnet'),
+                                          'l3': ('sol', 'opus'), 'l4': ('sol', 'opus'),
+                                          'm1': ('sol', 'opus'), 'h1': ('sol', 'opus')})
+        self.assertEqual([t['task'] for t in done['tasks']], ['l1', 'l2'])
+        self.assertEqual(done['kept'], {'l3': 'RUNNING', 'l4': 'MERGED'})
+        self.assertEqual(done['changed'], dict(action='models', task=None, key='low', value='dwarf=astra:xhigh,haiku;qa=sonnet',
+                                               previous=None))
+        self.assertEqual(done['controls']['tiers']['low'], dict(tasks=4, pending=2, dwarf=['astra:xhigh'], qa=['sonnet']))
+        [entry] = self.log()
+        self.assertEqual((entry['actor'], entry['action'], entry['key'], entry['tasks']), ('ui', 'models', 'low', ['l1', 'l2']))
+        calls = Path(str(self.stub) + '.calls').read_text().splitlines()
+        self.assertEqual(calls, ['--spec astra:xhigh --role dwarf', '--spec haiku --role dwarf', '--spec sonnet --role qa'])
+
+    def test_a_pool_alternates_across_the_tier(self):
+        self.tiered()
+        self.ok('models', self.plan, 'low', '--dwarf', 'astra,haiku')
+        (self.plan / 'tasks/l3/status').unlink(); (self.plan / 'tasks/l3/attempt').unlink()
+        self.ok('models', self.plan, 'low', '--dwarf', 'astra,haiku')
+        self.assertEqual([self.columns()[t][0] for t in ('l1', 'l2', 'l3')], ['astra', 'script', 'haiku'])
+
+    def test_models_refuses_a_bad_tier_a_bad_spec_no_role_and_a_fractal_plan_and_changes_nothing(self):
+        self.tiered()
+        before = (self.plan / 'tasks.tsv').read_text()
+        self.code(2, 'models', self.plan, 'huge', '--dwarf', 'sol')
+        self.code(2, 'models', self.plan, 'low')
+        self.code(2, 'models', self.plan, 'low', '--dwarf', 'sol,,astra')
+        self.code(2, 'models', self.plan, 'low', '--qa', 'sol high')
+        self.assertIn('bad:spec:x', self.code(3, 'models', self.plan, 'low', '--dwarf', 'sol,bad:spec:x').stderr)
+        self.put('fractal-selection.json', json.dumps({'enabled': True}))
+        self.assertIn('Fractal', self.code(3, 'models', self.plan, 'low', '--dwarf', 'sol').stderr)
+        self.assertEqual((self.plan / 'tasks.tsv').read_text(), before)
+        self.assertEqual(self.log(), [])
+
+    def test_models_that_change_nothing_are_not_logged(self):
+        self.tiered()
+        out = self.ok('models', self.plan, 'medium', '--dwarf', 'sol').stdout
+        self.assertIn('nothing logged', out)
+        self.assertEqual(self.log(), [])
+
+    def test_show_names_the_model_each_spec_runs_and_carries_the_registry(self):
+        shown = self.show()
+        self.assertEqual(shown['models']['astra:xhigh:codex'], 'gpt-6.2-astra on codex')
+        self.assertEqual(shown['registry']['sol'][0], ['codex', 'gpt-6.2-sol'])
+        self.assertEqual(shown['tiers']['high'], dict(tasks=1, pending=1, dwarf=['sol:high:codex'], qa=['astra:xhigh:codex']))
+        self.assertIn('gpt-6.2-sol on codex', self.ok('pin', self.plan, 'a', 'sol:xhigh:codex').stdout)
+
     # ------------------------------------------------------------------------------------ dataset
 
     def test_each_change_emits_a_control_event_with_the_log_lines_fields(self):
@@ -637,6 +706,20 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(rows, [('cli', None, 'summaries', 'on', None), ('ui', 'a', 'summaries', 'off', None),
                                 ('cli', 'a', 'summaries', 'inherit', 'off'), ('cli', None, 'summaries', 'off', 'on')])
         self.assertFalse((self.plan / 'summaries.out').exists())
+
+    def test_summaries_model_changes_a_planned_run_and_default_drops_it(self):
+        # #162: summaries.model reached only plans made after it was set; this changes one already planned
+        self.ok('set', self.plan, 'summaries-model', 'haiku:low')
+        self.assertEqual((self.plan / 'summaries_model').read_text(), 'haiku:low\n')
+        self.assertIn('--spec haiku:low --role qa', (self.base / 'doctor.sh.calls').read_text())
+        self.code(3, 'set', self.plan, 'summaries-model', 'bad:spec:x')
+        for bad in ('two words', 'a,b', ''):
+            self.code(2, 'set', self.plan, 'summaries-model', bad)
+        self.code(2, 'set', self.plan, 'summaries-model', 'haiku:low', '--task', 'a')
+        self.ok('set', self.plan, 'summaries-model', 'default')
+        self.assertFalse((self.plan / 'summaries_model').exists())
+        rows = [(e['key'], e['value'], e['previous']) for e in self.log()]
+        self.assertEqual(rows, [('summaries-model', 'haiku:low', None), ('summaries-model', 'default', 'haiku:low')])
 
     def test_summaries_refuse_a_bad_value_and_inherit_at_run_level(self):
         for args in (('maybe',), ('inherit',), ('default',), ('maybe', '--task', 'a'), ('on', '--task', 'zz')):

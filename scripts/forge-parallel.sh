@@ -992,7 +992,7 @@ do_plan() {
   forge_is_sub_plan "$PLAN" || forge_ui_register "$PLAN"
   [ "${FORGE_RIPWIRE:-}" != off ] || touch "$PLAN/no_ripwire"
   # Persist plan choices for later run and retry processes.
-  [ "$NOMEM" = 1 ] && : > "$PLAN/no_memory"
+  { [ "$NOMEM" = 1 ] || forge_repo_memory_off "$REPO"; } && : > "$PLAN/no_memory"
   [ -n "$PLANNER" ] && printf '%s\n' "$PLANNER" > "$PLAN/planner"
   # dwarf-routing.json; a plan made before 0.23 kept these pools under another name, read once here.
   python3 - "$PLAN/dwarf-routing.json" "$(forge_pools_file "$PLAN")" "$D_ANY" "$D_LO" "$D_MD" "$D_HI" <<'PY'
@@ -1505,6 +1505,11 @@ EOF
     done
     echo
   done
+  # The model each spec runs today (#187): an alias moves to newer models over time, so the
+  # table says which version `sol` or `astra` is before anything is spent.
+  local models_block
+  models_block="$(python3 "$SKILL_DIR/scripts/forge_models.py" legend "$T" 2>/dev/null)" || models_block=""
+  [ -z "$models_block" ] || printf '%s\n\n' "$models_block"
   render_groups "$PLAN"
   # A chain collapsed on this call, or a chain left as a chain. one and branches say nothing.
   # COLLAPSED_NOW is do_plan's: collapsed.json from an earlier plan is not announced again.

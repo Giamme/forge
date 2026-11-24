@@ -54,8 +54,12 @@ homework isn't a check: the second stage is worth having because it sees the cod
 
 ```bash
 npm install -g @giamme/forge
-forge install                  # links forge into every agent CLI it finds
+forge install                  # links forge into every agent CLI it finds, then runs forge setup
 ```
+
+`forge setup` asks once what a first run needs (which models build and review, review preferences,
+forge-ui, project memory, add-ons) and saves the answers as defaults; `forge setup show` lists them
+and `forge setup --defaults` takes the recommended ones. → [Setup](references/setup.md)
 
 Update with `npm install -g @giamme/forge@latest && forge install`. Or install from a git
 checkout:

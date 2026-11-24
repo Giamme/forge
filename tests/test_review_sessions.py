@@ -285,7 +285,10 @@ class RoundTests(unittest.TestCase):
     def test_a_registry_that_resolves_the_alias_differently_goes_fresh(self):
         p = self.first_round_fails('--reviewer-session')
         registry = self.root / 'registry.tsv'
-        registry.write_text((ROOT / 'registry.tsv').read_text().replace('opus\tclaude\topus\t', 'opus\tclaude\topus-next\t'))
+        text = (ROOT / 'registry.tsv').read_text()
+        moved = text.replace('opus\tclaude\tclaude-opus-5-5\t', 'opus\tclaude\tclaude-opus-next\t')
+        self.assertNotEqual(moved, text, 'the claude opus row moved: update this test')
+        registry.write_text(moved)
         self.env['FORGE_REGISTRY'] = str(registry)
         self.assertEqual(self.retry(p).returncode, 0)
         self.assertFalse(continues(p / 'tasks/a/qa.cmd'))

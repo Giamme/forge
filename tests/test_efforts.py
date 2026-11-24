@@ -63,7 +63,7 @@ class Case(unittest.TestCase):
                                             task=tid, attempt=i, ts=ts, data=dict(status=status)))
                     task_events.append(dict(rid='d%s.%d' % (tid, i), kind='dispatch', run=run, mode='parallel',
                                             task=tid, attempt=i, ts=ts,
-                                            data=dict(role='dwarf', model='haiku', effort=effort, duration_s=seconds)))
+                                            data=dict(role='dwarf', model='claude-haiku-5-5', effort=effort, duration_s=seconds)))
             events.append(dict(rid='p-%s' % run, kind='plan', run=run, mode='parallel', ts=1000 + index,
                                data=dict(tasks=rows)))
             events.extend(task_events)
@@ -197,7 +197,7 @@ class DoctorNoteTests(Case):
         self.assertNotIn('forge: note:', noted.stdout)
         resolved = (run / 'dwarf.resolved').read_text()
         self.assertIn('effort=max\n', resolved)
-        self.assertIn('model=haiku\n', resolved)
+        self.assertIn('model=claude-haiku-5-5\n', resolved)
         self.assertNotIn('no measured gain', resolved)
         self.assertNotIn('note', resolved)
 

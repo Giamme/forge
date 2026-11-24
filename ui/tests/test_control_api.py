@@ -289,6 +289,10 @@ class ArgvAndMappingTests(ControlApiCase):
             ({'action': 'pin', 'task': 'graph', 'spec': 'sol:high:codex'},
              ['control', 'pin', plan, 'graph', 'sol:high:codex', '--actor', 'ui', '--json']),
             ({'action': 'unpin', 'task': 'graph'}, ['control', 'unpin', plan, 'graph', '--actor', 'ui', '--json']),
+            ({'action': 'models', 'tier': 'low', 'dwarf': 'haiku:xhigh,sonnet', 'qa': 'opus'},
+             ['control', 'models', plan, 'low', '--dwarf', 'haiku:xhigh,sonnet', '--qa', 'opus', '--actor', 'ui', '--json']),
+            ({'action': 'models', 'tier': 'high', 'qa': 'opus'},
+             ['control', 'models', plan, 'high', '--qa', 'opus', '--actor', 'ui', '--json']),
         ]
         for body, argv in cases:
             status, answer = self.post(body)
@@ -377,6 +381,8 @@ class ArgvAndMappingTests(ControlApiCase):
             {'action': 'retry'}, {'action': 'retry', 'task': ''}, {'action': 'retry', 'task': 'graph', 'dwarf': '-x'},
             {'action': 'retry', 'task': 'graph', 'dwarf': 5}, {'action': 'retry', 'task': 'graph', 'spec': 'sol'},
             {'action': 'drain', 'task': 'graph'}, {'action': 'resume', 'now': True}, {'action': 'add', 'task': 'graph'},
+            {'action': 'models', 'tier': 'low'}, {'action': 'models', 'dwarf': 'sol'}, {'action': 'models', 'tier': 'low', 'dwarf': '-x'},
+            {'action': 'models', 'tier': 'low', 'dwarf': 5}, {'action': 'models', 'tier': 'low', 'dwarf': 'sol', 'task': 'a'},
         ]
         for body in bad:
             status, answer = self.post(body)

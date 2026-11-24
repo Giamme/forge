@@ -398,6 +398,11 @@ takes effect, except a brief answer, which is sent when you press *Send*. The ro
   exempts it from the run's threshold), its own retry budget and a **model pin**: the model
   its next full retry uses, once. A control that cannot apply (no live scheduler, a merged
   task) is disabled and says why.
+- **Models per difficulty (`forge control models`):** in a plan's inspector, the implementer and
+  reviewer of the `low`, `medium` and `high` tasks that have not started yet, one spec or a pool
+  separated by commas. Started tasks keep their model. Every spec on the page, a pin or a tier's
+  pool included, shows the model id it runs (`astra:xhigh runs gpt-6.2-astra on codex`), also while
+  you type it, so a pin never changes the model generation unnoticed.
 - **Open findings (`forge issues`):** the findings a run, or every run of its repository,
   left open. The list opens from a quick offline listing and then fills in what is already
   filed; select findings to file as GitHub issues, or dismiss them (and undo that).

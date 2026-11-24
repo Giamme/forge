@@ -67,7 +67,7 @@ forge config profile use mine                           <span class="c"># make i
 <h2>Teaching forge a new model</h2>
 <p>Add one line to <code>registry.tsv</code>: alias, CLI, model id, efforts, and optionally a timeout. Nothing else changes.</p>
 <pre><span class="c"># alias   harness     model          effort     [timeout]</span>
-sol       codex       gpt-6.1-sol    &lt;=ultra
+sol       codex       gpt-6.2-sol    &lt;=ultra
 gemini-pro antigravity gemini-3.1-pro low,high
-opus      antigravity claude-opus-4-6-thinking none</pre>
+opus-4.6  antigravity claude-opus-4-6-thinking none</pre>
 <p><code>&lt;=X</code> means any effort up to X, <code>a,b</code> exactly those, <code>none</code> takes no effort flag, <code>-</code> passes it through unchecked.</p>
