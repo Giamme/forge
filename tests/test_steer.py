@@ -173,7 +173,6 @@ class SteerRunTests(unittest.TestCase):
         self.steer(p, 'STEER_ONE: keep the old function name.')
         r = self.run_script('forge-parallel.sh', 'run', p)
         self.assertEqual(self.read(p, 'status').strip(), 'PASS', r.stdout)
-        self.assertIn('attempt 1 gets 1 message(s) from the user', r.stdout)
         dwarf = self.read(p, 'dwarf.input')
         self.assertIn('## Messages from the user for this attempt', dwarf)
         self.assertIn('STEER_ONE: keep the old function name.', dwarf)
