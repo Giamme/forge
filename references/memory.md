@@ -53,6 +53,16 @@ committed by the user — forge does not commit on anyone's behalf.
 Gitignoring does **not** disable anything: an ignored `.forge/` is still written and still
 injected into every prompt. Only the third row turns the feature off.
 
+**Linked worktrees (#159).** A run whose `--repo` is a linked worktree (`git worktree add`)
+whose `.forge/memory.md` and `.forge/ledger.tsv` are not tracked reads and writes the **main
+checkout's** `.forge/`: `git worktree remove` deletes ignored files without a word, so learnings
+kept in the worktree would be lost with it. Every reader agrees (`inject`, `show`, `learnings`,
+`forget`, `add`, `edit`, the decision-model gates, the run dataset); `forge memory where <repo>`
+prints the folder. A tracked `.forge/`, a bare repository's worktree, or
+`FORGE_MEMORY_PER_CHECKOUT=1` keeps memory in the checkout itself. A linked worktree that already
+holds a ledger of its own (from before) has its rows appended to the main checkout's ledger the
+first time forge touches its memory, and its two files are renamed `*.merged`.
+
 **The two files must share a fate.** Because `memory.md` is rebuilt from `ledger.tsv` on
 every write, committing the memory while ignoring the ledger destroys the shared facts the
 first time anyone runs forge on a fresh clone — the rebuild regenerates `memory.md` from that
@@ -212,6 +222,7 @@ forge-memory.sh note <planner|dwarf|qa>            # the instruction to append
 forge-memory.sh record <repo> --last <file> --role <r> [--run-id X] [--task T]
                               [--model M] [--verdict V] [--duration S]
 forge-memory.sh show <repo>
+forge-memory.sh where <repo>                       # the checkout whose .forge/ holds the memory
 forge-memory.sh prune <repo>                       # re-apply staleness and cap now
 forge-memory.sh spend <repo> [--run <run-id>]      # time and dispatch counts
 forge-memory.sh add <repo> --category <verify|trap|finding> --text TEXT [--path P]...

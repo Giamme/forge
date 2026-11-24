@@ -886,7 +886,7 @@ def run_end_event(attempt: Path, plan: Path, rc, prov: dict, src: str = 'live') 
     repo = first_line(plan / 'repo')
     data = dict(exit=as_int(rc), results=results,
                 accepted_integration=first_line(plan / 'accepted.integration'),
-                blobs=blobs(memory=put_file(Path(repo) / '.forge' / 'memory.md') if repo else None))
+                blobs=blobs(memory=put_file(_memory_md(repo)) if repo else None))
     return dict(rid=attempt.name, kind='run_end', ts=prov.get('wall_ended') or time.time(), src=src,
                 run=prov.get('run'), run_id=prov.get('run_id'), mode='parallel', parent=prov.get('parent'),
                 inv=prov.get('inv'), data=data)
@@ -1012,7 +1012,7 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
                     jev_routing=put_file(plan / 'jev-routing.tsv'),
                     snapshot=put_blob(json.dumps(snapshot_excerpts, sort_keys=True), 'request') if snapshot_excerpts else None,
                     inventory=put_blob(listing, 'request') if listing else None,
-                    memory=put_file(Path(repo) / '.forge' / 'memory.md') if repo else None),
+                    memory=put_file(_memory_md(repo)) if repo else None),
     )
     if plan_gates is not None:
         data['plan_gates'] = plan_gates
@@ -1090,3 +1090,12 @@ def fractal_task_events(task_dir: Path, ctx: dict, src: str = 'live') -> list:
                                      blobs=blobs(diff=put_file(task_dir / 'changes.diff', 'diff'),
                                                  qa=put_file(task_dir / 'qa.last', 'message')))))
     return events
+
+
+def _memory_md(repo) -> Path:
+    """repo's .forge/memory.md, in the main checkout when repo is a linked worktree (#159)."""
+    try:
+        import forge_memory_home
+    except ImportError:
+        return Path(repo) / '.forge' / 'memory.md'
+    return forge_memory_home.memory_file(repo)

@@ -23,6 +23,7 @@
 #   forge-memory.sh record <repo> --last <file> --role <r> [--run-id X] [--task T]
 #                                 [--model M] [--verdict V] [--duration S]
 #   forge-memory.sh show   <repo>
+#   forge-memory.sh where  <repo>       the checkout whose .forge/ holds the memory (#159)
 #   forge-memory.sh prune  <repo>
 #   forge-memory.sh spend  <repo> [--run <run-id>]
 #   forge-memory.sh learnings <repo> [--json]   every ledger learning and its state, as JSON
@@ -72,9 +73,73 @@ memory_dataset_event() { # memory_dataset_event <name> <repo> <run-dir> [--set k
     >/dev/null 2>&1 || true
 }
 
-dir_for()    { echo "$1/.forge"; }
-memory_for() { echo "$1/.forge/memory.md"; }
-ledger_for() { echo "$1/.forge/ledger.tsv"; }
+# Where a checkout's project memory lives (#159). A linked worktree (`git worktree add`) whose
+# .forge/memory.md and .forge/ledger.tsv are not tracked keeps its memory in the main checkout's
+# .forge/: `git worktree remove` deletes ignored files without a word, and the main checkout is where
+# later runs start. Everything else keeps it in the checkout itself: the main checkout, a tracked
+# .forge/ (git refuses to remove a worktree with changes to it), a bare repository's worktree, a path
+# outside git, or FORGE_MEMORY_PER_CHECKOUT=1. scripts/forge_memory_home.py is the same rule in Python.
+memory_home() { # memory_home <repo>
+  local repo="$1" gd common main listing
+  [ "${FORGE_MEMORY_PER_CHECKOUT:-}" != 1 ] || { printf '%s\n' "$repo"; return 0; }
+  gd="$(cd "$repo" 2>/dev/null && cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd -P)" \
+    && common="$(cd "$repo" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P)" \
+    && [ "$gd" != "$common" ] || { printf '%s\n' "$repo"; return 0; }
+  # The first entry of the worktree list is the main working tree; a bare repository has none.
+  listing="$(git -C "$repo" worktree list --porcelain 2>/dev/null)"
+  main="$(printf '%s\n' "$listing" | sed -n '1s/^worktree //p')"
+  [ -n "$main" ] || { printf '%s\n' "$repo"; return 0; }
+  if printf '%s\n' "$listing" | awk 'NR > 1 && /^$/ { exit } NR > 1 && /^bare$/ { found = 1 } END { exit !found }'; then
+    printf '%s\n' "$repo"; return 0
+  fi
+  [ -d "$main" ] || { printf '%s\n' "$repo"; return 0; }
+  if [ -n "$(git -C "$repo" ls-files -- .forge/memory.md .forge/ledger.tsv 2>/dev/null)" ]; then
+    printf '%s\n' "$repo"; return 0
+  fi
+  printf '%s\n' "$main"
+}
+
+# Resolved once per command for the repository it names (memory_cache below), so the helpers below
+# cost no git call each time; any other path is resolved when it is asked about.
+MEMORY_HOME_REPO="" MEMORY_HOME_DIR=""
+memory_cache() { MEMORY_HOME_REPO="$1"; MEMORY_HOME_DIR="$(memory_home "$1")"; }
+memory_root() {
+  if [ -n "$MEMORY_HOME_REPO" ] && [ "$1" = "$MEMORY_HOME_REPO" ]; then printf '%s\n' "$MEMORY_HOME_DIR"
+  else memory_home "$1"; fi
+}
+dir_for()    { echo "$(memory_root "$1")/.forge"; }
+memory_for() { echo "$(memory_root "$1")/.forge/memory.md"; }
+ledger_for() { echo "$(memory_root "$1")/.forge/ledger.tsv"; }
+
+# A linked worktree that kept memory of its own before #159 (or before its .forge/ was untracked):
+# its ledger rows go into the main checkout's ledger once (rows already there are not added twice),
+# and its two files are renamed *.merged, so nothing is lost and nothing is read twice. Fail-quiet:
+# a merge that cannot complete leaves both ledgers as they were.
+memory_adopt_stranded() { # memory_adopt_stranded <repo>
+  local repo="$1" home own_led home_led n
+  home="$(memory_root "$repo")"
+  [ "$home" != "$repo" ] || return 0
+  own_led="$repo/.forge/ledger.tsv"; home_led="$home/.forge/ledger.tsv"
+  [ -f "$own_led" ] || return 0
+  mkdir -p "$home/.forge" || return 0
+  # Appended, as `record` appends: a row another dispatch adds meanwhile is never lost. Two merges at
+  # once can add a row twice, which changes no count (a learning counts the distinct runs it came from).
+  if [ -s "$home_led" ]; then
+    n="$(awk 'NR == FNR { seen[$0] = 1; next } FNR > 1 && !($0 in seen)' "$home_led" "$own_led" | wc -l | tr -d ' ')"
+    awk 'NR == FNR { seen[$0] = 1; next } FNR > 1 && !($0 in seen)' "$home_led" "$own_led" > "$own_led.adding" \
+      && cat "$own_led.adding" >> "$home_led" || { rm -f "$own_led.adding"; return 0; }
+    rm -f "$own_led.adding"
+  else
+    n="$(awk 'FNR > 1' "$own_led" | wc -l | tr -d ' ')"
+    cat "$own_led" >> "$home_led" || return 0
+  fi
+  mv "$own_led" "$own_led.merged" 2>/dev/null
+  [ ! -f "$repo/.forge/memory.md" ] || mv "$repo/.forge/memory.md" "$repo/.forge/memory.md.merged" 2>/dev/null
+  FORGE_MEMORY_DEEP_PRUNE=0 rebuild "$repo" >/dev/null 2>&1 || true
+  printf 'forge: memory: %s learning row(s) of the linked worktree %s moved to %s, where its memory now lives\n' \
+    "$n" "$repo" "$home_led" >&2
+  return 0
+}
 
 # Normalized dedup key: lowercase, every run of non-alphanumerics collapsed to a
 # single space. Exact match after that — genuinely different phrasings will NOT
@@ -1274,6 +1339,8 @@ memory_usage() {
 usage: forge memory <command> <repo> [...]   (scripts/forge-memory.sh)
 
   show <repo>                 the repository's .forge/memory.md
+  where <repo>                the checkout whose .forge/ holds that memory: the repository itself, or for a
+                              linked worktree whose .forge/ is not tracked, the main checkout (#159)
   learnings <repo> [--json]   every ledger learning and what forge does with it (in_memory, waiting,
                               stale, capped, muted), from forge's own rebuild; changes nothing
   prune <repo>                re-apply staleness and the cap now, then print what a dwarf is told
@@ -1289,10 +1356,17 @@ usage: forge memory <command> <repo> [...]   (scripts/forge-memory.sh)
                               (--path P, --actor ui|cli, --json); an unknown key is an error
 USAGE
 }
-[ $# -ge 1 ] || die "usage: forge-memory.sh <inject|note|record|show|prune|spend|learnings|forget|add|edit> [repo] [...]"
+[ $# -ge 1 ] || die "usage: forge-memory.sh <inject|note|record|show|prune|spend|learnings|forget|add|edit|where> [repo] [...]"
 CMD="$1"; shift
+# The repository named first: where its memory lives is decided once (#159), and memory a linked
+# worktree kept of its own is moved there before anything reads it.
+case "$CMD" in
+  inject|record|show|spend|learnings|prune|forget|add|edit|where)
+    if [ -n "${1:-}" ] && [ -d "$1" ]; then memory_cache "$1"; memory_off || memory_adopt_stranded "$1"; fi ;;
+esac
 case "$CMD" in
   -h|--help|help) memory_usage; exit 0 ;;
+  where)  [ -n "${1:-}" ] || die "where needs a repo"; memory_root "$1" ;;
   inject) do_inject "$@" ;;
   note)   do_note "$@" ;;
   record) do_record "$@" ;;

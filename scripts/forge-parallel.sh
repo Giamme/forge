@@ -3804,11 +3804,22 @@ do_run() {
     /bin/bash "$MEMORY" spend "$REPO" --run "$run_id" 2>/dev/null | sed 's/^/  /'
     echo
   fi
-  if [ ! -f "$PLAN/no_memory" ] && [ -s "$REPO/.forge/memory.md" ]; then
-    echo "project memory: $(grep -c '^- ' "$REPO/.forge/memory.md") fact(s) in .forge/ —"
-    echo "  uncommitted, and the only thing forge wrote outside its own branches."
-    echo
-    echo "Your branch and working tree were not touched, apart from .forge/ above."
+  local mem_home=""
+  [ -f "$PLAN/no_memory" ] || mem_home="$(/bin/bash "$MEMORY" where "$REPO" 2>/dev/null)"
+  if [ -n "$mem_home" ] && [ -s "$mem_home/.forge/memory.md" ]; then
+    if [ "$mem_home" = "$REPO" ]; then
+      echo "project memory: $(grep -c '^- ' "$mem_home/.forge/memory.md") fact(s) in .forge/ —"
+      echo "  uncommitted, and the only thing forge wrote outside its own branches."
+      echo
+      echo "Your branch and working tree were not touched, apart from .forge/ above."
+    else
+      # #159: a linked worktree's learnings live in the main checkout, so removing it loses none.
+      echo "project memory: $(grep -c '^- ' "$mem_home/.forge/memory.md") fact(s) in $mem_home/.forge/ —"
+      echo "  the main checkout's, since $REPO is a linked worktree: removing that worktree loses none of them."
+      echo "  Uncommitted, and the only thing forge wrote outside its own branches."
+      echo
+      echo "Your branch and working tree were not touched."
+    fi
   else
     echo "Your branch and working tree were not touched."
   fi
