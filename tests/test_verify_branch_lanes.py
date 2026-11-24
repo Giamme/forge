@@ -111,7 +111,7 @@ class BranchLanesTests(unittest.TestCase):
         # One range renames the suite and updates the lane that names it, as in the issue.
         self.in_wt(wt, 'mv', 'suite-old.txt', 'suite-new.txt')
         (wt / '.forge' / 'verify.d' / 'chat').write_text('test -f suite-new.txt\n')
-        self.in_wt(wt, 'add', '-A', '.'); self.in_wt(wt, 'commit', '-qm', 'rename the suite')
+        self.in_wt(wt, 'add', '.forge/verify.d/chat'); self.in_wt(wt, 'commit', '-qm', 'rename the suite')
         r = self.run_script('forge-parallel.sh', 'adopt', p, '--head', '--reason', 'the suite rename')
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertEqual((p / 'verification.status').read_text().strip(), 'PASS', r.stdout)

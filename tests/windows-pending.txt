@@ -59,6 +59,7 @@ forge:test_interrupt_harness
 forge:test_issues
 forge:test_lateral
 forge:test_locations
+forge:test_memory_checkout
 forge:test_message_gate
 forge:test_needs_decision
 forge:test_needs_input
@@ -102,6 +103,7 @@ forge:test_triage
 forge:test_triage_apply
 forge:test_ui
 forge:test_update
+forge:test_verify_branch_lanes
 forge:test_verify_freeze
 forge:test_verify_lanes_config
 forge:test_verify_lanes_run
