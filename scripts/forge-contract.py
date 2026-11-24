@@ -352,13 +352,13 @@ _VERIFY_SCOPE = (
     '  type checks unless the task asks for them.',
 )
 
-# When the run verifies the repository after each merge, a task that names the whole suite in its
-# acceptance criteria no longer buys a full run per attempt: forge runs it once, after the merge.
+# When the run verifies the repository, a task that names the whole suite in its acceptance criteria
+# no longer buys a full run per attempt: forge runs it once at the end of the run.
 _VERIFY_SCOPE_AFTER_MERGE = (
     '- Verify within your change: run the tests the change affects (the task\'s own tests and the',
     '  tests of the modules you changed). Never run the whole suite or repo-wide lint, format or',
     '  type checks, even when the task or its acceptance criteria name them: forge runs the',
-    '  repository\'s verification after the merge. Report that check as left to forge.',
+    '  repository\'s verification once at the end of the run. Report that check as left to forge.',
 )
 
 _DWARF = [
@@ -817,7 +817,7 @@ def _parser() -> argparse.ArgumentParser:
     dwarf = sub.add_parser('dwarf', help='print the implementer rules block')
     dwarf.add_argument('--pre-review', action='store_true', help='forge runs the affected tests before the review')
     dwarf.add_argument('--verify-after-merge', action='store_true',
-                       help='the run verifies the repository after each merge, so the whole suite is left to it')
+                       help='the run verifies the repository once at the end of the run, so the whole suite is left to it')
     retro = sub.add_parser('retro', help='print the retro-note instruction for one role')
     retro.add_argument('--role', required=True, choices=RETRO_ROLES,
                        help='dwarf also hears about .forge/retro-inbox.jsonl')

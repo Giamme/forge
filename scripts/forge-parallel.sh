@@ -2203,7 +2203,7 @@ do_task_body() (
       [ ! -f "$PLAN/sweep_ahead" ] || python3 "$SKILL_DIR/scripts/forge-sweep.py" ahead "$PLAN" "$id" --role dwarf 2>/dev/null
       echo "Implement this task in the repository. Follow the intended approach unless it is wrong; explain deviations. Run the task's requested verification and report results."
       echo "On retry, fix the findings in the existing work; preserve parts not criticised. Explain any finding you reject."
-      # With repository verification configured, the whole suite runs after the merge, never per attempt.
+      # With repository verification configured, the whole suite runs once at the end of the run, never per attempt.
       echo; python3 "$SKILL_DIR/scripts/forge-contract.py" dwarf $([ ! -f "$PLAN/pre_review_tests" ] || echo --pre-review) \
         $([ -z "$(verify_source_for "$PLAN" "$REPO" "$(cat "$PLAN/wt_root" 2>/dev/null)/_integration")" ] || echo --verify-after-merge)
       echo; /bin/bash "$MEMORY" note dwarf

@@ -4,8 +4,10 @@
   forge-plan-check.py size --plan P
       Names the tasks that are large by the measure that predicts a failed first attempt, the
       tasks whose prompt.md has no acceptance criteria, and the tasks whose acceptance criteria
-      ask for the whole suite (each attempt would run it; the run's verification already does,
-      after each merge). Prints nothing when every task is fine. Exit status is always 0.
+      ask for the whole suite (each attempt would run it; the run's verification already does
+      once at the end of the run on the combined result — not after each merge, so a failure is
+      not attributed to a task unless `forge-parallel.sh attribute` is run). Prints nothing
+      when every task is fine. Exit status is always 0.
 
   forge-plan-check.py gates PLAN
       Prints the decision-model gate block (what drift, forward, prompt and coverage did to this
