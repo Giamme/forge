@@ -1055,7 +1055,7 @@ class FastTierTests(DispatchBase):
             '-o', str(self.run_dir / 'dwarf.last'), '-c', 'model_reasoning_effort=medium', '--approve-for-me', '-',
         ]
         claude = [
-            'claude', '-p', '--model', 'opus', '--add-dir', str(self.run_dir), '--output-format', 'stream-json',
+            'claude', '-p', '--model', 'claude-opus-5-5', '--add-dir', str(self.run_dir), '--output-format', 'stream-json',
             '--verbose', '--effort', 'medium', '--permission-mode', 'acceptEdits', '--allowedTools', 'Bash',
         ]
         cases = (
@@ -1211,7 +1211,7 @@ class SideRoleTests(DispatchBase):
             *read_only_tail(self.run_dir, 'side'), '-',
         ]
         claude = [
-            'claude', '-p', '--model', 'opus', '--add-dir', str(self.run_dir), '--output-format', 'stream-json',
+            'claude', '-p', '--model', 'claude-opus-5-5', '--add-dir', str(self.run_dir), '--output-format', 'stream-json',
             '--verbose', '--effort', 'low', '--permission-mode', 'acceptEdits', '--allowedTools', 'Bash',
             '--disallowed-tools', 'Edit,Write,NotebookEdit',
         ]

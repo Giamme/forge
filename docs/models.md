@@ -185,9 +185,15 @@ alias whose rows disagree.
 
 **The approval table says which model each spec runs.** Under the waves, a `models` block lists
 every spec of the plan with the model id it resolves to today (`sol:high  gpt-6.2-sol on codex`),
-so a moved alias is never a surprise. Claude's own CLI names (`opus`, `sonnet`, `haiku`,
-`fable`) are the CLI's current model of that family, and the block says so. `python3
-scripts/forge_models.py describe SPEC` prints the same line for any spec.
+so a moved alias is never a surprise. `python3 scripts/forge_models.py describe SPEC` prints
+the same line for any spec.
+
+**Claude models are named by exact id.** The claude and openclaude rows pass
+`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5` and `claude-fable-5-2`, not the
+claude CLI's own `opus` or `sonnet`, which the CLI moves to a newer model on its own. So the
+version that runs is the one the registry, the approval table and the statistics show, and a
+new Claude release is a registry edit like any other: move the alias and keep the old model
+under a versioned alias.
 
 Adding a model is one line in this file. Nothing else needs to change.
 

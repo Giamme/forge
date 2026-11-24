@@ -21,7 +21,7 @@
 #            `timeout=` and `timeout_source=` in <role>.resolved.
 #            Commented examples (not enabled; write the real number for your model):
 #              # sol	codex	gpt-6.2-sol	<=ultra	1800
-#              # opus	claude	opus	<=max	-
+#              # opus	claude	claude-opus-5-5	<=max	-
 #
 # FORGE_REGISTRY=<file> points dispatch at a different registry (useful for trying a
 # row without editing this one); the capability cache keys on the file actually used.
@@ -69,16 +69,19 @@ astra-6	opencode	github-copilot/gpt-6-astra	-
 luna	codex	gpt-6-luna	<=max
 luna	openclaude	gpt-6-luna	<=max
 luna	opencode	opencode-go/gpt-6-luna	-
-opus	claude	opus	<=max
-opus	openclaude	opus	<=ultracode
+# Claude models by exact id, not the claude CLI's moving `opus`/`sonnet` names, so the
+# approval table, statistics and forge-ui show the version that runs. A new Claude release is
+# a registry edit: move the alias and keep the old model under `<alias>-<version>`.
+opus	claude	claude-opus-5-5	<=max
+opus	openclaude	claude-opus-5-5	<=ultracode
 opus	opencode	github-copilot/claude-opus-5.5	-
-sonnet	claude	sonnet	<=max
-sonnet	openclaude	sonnet	<=ultracode
+sonnet	claude	claude-sonnet-5-5	<=max
+sonnet	openclaude	claude-sonnet-5-5	<=ultracode
 sonnet	opencode	github-copilot/claude-sonnet-5.5	-
-fable	claude	fable	<=max
-fable	openclaude	fable	<=ultracode
-haiku	claude	haiku	<=max
-haiku	openclaude	haiku	<=ultracode
+fable	claude	claude-fable-5-2	<=max
+fable	openclaude	claude-fable-5-2	<=ultracode
+haiku	claude	claude-haiku-5-5	<=max
+haiku	openclaude	claude-haiku-5-5	<=ultracode
 haiku	opencode	github-copilot/claude-haiku-5.5	-
 # Older Claude models some harnesses still serve. An alias names one model on every harness
 # (tests/test_model_registry.py checks it), so these have aliases of their own.
