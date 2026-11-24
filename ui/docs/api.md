@@ -143,6 +143,14 @@ task that depends on one waits on it (it is not a stopped dependency). `status_c
 leaves it in `on` only. `PASS` is neither: it is saved and not merged yet, so a dependent
 still lists it.
 
+A task whose `status` file says `RUNNING` reads as `INTERRUPTED` when the run dir records the forge
+process that ran it (`scheduler.live` or `schedule.holder`) and none of it is running: neither the pid
+in `scheduler.live` nor a `run` or `retry` command holding the plan lock (`schedule.holder`). That is a
+run killed outright, which nothing could mark `INTERRUPTED` (#229). Its clock stops, the run and its
+project stop counting as live, its worktrees stop being in use, and `scheduler.stale` and the task's
+`waiting` name it and `forge handoff resume`. The reader writes nothing, and a run dir with neither file
+reads as before.
+
 Only the ids listed in `tasks.tsv` are tasks: `tasks/` may also hold forge's own dirs (e.g.
 `tasks/_integration/`), and a task dir holds many other files (`attempts/` is a directory of
 receipts, not `attempts.tsv`), all of which the reader ignores.
@@ -605,7 +613,8 @@ Every RunSummary field, plus:
   `max_parallel` (the `max_parallel` file when it holds 1 to 64, else `null`) and `pauses` (the scopes of
   `infra.paused`, `[]` without it; each with `needs_you` (`true` only for a bool `true`), `hint` (a string or
   `null`) and `reset_at` (an epoch or `null`), which an older scope lacks, so they read as `false`, `null`, `null`);
-  while no scheduler runs they are `false`, `null`, `null` and `[]`.
+  while no scheduler runs they are `false`, `null`, `null` and `[]`. `stale` lists the tasks a forge process
+  that is gone left `RUNNING` (see the task `status` below), `[]` otherwise.
   A solo run's `scheduler` is `null`.
 - `sweep`: the run's finding sweep (`run --sweep`), `null` without `sweep/plan.json` (and for a solo
   run). `tasks` are its fix tasks (tasks with a `sweep.json`), `findings` how many findings they took
@@ -819,6 +828,8 @@ Every RunSummary field, plus:
   `started` comes from the harness's own times, from `<role>.clock`, or, when the call is the log's
   last line, the log's mtime. Every value but the call is `null` when unknown.
 - `waiting`: why a task that is not running waits, as far as the run dir says, or `null`:
+  `{"kind": "stale", "status": "RUNNING", "command": "forge handoff resume <plan>"}` for a task a forge
+  process that is gone left `RUNNING` (#229); else
   `{"kind": "escalation", "attempts", "model", "split"}` when `escalation.stop` exists (whether or
   not a scheduler runs); else, while `scheduler.live` is true, for a `PENDING` or `INFRA` task:
   `infra` (a pause in `scheduler.pauses` holds it: scope `all`, or its id in `tasks`; the pause's

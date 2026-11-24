@@ -88,6 +88,8 @@
       return { ...out, text: asked.length ? `waits for your answer to ${asked.join(', ')}` : 'waits for its brief questions to be written' };
     }
     if (w.kind === 'next') return { ...out, text: "starts at the scheduler's next turn" };
+    // #229: left RUNNING by a forge process that is gone
+    if (w.kind === 'stale') return { ...out, text: `stopped: no live scheduler${w.command ? ' · ' + w.command : ''}`, command: w.command || null };
     if (w.kind === 'infra') {
       const cause = RM.causeLabel(w.class);
       const needs = w.needs_you === true ? (typeof w.hint === 'string' && w.hint ? `needs you: ${w.hint}` : 'needs you') : null;
@@ -102,7 +104,7 @@
     return null;
   }
   // The Now column's order: running, then what starts soonest, then what waits on others, then what is held
-  const RANK = { running: 0, next: 1, slot: 2, overlap: 2, brief: 2, deps: 3, infra: 4, drained: 5, stopping: 5, escalation: 6 };
+  const RANK = { running: 0, next: 1, slot: 2, overlap: 2, brief: 2, deps: 3, infra: 4, drained: 5, stopping: 5, escalation: 6, stale: 6 };
   function nowRank(task) {
     if (task && task.now) return RANK.running;
     const w = task && task.waiting;
@@ -140,9 +142,16 @@
   }
   // The environment problems that several tasks met, for the run header's banner
   const bannerProblems = (env, least = 2) => list(env && env.problems).filter(p => p && list(p.tasks).length >= least);
-  // The run inspector's scheduler fields: [[label, text]], or null when no scheduler runs the plan
+  // The run inspector's scheduler fields: [[label, text]], or null when no scheduler runs the plan and none
+  // left a task RUNNING behind it (#229: then the scheduler reads as stopped, with those tasks and the way back)
   function schedulerModel(run) {
     const s = run && run.scheduler;
+    const stale = list(s && s.stale).map(String);
+    if (s && s.live !== true && stale.length) {
+      const w = list(run.tasks).map(t => t.waiting).find(x => x && x.kind === 'stale' && x.command);
+      return [['Scheduler', 'stopped: no live scheduler'], ['Left running', stale.join(', ')]]
+        .concat(w ? [['Resume with', w.command]] : []);
+    }
     if (!s || s.live !== true) return null;
     const tasks = list(run.tasks), count = kind => tasks.filter(t => t.waiting && t.waiting.kind === kind).length;
     const state = s.stopping ? (s.stopping === 'now' ? 'stopping now' : 'stopping once its running tasks end') : s.drained ? 'drained: nothing new starts' : 'dispatching';
@@ -404,7 +413,7 @@
     const rows = schedulerModel(run);
     if (!rows) return;
     const dl = el('dl', undefined, 'fields');
-    for (const [label, value] of rows) { dl.append(el('dt', label), el('dd', value)); }
+    for (const [label, value] of rows) { dl.append(el('dt', label), el('dd', value, label === 'Resume with' ? 'mono' : undefined)); }
     for (const p of list(run.scheduler.pauses)) {
       const w = waitingModel({ ...p, kind: 'infra' }, now);
       const dd = el('dd', w.text);

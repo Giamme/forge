@@ -80,6 +80,10 @@ running task it shares files with, no free slot, a drain or stop, an infrastruct
 its countdown, or the retry policy's stop with the split it proposes. The run's inspector says
 what the scheduler is doing and how many tasks wait on what.
 
+A run whose scheduler died (a crash, a killed terminal) reads as stopped: the tasks it left running
+show as `INTERRUPTED`, *stopped: no live scheduler*, with `forge handoff resume <plan>` to pick it
+up; the clock stops, Projects no longer counts the run as live and its worktrees are no longer in use.
+
 A run with `groups.tsv` shows a Groups block after the task table. Each row is the group's title
 and goal, "one review" or "per-task review", its reviewer and its members. A review group's
 title opens `#/runs/<key>/group/<gid>`, and that row also shows the status, the round and who

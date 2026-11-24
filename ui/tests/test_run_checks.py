@@ -2,6 +2,7 @@
 (/tasks/<id>/checks, /executions/<name>/checks) and the environment problems they met (/environment)."""
 import json
 import os
+import shlex
 from pathlib import Path
 import tempfile
 import unittest
@@ -100,7 +101,8 @@ class Waiting(Base):
         self.assertEqual(waiting, {'t1': None, 't2': {'kind': 'deps', 'on': ['t1'], 'stopped': []},
                                    't3': {'kind': 'overlap', 'on': ['t1']}, 't4': {'kind': 'next'}, 't5': None,
                                    't6': {'kind': 'deps', 'on': ['t5'], 'stopped': ['t5']}})
-        self.assertEqual(scheduler, {'live': True, 'drained': False, 'stopping': None, 'pauses': [], 'max_parallel': None})
+        self.assertEqual(scheduler, {'live': True, 'drained': False, 'stopping': None, 'pauses': [], 'max_parallel': None,
+                                     'stale': []})
         self.assertEqual(self.plan(self.ROWS, max_parallel='1\n')[0]['t4'], {'kind': 'slot', 'running': 1, 'max_parallel': 1})
         self.assertEqual(self.plan(self.ROWS, drain='')[0]['t4'], {'kind': 'drained'})
         self.assertEqual(self.plan(self.ROWS, stop='graceful\n')[0]['t4'], {'kind': 'stopping', 'mode': 'graceful'})
@@ -125,6 +127,48 @@ class Waiting(Base):
         process_gone = 2 ** 22 + 12345                                    # above any pid this machine hands out
         _, scheduler = self.plan(self.ROWS, live=False, scheduler_dot_live={'pid': process_gone})
         self.assertFalse(scheduler['live'])
+
+    GONE = 2 ** 22 + 12345
+
+    def statuses(self):
+        return {t['id']: t['status'] for t in reader.detail(self.base / 'plan')['tasks']}
+
+    def test_a_task_a_dead_scheduler_left_running_reads_as_stopped(self):
+        # #229: SIGKILL left t1 RUNNING and scheduler.live naming a pid that is gone.
+        waiting, scheduler = self.plan(self.ROWS, live=False, scheduler_dot_live={'pid': self.GONE},
+                                       schedule_dot_holder={'pid': self.GONE, 'command': 'run', 'at': F.T0})
+        plan = self.base / 'plan'
+        self.assertEqual(self.statuses()['t1'], 'INTERRUPTED')
+        self.assertEqual(waiting['t1'], {'kind': 'stale', 'status': 'RUNNING',
+                                         'command': 'forge handoff resume ' + shlex.quote(str(plan))})
+        self.assertEqual((scheduler['live'], scheduler['stale']), (False, ['t1']))
+        summary = reader.summarize(plan, 'plan')
+        self.assertEqual(summary['counts'].get('RUNNING'), None)
+        self.assertEqual(summary['counts']['INTERRUPTED'], 1)
+        self.assertNotIn('stale', next(t for t in reader.detail(plan)['tasks'] if t['id'] == 't1'))
+        self.assertEqual((plan / 'tasks/t1/status').read_text(), 'RUNNING\n')     # the reader writes nothing
+
+    def test_a_live_scheduler_or_a_dispatching_lock_holder_keeps_it_running(self):
+        self.plan(self.ROWS)                                                           # scheduler.live: this process
+        self.assertEqual(self.statuses()['t1'], 'RUNNING')
+        # A run that is starting: the lock is held, its scheduler has not written scheduler.live yet (or an
+        # earlier one's names a dead pid). No flicker.
+        self.plan(self.ROWS, live=False, scheduler_dot_live={'pid': self.GONE},
+                  schedule_dot_holder={'pid': os.getpid(), 'command': 'run', 'at': F.T0})
+        self.assertEqual(self.statuses()['t1'], 'RUNNING')
+        # `forge-parallel.sh retry` dispatches with no scheduler at all.
+        (self.base / 'plan' / 'scheduler.live').unlink()
+        self.plan(self.ROWS, live=False, schedule_dot_holder={'pid': os.getpid(), 'command': 'retry', 'at': F.T0})
+        self.assertEqual(self.statuses()['t1'], 'RUNNING')
+
+    def test_a_lock_holder_that_runs_no_tasks_does_not_keep_it_running(self):
+        self.plan(self.ROWS, live=False, scheduler_dot_live={'pid': self.GONE},
+                  schedule_dot_holder={'pid': os.getpid(), 'command': 'integrate', 'at': F.T0})
+        self.assertEqual(self.statuses()['t1'], 'INTERRUPTED')
+
+    def test_a_run_dir_with_no_record_of_its_process_is_left_as_it_reads(self):
+        self.plan(self.ROWS, live=False)
+        self.assertEqual(self.statuses()['t1'], 'RUNNING')
 
 
 class Checks(Base):
