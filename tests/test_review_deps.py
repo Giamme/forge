@@ -207,6 +207,107 @@ class ReviewDepsTests(unittest.TestCase):
         self.assertIn('the browser suite needs a display', r.stdout)
         self.assertNotIn('decided.left', r.stdout)                    # no decision governs it, so no noise about one
 
+    def test_setup_generated_ignored_paths_are_linked_into_task_final_and_group_snapshots(self):
+        (self.repo / '.gitignore').write_text('node_modules/\n.gen/\n.env\n')
+        (self.repo / 'src').mkdir()
+        (self.repo / 'src/a.ts').write_text("import { v } from '../.gen'; export const w = v;\n")
+        self.git('add', '.'); self.git('commit', '-qm', 'ignore and src')
+
+        setup = (
+            'mkdir -p node_modules/dep .gen && '
+            'echo attempt > node_modules/dep/marker && '
+            'echo "export const v = 1;" > .gen/index.ts'
+        )
+        self.env['READS'] = str(self.root / 'reads')
+        self.scenario({'a.qa.*': {'verdict': 'PASS', 'reads': ['.gen/index.ts']}})
+        p = self.plan_a()
+        r = self.run_script('forge-parallel.sh', 'run', p, '--setup', setup)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertTrue((p / 'tasks/a/merged').exists(), r.stdout)
+        self.assertEqual((self.root / 'reads').read_text(), 'export const v = 1;\n')
+        snapshot = self.snapshot(p / 'tasks/a')
+        self.assertEqual(self.status(snapshot), '')
+        self.assertNotIn('.gen', (p / 'tasks/a/changes.diff').read_text())
+        note = self.deps_note(p / 'tasks/a/qa.input')
+        self.assertIn('node_modules', note)
+        self.assertIn('.gen', (p / 'tasks/a/qa.input').read_text())
+
+        # Pre-existing .env in _integration before review is never linked into final review snapshot.
+        int_wt = Path((p / 'wt_root').read_text().strip()) / '_integration'
+        (int_wt / '.env').write_text('SECRET=stay-out\n')
+        self.scenario({'*.qa.*': {'verdict': 'PASS', 'reads': ['.gen/index.ts']}})
+        r = self.run_script('forge-parallel.sh', 'review', p)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        out = sorted(p.glob('final-review-*'))[-1]
+        final_snap = self.snapshot(out)
+        self.assertEqual((final_snap / '.gen/index.ts').read_text(), 'export const v = 1;\n')
+        self.assertFalse((final_snap / '.env').exists())
+        self.assertEqual(self.status(final_snap), '')
+        self.assertIn('.gen', (out / 'qa.input').read_text())
+
+        # Group review also sets up candidate and links .gen into the group snapshot.
+        gp = self.root / 'plan_group'; gp.mkdir()
+        (gp / 'tasks.tsv').write_text(
+            'a\t-\tlow\ta.txt\tsol\topus\tA\n'
+            'b\t-\tlow\tb.txt\tsol\topus\tB\n'
+        )
+        for tid in ('a', 'b'):
+            (gp / 'tasks' / tid).mkdir(parents=True)
+            (gp / 'tasks' / tid / 'prompt.md').write_text('Implement change. TASK_' + tid)
+        (gp / 'groups.tsv').write_text('# id\treview\tqa\tmembers\ttitle\tgoal\ng1\tgroup\t-\ta,b\tTwo\tGoal\n')
+        rp = self.run_script('forge-parallel.sh', 'plan', gp, '--repo', self.repo, '--no-memory')
+        self.assertEqual(rp.returncode, 0, rp.stdout)
+        (gp / 'groups/g1').mkdir(parents=True, exist_ok=True)
+        (gp / 'groups/g1/status').write_text('NEEDS_DECISION\n')
+        self.run_script('forge-parallel.sh', 'run', gp, '--setup', setup)
+        self.assertEqual((gp / 'tasks/a/status').read_text().strip(), 'IMPLEMENTED')
+        self.assertEqual((gp / 'tasks/b/status').read_text().strip(), 'IMPLEMENTED')
+        self.scenario({'*.qa.*': {'verdict': 'PASS', 'reads': ['.gen/index.ts']}})
+        r = self.run_script('forge-parallel.sh', '_group', gp, 'g1')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        gsnap = self.snapshot(gp / 'groups/g1')
+        self.assertEqual((gsnap / '.gen/index.ts').read_text(), 'export const v = 1;\n')
+        self.assertEqual(self.status(gsnap), '')
+        self.assertIn('.gen', (gp / 'groups/g1/qa.input').read_text())
+
+    def test_solo_reviewer_honors_review_links_and_blocks_secrets(self):
+        (self.repo / '.gitignore').write_text('.gen/\n.env\n')
+        (self.repo / '.forge').mkdir(exist_ok=True)
+        (self.repo / '.forge/review-links').write_text('.gen\n.env\n')
+        self.git('add', '.'); self.git('commit', '-qm', 'links config')
+        (self.repo / '.gen').mkdir()
+        (self.repo / '.gen/index.ts').write_text('export const v = 42;\n')
+        (self.repo / '.env').write_text('API_KEY=secret\n')
+        self.env['READS'] = str(self.root / 'reads')
+        self.scenario({'*.qa.*': {'verdict': 'PASS', 'reads': ['.gen/index.ts']}})
+        r = self.solo('--qa', 'opus')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        snapshot = self.snapshot(self.root / 'solo')
+        self.assertEqual((snapshot / '.gen/index.ts').read_text(), 'export const v = 42;\n')
+        self.assertFalse((snapshot / '.env').exists())
+        self.assertEqual(self.status(snapshot), '')
+        qa_text = (self.root / 'solo/qa.input').read_text()
+        self.assertIn('.gen', qa_text)
+        self.assertIn('could not provide', qa_text)
+        self.assertIn('.env', qa_text)
+
+    def test_partial_tests_and_qa_test_minutes_flag_reach_prompt_and_output(self):
+        self.scenario({'a.qa.*': {'verdict': 'PASS',
+                                  'findings': 'FORGE_TESTS: PARTIAL — typecheck:tests stopped after 5m'}})
+        p = self.plan_a('--qa-test-minutes', '15')
+        self.assertEqual((p / 'qa_test_minutes').read_text().strip(), '15')
+        r = self.run_script('forge-parallel.sh', 'run', p)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn('partial: typecheck:tests stopped after 5m', r.stdout)
+        self.assertIn('15 minutes', (p / 'tasks/a/qa.input').read_text())
+
+        # --qa-test-minutes 0 removes the separate minute guideline from later reviews.
+        r_rev = self.run_script('forge-parallel.sh', 'review', p, '--qa-test-minutes', '0')
+        self.assertEqual(r_rev.returncode, 0, r_rev.stdout)
+        self.assertIn('partial: typecheck:tests stopped after 5m', r_rev.stdout)
+        out = sorted(p.glob('final-review-*'))[-1]
+        self.assertIn('no separate test-minute cap', (out / 'qa.input').read_text())
+
 
 if __name__ == '__main__':
     unittest.main()

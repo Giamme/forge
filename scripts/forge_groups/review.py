@@ -181,6 +181,9 @@ def prompt(plan: Path, gid: str, threshold) -> str:
     earlier = _earlier(gdir)
     contract = attribute._contract()
     out = [contract.qa_text('head', 'group').rstrip('\n'), '']
+    deps = _read(gdir / 'review.deps').strip('\n')
+    if deps:
+        out += [deps, '']
     out += ['# Group %s: %s' % (gid, group.title if group.title != '-' else gid)]
     if group.goal != '-':
         out += ['', 'Goal of the group: %s' % group.goal]
@@ -193,7 +196,9 @@ def prompt(plan: Path, gid: str, threshold) -> str:
             out += [_finding_text(f, blocks) for f in loose] + ['']
     for task in group.members:
         out += _member(plan, repo, task, tasks.get(task, []), gdir, current, earlier, history) + ['']
-    out += [contract.qa_text('tail', 'group', threshold).rstrip('\n'), '']
+    raw_mins = _read(plan / 'qa_test_minutes').strip()
+    test_minutes = int(raw_mins) if raw_mins.isdigit() else None
+    out += [contract.qa_text('tail', 'group', threshold, test_minutes).rstrip('\n'), '']
     out += ['```diff', _combined(repo, gdir, base, commit).rstrip('\n'), '```']
     return '\n'.join(out) + '\n'
 

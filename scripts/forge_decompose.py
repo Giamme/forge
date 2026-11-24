@@ -81,7 +81,7 @@ NOT_SPLITTABLE = ('MERGED', 'RUNNING', 'PASS', 'IMPLEMENTED')
 # its subtasks too. Not verification (the parent's review and the root's verification judge the
 # result), not groups, not the brief or the summaries, not `after`.
 OPTION_FILES = ('no_ripwire', 'no_memory', 'yolo_dwarf', 'yolo_qa', 'reviewer_session', 'implementer_session',
-                'fast', 'pre_review_tests', 'pre_review_parallel', 'fail_first', 'qa_threshold', 'timeout',
+                'fast', 'pre_review_tests', 'pre_review_parallel', 'fail_first', 'qa_threshold', 'qa_test_minutes', 'timeout',
                 'setup_cmd', 'escalate_after', 'retry_per_model', 'max_attempts', 'converge_window',
                 'infra_fallback', 'infra_backoff', forge_legacy.POOLS, 'qa-routing.json', 'jev-selection.json',
                 'profile.json', 'repo.identity', 'planner', 'split_planner', 'auto_split')

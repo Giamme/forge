@@ -1,5 +1,57 @@
 #!/usr/bin/env bash
 # Shared artifact operations. A private index never stages or unstages user work.
+_FORGE_ARTIFACT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+_forge_links_script() {
+  if [ -n "${SKILL_DIR:-}" ] && [ -f "$SKILL_DIR/scripts/forge-review-links.py" ]; then
+    printf '%s\n' "$SKILL_DIR/scripts/forge-review-links.py"
+  else
+    printf '%s\n' "$_FORGE_ARTIFACT_DIR/forge-review-links.py"
+  fi
+}
+
+_forge_links_run() {
+  if declare -F forge_ensure_python3 >/dev/null 2>&1; then forge_ensure_python3; fi
+  local py=python3
+  case "$(command -v python3 2>/dev/null || true)" in
+    ''|*[Ww]indows[Aa]pps*) command -v python >/dev/null 2>&1 && py=python ;;
+  esac
+  "$py" "$@"
+}
+
+_forge_link_file() { # source file, dest path; hardlink on native Windows (no Admin), symlink on POSIX
+  local src="$1" dest="$2" is_win=1
+  if declare -F forge_is_windows >/dev/null 2>&1; then
+    forge_is_windows && is_win=0
+  else
+    case "${OSTYPE:-}" in
+      msys*|cygwin*) [ "${FORGE_WIN_MODE:-native}" != msys2 ] && is_win=0 ;;
+    esac
+  fi
+  if [ "$is_win" = 0 ]; then
+    ln "$src" "$dest" 2>/dev/null
+  else
+    ln -s "$src" "$dest" 2>/dev/null
+  fi
+}
+
+forge_capture_ignored_before() { # checkout, out_file (#198)
+  local script
+  script="$(_forge_links_script)"
+  [ -f "$script" ] || return 0
+  _forge_links_run "$script" capture-before "$1" "$2" 2>/dev/null || true
+}
+
+forge_record_setup_generated() { # checkout, before_file, [out_file] (#198)
+  local script
+  script="$(_forge_links_script)"
+  [ -f "$script" ] || return 0
+  if [ -n "${3:-}" ]; then
+    _forge_links_run "$script" capture-after "$1" "$2" --out "$3" --dep-dirs "$FORGE_DEP_DIRS" 2>/dev/null || true
+  else
+    _forge_links_run "$script" capture-after "$1" "$2" --dep-dirs "$FORGE_DEP_DIRS" 2>/dev/null || true
+  fi
+}
 # forge_tree <dir> [--tracked]: the tree of everything in <dir> that is not ignored. --tracked
 # leaves untracked files out, for a copy whose artifact is a commit: there an untracked file
 # (a test run's __pycache__/ in a repository with no .gitignore) cannot reach what merges.
@@ -88,15 +140,13 @@ _forge_dep_dirs() { # checkout: its dependency directories, relative, never one 
     sed 's#^\./##'
 }
 
-forge_review_deps() { # source checkout, review snapshot, note file (#117)
-  # Links the dependency directories of the checkout under review (what .forge/setup filled, so
-  # they match the attempt, unlike the source repo's) into its snapshot, at the root and in
-  # workspace packages, and writes what the reviewer has to the note. An untracked link counts for
-  # no fingerprint, and the exclude keeps it out of the reviewer's `git status`: a `node_modules/`
-  # ignore pattern does not match a link. A directory the snapshot already holds is committed: it
-  # stays as it is. `ln` fails where the snapshot lacks the parent (an old run's dir in a solo
-  # repo): that is no part of the change, so nothing is linked there.
-  local src rel linked="" committed
+forge_review_deps() { # source checkout, review snapshot, note file, [extra paths file] (#117, #198)
+  # Links the dependency directories and setup-generated (or .forge/review-links) ignored paths of
+  # the checkout under review into its snapshot, and writes what the reviewer has to the note. An
+  # untracked link counts for no fingerprint, and .git/info/exclude keeps it out of `git status`:
+  # a `node_modules/` ignore pattern does not match a link. Paths the snapshot already holds stay
+  # as they are. Secret-looking files (such as .env) are never linked.
+  local src rel linked="" committed gen_linked="" gen_unlinked="" kind script plan_rows extra="${4:-}"
   src="$(cd "$1" && pwd)" || src=""
   committed="$(_forge_dep_dirs "$2" | sort | awk 'NR > 1 { printf ", " } { printf "%s", $0 }')"
   if [ -n "$src" ]; then
@@ -110,24 +160,74 @@ forge_review_deps() { # source checkout, review snapshot, note file (#117)
       mkdir -p "$2/.git/info" && echo "/$rel" >> "$2/.git/info/exclude"
       linked="$linked${linked:+, }$rel"
     done <<< "$(_forge_dep_dirs "$src" | sort)"
+
+    script="$(_forge_links_script)"
+    if [ -f "$script" ]; then
+      if [ -n "$extra" ]; then
+        plan_rows="$(_forge_links_run "$script" plan-extra "$src" "$2" --extra-file "$extra" --dep-dirs "$FORGE_DEP_DIRS" 2>/dev/null || true)"
+      else
+        plan_rows="$(_forge_links_run "$script" plan-extra "$src" "$2" --dep-dirs "$FORGE_DEP_DIRS" 2>/dev/null || true)"
+      fi
+      while IFS=$'\t' read -r kind rel; do
+        rel="${rel%$'\r'}"
+        [ -n "$kind" ] && [ -n "$rel" ] || continue
+        case "$kind" in
+          LINK_DIR)
+            if declare -F forge_link_dir >/dev/null 2>&1; then
+              if forge_link_dir "$src/$rel" "$2/$rel" 2>/dev/null; then
+                mkdir -p "$2/.git/info" && echo "/$rel" >> "$2/.git/info/exclude"
+                gen_linked="$gen_linked${gen_linked:+, }$rel"
+              else
+                gen_unlinked="$gen_unlinked${gen_unlinked:+, }$rel"
+              fi
+            elif ln -s "$src/$rel" "$2/$rel" 2>/dev/null; then
+              mkdir -p "$2/.git/info" && echo "/$rel" >> "$2/.git/info/exclude"
+              gen_linked="$gen_linked${gen_linked:+, }$rel"
+            else
+              gen_unlinked="$gen_unlinked${gen_unlinked:+, }$rel"
+            fi
+            ;;
+          LINK_FILE)
+            if _forge_link_file "$src/$rel" "$2/$rel"; then
+              mkdir -p "$2/.git/info" && echo "/$rel" >> "$2/.git/info/exclude"
+              gen_linked="$gen_linked${gen_linked:+, }$rel"
+            else
+              gen_unlinked="$gen_unlinked${gen_unlinked:+, }$rel"
+            fi
+            ;;
+          UNLINKED)
+            gen_unlinked="$gen_unlinked${gen_unlinked:+, }$rel"
+            ;;
+        esac
+      done <<< "$plan_rows"
+    fi
   fi
   {
     if [ -n "$linked" ]; then
       echo "Dependencies linked into your checkout from the attempt's own copy: $linked. Use them to run tests, and do not write to them. forge does not check that they are complete, or look more than five levels down."
+    elif [ -z "$committed" ] && [ -n "$gen_linked$gen_unlinked" ]; then
+      echo "Dependencies in your checkout: no dependency directories."
     fi
     if [ -n "$committed" ]; then
       echo "Dependency directories committed in your checkout, holding only what was committed: $committed."
     fi
-    if [ -z "$linked$committed" ]; then
+    if [ -n "$gen_linked" ]; then
+      echo "Setup-generated paths linked into your checkout from the attempt's own copy: $gen_linked. Use them to run tests, and do not write to them."
+    fi
+    if [ -n "$gen_unlinked" ]; then
+      echo "Setup-generated paths forge could not provide in your checkout: $gen_unlinked."
+    fi
+    if [ -z "$linked$committed$gen_linked$gen_unlinked" ]; then
       echo "Dependencies in your checkout: none. It holds committed files only, with no installed packages."
     fi
   } > "$3"
 }
 
-forge_tests_note() { # QA reply: the reason, when the reviewer says its tests could not run (#117)
+forge_tests_note() { # QA reply: the reason, when the reviewer says its tests were partial or could not run (#117, #223)
   grep -qs 'FORGE_TESTS:' "$1" || return 0
   python3 "$SKILL_DIR/scripts/forge-contract.py" tests --qa-last "$1" 2>/dev/null |
-    awk -F'\t' '$1 == "could_not_run" { print ($2 == "" ? "no reason given" : $2) }'
+    awk -F'\t' '$1 == "could_not_run" { print ($2 == "" ? "no reason given" : $2) }
+                $1 == "partial" { print "partial: " ($2 == "" ? "some checks stopped or skipped" : $2) }'
 }
 
 forge_review_submodules() { # source checkout, review snapshot, note file (#255)

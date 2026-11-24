@@ -1744,16 +1744,23 @@ populate_submodules() { # populate_submodules <repo> <wt> <tdir> <id>
 # work in — it just has to install things itself, which is the status quo this exists
 # to improve on. Failing the task instead would turn a slow run into a dead one.
 run_worktree_setup() { # run_worktree_setup <plan> <repo> <wt> <tdir> <id>
-  local PLAN="$1" REPO="$2" wt="$3" tdir="$4" id="$5" cmd
+  local PLAN="$1" REPO="$2" wt="$3" tdir="$4" id="$5" cmd before_ignored=""
   # Every worktree forge makes reaches here once, right after it exists, so the submodules'
   # files are in place before `.forge/setup` runs. The outcome lands in <tdir>/submodules.txt.
   populate_submodules "$REPO" "$wt" "$tdir" "$id"
   cmd="$(worktree_setup_command "$PLAN" "$REPO")"
   [ -n "$cmd" ] || return 0
+  before_ignored="$(mktemp "${TMPDIR:-/tmp}/forge-setup-ignored.XXXXXX" 2>/dev/null || true)"
+  [ -z "$before_ignored" ] || forge_capture_ignored_before "$wt" "$before_ignored"
   if (cd "$wt" && eval "$cmd") >"$tdir/setup.out" 2>&1; then
     note "$id: worktree setup ok"
+    python3 "$SKILL_DIR/scripts/forge-setup-stale.py" record-commit "$wt" --out "$tdir/setup.commit" 2>/dev/null || true
   else
     note "$id: worktree setup failed (continuing) — see $tdir/setup.out"
+  fi
+  if [ -n "$before_ignored" ]; then
+    forge_record_setup_generated "$wt" "$before_ignored"
+    rm -f "$before_ignored"
   fi
 }
 
@@ -2203,7 +2210,7 @@ do_task_body() (
       [ ! -f "$PLAN/sweep_ahead" ] || python3 "$SKILL_DIR/scripts/forge-sweep.py" ahead "$PLAN" "$id" --role dwarf 2>/dev/null
       echo "Implement this task in the repository. Follow the intended approach unless it is wrong; explain deviations. Run the task's requested verification and report results."
       echo "On retry, fix the findings in the existing work; preserve parts not criticised. Explain any finding you reject."
-      # With repository verification configured, the whole suite runs after the merge, never per attempt.
+      # With repository verification configured, the whole suite runs once at the end of the run, never per attempt.
       echo; python3 "$SKILL_DIR/scripts/forge-contract.py" dwarf $([ ! -f "$PLAN/pre_review_tests" ] || echo --pre-review) \
         $([ -z "$(verify_source_for "$PLAN" "$REPO" "$(cat "$PLAN/wt_root" 2>/dev/null)/_integration")" ] || echo --verify-after-merge)
       echo; /bin/bash "$MEMORY" note dwarf
@@ -2520,7 +2527,14 @@ for r in json.load(sys.stdin):
       echo "matters because another task may own those files."
       echo
     fi
-    python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind "$qa_kind" --threshold "$qa_thr"
+    local qa_test_mins="" qa_test_mins_flag=()
+    for _tmf in "$tdir/qa_test_minutes" "$PLAN/qa_test_minutes"; do
+      if [ -f "$_tmf" ]; then
+        qa_test_mins="$(head -1 "$_tmf" 2>/dev/null | tr -d ' \r')"
+        case "$qa_test_mins" in ''|*[!0-9]*) qa_test_mins="" ;; *) qa_test_mins_flag=(--test-minutes "$qa_test_mins") ; break ;; esac
+      fi
+    done
+    python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind "$qa_kind" --threshold "$qa_thr" ${qa_test_mins_flag[@]+"${qa_test_mins_flag[@]}"}
     echo
     if [ "$qa_inline" = 1 ]; then
       echo '```diff'; cat "$tdir/.qa.diff"; echo '```'
@@ -2794,7 +2808,7 @@ report_untested() { # report_untested <plan> <id>...: verdicts that rest on read
   for id in "$@"; do
     tests_note="$(forge_tests_note "$plan/tasks/$id/qa.last")"
     if [ -n "$tests_note" ]; then
-      [ "$untested" = 0 ] && echo "reviews whose tests could not run:"
+      [ "$untested" = 0 ] && echo "reviews whose tests did not complete:"
       untested=1
       printf '  %-*s %s\n' "$id_w" "$id" "$tests_note"
     fi
@@ -3188,6 +3202,13 @@ verify_result() ( verify_result_body "$@" ) # plan, checkout, artifact directory
 # finished verification's verification.command or verification.lanes.d/). It replaces
 # verify_source_for and verify-discover, so a re-run judges by the predicate that verification
 # used, whatever the plan, the repository or discovery would say now.
+verify_mark_stale_if_needed() { # verify_mark_stale_if_needed <out> <stale_status> <stale_reason>
+  local out="$1" st="${2:-}" reason="${3:-}"
+  [ "$st" = STALE ] || return 0
+  printf '%s\n' "${reason:-setup inputs changed}" > "$out/verification.stale_setup"
+  note "warning: verification ran against stale setup (${reason:-lockfile or setup input merged since setup}); pass --setup-before-verify or prepend setup to the verify command"
+}
+
 verify_result_body() { # plan, checkout, artifact directory[, fixed source]
   local plan="$1" wt="$2" out="$3" cmd="" before after rc=0 repo jev_loaded=0 vretries
   FORGE_VERIFY_STOP=0 FORGE_VERIFY_GROUP="" FORGE_VERIFY_TIMER="" FORGE_VERIFY_GRACE=5
@@ -3199,7 +3220,7 @@ verify_result_body() { # plan, checkout, artifact directory[, fixed source]
   rm -f "$out/verification.status" "$out/verification.exit" \
     "$out/verification.flaky" "$out/verification.retry.log" "$out/verification.failing.log" "$out/verification.coverage.txt" \
     "$out/verification.runs.tsv" "$out"/verification.run-*.log "$out/verification.commit" \
-    "$out/verification.lanes.json" "$out"/verification.lane.*.log
+    "$out/verification.lanes.json" "$out"/verification.lane.*.log "$out/verification.stale_setup"
   # The commit being verified, named before any early return, so every outcome (FAIL and
   # UNVERIFIED included) can be joined to the code it judged.
   git -C "$wt" rev-parse HEAD > "$out/verification.commit" 2>/dev/null || rm -f "$out/verification.commit"
@@ -3244,10 +3265,35 @@ verify_result_body() { # plan, checkout, artifact directory[, fixed source]
     echo FAIL > "$out/verification.status"
     note "verification checkout has source changes outside its commit"; return 1
   fi
+  local stale_status="" stale_reason="" setup_cmd_now=""
+  setup_cmd_now="$(worktree_setup_command "$plan" "$repo")"
+  if [ -n "$setup_cmd_now" ]; then
+    local stale_out="" setup_commit_arg=""
+    [ -s "$plan/tasks/_integration/setup.commit" ] && setup_commit_arg="$plan/tasks/_integration/setup.commit"
+    stale_out="$(python3 "$SKILL_DIR/scripts/forge-setup-stale.py" check "$plan" "$wt" "$repo" ${setup_commit_arg:+--setup-commit "$setup_commit_arg"} 2>/dev/null || true)"
+    stale_status="${stale_out%%$'\t'*}"
+    stale_reason="${stale_out#*$'\t'}"
+    if [ "$stale_status" = RERUN ]; then
+      note "setup: re-running before verification ($stale_reason)"
+      local setup_log="$out/setup.verify.out"
+      [ -d "$out/tasks/_integration" ] && setup_log="$out/tasks/_integration/setup.verify.out"
+      if (cd "$wt" && eval "$setup_cmd_now") >"$setup_log" 2>&1; then
+        note "setup before verification ok"
+        local commit_out="$out/setup.commit"
+        [ -d "$out/tasks/_integration" ] && commit_out="$out/tasks/_integration/setup.commit"
+        python3 "$SKILL_DIR/scripts/forge-setup-stale.py" record-commit "$wt" --out "$commit_out" 2>/dev/null || true
+      else
+        note "setup before verification failed (continuing) — see $setup_log"
+      fi
+      stale_status=""
+    fi
+  fi
   case "$vsource" in
     lanes:*)
-      verify_lanes_run "$plan" "$wt" "$out" "${vsource#*$'\t'}" "$vretries"
-      return $? ;;
+      local vrc=0
+      verify_lanes_run "$plan" "$wt" "$out" "${vsource#*$'\t'}" "$vretries" || vrc=$?
+      [ "$vrc" = 0 ] || verify_mark_stale_if_needed "$out" "$stale_status" "$stale_reason"
+      return "$vrc" ;;
   esac
   # Only when nothing is configured: ask Jev to name a command that actually exists
   # in the repo. Its exit code, not its stdout text, decides whether a judgment was
@@ -3340,6 +3386,7 @@ with open(out + "/verification.jev.json", "w") as fh:
         if [ "$rc3" != 0 ] && [ "$rc3" != 126 ] && [ "$rc3" != 127 ] && [ "$b3" = "$a3" ]; then
           echo FAIL > "$out/verification.status"
           note "the failing tests fail again on their own (exit $rc3): a regression, not a flaky test, so the full command is not rerun; see $out/verification.log"
+          verify_mark_stale_if_needed "$out" "$stale_status" "$stale_reason"
           return 1
         fi
       fi
@@ -3370,6 +3417,7 @@ with open(out + "/verification.jev.json", "w") as fh:
     fi
     echo FAIL > "$out/verification.status"
     note "combined verification failed or changed source; see $out/verification.log"
+    verify_mark_stale_if_needed "$out" "$stale_status" "$stale_reason"
     return 1
   fi
   echo PASS > "$out/verification.status"
@@ -3923,6 +3971,9 @@ do_run() {
   fi
   if [ "$failed" = 1 ] && [ "$paused" = 0 ] && [ "$interrupted" = 0 ] && [ "$(cat "$PLAN/verification.status" 2>/dev/null)" = FAIL ]; then
     echo "combined verification failed: see $PLAN/verification.log"
+    if [ -s "$PLAN/verification.stale_setup" ]; then
+      echo "warning: stale setup — generated files may predate merged setup inputs ($(cat "$PLAN/verification.stale_setup")); rerun with --setup-before-verify or prepend setup to the verify command"
+    fi
     echo
     if [ -f "$PLAN/attribute_on" ] && declare -F attribute_search >/dev/null; then
       # This run holds the plan lock: the search function, never the subcommand.

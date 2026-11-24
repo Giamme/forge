@@ -41,8 +41,10 @@ comes from one place, `scripts/forge-contract.py`, shared by solo, decomposed an
 review; the implementer rules appended to every dwarf prompt come from the same module.
 When the run verifies the repository (`--verify`, verification lanes or `.forge/verify`), those
 rules tell the implementer never to run the whole suite, even when the task's acceptance
-criteria name it, and to report it as left to forge: the suite runs once, after the merge.
-Without verification, the implementer runs the whole suite only when the task asks for it.
+criteria name it, and to report it as left to forge: verification runs once at the end of the
+run on the combined result (not after each merge; if it fails, `forge-parallel.sh attribute`
+searches the merge order). Without verification, the implementer runs the whole suite only
+when the task asks for it.
 
 ### Fail-first evidence (opt-in)
 

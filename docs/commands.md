@@ -837,6 +837,7 @@ forge-parallel.sh plan      <plan-dir> --repo <dir> [--after <plan-dir>] [routin
                                      [--implementer-session | --no-implementer-session]
                                      [--explore E] [--ui | --no-ui] [--fail-first | --no-fail-first]
                                      [--pre-review-tests | --no-pre-review-tests] [--pre-review-parallel N]
+                                     [--setup-before-verify | --no-setup-before-verify]
                                      [--qa-threshold P0|P1|P2|P3|none|default]
                                      [--profile NAME | --no-profile] [--fast ROLES] [--collapse-chains]
                                      [--groups waves|FILE] [--group-review]
@@ -852,7 +853,7 @@ forge-parallel.sh auto      <plan-dir> --repo <dir> --goal-file <file> [--planne
                                      [--no-collapse] [--approved] [plan flags...] [-- run flags...]
 forge-parallel.sh run       <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa] [--dry-run]
                                      [--verify <cmd> | --verify-lane 'name[opts]=cmd' ...]
-                                     [--verify-parallel N] [--setup <cmd>] [--timeout S]
+                                     [--verify-parallel N] [--setup <cmd>] [--setup-before-verify | --no-setup-before-verify] [--timeout S]
                                      [--retry-failed N] [--infra-retries M] [--infra-backoff SHAPE]
                                      [--infra-fallback | --no-infra-fallback]
                                      [--qa-threshold P0|P1|P2|P3|none|default] [--verify-retries N]
@@ -873,9 +874,9 @@ forge-parallel.sh adopt     <plan-dir> <commit|a..b> | --head --reason "<why>" [
                                      [--resubmit <adopt-dir>] [--decide resubmit]
 forge-parallel.sh review    <plan-dir> [--qa <spec>] [--yolo-qa] [--qa-threshold P0|P1|P2|P3|none|default]
 forge-parallel.sh attribute <plan-dir> [--force]
-forge-parallel.sh verify    <plan-dir> [--verify-retries N] [--verify-parallel N]
+forge-parallel.sh verify    <plan-dir> [--verify-retries N] [--verify-parallel N] [--setup-before-verify | --no-setup-before-verify]
 forge-parallel.sh integrate <plan-dir> --approved [--final-review <qa-spec>] [--verify-retries N]
-                                     [--verify-parallel N]
+                                     [--verify-parallel N] [--setup-before-verify | --no-setup-before-verify]
 forge-parallel.sh split     <plan-dir> <new-plan-dir> --tasks <id,id> [--dry-run]
 forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <cmd>] [--dry-run]
 forge-parallel.sh next      <plan-dir> [<new-plan-dir>] [--planner <spec>] [plan flags...]
@@ -927,6 +928,7 @@ A `tasks.tsv` row whose `dwarf` column is `script` runs the executable `tasks/<i
 | `--verify-retries N` | run, retry, integrate | `verify_retries` | reruns of a failed verify command, or of each failed lane (default `1`, `0` = strict single run); with `.forge/verify-subset`, a failed command's failing test files run alone first and confirm a regression without a full rerun |
 | `--verify-lane 'name[opts]=cmd'` | run, retry | `verify.d/<name>` | one verification lane; repeatable. Options as in a lane file, comma-separated (`group=g`, `first`, `retries=n`, `reports=dir`, `baseline=file`). The first one of an invocation replaces the plan's earlier lanes and `--verify`; see [verification lanes](../references/decompose-integration.md#execution-checks-and-integration-verification) |
 | `--verify-parallel N` | run, retry, integrate | `verify_parallel` | lanes run at once, 1 to 32 (default `3`) |
+| `--setup-before-verify` | plan, run, retry, integrate, verify | `setup_before_verify` | re-run worktree setup in the integration checkout before verification whenever commits (or `.forge/setup-inputs` entries, when present) changed since setup (off by default; `--no-setup-before-verify` turns it off). Without it, a failed verify after a lockfile or `.forge/setup-inputs` merge warns about stale setup |
 | `--escalate-after N` | run, retry | `escalate_after` | failed attempts on one model before the next goes a tier up (default `3`, `0` = off). When `retry_per_model` is set, that count is the trigger instead |
 | `--pre-review-tests` | plan | `pre_review_tests` | before each review, run only the tests the attempt affects; a red attempt goes back to its implementer unreviewed (off by default; `--no-pre-review-tests` turns it off). See [pre-review tests](../references/decompose-review.md#pre-review-tests-opt-in) |
 | `--pre-review-parallel N` | plan | `pre_review_parallel` | how many of those checks run at once across tasks, 1 to 64 (default `2`) |

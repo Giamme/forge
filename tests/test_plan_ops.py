@@ -251,6 +251,13 @@ class PlanOpsTests(unittest.TestCase):
             self.assertNotEqual(self.text(p, 'accepted.integration'), verified_commit)
             self.assertIn('unverified', r.stdout)
 
+        self.scenario({})
+        r_rev = self.forge('review', p)
+        self.assertEqual(r_rev.returncode, 0, r_rev.stdout)
+        out = sorted(p.glob('final-review-*'))[-1]
+        self.assertIn('status: STALE (verified %s, before later merges)' % verified_commit[:7],
+                      (out / 'qa.input').read_text())
+
         r = self.forge('run', p)
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertEqual(self.text(p, 'verification.status'), 'PASS')

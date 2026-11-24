@@ -1,0 +1,1 @@
+- Clarified `STALE` verification wording for orchestrators, `forge attribute`, final-review prompts, and `forge pr` bodies: `SKILL.md` defines `STALE`, `forge attribute` reports that a `STALE` verification was not of the accepted integration commit, and both final-review prompts and PR bodies note `STALE (verified <short sha>, before later merges)` (#194).

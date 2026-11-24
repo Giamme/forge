@@ -38,6 +38,8 @@
 #   --qa-threshold Pn|none|default  plan run retry review  $PLAN/qa_threshold  least severe CONFIRMED
 #                                                                  finding that still blocks; none (or off) =
 #                                                                  P3, default removes the file (P2)
+#   --qa-test-minutes N|default  plan run retry review $PLAN/qa_test_minutes  reviewer test-time guideline
+#                                                                  in minutes (0 = no cap; default removes, 5)
 #   --verify-retries N      run retry integrate verify $PLAN/verify_retries  reruns of a failed verify command
 #   --escalate-after N      run retry         $PLAN/escalate_after failed attempts on one model before the
 #                                                                  next goes a tier up (default 3; 0 = off)
@@ -65,6 +67,9 @@
 #                                                                  repeatable; replaces --verify and the lanes
 #                                                                  of an earlier invocation
 #   --verify-parallel N     run retry integrate verify $PLAN/verify_parallel  lanes run at once (1-32, default 3)
+#   --setup-before-verify   plan run retry integrate verify $PLAN/setup_before_verify  re-run worktree setup in
+#   --no-setup-before-verify                                       the integration checkout before verification
+#                                                                  when HEAD (or a .forge/setup-inputs file) moved
 PP_SHIFT=2
 PP_RETRY_FAILED=0
 PP_INFRA_RETRIES=0
@@ -132,6 +137,14 @@ forge_pp_flag() {
         default) rm -f "$plan/qa_threshold" ;;
         *) die "--qa-threshold needs P0, P1, P2, P3, none or default" ;;
       esac ;;
+    --qa-test-minutes)
+      case "$cmd" in plan|run|retry|review) ;; *) return 1 ;; esac
+      if [ "${2:-}" = default ]; then
+        rm -f "$plan/qa_test_minutes"
+      else
+        pp_nonneg --qa-test-minutes "${2:-}"
+        printf '%s\n' "$2" > "$plan/qa_test_minutes" || die "could not write $plan/qa_test_minutes"
+      fi ;;
     --escalate-after)
       case "$cmd" in run|retry) ;; *) return 1 ;; esac
       pp_nonneg --escalate-after "${2:-}"
@@ -192,6 +205,12 @@ forge_pp_flag() {
     --no-attribute)
       [ "$cmd" = run ] || return 1
       PP_SHIFT=1; rm -f "$plan/attribute_on" ;;
+    --setup-before-verify)
+      case "$cmd" in plan|run|retry|integrate|verify) ;; *) return 1 ;; esac
+      PP_SHIFT=1; printf 'on\n' > "$plan/setup_before_verify" ;;
+    --no-setup-before-verify)
+      case "$cmd" in plan|run|retry|integrate|verify) ;; *) return 1 ;; esac
+      PP_SHIFT=1; rm -f "$plan/setup_before_verify" ;;
     --final-review)
       [ "$cmd" = integrate ] || return 1
       PP_FINAL_REVIEW="${2:?--final-review needs a QA spec}"

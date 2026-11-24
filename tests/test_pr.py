@@ -101,6 +101,15 @@ class PrTests(unittest.TestCase):
         (self.run / 'final-review-1-1' / 'review.meta').write_text('tip=%s\n' % ('b' * 40))
         self.assertIn('- Final review: PASS\n', self.forge_pr(str(self.run))[0])
 
+    def test_stale_verification_names_verified_commit_or_earlier_commit(self):
+        (self.run / 'verification.status').write_text('STALE\n')
+        (self.run / 'verification.commit').write_text('0123456789abcdef' + '0' * 24 + '\n')
+        out, _ = self.forge_pr(str(self.run))
+        self.assertIn('- Verification: STALE (verified `0123456`, before later merges)\n', out)
+        (self.run / 'verification.commit').unlink()
+        out, _ = self.forge_pr(str(self.run))
+        self.assertIn('- Verification: STALE (verified an earlier commit, before later merges)\n', out)
+
     def test_out_writes_the_body_to_a_file(self):
         out, _ = self.forge_pr(str(self.run), '--out', str(self.base / 'pr.md'))
         self.assertEqual((self.base / 'pr.md').read_text(), out)

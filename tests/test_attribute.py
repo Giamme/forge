@@ -175,6 +175,13 @@ class AttributeTests(unittest.TestCase):
         self.assertEqual(r.returncode, 2, r.stdout)
         self.assertIn('not of the accepted integration commit', r.stdout)
         self.assertFalse((self.plan / 'attribution.json').exists())
+        # STALE verification (e.g. a later accept/merge moved the tip) says the same rather than "did not fail".
+        (self.plan / 'verification.status').write_text('STALE\n')
+        r_stale = self.attribute()
+        self.assertEqual(r_stale.returncode, 2, r_stale.stdout)
+        self.assertIn('not of the accepted integration commit', r_stale.stdout)
+        self.assertIn('STALE', r_stale.stdout)
+        self.assertNotIn('did not fail', r_stale.stdout)
         # --force does not take anyone's word for the tip: it verifies it.
         forced = self.attribute('--force')
         self.assertEqual(forced.returncode, 0, forced.stdout)

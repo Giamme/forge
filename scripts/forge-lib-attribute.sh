@@ -231,8 +231,13 @@ attribute_evidence() { # attribute_evidence <plan> <force>
   [ -s "$plan/wt_root" ] && [ -s "$plan/repo" ] || die "this plan has never been run: there is nothing to attribute"
   repo="$(cat "$plan/repo")"; run_id="$(cat "$plan/run_id" 2>/dev/null)"
   if [ "$force" != 1 ]; then
-    [ "$(cat "$plan/verification.status" 2>/dev/null)" = FAIL ] \
-      || die "the run's verification did not fail (verification.status is '$(cat "$plan/verification.status" 2>/dev/null)'): nothing to attribute; --force verifies the tip itself"
+    local vstatus
+    vstatus="$(cat "$plan/verification.status" 2>/dev/null)"
+    if [ "$vstatus" = STALE ]; then
+      die "the failed verification was not of the accepted integration commit (verification.status is 'STALE'): it says nothing about the tip; --force verifies the tip itself"
+    fi
+    [ "$vstatus" = FAIL ] \
+      || die "the run's verification did not fail (verification.status is '$vstatus'): nothing to attribute; --force verifies the tip itself"
     [ -s "$plan/verification.commit" ] && [ -s "$plan/accepted.integration" ] \
       && [ "$(cat "$plan/verification.commit")" = "$(cat "$plan/accepted.integration")" ] \
       || die "the failed verification was not of the accepted integration commit: it says nothing about the tip; --force verifies the tip itself"

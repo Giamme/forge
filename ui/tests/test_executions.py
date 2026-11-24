@@ -283,6 +283,9 @@ class ExecutionTests(FixtureCase):
         self.assertIsNone(task_detail(self.solo, 'solo')['reviews'][0]['tests'])   # an older reply says nothing
         self.write(self.solo / 'qa.last', reply)
         self.assertEqual(task_detail(self.solo, 'solo')['reviews'][-1]['tests'], {'status': 'could_not_run', 'reason': 'no display'})
+        self.write(self.solo / 'qa.last', 'FORGE_TESTS: PARTIAL — typecheck:tests stopped\nFORGE_VERDICT: PASS\n')
+        self.assertEqual(task_detail(self.solo, 'solo')['reviews'][-1]['tests'],
+                         {'status': 'partial', 'reason': 'typecheck:tests stopped'})
         self.assertIsNone(final_review_detail(self.plan, F.REVIEW_NEW)['tests'])
         self.write(self.plan / F.REVIEW_NEW / 'qa.last', reply)
         self.assertEqual(final_review_detail(self.plan, F.REVIEW_NEW)['tests'], {'status': 'could_not_run', 'reason': 'no display'})
