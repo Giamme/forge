@@ -205,7 +205,7 @@ def build_prompt(request: str, level: str | None) -> str:
         'sees only that prompt can do it, and ends with a `## Acceptance criteria` section of checks '
         'a reviewer can verify (a behaviour, a command that passes, a file that exists), not restated '
         'goals. Its tests are the ones for the files it touches. Never ask for the whole test suite '
-        '(`tests/check.sh`, `npm test`, `make check` and the like): forge runs that after the merge.',
+        '(`tests/check.sh`, `npm test`, `make check` and the like): forge runs that once at the end of the run.',
         'Where tasks share a seam (an interface, a file format, a name), fix it in the `approach` of '
         'every task that touches it, so both sides build the same thing.',
         '**Keep each task** under about 7000 characters of prompt and 9 files. A smaller task with '

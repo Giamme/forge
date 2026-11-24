@@ -400,7 +400,9 @@ So:
 - End every `prompt.md` with an `## Acceptance criteria` section: observable checks the
   reviewer can verify (a behaviour, a command that passes, a file that exists), not
   restated goals. A command names the task's own tests, never the whole suite: the run's
-  verification runs the suite after each merge, and naming it here makes every attempt run it.
+  verification runs the suite once at the end of the run after the tasks merge (a failure is not
+  attributed to a task; run `forge-parallel.sh attribute <plan-dir>` or pass `--attribute` on
+  `run` to search the merge order), and naming it here makes every attempt run it.
 - `plan` prints an advisory block under the table naming tasks at 7,000 characters or 9
   declared files and over, with the history for their size, tasks with no acceptance
   criteria, and tasks whose acceptance criteria ask for the whole suite (forge's
