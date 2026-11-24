@@ -183,6 +183,12 @@ are `opus-4.6` and `sonnet-4.6`, GitHub Copilot's older Fable and Grok are `fabl
 literal model id, with a note that Antigravity serves `opus-4.6`, and the statistics that count by alias never mix two models. `tests/test_model_registry.py` fails on an
 alias whose rows disagree.
 
+**The approval table says which model each spec runs.** Under the waves, a `models` block lists
+every spec of the plan with the model id it resolves to today (`sol:high  gpt-6.2-sol on codex`),
+so a moved alias is never a surprise. Claude's own CLI names (`opus`, `sonnet`, `haiku`,
+`fable`) are the CLI's current model of that family, and the block says so. `python3
+scripts/forge_models.py describe SPEC` prints the same line for any spec.
+
 Adding a model is one line in this file. Nothing else needs to change.
 
 **Moving an alias to a newer model.** Keep the old model under a versioned alias, as

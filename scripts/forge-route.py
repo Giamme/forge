@@ -191,9 +191,8 @@ def canonical(spec: str, registry: dict) -> str:
 def model_key(spec: str, registry: dict) -> str:
     """The model a spec runs, named so that one model reached through two harnesses compares equal
     (`gpt-6.2-sol` on codex and `github-copilot/gpt-6.2-sol` on opencode): the id it resolves to, without
-    its provider prefix and with dots and dashes alike. Two ids are compared, never two aliases, since
-    one alias may list different models on different harnesses (`gemini` is Flash on antigravity and
-    Pro on opencode)."""
+    its provider prefix and with dots and dashes alike. Two ids are compared, never two aliases: an
+    alias names one model on every harness now (#187), but a literal id has no alias at all."""
     return canonical(spec, registry).rsplit('/', 1)[-1].lower().replace('.', '-')
 
 
