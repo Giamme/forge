@@ -3091,7 +3091,7 @@ verify_result_body() { # plan, checkout, artifact directory[, fixed source]
   else
     vsource="$(verify_source_for "$plan" "$repo" "$wt")"
     # The checkout's own lanes or command run (#151): say where the root's copy differs.
-    case "$vsource" in
+    case "${vsource%%$'\t'*}" in
       *:checkout) local diffline
         while IFS= read -r diffline; do note "$diffline"; done < <(verify_root_difference "$vsource" "$repo") ;;
     esac
