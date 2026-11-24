@@ -246,7 +246,10 @@ them in the repository as `.forge/verify.d/<name>` files, or for one plan with
 `<plan>/verify.d/`; the first one of an invocation replaces the plan's earlier lanes and its
 `--verify`, as `--verify` replaces the plan's lanes). The first source that exists wins: the
 plan's lanes, the plan's `--verify`, the repository's `.forge/verify.d/`, then
-`.forge/verify` (ignored, with a note, when the repository also has lanes). `run` checks the
+`.forge/verify` (ignored, with a note, when the repository also has lanes). The repository's lanes
+and `.forge/verify` are read as committed on the branch being verified, not from the root checkout,
+and forge says before a run which lanes differ from the root's (#151); `forge-parallel.sh verify <plan>`
+runs that verification again on its own, with no model. `run` checks the
 lanes before any model is paid for and exits 2 on an invalid one (an unknown or repeated
 option, an empty command, a path outside the checkout, a missing baseline).
 

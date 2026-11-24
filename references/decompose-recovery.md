@@ -489,6 +489,11 @@ Four subcommands act on plans after tasks have run. Full usage and refusal condi
   about it, `attribute` treats it as a step of its own, and forge-ui lists it above the final review, each
   row opening its review, its findings and the range's diff with the findings pinned.
   `adopt-<epoch>-<pid>/` keeps the review.
+  A range that extends one a review refused, or one named with `--resubmit <adopt-dir>`, is a resubmission
+  (#155): its reviewer gets the previous findings and the commits and diff since, and settles each earlier
+  finding and its siblings first; after `--escalate-after` refusals of the same work (3 by default) the next
+  one waits for the user (`--decide resubmit`, `--approved`, or adopting it in parts), and each review
+  records its number in `adopt-*/submission`.
 - **`accept <plan> <task> --reason … --approved`** overrides a `FAIL`/`UNKNOWN` reviewer only
   when the reviewed commit is still the branch tip and the worktree still matches
   `source.fingerprint`. It records `known_issues.md` and `accepted.by`, merges through `merge_task`,
