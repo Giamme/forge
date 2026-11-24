@@ -311,6 +311,7 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `POST /api/runs/<key>/issues/dismiss` | dismiss or (`undo`) restore findings; authenticated |
 | `POST /api/runs/<key>/delete` | dry-run or delete a run with `forge runs rm`; authenticated, 900 s timeout; later requests for the key answer `404` |
 | `POST /api/runs/<key>/tasks/<id>/answer` | answer a task that waits for input (`forge control retry … --answer-file -`); authenticated, see Controls |
+| `POST /api/runs/<key>/tasks/<id>/steer` | queue a message for a task's next attempt (`forge control steer … --file -`); authenticated, see Controls |
 | `POST /api/worktrees/remove` | remove chosen worktrees (`forge worktrees rm`); authenticated, 900 s timeout |
 | `POST /api/projects/<id>/memories/forget` | forget learnings in a project's checkouts (`forge memory forget`); authenticated |
 | `POST /api/projects/<id>/memories/add` | add a learning in a project's checkouts (`forge memory add`); body `{path?, category, text, paths?}`; authenticated |
@@ -858,6 +859,10 @@ Every RunSummary field, plus:
   a merge changes the status the page shows. `error` is the text of `tasks/<id>/summary.error`, or `null` when
   the file is missing or blank. A task whose first generation failed has no `summary.json`, so its `summary` is
   `null` and its error is not shown. The export blanks `text` and `error` unless texts are chosen.
+- `steer_waiting`: the messages `forge control steer` queued for the task's next attempt, oldest first, from
+  `tasks/<id>/steer.jsonl`: `{actor, at, chars, text}` (text capped at 8000 characters). `[]` for a solo task. Each
+  `trail` entry has `steered`, the same objects without `text`, from `tasks/<id>/steered.<attempt>.jsonl`: the
+  messages that attempt was given (`[]` when none).
 - `summaries_override`: `on` or `off` from `tasks/<id>/summaries`, or `null` when the file is missing or holds
   anything else (the task then follows the run's switch). A solo run's task has `null` for `summary` and
   `summaries_override`.
@@ -1896,6 +1901,15 @@ live scheduler and prepares the retry itself when none runs. The answer is `200 
 RunDetail's `scheduler.live`) and `result` is `{"queued": true, "request"}` or `{"queued": false,
 "prepared": true}`. Exit 3 (the task is not `NEEDS_INPUT`) is `409` with the CLI's message. Holds
 the run's write lock (`409 busy`); timeout 60 s. Refused under `--read-only` and without the token.
+
+### `POST /api/runs/<key>/tasks/<id>/steer`
+
+Body: `{"text": string}`, checked as for `/answer`. The run must be a plan (`404` otherwise). Runs
+`control steer <plan> <id> --file - --actor ui --json` with the stripped text on stdin; the answer
+is `200` with the CLI's object, `{"ok": true, "queued": true, "task", "waiting", "live", "chars"}`.
+Exit 3 (a MERGED task, or 20 messages already waiting) is `409` with the CLI's message. Nothing is
+started: the task's next implementer attempt gets the message (#134). Holds the run's write lock
+(`409 busy`); timeout 60 s. Refused under `--read-only` and without the token.
 
 ### `GET /api/models/reviewers`
 

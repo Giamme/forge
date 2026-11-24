@@ -27,6 +27,9 @@
                                                  a NEEDS_DECISION task (reviews that do not converge, or a stop with no
                                                  stronger model) is resumed only by a decision: --decide retry=N or
                                                  threshold=P0..P3, or --dwarf SPEC, each with --reason TEXT --approved
+  steer <plan> <task> TEXT|--file F             queue a message for the task's next implementer attempt (1 to 8000
+                                                 characters): tasks/<id>/steer.jsonl, given to the next dispatch
+                                                 whatever starts it; it starts nothing, and control.log keeps no text
   accept <plan> <task> --reason TEXT --approved  queue an accept of a FAIL, UNKNOWN or NEEDS_DECISION task into the
                                                  live run: its findings become known issues, it merges, its dependents start
   add   <plan> <task>                            queue a row added to tasks.tsv (with its prompt.md) into the live run
@@ -79,6 +82,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import errno
+import hashlib
 import json
 import os
 import posixpath
@@ -1368,6 +1372,93 @@ def answer_of(args):
     return text
 
 
+STEER_MAX = 8000            # characters of one message for the next attempt (#134)
+STEER_QUEUE = 20           # messages waiting at once for one task
+STEER_FILE = 'steer.jsonl'
+
+
+def steer_text(args):
+    """The message --file or TEXT gives (stripped), checked as an answer is."""
+    if (args.text is None) == (args.file is None):
+        raise Invalid('give the message as TEXT or with --file FILE (- for stdin), not both')
+    text = args.text if args.file is None else answer_file_text(args.file)
+    text = text.strip()
+    if not text:
+        raise Invalid('the message is empty')
+    if '\0' in text:
+        raise Invalid('the message contains a NUL byte')
+    if len(text) > STEER_MAX:
+        raise Invalid(f'the message is limited to {STEER_MAX} characters')
+    return text
+
+
+def steer_entries(plan, rel):
+    """The JSON lines of a steer file; a line that does not parse is skipped."""
+    out = []
+    for line in (read_file(plan, rel, strict=True) or '').splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict) and isinstance(entry.get('text'), str):
+            out.append(entry)
+    return out
+
+
+def steer_digest(text):
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+def cmd_steer(args):
+    """Queue a message for a task's next implementer attempt (#134): stored in tasks/<id>/steer.jsonl, given to
+    the next dispatch of that task, whatever starts it, and logged without its text. It starts nothing."""
+    plan, rows = load(args.plan)
+    require_task(rows, args.task)
+    text = steer_text(args)
+    rel = f'tasks/{args.task}/{STEER_FILE}'
+    with control_lock(plan):
+        probe(plan, 'control.log')
+        refuse_task(plan, args.task)
+        if len(steer_entries(plan, rel)) >= STEER_QUEUE:
+            raise Refused(f'task {args.task} already has {STEER_QUEUE} messages waiting for its next attempt')
+        entry = dict(at=time.time(), actor=args.actor, text=text, sha256=steer_digest(text), chars=len(text))
+        append_line(plan, rel, json.dumps(entry) + '\n')
+        waiting = len(steer_entries(plan, rel))
+        audit(plan, args.actor, 'steer', args.task, 'steer', 'queued', None, steer_chars=len(text),
+              sha256=entry['sha256'], waiting=waiting)
+    live = is_live(plan)
+    if args.json:
+        json.dump(dict(ok=True, queued=True, task=args.task, waiting=waiting, live=live, chars=len(text)), sys.stdout,
+                  indent=2)
+        sys.stdout.write('\n')
+    else:
+        print(f'queued a message for task {args.task}\'s next attempt ({waiting} waiting); it starts nothing: '
+              + ('the run gives it at the task\'s next dispatch' if live else
+                 'the next run, retry or resume of the task gives it'))
+    return 0
+
+
+def cmd_steer_take(args):
+    """forge-parallel.sh, as an implementer attempt starts: move the waiting messages to steered.<attempt>.jsonl
+    (appended, so a re-dispatch of the same attempt keeps them) and log the delivery. Prints how many moved."""
+    plan, rows = load(args.plan)
+    require_task(rows, args.task)
+    if not re.fullmatch(r'[1-9][0-9]{0,5}', args.attempt):
+        raise Invalid('attempt must be a positive integer')
+    rel, dest = f'tasks/{args.task}/{STEER_FILE}', f'tasks/{args.task}/steered.{args.attempt}.jsonl'
+    with control_lock(plan):
+        entries = steer_entries(plan, rel)
+        if entries:
+            probe(plan, 'control.log')
+            for entry in entries:
+                append_line(plan, dest, json.dumps(entry) + '\n')
+            remove_safe(plan, rel)
+            audit(plan, 'scheduler', 'steer-delivered', args.task, 'steer', str(len(entries)), None,
+                  attempt=int(args.attempt), sha256=[e.get('sha256') for e in entries])
+    print(len(entries))
+    return 0
+
+
 def retry_prepared(args, plan, answer):
     """No scheduler is live: prepare the answered task for the next `run`, as `forge-parallel.sh retry
     --answer-file --no-dispatch` does, and pass its exit code through."""
@@ -1520,7 +1611,7 @@ def cmd_show(args):
 def parser():
     top = argparse.ArgumentParser(prog='forge control', description="Show and change a plan's live controls.")
     sub = top.add_subparsers(dest='command', required=True,
-                             metavar='{show,set,pin,unpin,retry,accept,add,drain,resume,stop}')
+                             metavar='{show,set,pin,unpin,retry,steer,accept,add,drain,resume,stop}')
 
     def common(p, mutator=True):
         p.add_argument('plan', metavar='PLAN_DIR', help="the plan dir (the one with tasks.tsv)")
@@ -1572,6 +1663,17 @@ def parser():
     p.add_argument('--reason', metavar='TEXT', help='why (a decision needs it)')
     p.add_argument('--approved', action='store_true', help='the decision is the user\'s (a decision needs it)')
     p.set_defaults(func=cmd_retry)
+    p = sub.add_parser('steer', help="queue a message for a task's next implementer attempt (it starts nothing)")
+    common(p)
+    p.add_argument('task')
+    p.add_argument('text', nargs='?', help=f'the message (1 to {STEER_MAX} characters)')
+    p.add_argument('--file', metavar='FILE', help='the message, read from FILE (- for stdin)')
+    p.set_defaults(func=cmd_steer)
+    p = sub.add_parser('_steer-take')   # forge-parallel.sh only
+    p.add_argument('plan')
+    p.add_argument('task')
+    p.add_argument('attempt')
+    p.set_defaults(func=cmd_steer_take)
     p = sub.add_parser('accept', help="queue an accept of a FAIL or NEEDS_DECISION task into the live run: "
                        "its findings become known issues and it merges (the user's decision only)")
     common(p)

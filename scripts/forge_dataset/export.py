@@ -222,10 +222,16 @@ def review_survives() -> dict:
 # --- indexes ---------------------------------------------------------------------------
 
 class Runs:
-    """Plans, attempts and dispatches of every run, joined by (run, task)."""
+    """Plans, attempts and dispatches of every run, joined by (run, task).
 
-    def __init__(self, store: Store):
+    A task a person steered (`forge control steer`, #134) is its own measure from the first steered
+    attempt on: that attempt and every later one (and their dispatches) are left out unless
+    `include_steered`. `steered` names those tasks, {(run, task): first steered attempt}, either way.
+    """
+
+    def __init__(self, store: Store, include_steered: bool = False):
         self.store = store
+        self.include_steered = include_steered
         self.plans = defaultdict(list)
         for e in store.of('plan'):
             self.plans[e['run']].append(e)
@@ -237,6 +243,14 @@ class Runs:
                 self.attempts[(e['run'], e['task'])].append(e)
         for rows in self.attempts.values():
             rows.sort(key=lambda e: (e['attempt'] or 0, e['d'].get('wall_started') or e['ts']))
+        self.steered = {}
+        for key, rows in self.attempts.items():
+            marked = [e['attempt'] or 0 for e in rows if e['d'].get('steered')]
+            if marked:
+                self.steered[key] = min(marked)
+        if not include_steered:
+            for key, first in self.steered.items():
+                self.attempts[key] = [e for e in self.attempts[key] if (e['attempt'] or 0) < first]
         self.dispatches = defaultdict(list)
         for e in store.of('dispatch'):
             # A group review names no task. scope group stays out of per-task indexes even
@@ -247,6 +261,11 @@ class Runs:
         # the attempt ended on, so each list is chronological; a tie keeps store order.
         for rows in self.dispatches.values():
             rows.sort(key=lambda e: (e['attempt'] or 0, e['d'].get('wall_started') or e['ts']))
+        if not include_steered:
+            for (run, task, role), rows in self.dispatches.items():
+                first = self.steered.get((run, task))
+                if first is not None:
+                    rows[:] = [e for e in rows if (e['attempt'] or 0) < first]
         self.accepted = {(e['run'], e['d'].get('task')) for e in store.of('invocation')
                          if e['d'].get('command') == 'accept' and e['d'].get('exit') == 0}
         self.interrupted = {(e['run'], e['task']) for e in store.of('event')
@@ -255,7 +274,8 @@ class Runs:
         # What `forge dataset outcomes` saw after integration, per reviewed commit; the
         # longest horizon observed wins, since it is the stronger observation.
         self.reviewed = {(e['run'], e['task'], e['attempt']): e['d']['reviewed_commit']
-                         for e in store.of('attempt') if e['d'].get('reviewed_commit')}
+                         for e in store.of('attempt') if e['d'].get('reviewed_commit')
+                         and (include_steered or (e['attempt'] or 0) < self.steered.get((e['run'], e['task']), 1 << 30))}
         self.survival = {}
         for e in store.of('outcome'):
             d = e['d']
@@ -1042,10 +1062,11 @@ def _sample(cases: list, limit: int | None, seed: int) -> list:
     return picked
 
 
-def build(db, *, slices=SLICES, limit: int | None = None, seed: int = 7, stats: dict | None = None) -> list:
+def build(db, *, slices=SLICES, limit: int | None = None, seed: int = 7, stats: dict | None = None,
+          include_steered: bool = False) -> list:
     """Every case of the given slices. `stats`, when given, receives the censored-label counts."""
     store = Store(db)
-    runs = Runs(store)
+    runs = Runs(store, include_steered=include_steered)
     builders = dict(routing=lambda: routing_cases(runs), retry=lambda: retry_cases(runs),
                     review=lambda: review_cases(runs),
                     drift=lambda: drift_cases(runs, seed), citation=lambda: citation_cases(runs, seed),
@@ -1106,7 +1127,8 @@ def main(args) -> int:
     db = connect()
     try:
         stats = {}
-        cases = build(db, slices=args.slices or SLICES, limit=args.limit, seed=args.seed, stats=stats)
+        cases = build(db, slices=args.slices or SLICES, limit=args.limit, seed=args.seed, stats=stats,
+                      include_steered=getattr(args, 'include_steered', False))
     finally:
         db.close()
     if args.out:

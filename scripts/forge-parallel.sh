@@ -2195,8 +2195,11 @@ do_task_body() (
     # it, or with Jev off, the full role slice is injected exactly as before.
     /bin/bash "$MEMORY" inject "$REPO" dwarf --task "$tdir/prompt.md" \
         --run-dir "$tdir" > "$tdir/dwarf.memory"
+    # The messages queued for this task's next attempt (forge control steer, #134) are this attempt's.
+    steer_take "$PLAN" "$id" "$attempt"
     {
       python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --retry-source "$(cat "$tdir/retry_findings.source" 2>/dev/null || echo review)" --memory "$tdir/dwarf.memory"
+      steer_section "$tdir" "$attempt" dwarf
       [ ! -f "$PLAN/sweep_ahead" ] || python3 "$SKILL_DIR/scripts/forge-sweep.py" ahead "$PLAN" "$id" --role dwarf 2>/dev/null
       echo "Implement this task in the repository. Follow the intended approach unless it is wrong; explain deviations. Run the task's requested verification and report results."
       echo "On retry, fix the findings in the existing work; preserve parts not criticised. Explain any finding you reject."
@@ -2469,6 +2472,7 @@ do_task_body() (
   [ "$(wc -c < "$tdir/.qa.diff" | tr -d ' ')" -le "$REVIEW_DIFF_LIMIT" ] || qa_inline=0
   {
     python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --retry-source "$(cat "$tdir/retry_findings.source" 2>/dev/null || echo review)" ${prompt_extra[@]+"${prompt_extra[@]}"} --memory "$tdir/dwarf.memory" --memory "$tdir/qa.memory"
+    steer_section "$tdir" "$attempt" qa
     python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind "$qa_kind"
     echo
     if [ "$is_script" = 1 ]; then

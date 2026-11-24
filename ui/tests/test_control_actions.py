@@ -282,5 +282,34 @@ class AnswerTests(ActionCase):
         self.assertEqual(self.calls(), [])
 
 
+class SteerTests(ActionCase):
+    """#134: a message for the task's next attempt, `forge control steer --file -`."""
+
+    def path(self, task='reader', key=None):
+        return f'/api/runs/{key or self.key}/tasks/{task}/steer'
+
+    def test_the_text_goes_to_stdin_and_the_clis_object_comes_back(self):
+        self.behave(stdout='{"ok": true, "queued": true, "task": "reader", "waiting": 1, "live": false, "chars": 14}')
+        status, body = self.post({'text': '  keep the API \n'}, self.path())
+        self.assertEqual((status, body['waiting'], body['queued']), (200, 1, True))
+        call = self.calls()[-1]
+        self.assertEqual(call['argv'], ['control', 'steer', str(self.server.catalog.locate(self.key)[0]), 'reader',
+                                        '--file', '-', '--actor', 'ui', '--json'])
+        self.assertEqual(call['stdin'], 'keep the API')
+
+    def test_bad_bodies_runs_and_refusals(self):
+        for body in ({}, {'text': ''}, {'text': 'x' * 8001}, {'text': 'a\x00b'}, {'text': 3}, {'text': 'x', 'more': 1}):
+            self.assertEqual(self.post(body, self.path())[0], 400, body)
+        self.assertEqual(self.post({'text': 'x'}, self.path(key=self.solo_key))[0], 404)
+        self.assertEqual(self.calls(), [])
+        self.behave(code=3, stderr='forge control: task reader is MERGED: nothing left to change\n')
+        status, body = self.post({'text': 'x'}, self.path())
+        self.assertEqual((status, body['error']), (409, 'refused'))
+        self.assertIn('MERGED', body['detail'])
+
+    def test_refused_without_authentication_and_read_only(self):
+        self.refused_everywhere(self.path(), {'text': 'x'})
+
+
 if __name__ == '__main__':
     unittest.main()

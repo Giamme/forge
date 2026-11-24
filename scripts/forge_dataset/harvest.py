@@ -730,6 +730,25 @@ def requirement_blob(tdir: Path, stem: str):
     return put_file(tdir / (stem + '.md'), 'prompt')
 
 
+def steered_of(tdir: Path, attempt) -> tuple[list, str | None]:
+    """The messages `forge control steer` gave this attempt (#134), as `{actor, at, sha256, chars, mode}`,
+    and their texts joined for the blob. An attempt nobody steered has `[]`."""
+    if attempt is None:
+        return [], None
+    found, texts = [], []
+    for line in (text(tdir / ('steered.%d.jsonl' % attempt)) or '').splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(entry, dict) or not isinstance(entry.get('text'), str):
+            continue
+        found.append(dict(actor=entry.get('actor'), at=entry.get('at'), sha256=entry.get('sha256'),
+                          chars=entry.get('chars'), mode='queued'))
+        texts.append(entry['text'])
+    return found, ('\n\n---\n\n'.join(texts) if texts else None)
+
+
 def task_event(attempt: Path, tdir: Path, rc, prov: dict, src: str = 'live') -> dict:
     before = prov.get('files')
     made = lambda name: produced(tdir, before, name)
@@ -741,6 +760,7 @@ def task_event(attempt: Path, tdir: Path, rc, prov: dict, src: str = 'live') -> 
     row = tasks_rows(plan / 'tasks.tsv').get(tdir.name, {})
     diff = text(tdir / 'changes.diff') if made('changes.diff') else None
     gate = first_line(tdir / 'qa.gate') if made('qa.gate') else None
+    steered, steer_text = steered_of(tdir, end)
     data = dict(
         status=status, exit=as_int(rc), attempt_start=prov.get('attempt_start'), attempt_end=end,
         trigger=prov.get('trigger'), **flags,
@@ -755,6 +775,7 @@ def task_event(attempt: Path, tdir: Path, rc, prov: dict, src: str = 'live') -> 
         retry_source=first_line(tdir / 'retry_findings.source'),
         identical_retry=bool(diff) and made('changes.prev.diff') and diff == text(tdir / 'changes.prev.diff'),
         prompt_changed=attempt_prompt_changed(status),
+        steered=steered,
         produced=sorted(n for n in WATCHED if made(n)),
         carried=sorted(n for n in WATCHED if (tdir / n).exists() and not made(n)),
         children=children(tdir, attempt.name),
@@ -774,6 +795,7 @@ def task_event(attempt: Path, tdir: Path, rc, prov: dict, src: str = 'live') -> 
         review_triage_jev=put_file(tdir / 'qa.jev.json') if made('qa.jev.json') else None,
         routing_jev=put_file(tdir / 'jev.json'),
         prompt=requirement_blob(tdir, 'prompt'), approach=requirement_blob(tdir, 'approach'),
+        steer=put_blob(steer_text, 'message') if steer_text else None,
     )
     data['blobs'] = refs
     return dict(rid=attempt.name, kind='attempt', ts=prov.get('wall_ended') or time.time(), src=src,

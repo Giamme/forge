@@ -386,6 +386,22 @@ forge control add <plan-dir> docs-fix             # queue a row you appended to 
 forge control accept <plan-dir> docs --reason "the P2 is a test-only nit" --approved   # queue an accept
 ```
 
+To tell an implementer something, queue a message for the task's next attempt (no live run needed):
+
+```bash
+forge control steer <plan-dir> docs "keep the old function name; callers outside this repo use it"
+forge control steer <plan-dir> docs --file note.md     # or --file - for stdin; 1 to 8000 characters
+```
+
+A message starts nothing. It waits in `tasks/<id>/steer.jsonl` until the task's next implementer
+attempt starts, whatever starts it (the run's own retry, `forge control retry`, a resume), and goes
+into that attempt's prompt beside any review findings; the reviewer of that attempt sees it too, as
+part of the requirements. A running attempt is not interrupted: the probes for #134 found no route
+that works on every harness. `control.log` records `steer` (the length and a hash, never the text)
+and `steer-delivered` with the attempt. The attempt is marked steered in forge-ui and in the dataset,
+and `forge dataset routing`, `reviewers`, `pairs` and `export` leave a steered task out from its
+first steered attempt on unless given `--include-steered`. forge-ui's leaderboard censors those attempts.
+
 A stop skips verification and exits 130, unless every task had merged by then, and a drain
 with nothing left to start lets the run end as usual: both act on work still to do.
 `retry` and `add` only queue a request in `control.requests/`; the scheduler applies or refuses

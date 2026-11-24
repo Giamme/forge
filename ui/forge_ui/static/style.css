@@ -836,6 +836,12 @@ p.ctl-request-refused { color: var(--warn-ink); font-weight: 600; }
 .sum-bank { justify-self: start; flex-wrap: wrap; max-width: 100%; }
 p.sum-note { margin: 0; font-size: var(--t-xs); }
 .sum-msgs:empty { display: none; }
+.steer-waiting { list-style: none; margin: 0 0 var(--s-1); padding: 0; display: grid; gap: var(--s-1); }
+.steer-waiting .steer-text { white-space: pre-wrap; margin: 0; }
+.steer-box { display: grid; gap: var(--s-1); }
+.steer-box textarea { width: 100%; box-sizing: border-box; font: inherit; }
+.steer-box button { justify-self: start; }
+.tag.steered { margin-left: var(--s-1); }
 /* the one-sentence column: one line, cut off at the cell's edge */
 .sum-col { max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* who decided an escalation, on the line that reports it */

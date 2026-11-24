@@ -195,6 +195,33 @@ class Summaries(unittest.TestCase):
         self.assertEqual(self.posts, [{'action': 'set', 'key': 'summaries', 'value': 'off', 'task': 'reader'}])
         self.assertClean(page)
 
+    def test_a_message_for_the_next_attempt_is_queued_and_a_steered_attempt_is_marked(self):
+        # #134: the task's box posts to /steer; an attempt that got messages has a steered mark on the trail
+        line = json.dumps({'at': time.time() - 60, 'actor': 'cli', 'text': 'Use the parser.', 'sha256': 'ab', 'chars': 15})
+        F.write(self.plan / 'tasks/reader/steered.2.jsonl', line + '\n')
+        F.write(self.plan / 'tasks/graph/steer.jsonl', line + '\n')
+        sent = []
+
+        def steer(route):
+            sent.append((route.request.url, json.loads(route.request.post_data)))
+            route.fulfill(status=200, content_type='application/json',
+                          body=json.dumps({'ok': True, 'queued': True, 'task': 'graph', 'waiting': 2, 'live': False, 'chars': 9}))
+        page = self.open(cdn=False, view='2d')
+        page.route(re.compile(r'/api/runs/[^/]+/tasks/graph/steer$'), steer)
+        page.goto(self.url + '#/runs/' + self.key + '/tasks/reader')
+        page.wait_for_selector('#inspector .attempt-trail .tag.steered')
+        self.assertEqual(page.locator('#inspector .attempt-trail .tag.steered').count(), 1)
+        self.assertEqual(page.locator('#inspector .steer-section').count(), 0, 'a merged task takes no message')
+        page.goto(self.url + '#/runs/' + self.key + '/tasks/graph')
+        page.wait_for_selector('#inspector .steer-section .steer-box textarea')
+        self.assertEqual(page.text_content('#inspector .steer-waiting .steer-text'), 'Use the parser.')
+        page.fill('#inspector .steer-box textarea', ' Keep it. ')
+        page.click('#inspector .steer-box button')
+        page.wait_for_selector('#inspector .steer-msgs .ui-outcome.ok')
+        self.assertEqual([body for _, body in sent], [{'text': 'Keep it.'}])
+        self.assertIn('Queued for the next attempt (2 waiting)', page.text_content('#inspector .steer-msgs'))
+        self.assertClean(page)
+
     def test_a_poll_keeps_the_keyboard_on_the_task_switch(self):
         page = self.open(cdn=False, view='2d')
         page.route(CONTROLS, self.control)

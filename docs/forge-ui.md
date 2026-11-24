@@ -306,6 +306,9 @@ press the button, with no dry run. The HTTP shapes are in
   Beside the run's switch, the model they use (or *no model set*) and a field that sets the run's own
   (`forge control set summaries-model`): a planned run never reads `forge config set summaries.model`
   again, and *On* is refused, with that reason, while the run has no model.
+- **Message for the next attempt:** a task that has not merged has a box that queues a message for its
+  next implementer attempt (`forge control steer`), and lists the ones waiting. It starts nothing. An
+  attempt that got messages has a *steered* mark on its line of the attempt trail.
 - **Brief answers and proposals:** each brief question in a task's inspector has an answer box, and *Send* records the
   answer (`forge brief answer`, logged as `ui`). A late answer, given after the task started, shows the
   CLI's notice under its question. An answered parked `wave` or `plan` question has *Propose a change*

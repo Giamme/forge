@@ -1270,6 +1270,43 @@ prepare_fallback() { # prepare_fallback <plan> <id> <excluded harness/model,...>
 # attempt was not reviewed and spent nothing. The attempt number is given back (as a dwarf-stage infra
 # stop does), the implementer is told what changed, and no escalation, decision or attempt-cap gate runs:
 # nothing was spent. The status is cleared by the caller.
+# --- messages for the next attempt (#134) --------------------------------------
+# `forge control steer` queues them in tasks/<id>/steer.jsonl. As an implementer attempt starts,
+# steer_take moves them to steered.<attempt>.jsonl under the control lock; steer_section prints them
+# into that attempt's implementer and reviewer prompts (again on a re-dispatch of the same attempt).
+steer_take() { # steer_take <plan> <id> <attempt>
+  [ -s "$1/tasks/$2/steer.jsonl" ] || return 0
+  local moved
+  moved="$(python3 "$SKILL_DIR/scripts/forge-control.py" _steer-take "$1" "$2" "$3" 2>&1)" \
+    || { note "$2: the waiting messages could not be given to attempt $3 ($moved); they stay for the next one"; return 0; }
+  [ "${moved:-0}" = 0 ] || note "$2: attempt $3 gets $moved message(s) from the user (forge control steer)"
+}
+
+steer_section() { # steer_section <tdir> <attempt> dwarf|qa
+  [ -s "$1/steered.$2.jsonl" ] || return 0
+  python3 - "$1/steered.$2.jsonl" "$3" <<'PY'
+import json, sys
+texts = []
+for line in open(sys.argv[1], encoding='utf-8', errors='replace'):
+    try:
+        entry = json.loads(line)
+    except ValueError:
+        continue
+    if isinstance(entry, dict) and isinstance(entry.get('text'), str) and entry['text'].strip():
+        texts.append(entry['text'].strip())
+if texts:
+    if sys.argv[2] == 'qa':
+        print('\n## Messages the user sent the implementer for this attempt\n')
+        print('The user sent these to the implementer of this attempt. Treat them as part of the requirements: '
+              'work they asked for is in scope, and judge whether the attempt followed them.\n')
+    else:
+        print('\n## Messages from the user for this attempt\n')
+        print('The user sent these while the task waited or ran. Follow them. Where one conflicts with the '
+              'requirements above, follow the message and say so in your reply.\n')
+    print('\n\n---\n\n'.join(texts))
+PY
+}
+
 prepare_prompt_retry() { # prepare_prompt_retry <plan> <id>
   local PLAN="$1" id="$2" tdir="$1/tasks/$2" st attempt n
   st="$(task_status "$PLAN" "$id")"

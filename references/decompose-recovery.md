@@ -13,6 +13,11 @@ Part of the decomposition reference; planning is in [decompose.md](decompose.md)
 
 ## Retrying, and resuming an interrupted run
 
+When the user wants to tell an implementer something (a hint, a correction, a constraint), queue it:
+`forge control steer <plan> <task> "text"` (live run or not). It starts nothing; the task's next implementer
+attempt gets it beside the findings, and that attempt is marked steered and left out of routing statistics.
+A running attempt is not interrupted (#134).
+
 A live `run` says at once when a task stops for the user while the rest goes on (#193):
 `forge: needs you: <task> NEEDS_DECISION (<reasons>) -> <plan>/tasks/<task>/decision.md`, the same with
 `NEEDS_INPUT (a question to answer)` and `needs_input.md`, and `forge: stopped: <task> INFRA (<cause>, no

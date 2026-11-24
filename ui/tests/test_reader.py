@@ -49,11 +49,11 @@ class ReaderTests(unittest.TestCase):
             'header': {'title': 'Read plan dirs', 'goal': 'Use standard Python.', 'criteria': None, 'links': []},
             'trail': [
                 {'attempt': 1, 'dwarf': None, 'verdict': None, 'findings': None, 'worst': None,
-                 'reason': 'first', 'executions': []},
+                 'reason': 'first', 'executions': [], 'steered': []},
                 {'attempt': 2, 'dwarf': None, 'verdict': None, 'findings': None, 'worst': None,
-                 'reason': 'unknown', 'executions': []},
+                 'reason': 'unknown', 'executions': [], 'steered': []},
                 {'attempt': 2, 'dwarf': None, 'verdict': None, 'findings': None, 'worst': None,
-                 'reason': 'unknown', 'executions': []}],
+                 'reason': 'unknown', 'executions': [], 'steered': []}],
             'wave': 1, 'status': 'MERGED', 'branch': 'forge/custom/reader', 'attempt': 2,
             'attempts': [
                 {'at': 1760620000.0, 'attempt': 1, 'status': 'FAIL', 'infra': None},
@@ -78,7 +78,7 @@ class ReaderTests(unittest.TestCase):
             'merged_at': (FIXTURE / 'tasks/reader/merged').stat().st_mtime, 'findings': NO_FINDINGS,
             'gate': None, 'known_issues': False, 'needs_input': None, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
             'infra': None, 'lateral': [], 'ledger': [], 'decision': None, 'decisions': [], 'attempts_total': 3, 'attempt_cap': 8,
-            'summary': None, 'summaries_override': None, 'brief': None,
+            'summary': None, 'summaries_override': None, 'brief': None, 'steer_waiting': [],
         })
         self.assertEqual((page['accepted'], page['accepted_attempt'], page['accepted_over']), (False, None, None))
         self.assertEqual(page['status'], 'RUNNING')
@@ -617,9 +617,9 @@ class ReaderTests(unittest.TestCase):
             'header': {'title': 'Ship the solo reader', 'goal': 'Implement the reader.', 'criteria': None, 'links': []},
             'trail': [
                 {'attempt': 1, 'dwarf': 'luna:low', 'verdict': None, 'findings': None, 'worst': None,
-                 'reason': 'first', 'executions': []},
+                 'reason': 'first', 'executions': [], 'steered': []},
                 {'attempt': 2, 'dwarf': 'sol:high', 'verdict': None, 'findings': None, 'worst': None,
-                 'reason': 'unknown', 'executions': []}],
+                 'reason': 'unknown', 'executions': [], 'steered': []}],
             'attempts': [
                 {'at': 1760620000.0, 'attempt': 1, 'status': 'FAIL', 'infra': None},
                 {'at': 1760621000.0, 'attempt': 2, 'status': 'RUNNING', 'infra': None}],
@@ -632,7 +632,7 @@ class ReaderTests(unittest.TestCase):
             'executions': [], 'merged_at': None, 'findings': NO_FINDINGS, 'gate': None, 'known_issues': False,
             'needs_input': None, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
             'infra': None, 'lateral': [], 'ledger': [], 'decision': None, 'decisions': [], 'attempts_total': 2, 'attempt_cap': None,
-            'summary': None, 'summaries_override': None, 'brief': None,
+            'summary': None, 'summaries_override': None, 'brief': None, 'steer_waiting': [],
         }])
         self.assertEqual(data['kind'], 'solo')
         self.assertIsNone(data['brief'])
@@ -695,7 +695,7 @@ class ReaderTests(unittest.TestCase):
             'qa_tail': None, 'dwarf_tail': None, 'executions': [], 'merged_at': None, 'findings': None,
             'gate': None, 'known_issues': False, 'needs_input': None, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
             'infra': None, 'lateral': [], 'ledger': [], 'decision': None, 'decisions': [], 'attempts_total': 0, 'attempt_cap': None,
-            'summary': None, 'summaries_override': None, 'brief': None,
+            'summary': None, 'summaries_override': None, 'brief': None, 'steer_waiting': [],
         }])
         json.dumps(data, allow_nan=False)
         run = self.base / 'neither'
@@ -1468,6 +1468,20 @@ class TaskSummaryTests(unittest.TestCase):
         self.assertEqual((len(summary['text']), summary['text'][-1]), (20001, '…'))
         self.assertEqual(summary['sentence'], 'y' * 20000)  # at the cap, not over it
         self.assertIn('tasks/graph/summary.text', detail(self.plan)['truncated'])
+
+    def test_steer_messages_waiting_and_given_to_an_attempt(self):
+        # #134: forge control steer's queue, and the messages an attempt was given (reader has attempts 1 and 2)
+        line = lambda text, actor='ui', at=1760605000.0: json.dumps(dict(at=at, actor=actor, text=text, sha256='ab', chars=len(text)))
+        (self.plan / 'tasks/graph/steer.jsonl').write_text(line('Keep the API.') + '\nnot json\n' + line('x' * 9000, 'cli') + '\n')
+        (self.plan / 'tasks/reader/steered.2.jsonl').write_text(line('Use the parser.', 'cli') + '\n')
+        tasks = self.tasks()
+        waiting = tasks['graph']['steer_waiting']
+        self.assertEqual([(m['actor'], m['chars'], len(m['text'])) for m in waiting], [('ui', 13, 13), ('cli', 9000, 8001)])
+        self.assertEqual(waiting[0]['text'], 'Keep the API.')
+        self.assertEqual(tasks['docs']['steer_waiting'], [])
+        steered = {item['attempt']: item['steered'] for item in tasks['reader']['trail']}
+        self.assertEqual(steered[1], [])
+        self.assertEqual(steered[2], [{'actor': 'cli', 'at': 1760605000.0, 'chars': 15}])
 
     def test_the_override_is_on_off_or_null(self):
         F.write(self.plan / 'tasks/reader/summaries', 'off\n')

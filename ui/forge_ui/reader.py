@@ -1616,8 +1616,32 @@ def _attempt_review(execs, attempt):
     return chosen
 
 
-def _trail(reader, rows, execs, sources_name, escalations, queue_times):
-    """One entry per attempts.tsv row: its review, why it ran, and its execution ids."""
+_STEER_LIMIT = 50   # messages read from one steer file
+
+
+def _steer_list(reader, name, with_text=False):
+    """The messages of a steer file (#134: `forge control steer`), oldest first: `{actor, at, chars}`, and `text`
+    (capped) when asked. A line that is not such an object is warned and skipped."""
+    out = []
+    for n, line in enumerate((reader.text(name) or '').splitlines()[:_STEER_LIMIT], 1):
+        if not line.strip():
+            continue
+        obj = reader.object(f'{name} line {n}', line)
+        if not isinstance(obj, dict) or not isinstance(obj.get('text'), str):
+            if obj is not None:
+                reader.warn(name, f'line {n} is not a message')
+            continue
+        item = dict(actor=obj.get('actor') if isinstance(obj.get('actor'), str) else None,
+                    at=obj.get('at') if _is_number(obj.get('at')) else None, chars=len(obj['text']))
+        if with_text:
+            item['text'] = reader.cap(obj['text'], name, size=8000)
+        out.append(item)
+    return out
+
+
+def _trail(reader, rows, execs, sources_name, escalations, queue_times, prefix=None):
+    """One entry per attempts.tsv row: its review, why it ran, its execution ids, and the messages a person sent it
+    (`steered`, a plan task's only)."""
     sources = _retry_sources(reader, sources_name)
     manual = _manual_indexes(rows, queue_times)
     result = []
@@ -1634,7 +1658,9 @@ def _trail(reader, rows, execs, sources_name, escalations, queue_times):
             worst=summary.get('worst') if summary else None, reason=_attempt_reason(
                 index, row, rows, sources, escalations, manual),
             executions=[item['id'] for item in execs
-                        if item.get('attempt') == row['attempt'] and not item.get('shadow')]))
+                        if item.get('attempt') == row['attempt'] and not item.get('shadow')],
+            steered=_steer_list(reader, f"{prefix}/steered.{row['attempt']}.jsonl")
+            if prefix and isinstance(row['attempt'], int) else []))
     return result
 
 
@@ -1959,7 +1985,8 @@ def _task_detail(reader, task, run_id, waves, branches, max_attempts, origin, re
     execs = _task_execs(reader, task)
     task['executions'] = execs
     task['header'] = _header(reader, task['title'], texts['prompt'], texts['approach'], request, prefix, origin)
-    task['trail'] = _trail(reader, logged, execs, prefix + '/retry_sources.tsv', task['escalations'], queues)
+    task['trail'] = _trail(reader, logged, execs, prefix + '/retry_sources.tsv', task['escalations'], queues, prefix)
+    task['steer_waiting'] = _steer_list(reader, prefix + '/steer.jsonl', with_text=True)
     task['now'] = _now(reader, prefix, execs) if task['status'] == 'RUNNING' else None
     merged = reader.stat(prefix + '/merged') if task['status'] == 'MERGED' else None
     task['merged_at'] = float(merged.st_mtime) if merged is not None else None
@@ -2056,7 +2083,7 @@ def _sweep(reader, tasks):
 _RUN_CONTROLS = ('control.log', 'retry_budget', 'infra_budget', 'drain', 'stop', 'max_parallel', 'infra.paused', 'infra.last',
                  'infra_backoff', 'escalate_effort', 'control.requests', 'summaries', 'summaries_model')
 _TASK_CONTROLS = ('qa_threshold', 'retry_budget', 'retries.used', 'escalation.pin', 'escalation.stop', 'escalation.next',
-                  'summaries')
+                  'summaries', 'steer.jsonl')
 
 
 _FAIL_FIRST_RESULTS = ('proven', 'passes_without_change', 'inconclusive', 'error')
@@ -2584,7 +2611,7 @@ def _solo_detail(reader, source):
                 gate=_gate(reader, 'qa.gate'), known_issues=_nonempty(reader, 'known_issues.md'),
                 fail_first=_fail_first(reader, 'failfirst.json'), pre_review=None,
                 now=_now(reader, '', execs) if status == 'RUNNING' else None, waiting=None, sweep=None, swept=[],
-                summary=None, summaries_override=None, brief=None)
+                summary=None, summaries_override=None, brief=None, steer_waiting=[])
     task['header'] = _header(reader, task['title'], prompt, approach, request, 'tasks/solo',
                              _github_origin(reader))
     task['trail'] = _trail(reader, logged, execs, 'retry_sources.tsv', [], _queued_retries(reader).get('solo', ()))

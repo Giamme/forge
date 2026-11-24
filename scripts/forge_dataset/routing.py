@@ -93,6 +93,9 @@ def tasks(runs: Runs, *, repo=None, since=None) -> list:
                 rows[tid] = row
                 decisions[tid].extend(row.get('route') or [])
         for tid, row in rows.items():
+            # A steered task (#134) is left out whole: its later attempts and its outcome carry a person's nudge.
+            if (run, tid) in runs.steered and not runs.include_steered:
+                continue
             events = runs.attempts.get((run, tid), [])
             attempts = _attempts(runs, run, tid, events)
             first = attempts[0] if attempts else None
@@ -241,7 +244,7 @@ def _pct(x):
 def main(args) -> int:
     db = connect()
     try:
-        runs = Runs(Store(db))
+        runs = Runs(Store(db), include_steered=getattr(args, 'include_steered', False))
     finally:
         db.close()
     repo = os.path.realpath(args.repo) if args.repo else None
