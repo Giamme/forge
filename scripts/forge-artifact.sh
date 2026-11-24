@@ -223,10 +223,11 @@ forge_review_deps() { # source checkout, review snapshot, note file, [extra path
   } > "$3"
 }
 
-forge_tests_note() { # QA reply: the reason, when the reviewer says its tests could not run (#117)
+forge_tests_note() { # QA reply: the reason, when the reviewer says its tests were partial or could not run (#117, #223)
   grep -qs 'FORGE_TESTS:' "$1" || return 0
   python3 "$SKILL_DIR/scripts/forge-contract.py" tests --qa-last "$1" 2>/dev/null |
-    awk -F'\t' '$1 == "could_not_run" { print ($2 == "" ? "no reason given" : $2) }'
+    awk -F'\t' '$1 == "could_not_run" { print ($2 == "" ? "no reason given" : $2) }
+                $1 == "partial" { print "partial: " ($2 == "" ? "some checks stopped or skipped" : $2) }'
 }
 
 forge_fingerprint() { # forge_fingerprint <dir> [--tracked], as forge_tree

@@ -35,11 +35,14 @@ failure — excluded from integration and flagged. Merging a diff whose reviewer
 a conclusion would defeat the point of reviewing it, so the ambiguous case fails safe.
 
 Before the verdict, a reviewer says whether its tests ran: `FORGE_TESTS: RAN`,
-`FORGE_TESTS: RAN — FAILED: <names>`, `FORGE_TESTS: NOT NEEDED — why` or
-`FORGE_TESTS: COULD NOT RUN — why`. Plain `RAN`, `NOT NEEDED` and `COULD NOT RUN` never change the
-verdict, while `RAN — FAILED: <names>` (or a `FORGE_TESTS_FAILED: <names>` line) stops the gate
-from accepting a FAIL and turns a PASS into FAIL. `COULD NOT RUN` prints a note, and forge-ui and
-the dataset record the status, so a review that judged the diff by reading alone can be told apart.
+`FORGE_TESTS: RAN — FAILED: <names>`, `FORGE_TESTS: PARTIAL — <what stopped or was skipped>`,
+`FORGE_TESTS: NOT NEEDED — why` or `FORGE_TESTS: COULD NOT RUN — why`. Checks listed in the
+brief's acceptance criteria take priority over the 5-minute guideline (or set `--qa-test-minutes N`,
+`0` for no separate minute cap); any stopped or skipped check must report `PARTIAL` rather than
+`RAN`. Plain `RAN`, `PARTIAL`, `NOT NEEDED` and `COULD NOT RUN` never change the verdict, while
+`RAN — FAILED: <names>` (or a `FORGE_TESTS_FAILED: <names>` line) stops the gate from accepting a
+FAIL and turns a PASS into FAIL. `PARTIAL` and `COULD NOT RUN` print a note, and forge-ui and the
+dataset record the status so a review that skipped acceptance checks stands out cleanly.
 Markup and any separator are accepted, and a line that says something else is recorded as `unclear`.
 An older reply has no such line.
 

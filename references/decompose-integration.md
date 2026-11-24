@@ -155,9 +155,11 @@ that is only partly committed (`vendor/.gitkeep`) keeps its committed files and 
 guards a write through a link: forge commits whatever git does not ignore, so a linked path is an
 ignored one (anything the attempt committed is already in the snapshot and gets no link), and a
 write there changes nothing that merges. A link dangles once its worktree is removed, which harms
-nothing. Each reviewer ends with `FORGE_TESTS: RAN`, `RAN — FAILED: <names>`, `NOT NEEDED — why` or
-`COULD NOT RUN — why`; `FAILED` keeps the gate from accepting a FAIL, `COULD NOT RUN` prints a
-note, and forge-ui and the dataset show it.
+nothing. Each reviewer ends with `FORGE_TESTS: RAN`, `RAN — FAILED: <names>`,
+`PARTIAL — <what stopped or was skipped>`, `NOT NEEDED — why` or `COULD NOT RUN — why`;
+checks in a brief's acceptance criteria take priority over the 5-minute guideline (set
+`--qa-test-minutes N` or `0` to adjust), `FAILED` keeps the gate from accepting a FAIL, `PARTIAL`
+and `COULD NOT RUN` print a note, and forge-ui and the dataset show it.
 
 Forge does not guess this step, and the obvious guess is worth naming because it looks right and
 is not: symlinking the source repo's `node_modules` into the worktree. In a workspace monorepo the

@@ -301,7 +301,12 @@ do_adopt() {
     fi
     echo
     [ -z "$prev" ] || adopt_carry "$prev" "$psrc" "$source" "$int_wt" "$out"
-    python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind adopt --threshold "$thr"
+    local _tm="" _tm_flag=()
+    if [ -f "$PLAN/qa_test_minutes" ]; then
+      _tm="$(head -1 "$PLAN/qa_test_minutes" 2>/dev/null | tr -d ' \r')"
+      case "$_tm" in ''|*[!0-9]*) ;; *) _tm_flag=(--test-minutes "$_tm") ;; esac
+    fi
+    python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind adopt --threshold "$thr" ${_tm_flag[@]+"${_tm_flag[@]}"}
     echo
     if [ "$inline" = 1 ]; then
       echo '```diff'; cat "$out/range.diff"; echo '```'

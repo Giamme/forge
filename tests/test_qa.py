@@ -118,6 +118,11 @@ class GateTableTests(unittest.TestCase):
                 ('ran', 'FORGE_TESTS: RAN', dict(status='ran', reason=None)),
                 ('ran, with a count', 'FORGE_TESTS: RAN (3 passed)', dict(status='ran', reason='3 passed')),
                 ('not needed', 'FORGE_TESTS: NOT NEEDED — docs only', dict(status='not_needed', reason='docs only')),
+                ('partial', 'FORGE_TESTS: PARTIAL — typecheck:tests stopped after 5m',
+                 dict(status='partial', reason='typecheck:tests stopped after 5m')),
+                ('partial echoed after real partial',
+                 'FORGE_TESTS: PARTIAL — typecheck stopped\n  FORGE_TESTS: PARTIAL — <what stopped or was skipped>',
+                 dict(status='partial', reason='typecheck stopped')),
                 ('a hyphen, CRLF', 'FORGE_TESTS: COULD NOT RUN - no deps\r', could_not),
                 ('a colon', 'FORGE_TESTS: COULD NOT RUN: no deps', could_not),
                 ('brackets', 'FORGE_TESTS: COULD NOT RUN (no deps)', could_not),
@@ -144,8 +149,16 @@ class GateTableTests(unittest.TestCase):
             with self.subTest(kind):
                 tail = contract.qa_text('tail', kind)
                 self.assertIn('FORGE_TESTS: RAN — FAILED: <names>', tail)
+                self.assertIn('FORGE_TESTS: PARTIAL — <what stopped or was skipped>', tail)
                 self.assertIn('FORGE_TESTS: COULD NOT RUN', tail)
                 self.assertIn('do not install anything', tail)     # report it, rather than hunt for dependencies
+                self.assertIn('take priority over that 5-minute guideline', tail)
+        uncapped = contract.qa_text('tail', 'task', test_minutes=0)
+        self.assertIn('no separate test-minute cap', uncapped)
+        self.assertNotIn('5 minutes', uncapped)
+        raised = contract.qa_text('tail', 'task', test_minutes=15)
+        self.assertIn('15 minutes', raised)
+        self.assertIn('15-minute guideline', raised)
         reply = '- [P3][CONFIRMED] a.py:1 — x\n  more about x\nFORGE_TESTS: COULD NOT RUN — path/b.py:2 needs a display\nFORGE_VERDICT: PASS'
         findings = contract.parse_findings(reply)
         self.assertEqual(len(findings), 1)
@@ -530,7 +543,8 @@ class PromptTextTests(unittest.TestCase):
         for kind in contract.KINDS:
             tail = ' '.join(contract.qa_text('tail', kind).split())
             for phrase in ('only the tests that touch the changed code', 'never the whole suite',
-                           '%d minutes' % contract.QA_TEST_MINUTES, 'say so instead of running everything'):
+                           '%d minutes' % contract.QA_TEST_MINUTES,
+                           'report what stayed unchecked with PARTIAL instead of RAN'):
                 self.assertIn(phrase, tail, (kind, phrase))
 
     def test_the_implementer_verifies_within_its_change(self):
@@ -690,12 +704,33 @@ class PromptTextTests(unittest.TestCase):
             'Use FAILED only for tests failing because of this change; mention unrelated failures in\n'
             'prose.\n'
         )
+        v018_verify = (
+            'spend at most about 5 minutes running tests. Use any test evidence forge gives you above\n'
+            'before running a test yourself. When the targeted tests would take longer, or the change\n'
+            'touches shared infrastructure (a test helper, a build file, a lockfile), say so instead of\n'
+            'running everything. If a test needs a dependency your checkout does not have, do not look for\n'
+            'it elsewhere and do not install anything: report that it could not run.\n'
+        )
+        v223_verify = (
+            "spend at most about 5 minutes running tests. Checks named in the task's acceptance\n"
+            'criteria take priority over that 5-minute guideline: run them unless the review\n'
+            'timeout stops them, and never report an unrun or stopped acceptance check as RAN. Use\n'
+            'any test evidence forge gives you above before running a test yourself. When a targeted\n'
+            'or required check is stopped at a time limit or skipped (such as shared infrastructure),\n'
+            'report what stayed unchecked with PARTIAL instead of RAN. If a test needs a dependency\n'
+            'your checkout does not have, do not look for it elsewhere and do not install anything:\n'
+            'report that it could not run.\n'
+        )
         for (kind, part, threshold), digest in _V018.items():
             with self.subTest(kind=kind, part=part, threshold=threshold):
                 text = contract.qa_text(part, kind, threshold)
                 if part == 'tail':
+                    self.assertEqual(text.count(v223_verify), 1)
+                    text = text.replace(v223_verify, v018_verify, 1)
                     self.assertEqual(text.count('  FORGE_TESTS: RAN — FAILED: <names>\n'), 1)
                     text = text.replace('  FORGE_TESTS: RAN — FAILED: <names>\n', '', 1)
+                    self.assertEqual(text.count('  FORGE_TESTS: PARTIAL — <what stopped or was skipped>\n'), 1)
+                    text = text.replace('  FORGE_TESTS: PARTIAL — <what stopped or was skipped>\n', '', 1)
                     self.assertEqual(text.count(verify_extra), 1)
                     text = text.replace(verify_extra, '', 1)
                     rank = threshold or contract.DEFAULT_THRESHOLD
