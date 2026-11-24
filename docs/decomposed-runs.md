@@ -396,9 +396,26 @@ forge control steer <plan-dir> docs --file note.md     # or --file - for stdin; 
 A message starts nothing. It waits in `tasks/<id>/steer.jsonl` until the task's next implementer
 attempt starts, whatever starts it (the run's own retry, `forge control retry`, a resume), and goes
 into that attempt's prompt beside any review findings; the reviewer of that attempt sees it too, as
-part of the requirements. A running attempt is not interrupted: the probes for #134 found no route
-that works on every harness. `control.log` records `steer` (the length and a hash, never the text)
-and `steer-delivered` with the attempt. The attempt is marked steered in forge-ui and in the dataset,
+part of the requirements. A running attempt is not interrupted. `control.log` records `steer` (the
+length and a hash, never the text) and `steer-delivered` with the attempt.
+
+A claude or openclaude implementer also takes a message **while it runs** (#252):
+
+```bash
+forge control steer <plan-dir> docs "the fixture is wrong, not the code" --now
+```
+
+`--now` gives the message to the task's running implementer at its next tool call, inside the same
+turn, without stopping it. Those implementers start with `--input-format stream-json
+--replay-user-messages`: forge feeds the prompt as the first message, then each `--now` message, and
+the log replays each one where the CLI took it in. `--now` is refused (exit 3) when the task has no
+implementer running live, so nothing is queued by mistake: another harness, Windows, a CLI whose help
+lacks the flags, `FORGE_LIVE_STEER=off`, or no attempt running. A message that arrives after the
+model's final result goes back to the queue for the next attempt. `control.log` records `steer`
+(value `live`) and `steer-sent` with the attempt, and the message joins that attempt's messages with
+`mode: live`, so its reviewer sees it too. Because the CLI's input stays open, forge ends the
+implementer `FORGE_LIVE_GRACE` seconds (default 10) after its final result when no background task is
+open; with one open, the result grace below applies. The attempt is marked steered in forge-ui and in the dataset,
 and `forge dataset routing`, `reviewers`, `pairs` and `export` leave a steered task out from its
 first steered attempt on unless given `--include-steered`. forge-ui's leaderboard censors those attempts.
 

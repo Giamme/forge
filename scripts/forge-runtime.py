@@ -796,14 +796,32 @@ def settled_result(text: str) -> dict | None:
     return found
 
 
-def settle(log: str, grace: str, pid: str) -> None:
+def open_background(text: str) -> bool:
+    """Whether the session's last list of background tasks (system/background_tasks_changed) names any. A log
+    that never lists them has none open."""
+    tasks = []
+    for event in _events(text)[0]:
+        if event.get('type') == 'system' and event.get('subtype') == 'background_tasks_changed':
+            tasks = event.get('tasks') if isinstance(event.get('tasks'), list) else []
+    return bool(tasks)
+
+
+def settle(log: str, grace: str, pid: str, quick: str = '') -> None:
     """Returns once the harness log ends in a settled result (settled_result) and has not grown for `grace`
     seconds of the machine's awake time; exits 1 once process `pid`, the harness, is gone. dispatch then ends
     the harness: its answer is in, and only a background task keeps it open. An idle log whose last turn is
-    still under way (a long command) is never ended here; that is the watchdog's."""
+    still under way (a long command) is never ended here; that is the watchdog's.
+
+    `quick` (live steering, #252): a CLI whose input forge holds open never exits after its result, so with no
+    background task open the wait is `quick` seconds instead. A grace of 0 then means only the quick path.
+    Prints which wait ended it: quick or grace."""
     grace_s, target = float(grace), int(pid)
-    poll = min(SETTLE_POLL_S, max(grace_s / 4, 0.05))
-    size, since, judged = None, time.monotonic(), None
+    quick_s = float(quick) if quick else None
+    waits = [w for w in (grace_s if grace_s > 0 else None, quick_s) if w is not None]
+    if not waits:
+        raise ValueError('settle needs a grace or a quick grace')
+    poll = min(SETTLE_POLL_S, max(min(waits) / 4, 0.05))
+    size, since, verdict = None, time.monotonic(), None   # verdict: (settled, background open) of this size
     while True:
         if forge_proc.IS_WINDOWS:
             if not forge_proc.pid_alive(target):
@@ -820,14 +838,21 @@ def settle(log: str, grace: str, pid: str) -> None:
         except OSError:
             now = None
         if now != size:
-            size, since = now, time.monotonic()
-        elif judged != size and time.monotonic() - since >= grace_s:
-            judged = size              # read once per size: an idle log mid-turn is not read again and again
-            try:
-                text = Path(log).read_text(errors='replace')
-            except OSError:
-                text = ''
-            if settled_result(text) is not None:
+            size, since, verdict = now, time.monotonic(), None
+        elif time.monotonic() - since >= min(waits):
+            if verdict is None:        # read once per size: an idle log mid-turn is not read again and again
+                try:
+                    text = Path(log).read_text(errors='replace')
+                except OSError:
+                    text = ''
+                settled = settled_result(text) is not None
+                verdict = (settled, settled and open_background(text))
+            idle = time.monotonic() - since
+            if verdict[0] and quick_s is not None and idle >= quick_s and not verdict[1]:
+                print('quick')
+                return
+            if verdict[0] and grace_s > 0 and idle >= grace_s:
+                print('grace')
                 return
         time.sleep(poll)
 

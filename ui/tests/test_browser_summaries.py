@@ -222,6 +222,28 @@ class Summaries(unittest.TestCase):
         self.assertIn('Queued for the next attempt (2 waiting)', page.text_content('#inspector .steer-msgs'))
         self.assertClean(page)
 
+    def test_a_running_live_implementer_takes_a_message_now(self):
+        # #252: while the task's implementer runs live (steer.live names a live feeder), Send now posts {now: true}
+        F.write(self.plan / 'tasks/graph/steer.live', json.dumps({'attempt': 3, 'pid': os.getpid()}) + '\n')
+        sent = []
+
+        def steer(route):
+            sent.append(json.loads(route.request.post_data))
+            route.fulfill(status=200, content_type='application/json',
+                          body=json.dumps({'ok': True, 'queued': False, 'sent': True, 'task': 'graph', 'attempt': 3,
+                                           'waiting': 1, 'live': True, 'chars': 4}))
+        page = self.open(cdn=False, view='2d')
+        page.route(re.compile(r'/api/runs/[^/]+/tasks/graph/steer$'), steer)
+        page.goto(self.url + '#/runs/' + self.key + '/tasks/graph')
+        page.wait_for_selector('#inspector .steer-box button:text-is("Send now")')
+        self.assertIn('attempt 3 is running live', page.text_content('#inspector .steer-section'))
+        page.fill('#inspector .steer-box textarea', 'Now.')
+        page.click('#inspector .steer-box button:text-is("Send now")')
+        page.wait_for_selector('#inspector .steer-msgs .ui-outcome.ok')
+        self.assertEqual(sent, [{'text': 'Now.', 'now': True}])
+        self.assertIn('next tool call', page.text_content('#inspector .steer-msgs'))
+        self.assertClean(page)
+
     def test_a_poll_keeps_the_keyboard_on_the_task_switch(self):
         page = self.open(cdn=False, view='2d')
         page.route(CONTROLS, self.control)

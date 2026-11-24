@@ -13,6 +13,9 @@
 #                                  (claude, openclaude, codex; custom prompt only)
 #   forge-dispatch.sh dwarf <spec> ... --continue-session <id>   continue that implementer session
 #                                  (claude, openclaude)
+#   forge-dispatch.sh dwarf <spec> ... --steer <plan> <task> <attempt>   live steering (#252): a claude or
+#                                  openclaude implementer takes the task's `forge control steer --now`
+#                                  messages while it runs (stream-json input fed by forge-control.py)
 #   forge-dispatch.sh side  <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>] [--yolo] [--dry-run]
 #                                  read-only; a brief or summary dispatch (default effort low)
 #   any role: [--no-ripwire] [--ripwire-query-file <requirements>]
@@ -44,6 +47,10 @@
 #                                  result may stay silent before forge ends the harness (an open
 #                                  background task keeps it up); default 1800, 0 = off. Either way
 #                                  a dispatch killed after that result is not a timeout.
+#              FORGE_LIVE_STEER    off = never run an implementer live, --steer or not (default on)
+#              FORGE_LIVE_GRACE    live steering: seconds of silence after the final result, with no
+#                                  background task open, before forge ends the harness (default 10;
+#                                  its input stays open, so it never exits by itself)
 #
 # Exit codes: 0 ok | 2 usage/resolution error | 3 harness missing or unusable
 #             (including a --service-tier fast the harness cannot take per invocation)
@@ -288,6 +295,7 @@ SPEC="$1"; shift
 RIPWIRE_QUERY=""
 OUTPUT=full
 REPO="$PWD"; RUN_DIR=""; PROMPT_FILE=""; YOLO=0; DRY=0; REVIEW_BASE=""; PROMPT_VIA_STDIN=0; NATIVE_REVIEW=0; CONTINUE_ID=""; CONTINUE_GIVEN=0; AGY_TIMEOUT="30m"; TIMEOUT_FLAG=""; SERVICE_TIER=""
+LIVE=0; LIVE_PLAN=""; LIVE_TASK=""; LIVE_ATTEMPT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-ripwire) export FORGE_RIPWIRE=off; shift ;;
@@ -304,6 +312,8 @@ while [ $# -gt 0 ]; do
     --service-tier) [ $# -ge 2 ] || die "--service-tier needs a value"; [ "$2" = fast ] || die "--service-tier accepts only fast"; SERVICE_TIER=fast; shift 2 ;;
     --yolo)         YOLO=1; shift ;;
     --dry-run)      DRY=1; shift ;;
+    --steer)        [ $# -ge 4 ] || die "--steer needs a plan dir, a task id and an attempt number"
+                    LIVE_PLAN="$2"; LIVE_TASK="$3"; LIVE_ATTEMPT="$4"; shift 4 ;;
     *)              die "unknown option '$1'" ;;
   esac
 done
@@ -462,6 +472,24 @@ RESULT_GRACE="${FORGE_RESULT_GRACE:-1800}"
 case "$RESULT_GRACE" in ''|*[!0-9]*) die "FORGE_RESULT_GRACE must be a nonnegative integer" ;; esac
 [ "${#RESULT_GRACE}" -gt 9 ] || RESULT_GRACE=$((10#$RESULT_GRACE))
 
+# --- live steering (#252) -------------------------------------------------------
+# A claude or openclaude implementer given --steer reads stream-json on stdin: forge-control.py
+# _steer-feed sends the prompt as the first user message, then each `forge control steer --now`
+# message, which the CLI takes in at its next tool boundary. Windows has no FIFO for the feed, so
+# it dispatches as before. Preflight turns it off for a CLI whose help lacks the input flags.
+LIVE_GRACE="${FORGE_LIVE_GRACE:-10}"
+case "$LIVE_GRACE" in ''|*[!0-9]*) die "FORGE_LIVE_GRACE must be a nonnegative integer" ;; esac
+if [ -n "$LIVE_PLAN" ]; then
+  case "$LIVE_ATTEMPT" in ''|0*|*[!0-9]*) die "--steer needs a positive attempt number" ;; esac
+  [ -d "$LIVE_PLAN" ] || die "--steer: '$LIVE_PLAN' is not a directory"
+  LIVE_PLAN="$(cd "$LIVE_PLAN" && pwd)"
+  case "${FORGE_LIVE_STEER:-on}" in off|OFF|Off|0|no|false) ;; *)
+    if [ "$ROLE" = dwarf ] && ! forge_is_windows; then
+      case "$HARNESS" in claude|openclaude) LIVE=1 ;; esac
+    fi ;;
+  esac
+fi
+
 # --- run dir & prompt ---------------------------------------------------------
 [ -d "$REPO" ] || die "--repo '$REPO' is not a directory"
 REPO="$(cd "$REPO" && pwd)"
@@ -488,6 +516,8 @@ if [ "$PREFLIGHT" != 1 ] && [ "$DRY" != 1 ]; then
   # dispatch and must not be the thing that hangs it.
   exit_cleanup() {
     [ -z "${tpid:-}" ] || kill -TERM "$tpid" 2>/dev/null
+    # Live steering: the feeder ends with its harness; its unsent messages go back to the queue.
+    [ "${LIVE:-0}" != 1 ] || [ -z "${FEED_STOP:-}" ] || { : > "$FEED_STOP"; } 2>/dev/null
     local _hw="${hwinpid:-${hpid:-}}"
     if [ -n "${hpid:-}" ] && kill -0 "$hpid" 2>/dev/null; then
       [ "${GUARD_ON:-0}" != 1 ] || forge_kill_group "$hpid" TERM
@@ -664,6 +694,9 @@ build_cmd() {
       # its conversation (forge-ui reads it), ending in the `result` line forge-runtime.py
       # takes the final message and the tokens from. stream-json needs --verbose with -p.
       CMD+=(--output-format stream-json --verbose)
+      # Live steering (#252): the prompt and later messages come as stream-json user messages, and
+      # the log replays each one where the CLI took it in (forge-ui shows them in the conversation).
+      [ "$LIVE" != 1 ] || CMD+=(--input-format stream-json --replay-user-messages)
       [ -n "$EFFORT" ] && CMD+=(--effort "$EFFORT")
       # Hidden: claude --help does not list it. openclaude has no per-invocation tier
       # and is refused before build_cmd; this guard keeps the flag off its argv too.
@@ -817,6 +850,16 @@ preflight_command() {
     codex) help_args=(exec --help); continue_args=(exec resume --help); [ "$NATIVE_REVIEW" = 1 ] && help_args=(exec review --help) ;;
     opencode) help_args=(run --help) ;;
   esac
+  # A CLI that does not advertise the stream-json input runs as before, without live steering.
+  if [ "$LIVE" = 1 ]; then
+    help="$(capability_help "$bin" --help 2>/dev/null)" || help=""
+    for flag in --input-format --replay-user-messages; do
+      printf '%s\n' "$help" | grep -E -- "(^|[[:space:],|])$flag([=[:space:],|]|$)" >/dev/null && continue
+      LIVE=0; build_cmd
+      note "$HARNESS does not advertise $flag; this implementer runs without live steering"
+      break
+    done
+  fi
   # grok's help hides --background-wait-timeout, which every grok recipe passes. grok checks
   # every flag and its value before it answers --help, so a help call with the flag in front
   # proves it exists.
@@ -859,6 +902,7 @@ if [ "$DRY" != 1 ] || [ "$PREFLIGHT" = 1 ]; then preflight_command; fi
   echo "timeout=$LIMIT"
   echo "timeout_source=$LIMIT_SOURCE"
   case "$HARNESS" in claude|openclaude) echo "result_grace=$RESULT_GRACE" ;; esac
+  [ "$LIVE" != 1 ] || echo "steer=live"
   # Native review ignores the assembled prompt, so whether it reached the model is a fact
   # worth recording rather than inferring from the role and harness later.
   echo "delivery=$([ "$NATIVE_REVIEW" = 1 ] && echo native_review || echo custom)"
@@ -945,7 +989,16 @@ RUNCMD=("${CMD[@]}")
 [ -z "${FORGE_WIN_AGENT_PATH:-}" ] || RUNCMD=(env -u MSYS -u FORGE_WIN_AGENT_PATH "PATH=$FORGE_WIN_AGENT_PATH" "MSYSTEM=${FORGE_WIN_MSYSTEM-}" "${CMD[@]}")
 [ "$GUARD_ON" != 1 ] || RUNCMD=(python3 "$D_GUARD" session -- "${RUNCMD[@]}")
 role_env() { [ -z "$D_ROLE_TMP" ] || export TMPDIR="$D_ROLE_TMP" TMP="$D_ROLE_TMP" TEMP="$D_ROLE_TMP"; }
-if [ "$PROMPT_VIA_STDIN" = 1 ]; then
+FEED_STOP="$RUN_DIR/$ROLE.feed.stop"; FEED_PID="$RUN_DIR/$ROLE.feed.pid"
+if [ "$LIVE" = 1 ]; then
+  # The feeder is the harness's stdin, and the harness becomes its parent through the exec: it stops
+  # when the model ends its turn, when the harness is gone, or when FEED_STOP appears. Its own
+  # messages go to $ROLE.feed, never into the log forge parses.
+  rm -f "$FEED_STOP" "$FEED_PID"
+  ( cd "$REPO" && role_env && exec "${RUNCMD[@]}" < <(exec python3 "$SKILL_DIR/scripts/forge-control.py" _steer-feed "$LIVE_PLAN" "$LIVE_TASK" \
+      "$LIVE_ATTEMPT" "$PROMPT_FILE" "$LOG" --harness "$HARNESS" --stop "$FEED_STOP" --pidfile "$FEED_PID" \
+      </dev/null 2>>"$RUN_DIR/$ROLE.feed") ) > "$LOG" 2>&1 &
+elif [ "$PROMPT_VIA_STDIN" = 1 ]; then
   ( cd "$REPO" && role_env && { ! forge_is_windows || export MSYS_NO_PATHCONV=1; } && exec "${RUNCMD[@]}" < "$PROMPT_FILE" ) > "$LOG" 2>&1 &
 else
   ( cd "$REPO" && role_env && { ! forge_is_windows || export MSYS_NO_PATHCONV=1; } && exec "${RUNCMD[@]}" </dev/null ) > "$LOG" 2>&1 &
@@ -978,6 +1031,18 @@ if [ "$GUARD_ON" = 1 ]; then
   python3 "$GUARD" track "$hwinpid" "$RUN_DIR/$ROLE.tracked" </dev/null >/dev/null 2>&1 & tpid=$!
 fi
 
+stop_feeder() {
+  local fp n=0
+  : > "$FEED_STOP" 2>/dev/null
+  fp="$(cat "$FEED_PID" 2>/dev/null)"
+  case "$fp" in ''|*[!0-9]*) fp="" ;; esac
+  while [ -n "$fp" ] && kill -0 "$fp" 2>/dev/null && [ "$n" -lt 30 ]; do sleep 0.1; n=$((n + 1)); done
+  [ -z "$fp" ] || kill -TERM "$fp" 2>/dev/null
+  n="$(python3 "$SKILL_DIR/scripts/forge-control.py" _steer-close "$LIVE_PLAN" "$LIVE_TASK" 2>/dev/null)" || n=0
+  case "$n" in ''|*[!0-9]*|0) ;; *) note "$n live message(s) arrived after the implementer's final result; they wait for the task's next attempt" ;; esac
+  rm -f "$FEED_STOP" "$FEED_PID"
+}
+
 # Ends the harness: the whole process group first when the harness has its own (GUARD_ON),
 # then children, then the process itself, then SIGKILL for a CLI that traps TERM and takes
 # its time. Without the guard there is no group to signal as a unit.
@@ -1008,13 +1073,19 @@ if [ "${LIMIT:-0}" != "0" ]; then
 fi
 # A final result the CLI stays open after (#110): once the log ends in it and has been silent for
 # the grace, the harness is ended like a timeout, but the result stands (see below).
-spid=""
+# Live, its input stays open, so the CLI never exits by itself: with no background task open,
+# FORGE_LIVE_GRACE of silence after the result is enough.
+spid=""; LIVE_QUICK=""; [ "$LIVE" != 1 ] || LIVE_QUICK="$LIVE_GRACE"
+rm -f "$RUN_DIR/.$ROLE.settle"
 case "$HARNESS" in claude|openclaude)
-  if [ "$RESULT_GRACE" != 0 ]; then
+  if [ "$RESULT_GRACE" != 0 ] || [ "$LIVE" = 1 ]; then
     (
-      python3 "$RUNTIME" settle "$LOG" "$RESULT_GRACE" "$hwinpid" </dev/null || exit 0
+      # Straight into the file, not through $(...): the settler stays this watcher's own child, so
+      # the kill after `wait` below reaches it (a grandchild would outlive the dispatch, holding
+      # whatever it inherited, such as a solo run's lock).
+      python3 "$RUNTIME" settle "$LOG" "$RESULT_GRACE" "$hwinpid" ${LIVE_QUICK:+"$LIVE_QUICK"} </dev/null > "$RUN_DIR/.$ROLE.settle" || exit 0
       kill -0 "$hpid" 2>/dev/null || exit 0
-      : > "$RUN_DIR/$ROLE.settled"
+      mv -f "$RUN_DIR/.$ROLE.settle" "$RUN_DIR/$ROLE.settled"
       stop_harness
     ) >/dev/null 2>&1 &
     spid=$!
@@ -1037,12 +1108,16 @@ for watcher in $wpid $spid; do
   kill "$watcher" 2>/dev/null
   wait "$watcher" 2>/dev/null
 done
+rm -f "$RUN_DIR/.$ROLE.settle"
 # Anything the harness left running in its group is an abandoned background job, and so is
 # anything the tracker saw it start that is still alive, in whatever session: a timeout stops
 # the harness, not the test servers its tools started (#129). Kill them before reading the
 # tree, and leave the list for the caller. Bounded (~6s) and advisory: a reaper failure
 # changes nothing about the exit code.
 if [ -n "$tpid" ]; then kill -TERM "$tpid" 2>/dev/null; wait "$tpid" 2>/dev/null; tpid=""; fi
+# The feeder is forge's, not the harness's: it is stopped (at most ~3s) before the reap below could
+# count it as an orphan, and what it left unsent goes back to the queue for the next attempt.
+[ "$LIVE" != 1 ] || stop_feeder
 if [ "$GUARD_ON" = 1 ]; then
   orphans_found="$(python3 "$GUARD" reap "$hwinpid" "$RUN_DIR/$ROLE.orphans" --tracked "$RUN_DIR/$ROLE.tracked" 2>/dev/null)"
   case "$orphans_found" in ''|*[!0-9]*|0) ;; *) note "$HARNESS left $orphans_found process(es) running after it exited; killed — see $RUN_DIR/$ROLE.orphans" ;; esac
@@ -1068,12 +1143,14 @@ if [ -f "$RUN_DIR/$ROLE.settled" ] || [ -f "$RUN_DIR/$ROLE.timedout" ]; then
   case "$HARNESS" in claude|openclaude)
     if verdict="$(python3 "$RUNTIME" settled "$LOG" 2>/dev/null)"; then
       # The marker is written before the harness is stopped, so it says the grace came first.
-      if [ -f "$RUN_DIR/$ROLE.settled" ]; then after="${RESULT_GRACE}s of silence"; ended_by=grace
+      if [ "$(cat "$RUN_DIR/$ROLE.settled" 2>/dev/null)" = quick ]; then after="${LIVE_GRACE}s of silence"; ended_by=live
+      elif [ -f "$RUN_DIR/$ROLE.settled" ]; then after="${RESULT_GRACE}s of silence"; ended_by=grace
       else after="the ${LIMIT}s timeout"; ended_by=timeout; fi
       printf 'ended_by=%s\nbackend_exit=%s\n' "$ended_by" "$rc" > "$RUN_DIR/$ROLE.settled"
       rm -f "$RUN_DIR/$ROLE.timedout"
       if [ "$verdict" = error ]; then rc=1; else rc=0; fi
-      note "$HARNESS gave its final result, then stayed open on a background task; forge ended it after $after — the result stands"
+      # Live, that is how every implementer ends: its input stays open, so it never exits by itself.
+      [ "$ended_by" = live ] || note "$HARNESS gave its final result, then stayed open on a background task; forge ended it after $after — the result stands"
     elif [ -f "$RUN_DIR/$ROLE.settled" ]; then
       rm -f "$RUN_DIR/$ROLE.settled"; : > "$RUN_DIR/$ROLE.timedout"
       note "$HARNESS began another turn while forge was ending it after its final result — see $LOG"

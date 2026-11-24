@@ -79,6 +79,7 @@ class ReaderTests(unittest.TestCase):
             'gate': None, 'known_issues': False, 'needs_input': None, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
             'infra': None, 'lateral': [], 'ledger': [], 'decision': None, 'decisions': [], 'attempts_total': 3, 'attempt_cap': 8,
             'summary': None, 'summaries_override': None, 'brief': None, 'steer_waiting': [],
+            'steer_live': None, 'steer_sending': [],
         })
         self.assertEqual((page['accepted'], page['accepted_attempt'], page['accepted_over']), (False, None, None))
         self.assertEqual(page['status'], 'RUNNING')
@@ -633,6 +634,7 @@ class ReaderTests(unittest.TestCase):
             'needs_input': None, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
             'infra': None, 'lateral': [], 'ledger': [], 'decision': None, 'decisions': [], 'attempts_total': 2, 'attempt_cap': None,
             'summary': None, 'summaries_override': None, 'brief': None, 'steer_waiting': [],
+            'steer_live': None, 'steer_sending': [],
         }])
         self.assertEqual(data['kind'], 'solo')
         self.assertIsNone(data['brief'])
@@ -696,6 +698,7 @@ class ReaderTests(unittest.TestCase):
             'gate': None, 'known_issues': False, 'needs_input': None, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
             'infra': None, 'lateral': [], 'ledger': [], 'decision': None, 'decisions': [], 'attempts_total': 0, 'attempt_cap': None,
             'summary': None, 'summaries_override': None, 'brief': None, 'steer_waiting': [],
+            'steer_live': None, 'steer_sending': [],
         }])
         json.dumps(data, allow_nan=False)
         run = self.base / 'neither'
@@ -1482,6 +1485,20 @@ class TaskSummaryTests(unittest.TestCase):
         steered = {item['attempt']: item['steered'] for item in tasks['reader']['trail']}
         self.assertEqual(steered[1], [])
         self.assertEqual(steered[2], [{'actor': 'cli', 'at': 1760605000.0, 'chars': 15}])
+        self.assertEqual((tasks['graph']['steer_live'], tasks['graph']['steer_sending']), (None, []))
+
+    def test_live_steering_names_the_attempt_and_the_messages_being_sent(self):
+        # #252: steer.live names a live feeder; one whose process is gone is not live. Live messages are marked.
+        F.write(self.plan / 'tasks/graph/steer.live', json.dumps(dict(attempt=2, pid=os.getpid())) + '\n')
+        F.write(self.plan / 'tasks/graph/steer.inbox.jsonl', json.dumps(dict(at=1.0, actor='ui', text='Now.', chars=4)) + '\n')
+        F.write(self.plan / 'tasks/reader/steered.2.jsonl', json.dumps(dict(at=2.0, actor='ui', text='Live.', chars=5, mode='live')) + '\n')
+        F.write(self.plan / 'tasks/docs/steer.live', json.dumps(dict(attempt=1, pid=2 ** 22 + 12345)) + '\n')
+        tasks = self.tasks()
+        self.assertEqual(tasks['graph']['steer_live'], 2)
+        self.assertEqual(tasks['graph']['steer_sending'], [{'actor': 'ui', 'at': 1.0, 'chars': 4, 'text': 'Now.'}])
+        self.assertIsNone(tasks['docs']['steer_live'])
+        steered = {item['attempt']: item['steered'] for item in tasks['reader']['trail']}
+        self.assertEqual(steered[2], [{'actor': 'ui', 'at': 2.0, 'chars': 5, 'mode': 'live'}])
 
     def test_the_override_is_on_off_or_null(self):
         F.write(self.plan / 'tasks/reader/summaries', 'off\n')

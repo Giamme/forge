@@ -732,7 +732,8 @@ def requirement_blob(tdir: Path, stem: str):
 
 def steered_of(tdir: Path, attempt) -> tuple[list, str | None]:
     """The messages `forge control steer` gave this attempt (#134), as `{actor, at, sha256, chars, mode}`,
-    and their texts joined for the blob. An attempt nobody steered has `[]`."""
+    and their texts joined for the blob. An attempt nobody steered has `[]`. mode is `queued` (given with the
+    prompt) or `live` (sent while the implementer ran, #252)."""
     if attempt is None:
         return [], None
     found, texts = [], []
@@ -744,7 +745,7 @@ def steered_of(tdir: Path, attempt) -> tuple[list, str | None]:
         if not isinstance(entry, dict) or not isinstance(entry.get('text'), str):
             continue
         found.append(dict(actor=entry.get('actor'), at=entry.get('at'), sha256=entry.get('sha256'),
-                          chars=entry.get('chars'), mode='queued'))
+                          chars=entry.get('chars'), mode='live' if entry.get('mode') == 'live' else 'queued'))
         texts.append(entry['text'])
     return found, ('\n\n---\n\n'.join(texts) if texts else None)
 

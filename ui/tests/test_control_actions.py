@@ -297,6 +297,20 @@ class SteerTests(ActionCase):
                                         '--file', '-', '--actor', 'ui', '--json'])
         self.assertEqual(call['stdin'], 'keep the API')
 
+    def test_now_sends_to_the_running_implementer(self):
+        # #252: {now: true} is --now; a task with no live implementer is the CLI's refusal.
+        self.behave(stdout='{"ok": true, "queued": false, "sent": true, "task": "reader", "attempt": 2, "waiting": 1, "live": true, "chars": 1}')
+        status, body = self.post({'text': 'x', 'now': True}, self.path())
+        self.assertEqual((status, body['sent'], body['attempt']), (200, True, 2))
+        self.assertEqual(self.calls()[-1]['argv'][-1], '--now')
+        self.behave(stdout='{"ok": true}')
+        self.post({'text': 'x', 'now': False}, self.path())
+        self.assertNotIn('--now', self.calls()[-1]['argv'])
+        self.assertEqual(self.post({'text': 'x', 'now': 'yes'}, self.path())[0], 400)
+        self.behave(code=3, stderr='forge control: task reader has no implementer running with live steering\n')
+        status, body = self.post({'text': 'x', 'now': True}, self.path())
+        self.assertEqual((status, body['error']), (409, 'refused'))
+
     def test_bad_bodies_runs_and_refusals(self):
         for body in ({}, {'text': ''}, {'text': 'x' * 8001}, {'text': 'a\x00b'}, {'text': 3}, {'text': 'x', 'more': 1}):
             self.assertEqual(self.post(body, self.path())[0], 400, body)

@@ -16,7 +16,9 @@ Part of the decomposition reference; planning is in [decompose.md](decompose.md)
 When the user wants to tell an implementer something (a hint, a correction, a constraint), queue it:
 `forge control steer <plan> <task> "text"` (live run or not). It starts nothing; the task's next implementer
 attempt gets it beside the findings, and that attempt is marked steered and left out of routing statistics.
-A running attempt is not interrupted (#134).
+A running attempt is not interrupted (#134). For a claude or openclaude implementer that is running now,
+`--now` gives it the message at its next tool call (#252); it is refused when the task has no live
+implementer, and then the plain form queues it.
 
 A live `run` says at once when a task stops for the user while the rest goes on (#193):
 `forge: needs you: <task> NEEDS_DECISION (<reasons>) -> <plan>/tasks/<task>/decision.md`, the same with

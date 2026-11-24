@@ -308,7 +308,10 @@ press the button, with no dry run. The HTTP shapes are in
   again, and *On* is refused, with that reason, while the run has no model.
 - **Message for the next attempt:** a task that has not merged has a box that queues a message for its
   next implementer attempt (`forge control steer`), and lists the ones waiting. It starts nothing. An
-  attempt that got messages has a *steered* mark on its line of the attempt trail.
+  attempt that got messages has a *steered* mark on its line of the attempt trail. While the task's
+  claude or openclaude implementer runs live, the box also has *Send now* (`forge control steer
+  --now`), which gives it the message at its next tool call, and the conversation shows each message
+  sent that way where the implementer took it in (*Your message*, *sent live*).
 - **Brief answers and proposals:** each brief question in a task's inspector has an answer box, and *Send* records the
   answer (`forge brief answer`, logged as `ui`). A late answer, given after the task started, shows the
   CLI's notice under its question. An answered parked `wave` or `plan` question has *Propose a change*

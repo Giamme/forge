@@ -733,8 +733,9 @@ window.ForgePanel = (() => {
       const steered = list(item && item.steered);
       if (steered.length) {                                // a person's message went into this attempt (#134)
         const tag = el('span', 'steered', 'tag steered');
+        const live = steered.filter(m => m.mode === 'live').length;
         tag.title = `${steered.length} message${steered.length === 1 ? '' : 's'} from ${[...new Set(steered.map(m => m.actor || '?'))].join(', ')} `
-          + '(forge control steer); left out of routing and calibration statistics';
+          + `(forge control steer${live ? `, ${live} sent live while it ran` : ''}); left out of routing and calibration statistics`;
         li.append(tag);
       }
       const nav = executionLinks(ctx, task, item && item.executions);
@@ -858,12 +859,13 @@ window.ForgePanel = (() => {
   }
 
   // Messages for the task's next attempt (#134: `forge control steer`): the ones waiting, and where the page can write,
-  // a box that queues one. It starts nothing: the next implementer attempt, whatever starts it, gets them.
+  // a box that queues one. It starts nothing: the next implementer attempt, whatever starts it, gets them. While the
+  // task's implementer runs live (#252, claude and openclaude), Send now gives it the message at its next tool call.
   function steerSection(host, ctx, task) {
     const run = ctx.run, U = window.ForgeUI;
     if (run.kind === 'solo' || task.status === 'MERGED') return;
-    const waiting = list(task.steer_waiting);
-    const s = section(host, 'Message for the next attempt');
+    const waiting = list(task.steer_waiting), sending = list(task.steer_sending), live = num(task.steer_live);
+    const s = section(host, live !== null ? 'Message for the implementer' : 'Message for the next attempt');
     s.classList.add('steer-section');
     s.dataset.hold = `steer:${run.key}:${task.id}`;
     if (waiting.length) {
@@ -877,34 +879,49 @@ window.ForgePanel = (() => {
     }
     muted(s, waiting.length ? 'Waiting: the task\'s next implementer attempt gets them, beside any review findings.'
       : 'Nothing waiting. A message starts nothing: the task\'s next implementer attempt gets it (a retry, a resume, or the run\'s own next attempt). Steered attempts are marked and left out of routing and calibration statistics.');
+    if (sending.length) {
+      const ul = el('ul', undefined, 'steer-waiting steer-sending');
+      for (const m of sending) {
+        const li = el('li');
+        li.append(el('p', String(m.text || ''), 'steer-text'), el('p', `sending to the running implementer (from ${m.actor || '?'})`, 'muted'));
+        ul.append(li);
+      }
+      s.append(ul);
+    }
+    if (live !== null) muted(s, `The implementer of attempt ${live} is running live: Send now gives it a message at its next tool call, without stopping it. Queue message keeps it for the next attempt.`);
     if (!U || !U.controlsEnabled) return;
     const box = el('div', undefined, 'steer-box');
     const field = el('textarea'); field.rows = 3; field.maxLength = 8000; field.autocomplete = 'off';
     field.setAttribute('aria-label', 'Message for the next attempt');
     const send = el('button', 'Queue message'); send.type = 'button';
+    const now = live !== null ? el('button', 'Send now') : null;
+    if (now) { now.type = 'button'; now.className = 'primary'; now.title = `Give it to the running implementer (attempt ${live}) at its next tool call`; }
     const msgs = el('div', undefined, 'steer-msgs');
     const mark = () => { s.dataset.editing = '1'; };
     field.addEventListener('focus', mark);
     field.addEventListener('input', mark);
     field.addEventListener('blur', () => { if (!s.dataset.busy && !String(field.value || '').trim()) delete s.dataset.editing; });
-    send.addEventListener('click', async () => {
+    const post = async (sendNow) => {
       if (s.dataset.busy) return;
       const text = String(field.value || '').trim();
       if (!text) { U.outcome(msgs, { ok: false, status: 400, error: 'invalid', detail: 'the message is empty' }); return; }
-      s.dataset.busy = '1'; send.disabled = true;
+      s.dataset.busy = '1'; send.disabled = true; if (now) now.disabled = true;
       const path = '/api/runs/' + encodeURIComponent(run.key) + '/tasks/' + encodeURIComponent(task.id) + '/steer';
       let res;
-      try { res = await U.post(path, { text }); } catch (_) { res = { ok: false, error: 'failed', detail: 'could not send' }; }
-      delete s.dataset.busy; send.disabled = false;
+      try { res = await U.post(path, sendNow ? { text, now: true } : { text }); } catch (_) { res = { ok: false, error: 'failed', detail: 'could not send' }; }
+      delete s.dataset.busy; send.disabled = false; if (now) now.disabled = false;
       if (!s.isConnected) return;
       if (res && res.ok) {
         field.value = ''; delete s.dataset.editing;
         const n = res.data && num(res.data.waiting);
-        U.outcome(msgs, res, `Queued for the next attempt${n ? ` (${n} waiting)` : ''}`);
+        U.outcome(msgs, res, sendNow ? 'Sent: the running implementer gets it at its next tool call'
+          : `Queued for the next attempt${n ? ` (${n} waiting)` : ''}`);
         if (ctx.refresh) ctx.refresh();
       } else U.outcome(msgs, res);
-    });
-    box.append(field, send, msgs);
+    };
+    send.addEventListener('click', () => post(false));
+    if (now) now.addEventListener('click', () => post(true));
+    box.append(field, ...(now ? [now] : []), send, msgs);
     s.append(box);
     U.controlsEnabled().then(on => { if (!on && box.isConnected) box.remove(); if (!on && !waiting.length && s.isConnected) s.remove(); });
   }
