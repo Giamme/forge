@@ -489,7 +489,10 @@ window.ForgePanel = (() => {
       const off = lim.depth === 0 || lim.nodes === 0;
       const text = off ? 'splitting is off for this run' : `depth ${lim.depth} · up to ${lim.children} subtasks per split · ${lim.nodes} subtasks in the run`;
       const used = tree.split ? ` · ${tree.subtasks} subtask${tree.subtasks === 1 ? '' : 's'} in ${tree.split} split task${tree.split === 1 ? '' : 's'}` : '';
-      rows.push(['Decomposition', text + (lim.frozen ? ' (frozen)' : '') + used]);
+      const value = el('span', text + (lim.frozen ? ' (frozen)' : '') + used);
+      value.title = 'The limits every split of a task works within: levels of subtasks, subtasks one split may make, and subtasks in the whole run. '
+        + (lim.frozen ? 'They were frozen when the plan first ran.' : 'They can still change with plan --split-depth, --split-children and --split-nodes; the first run freezes them.');
+      rows.push(['Decomposition', value, true]);
     }
     // A goal larger than one plan: the stage this plan is, and the stages its planner proposed after it.
     const later = run.later;
@@ -1036,6 +1039,18 @@ window.ForgePanel = (() => {
   const spent = t => t && typeof t === 'object' ? (num(t.input) || 0) + (num(t.output) || 0) : null;
   const tok = v => v === null ? null : (v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(1) + 'k' : String(v)) + ' tokens';
   const DECISIONS = { atomic: 'kept whole', split: 'split', bounded: 'kept whole at a limit' };
+  // What each word means, shown when the pointer rests on it.
+  const DECISION_HELP = {
+    atomic: 'Done as one piece. Keeping a task whole is always a valid decision.',
+    split: 'Split into subtasks. They run as a plan of their own, merge into this task, and the task is then reviewed on all of their work.',
+    bounded: 'A split here would pass a limit of the run (levels, subtasks per split, or subtasks in the whole run), so it runs as one piece.',
+  };
+  const BY_HELP = {
+    planner: 'The planner decided this when it planned.',
+    user: 'A person decided this (retry --decide split).',
+    auto: 'The run decided this: it was started with --auto-split, so the planner split a task that stopped on split.',
+    default: 'Nobody decided: a task is one piece unless someone splits it.',
+  };
   // task.decomposition: {decision, reason, by, at, sub: {key, run_id, path} | null, merged, waiting, start, kept,
   // nodes: [{id, parent, run, run_id, task, level, title, status, difficulty, model, qa, decision, reason, by, attempts,
   // tokens, has_diff}]}, the nodes in tree order through every level below the task. Absent on a plan with no record.
@@ -1047,8 +1062,8 @@ window.ForgePanel = (() => {
     if (D.decision === 'atomic' && D.by === 'default' && !nodes.length) return;
     const ds = section(host, 'Decomposition');
     const chips = el('div', undefined, 'chips');
-    if (D.decision) chips.append(el('span', DECISIONS[D.decision] || D.decision, 'tag'));
-    if (D.by) chips.append(el('span', 'decided by ' + D.by, 'plate src-plate'));
+    if (D.decision) { const c = el('span', DECISIONS[D.decision] || D.decision, 'tag'); c.title = DECISION_HELP[D.decision] || ''; chips.append(c); }
+    if (D.by) { const c = el('span', 'decided by ' + D.by, 'plate src-plate'); c.title = BY_HELP[D.by] || ''; chips.append(c); }
     ds.append(chips);
     if (D.reason) ds.append(el('p', D.reason));
     if (!nodes.length) return;
@@ -1065,7 +1080,7 @@ window.ForgePanel = (() => {
       const a = el('a', n.task || n.id); a.href = ctx.nodeHash ? ctx.nodeHash(n) : '#'; li.append(a);
       if (n.model) li.append(plate(n.model));
       li.append(el('span', [n.status, n.difficulty, num(n.attempts) > 1 ? `${n.attempts} attempts` : null, tok(spent(n.tokens))].filter(Boolean).join(' · '), 'muted'));
-      if (n.decision && n.decision !== 'atomic') li.append(el('span', DECISIONS[n.decision] || n.decision, 'tag'));
+      if (n.decision && n.decision !== 'atomic') { const c = el('span', DECISIONS[n.decision] || n.decision, 'tag'); c.title = DECISION_HELP[n.decision] || ''; li.append(c); }
       if (n.has_diff && ctx.nodeHash) { const d = el('a', 'diff', 'diff-link small'); d.href = ctx.nodeHash(n) + '/diff'; li.append(d); }
       li.title = [n.title, n.reason].filter(Boolean).join('\n');
       ul.append(li);

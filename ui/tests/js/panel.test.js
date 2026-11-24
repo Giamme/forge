@@ -249,6 +249,9 @@ test('a run shows the limits a split works within, what was split, and the stage
   assert.equal(fields.get('Later stages').textContent, 'The API · The UI');
   const off = fieldMap(render(planRun({ decomposition: { limits: { depth: 0, children: 6, nodes: 24, frozen: false }, split: 0, subtasks: 0 } })));
   assert.equal(off.get('Decomposition').textContent, 'splitting is off for this run');
+  // The words are explained where they are shown.
+  assert.match(fields.get('Decomposition').children[0].title, /^The limits every split of a task works within.* frozen when the plan first ran\.$/);
+  assert.match(off.get('Decomposition').children[0].title, /the first run freezes them\.$/);
   // A plan with no record reads as it did before these rows existed.
   const plain = labels(render(planRun({})));
   for (const label of ['Decomposition', 'Stage', 'Later stages', 'Subtasks of']) assert.equal(plain.includes(label), false, label);
@@ -278,6 +281,8 @@ test('a split task shows its decision, who made it, why, and every subtask below
   assert.ok(rows[0].textContent.includes('MERGED · low · 2 attempts · 1.5k tokens'), rows[0].textContent);
   assert.deepEqual(rows[0].querySelectorAll('a.diff-link').map(a => a.href), ['#/runs/k2/tasks/a/diff']);
   assert.deepEqual(rows.map(li => li.querySelectorAll('span.tag').map(t => t.textContent)), [['split'], [], ['kept whole at a limit']]);
+  assert.match(rows[2].querySelector('span.tag').title, /would pass a limit of the run/);
+  assert.deepEqual(s.querySelectorAll('div.chips span').map(span => /\./.test(span.title)), [true, true]);
   assert.equal(rows[0].title, 'Part d/a\ntwo steps');
   assert.equal(rows[1].querySelectorAll('a.diff-link').length, 0);
   assert.deepEqual(seen, [['d', 3]]);

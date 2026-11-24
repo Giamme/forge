@@ -670,6 +670,8 @@ do_combine() {
     p="$(cd "$p" && pwd)"
     [ -f "$p/tasks.tsv" ] || die "combine: '$p' is not a forge plan (no tasks.tsv)" 3
     [ "$p" != "$NEW" ] || die "combine: the new plan cannot be one of its sources" 3
+    # The subtasks of a split task (#153) merge into that task; they are not a plan to combine.
+    ! forge_is_sub_plan "$p" || die "combine: '$p' holds the subtasks of a split task: its work merges into that task, not into a combined plan" 3
     case "$seen" in *"|$p|"*) die "combine: plan '$p' is listed twice" 3 ;; esac
     seen="$seen|$p|"
     norm+=("$p")
@@ -988,6 +990,12 @@ do_split() {
   # A plan made with Fractal (removed in forge 0.23) kept each task's state under paths of its own
   # runtime: its tasks cannot be moved to a plan that runs.
   forge_refuse_fractal_run "$PLAN" split
+  # #153: a split task's subtasks are a plan under this run's id, on its branches. They stay with
+  # the run: neither they nor the task they belong to move to another plan.
+  ! forge_is_sub_plan "$PLAN" || die "split: '$PLAN' holds the subtasks of a split task; they stay with that task" 3
+  for id in $PICKED; do
+    ! forge_is_split "$PLAN" "$id" || die "split: task '$id' is split into subtasks ($PLAN/tasks/$id/sub), which stay with this run; it cannot move to another plan" 3
+  done
   for f in repo run_id wt_root accepted.integration; do
     [ -s "$PLAN/$f" ] || die "plan has no $f: it has not run far enough to split ('run' it first)" 3
   done

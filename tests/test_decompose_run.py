@@ -366,6 +366,27 @@ class AutoSplitTests(SplitCase):
         self.assertFalse((p / 'tasks/d/split').exists())
 
 
+class OtherPlanCommandsTests(SplitCase):
+    def test_a_split_task_and_its_subtasks_stay_with_their_run(self):
+        p, _ = self.stopped()
+        self.assertEqual(self.split(p, '--no-dispatch').returncode, 0)
+        sub, new = p / 'tasks/d/sub', self.root / 'moved'
+        cases = (
+            (('split', p, new, '--tasks', 'd'), 'is split into subtasks'),
+            (('split', sub, new, '--tasks', 'a'), 'holds the subtasks of a split task'),
+            (('combine', new, sub, p), 'holds the subtasks of a split task'),
+            (('integrate', sub, '--approved'), 'is the sub-plan of a split task'),
+            (('next', sub, '--planner', 'sol'), 'is a sub-plan'),
+        )
+        for args, said in cases:
+            with self.subTest(args[0] + ' ' + args[1].name):
+                r = self.forge(*args)
+                self.assertEqual(r.returncode, 3, r.stdout)
+                self.assertIn(said, r.stdout)
+        self.assertFalse(new.exists())
+        self.assertEqual(self.children(sub), ['a', 'b'])
+
+
 class LimitTests(SplitCase):
     def test_the_table_shows_the_limits_and_the_first_run_freezes_them(self):
         p = self.plan_dir()
