@@ -1075,13 +1075,17 @@ fi
 # the grace, the harness is ended like a timeout, but the result stands (see below).
 # Live, its input stays open, so the CLI never exits by itself: with no background task open,
 # FORGE_LIVE_GRACE of silence after the result is enough.
-spid=""
+spid=""; LIVE_QUICK=""; [ "$LIVE" != 1 ] || LIVE_QUICK="$LIVE_GRACE"
+rm -f "$RUN_DIR/.$ROLE.settle"
 case "$HARNESS" in claude|openclaude)
   if [ "$RESULT_GRACE" != 0 ] || [ "$LIVE" = 1 ]; then
     (
-      how="$(python3 "$RUNTIME" settle "$LOG" "$RESULT_GRACE" "$hwinpid" $([ "$LIVE" != 1 ] || echo "$LIVE_GRACE") </dev/null)" || exit 0
+      # Straight into the file, not through $(...): the settler stays this watcher's own child, so
+      # the kill after `wait` below reaches it (a grandchild would outlive the dispatch, holding
+      # whatever it inherited, such as a solo run's lock).
+      python3 "$RUNTIME" settle "$LOG" "$RESULT_GRACE" "$hwinpid" ${LIVE_QUICK:+"$LIVE_QUICK"} </dev/null > "$RUN_DIR/.$ROLE.settle" || exit 0
       kill -0 "$hpid" 2>/dev/null || exit 0
-      printf '%s\n' "$how" > "$RUN_DIR/$ROLE.settled"
+      mv -f "$RUN_DIR/.$ROLE.settle" "$RUN_DIR/$ROLE.settled"
       stop_harness
     ) >/dev/null 2>&1 &
     spid=$!
@@ -1104,6 +1108,7 @@ for watcher in $wpid $spid; do
   kill "$watcher" 2>/dev/null
   wait "$watcher" 2>/dev/null
 done
+rm -f "$RUN_DIR/.$ROLE.settle"
 # Anything the harness left running in its group is an abandoned background job, and so is
 # anything the tracker saw it start that is still alive, in whatever session: a timeout stops
 # the harness, not the test servers its tools started (#129). Kill them before reading the
