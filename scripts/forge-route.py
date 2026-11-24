@@ -753,16 +753,17 @@ def per_model_setting(plan: Path):
 def rungs_above(spec: str, plan: Path) -> list:
     """The specs the policy would move through from `spec`, in order: repeated stronger() until it
     returns None, then, with the effort step on, repeated _next_effort_spec on the last one. A spec
-    in none of the pools has none. Stops on a repeat, and at MAX_RUNGS."""
+    in none of the pools (every spec of a plan without tier pools) has no stronger model, but still
+    has its effort steps when the step is on, as escalation() moves it (#222). Stops on a repeat, and
+    at MAX_RUNGS."""
     if spec in NON_MODEL_DWARFS:
         return []
     registry = registry_models()
     pools = load_pools(forge_legacy.pools_path(plan))
-    if rank_of(spec, pools, registry) is None:
-        return []
+    pooled = rank_of(spec, pools, registry) is not None
     out, seen = [], {spec}
     current = spec
-    while len(out) < MAX_RUNGS:
+    while pooled and len(out) < MAX_RUNGS:
         target, _why = stronger(current, pools, registry)
         if not target or target in seen:
             break
