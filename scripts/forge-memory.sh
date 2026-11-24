@@ -1362,7 +1362,10 @@ CMD="$1"; shift
 # worktree kept of its own is moved there before anything reads it.
 case "$CMD" in
   inject|record|show|spend|learnings|prune|forget|add|edit|where)
-    if [ -n "${1:-}" ] && [ -d "$1" ]; then memory_cache "$1"; memory_off || memory_adopt_stranded "$1"; fi ;;
+    if [ -n "${1:-}" ] && [ -d "$1" ]; then
+      forge_repo_memory_off "$1" && export FORGE_MEMORY=off   # forge setup chose no memory here
+      memory_cache "$1"; memory_off || memory_adopt_stranded "$1"
+    fi ;;
 esac
 case "$CMD" in
   -h|--help|help) memory_usage; exit 0 ;;

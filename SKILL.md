@@ -62,8 +62,10 @@ apart. Offer the leftover findings as issues ([findings](references/findings.md)
   machine needs the user's explicit word: offer it, never add it. That covers every flag below,
   `--yolo-dwarf` / `--yolo-qa` (only for the role they name; Bash can still mutate files with editing
   tools disabled) and `--fast` (offer only when the user asks for speed).
+- **Setup.** If `forge setup show --json` says `done: false`, offer `forge setup` once before the first
+  run. Its saved answers ([setup](references/setup.md)) are the user's word for what they cover.
 - Ask **"Use Fractal for this run? [y/N]"** and **"Open forge-ui to watch this run? [y/N]"** once at the
-  start of every new interactive run, unless a flag answered it, and pass the answers on (details:
+  start of every new interactive run, unless a flag or setup answered it, and pass the answers on (details:
   [Fractal](references/fractal.md#for-the-orchestrator), [forge-ui](references/ui.md)). Never ask on
   resume or retry; unattended runs leave both off. Relay the `forge-ui:` URL; a UI failure never changes the run.
 - One implementer per tree. Solo edits stay uncommitted; decomposed runs commit only on forge's task and

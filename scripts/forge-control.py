@@ -653,6 +653,17 @@ def _summaries(value, task):
     raise Invalid('needs on or off' + (' (or inherit to drop the override)' if task else ''))
 
 
+def _summaries_model(value, _task):
+    """The model of a plan's task summaries (#162): a spec the doctor accepts, or default to drop the
+    plan's own and follow `forge config set summaries.model`."""
+    if value == 'default':
+        return value
+    if not value or re.search(r'[\s,\x00-\x1f\x7f]', value):
+        raise Invalid('needs one model spec such as haiku:low, or default')
+    doctor(value, 'qa')
+    return value
+
+
 # key -> (plan only or both, validator, file, live only, when it applies)
 KEYS = {
     'qa-threshold': ('both', _qa, 'qa_threshold', False, NEXT_ATTEMPT),
@@ -670,6 +681,7 @@ KEYS = {
     'max-attempts': ('plan', _int, 'max_attempts', False, NEXT_DECISION),
     'converge-window': ('plan', _int, 'converge_window', False, NEXT_DECISION),
     'summaries': ('both', _summaries, 'summaries', False, NEXT_CHANGE),
+    'summaries-model': ('plan', _summaries_model, 'summaries_model', False, NEXT_CHANGE),
 }
 
 
@@ -1302,7 +1314,8 @@ def parser():
     p = sub.add_parser('set', help='change a control', description='Keys: ' + ', '.join(KEYS) + '. '
                        'retry-budget, infra-retries and max-parallel change only while a run is live. '
                        'qa-threshold, retry-budget and summaries also take --task (value inherit drops the override; at run level, default drops the file and none means P3). '
-                       'summaries on|off turns generated task summaries on or off; on for a finished run also starts them.')
+                       'summaries on|off turns generated task summaries on or off; on for a finished run also starts them. '
+                       'summaries-model SPEC changes the model they use (default follows forge config set summaries.model).')
     common(p)
     p.add_argument('key', choices=list(KEYS))
     p.add_argument('value')

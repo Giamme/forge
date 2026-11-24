@@ -39,6 +39,12 @@ case "$TAG" in
   *) echo "forge: --version must be a release tag such as v0.6.10, not '$TAG'" >&2; exit 2 ;;
 esac
 [ "${FORGE_RIPWIRE:-}" != off ] || exit 0
+# `forge setup` answered "never offer it" (ripwire never): a run's offer stays silent. Asking for
+# it by name (--yes, from forge ripwire install or update) still installs.
+if [ "$YES" = 0 ] && [ "$UPGRADE" = 0 ] && [ "$DRY" = 0 ] \
+   && [ "$(python3 "$SCRIPTS/forge_prefs.py" get ripwire 2>/dev/null)" = never ]; then
+  exit 0
+fi
 DEST="$HOME/.local/bin/ripwire"
 FOUND="$(command -v ripwire 2>/dev/null || true)"
 same_file() { [ -e "$1" ] && [ -e "$2" ] && [ "$(cd -P "$(dirname "$1")" && pwd)/$(basename "$1")" = "$(cd -P "$(dirname "$2")" && pwd)/$(basename "$2")" ]; }

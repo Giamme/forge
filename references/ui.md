@@ -241,7 +241,7 @@ random token and puts it in the page it serves; every change must send it back, 
 it is refused before any CLI runs. There are no CORS headers, so another site in your browser
 can neither send nor read a change. Any process that can fetch the page can read the token, as
 it can read the runs, so on a shared machine start the server **read-only**: `--read-only`
-(`python3 -m forge_ui`) or `FORGE_UI_READONLY=1` (also for `forge ui open`). A read-only server
+(`python3 -m forge_ui`), `FORGE_UI_READONLY=1` (also for `forge ui open`), or `forge setup set ui_controls off`. A read-only server
 issues no token and answers every change with 405; its `/api/health` says `"controls": false`.
 No Remove, Forget selected, Compact or Send answer button is shown, and every copy button stays.
 `forge ui open` never reuses a server in the other mode: it replaces it, as it does one running

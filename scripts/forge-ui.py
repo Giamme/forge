@@ -190,7 +190,14 @@ def terminate(pid) -> bool:
 
 
 def read_only_wanted() -> bool:
-    return os.environ.get('FORGE_UI_READONLY', '').strip().lower() in ('1', 'true', 'yes', 'on')
+    """FORGE_UI_READONLY, or `forge setup` answered ui_controls off."""
+    if os.environ.get('FORGE_UI_READONLY', '').strip().lower() in ('1', 'true', 'yes', 'on'):
+        return True
+    try:
+        import forge_prefs
+    except ImportError:
+        return False
+    return forge_prefs.get('ui_controls') == 'off'
 
 
 def is_read_only(answer) -> bool:

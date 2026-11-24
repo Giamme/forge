@@ -64,6 +64,12 @@ def check_disabled():
         return True
     if os.environ.get('FORGE_UPDATE_CHECK', '').strip().lower() in _OFF:
         return True
+    try:   # `forge setup` answered update_check off
+        import forge_prefs
+        if forge_prefs.update_check_off():
+            return True
+    except ImportError:
+        pass
     ci = os.environ.get('CI', '').strip().lower()
     return bool(ci) and ci not in _OFF
 

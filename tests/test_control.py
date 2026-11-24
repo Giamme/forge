@@ -698,6 +698,20 @@ class ControlTests(unittest.TestCase):
                                 ('cli', 'a', 'summaries', 'inherit', 'off'), ('cli', None, 'summaries', 'off', 'on')])
         self.assertFalse((self.plan / 'summaries.out').exists())
 
+    def test_summaries_model_changes_a_planned_run_and_default_drops_it(self):
+        # #162: summaries.model reached only plans made after it was set; this changes one already planned
+        self.ok('set', self.plan, 'summaries-model', 'haiku:low')
+        self.assertEqual((self.plan / 'summaries_model').read_text(), 'haiku:low\n')
+        self.assertIn('--spec haiku:low --role qa', (self.base / 'doctor.sh.calls').read_text())
+        self.code(3, 'set', self.plan, 'summaries-model', 'bad:spec:x')
+        for bad in ('two words', 'a,b', ''):
+            self.code(2, 'set', self.plan, 'summaries-model', bad)
+        self.code(2, 'set', self.plan, 'summaries-model', 'haiku:low', '--task', 'a')
+        self.ok('set', self.plan, 'summaries-model', 'default')
+        self.assertFalse((self.plan / 'summaries_model').exists())
+        rows = [(e['key'], e['value'], e['previous']) for e in self.log()]
+        self.assertEqual(rows, [('summaries-model', 'haiku:low', None), ('summaries-model', 'default', 'haiku:low')])
+
     def test_summaries_refuse_a_bad_value_and_inherit_at_run_level(self):
         for args in (('maybe',), ('inherit',), ('default',), ('maybe', '--task', 'a'), ('on', '--task', 'zz')):
             self.code(2, 'set', self.plan, 'summaries', *args)

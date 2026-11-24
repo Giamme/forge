@@ -161,10 +161,22 @@ def check(source: Path, info: dict) -> dict:
 
 
 def disabled() -> bool:
-    if os.environ.get('FORGE_UPDATE_CHECK', '').strip().lower() in _OFF:
+    if os.environ.get('FORGE_UPDATE_CHECK', '').strip().lower() in _OFF or setup_off():
         return True
     ci = os.environ.get('CI', '').strip().lower()
     return bool(ci) and ci not in _OFF
+
+
+def setup_off() -> bool:
+    """`forge setup` answered update_check off (setup.json); a missing helper means on."""
+    try:
+        here = str(Path(__file__).resolve().parent)
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import forge_prefs
+    except ImportError:
+        return False
+    return forge_prefs.update_check_off()
 
 
 def available_line(latest: str, current: str, info: dict | None = None) -> str:

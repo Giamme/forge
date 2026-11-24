@@ -11,8 +11,8 @@ Use `--no-ripwire` on dispatch, solo, or parallel `plan`, `run`, and `retry`, or
 probing or offering installation. Parallel plans remember opt-out in `no_ripwire`
 for later resumes and retries; remove that marker to enable it again.
 
-Forge setup and solo/parallel run entrypoints offer installation once before agents
-start. The helper shows the release it would install and `~/.local/bin/ripwire`, then asks
+`forge setup` asks once (offer it at the first run, install now, or never offer it), and solo/parallel
+run entrypoints offer installation before agents start unless setup answered `never`. The helper shows the release it would install and `~/.local/bin/ripwire`, then asks
 “Ripwire is missing. Install it now? [Y/n]”. Enter accepts; no or EOF continues.
 It reads the controlling terminal separately from task stdin. Without a terminal it
 prints the helper command and continues. Dispatch itself never prompts, so background
@@ -48,7 +48,7 @@ whether a newer Ripwire release exists (cached in
 release). When one does and forge installed yours, a terminal gets “Ripwire X is available
 (you have Y). Update now? [Y/n]”, and a yes runs the update. Without a terminal it prints one
 line with `forge ripwire update` instead. It shows at most once a day, never in CI, never with
-`FORGE_RIPWIRE=off` or `FORGE_UPDATE_CHECK=off`, a network failure is silent, and it never
+`FORGE_RIPWIRE=off`, `FORGE_UPDATE_CHECK=off` or `forge setup set update_check off`, a network failure is silent, and it never
 changes the run's exit code. `forge update` stays quiet about Ripwire.
 
 Planner/dwarf use `--for` in their own repository or worktree. Runners pass the

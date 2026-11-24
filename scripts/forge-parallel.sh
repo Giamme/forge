@@ -986,7 +986,7 @@ do_plan() {
   forge_ui_register "$PLAN"
   [ "${FORGE_RIPWIRE:-}" != off ] || touch "$PLAN/no_ripwire"
   # Persist plan choices for later run and retry processes.
-  [ "$NOMEM" = 1 ] && : > "$PLAN/no_memory"
+  { [ "$NOMEM" = 1 ] || forge_repo_memory_off "$REPO"; } && : > "$PLAN/no_memory"
   [ -n "$PLANNER" ] && printf '%s\n' "$PLANNER" > "$PLAN/planner"
   python3 - "$PLAN/fractal-routing.json" "$D_ANY" "$D_LO" "$D_MD" "$D_HI" <<'PY'
 import json,sys

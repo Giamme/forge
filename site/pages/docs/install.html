@@ -16,7 +16,7 @@ station: install
 <h2>From npm</h2>
 <pre><span class="p">$ </span>npm install -g @giamme/forge
 <span class="p">$ </span>forge install</pre>
-<p><code>forge install</code> links forge into each agent CLI it finds, so <code>/forge</code> works inside them. It's a separate step rather than an npm install script, so it works where scripts are turned off. Restart any agent session that was already open.</p>
+<p><code>forge install</code> links forge into each agent CLI it finds, so <code>/forge</code> works inside them, then runs <code>forge setup</code>: a short pass over the models that build and review, your review preferences, forge-ui, project memory and the add-ons, saved as defaults so your first run asks none of it. Run <code>forge setup</code> again any time to change an answer, <code>forge setup show</code> to see them all, or <code>forge setup --defaults</code> to take the recommended ones without questions. It's a separate step rather than an npm install script, so it works where scripts are turned off. Restart any agent session that was already open.</p>
 <div class="callout"><span class="lamp is-amber"></span><div><p><strong>Using Foundry?</strong> Foundry's command is also called <code>forge</code>, and whichever comes first on your <code>PATH</code> wins. Runs start from your agent CLI, so this only matters for <code>forge install</code> and the helper commands. Keep Foundry first if you like, and run ours as <code>"$(npm root -g)/@giamme/forge/forge"</code>.</p></div></div>
 
 <h2>From a git checkout</h2>
@@ -59,7 +59,7 @@ npm install -g @giamme/forge@latest &amp;&amp; forge install
 <div class="callout"><span class="lamp is-amber"></span><div><p><strong>Antigravity keeps a copy.</strong> It copies forge's files into its plugin rather than linking them. Run <code>forge install</code> again after every update, or it keeps running the old version.</p></div></div>
 
 <h2>Optional add-ons</h2>
-<p>forge works fully without these. The installer offers them and declines by default.</p>
+<p>forge works fully without these. <code>forge setup</code> offers them and declines by default.</p>
 <ul>
   <li><strong>Ripwire</strong> adds repository evidence to every planner, dwarf and reviewer prompt. Turn it off with <code>--no-ripwire</code>.</li>
   <li><strong>Decision gates</strong> (<code>forge decide</code>) let a small external model advise on things like scope drift or a vague prompt. Off by default; each gate you enable sends a narrow slice of the run to an external API, so read what it sends first.</li>
