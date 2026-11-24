@@ -48,6 +48,7 @@ side: project memory
 </table>
 <div class="callout"><span class="lamp is-red"></span><div><p><strong>Commit both files or neither.</strong> <code>memory.md</code> is rebuilt from <code>ledger.tsv</code>. A teammate with your memory but not your ledger rebuilds it from their own short ledger on their next run, and your shared facts are gone.</p></div></div>
 <p>Ignoring the folder doesn't turn memory off; it just stays on your machine. Contributing to someone else's project? Ignore it: forge's notes to itself are noise in their pull requests.</p>
+<p>Running forge from a linked worktree (<code>git worktree add</code>)? When <code>.forge/</code> isn't committed, its memory lives in your main checkout's <code>.forge/</code>, so removing the worktree loses nothing. <code>forge memory where</code> prints the folder.</p>
 
 <h2>Looking inside</h2>
 <pre>forge memory show ~/dev/api        <span class="c"># what a dwarf would be told</span>

@@ -285,8 +285,10 @@ matching run exits 3.
 `forge handoff resume RUN_DIR` carries a decomposed run on. It claims the run first; a
 refused claim exits 3 and changes nothing else. A live scheduler is followed and nothing is
 started — leave that run to `forge control show`, and do not start `run` beside it. A
-Fractal plan is not restarted here; resume names `forge fractal resume`. Otherwise each
-task still `RUNNING` is recovered, and only when its worktree is exactly `<wt_root>/<id>`
+Fractal plan is not restarted here; resume names `forge fractal resume`. When another forge
+command holds the plan's lock (`schedule.lock`), resume says which and changes and starts
+nothing; otherwise it holds that lock while it recovers, so a `run` started meanwhile is refused
+instead of racing the reset. Each task still `RUNNING` is then recovered, and only when its worktree is exactly `<wt_root>/<id>`
 on `forge/<run_id>/<id>` and any leftover `dwarf.harness` or `qa.harness` has been stopped:
 the uncommitted work, untracked files included, is saved to
 `tasks/<id>/interrupted-<epoch>.diff`, and only then is the worktree reset and cleaned, the

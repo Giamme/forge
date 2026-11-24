@@ -69,6 +69,7 @@ SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 import forge_infra  # noqa: E402
 import forge_registry  # noqa: E402
+import forge_flock  # noqa: E402
 
 PARALLEL = str(SCRIPTS / 'forge-parallel.sh')
 SWEEP_OK = re.compile(r'P[0-3]')
@@ -990,6 +991,38 @@ def recover_task(ctrl, plan, wt_root, run_id, task, warn):
     return row
 
 
+def take_plan_lock(plan):
+    """schedule.lock, the plan lock every forge-parallel.sh command that changes a plan holds (#157).
+
+    The open file while it is held, else None (another command holds it, or it cannot be taken). Held
+    while stale tasks are reset, so a `run` started meanwhile is refused at the lock instead of racing
+    the git reset and the status write; released before `retry --no-dispatch`, which takes it itself.
+    """
+    try:
+        handle = open(os.path.join(str(plan), 'schedule.lock'), 'a')
+    except OSError:
+        return None
+    try:
+        forge_flock.flock(handle, forge_flock.LOCK_EX | forge_flock.LOCK_NB)
+    except (OSError, ValueError):
+        handle.close()
+        return None
+    return handle
+
+
+def lock_holder(plan):
+    """Who holds the plan lock, in words, from schedule.holder (written by each command that takes it)."""
+    try:
+        with open(os.path.join(str(plan), 'schedule.holder'), encoding='utf-8') as handle:
+            holder = json.loads(handle.read(READ_CAP))
+    except (OSError, ValueError):
+        holder = None
+    if isinstance(holder, dict) and isinstance(holder.get('command'), str) and holder['command'].isidentifier() \
+            and type(holder.get('pid')) is int and pid_alive(holder['pid']):
+        return f'forge-parallel.sh {holder["command"]} (pid {holder["pid"]})'
+    return 'another forge command'
+
+
 def prepare_task(plan, task):
     """forge-parallel.sh retry PLAN TASK --no-dispatch. {task, ok, message}."""
     command = forge_proc.bash_cmd(parallel_script(), 'retry', str(plan), task, '--no-dispatch')
@@ -1026,7 +1059,7 @@ def cmd_resume(args):
     if not (Path(plan) / 'tasks.tsv').is_file():
         raise Usage(f'{plan}: resume needs a decomposed run (tasks.tsv)')   # before the claim: a solo run is not marked
     claim_run(plan, args.harness, session, args.take_over)   # Held (a refused claim) exits 3 before anything else
-    out = dict(live=False, recovered=[], prepared=[], started=None, command=[])
+    out = dict(live=False, locked=False, recovered=[], prepared=[], started=None, command=[])
     view = Plan(plan)
     scheduler = scheduler_section(view)
     quote = shlex.quote
@@ -1049,11 +1082,29 @@ def cmd_resume(args):
                       f'forge fractal resume {quote(run_id or plan)}')
 
     ctrl, wt_root, run_id = control(), view.line('wt_root'), view.line('run_id')
-    for task in tasks_section(view):
-        if task['status'] == 'RUNNING':
-            row = recover_task(ctrl, plan, wt_root, run_id, task['id'], warn)
-            if row is not None:
-                out['recovered'].append(row)
+    # The plan lock first (#157): a command that holds it is working on the plan, and nothing here may
+    # reset its worktrees or restart it. Held through the resets, so no scheduler can start meanwhile.
+    lock = take_plan_lock(plan)
+    if lock is None:
+        out['locked'] = True
+        return finish(f'the plan is locked by {lock_holder(plan)}; nothing was recovered or started. '
+                      'Run this again once it has finished.', f'forge control show {quote(plan)}')
+    try:
+        if scheduler_section(Plan(plan))['live']:
+            out['live'] = True
+            return finish('a scheduler started while resume was starting; nothing was changed or started',
+                          f'forge control show {quote(plan)}')
+        for task in tasks_section(Plan(plan)):
+            if task['status'] == 'RUNNING':
+                row = recover_task(ctrl, plan, wt_root, run_id, task['id'], warn)
+                if row is not None:
+                    out['recovered'].append(row)
+    finally:
+        try:
+            forge_flock.flock(lock, forge_flock.LOCK_UN)
+        except (OSError, ValueError):
+            pass
+        lock.close()
     for task in tasks_section(Plan(plan)):
         if task['status'] == 'INTERRUPTED':
             result = prepare_task(plan, task['id'])

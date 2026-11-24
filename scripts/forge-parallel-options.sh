@@ -38,7 +38,7 @@
 #   --qa-threshold Pn|none|default  plan run retry review  $PLAN/qa_threshold  least severe CONFIRMED
 #                                                                  finding that still blocks; none (or off) =
 #                                                                  P3, default removes the file (P2)
-#   --verify-retries N      run retry integrate  $PLAN/verify_retries  reruns of a failed verify command
+#   --verify-retries N      run retry integrate verify $PLAN/verify_retries  reruns of a failed verify command
 #   --escalate-after N      run retry         $PLAN/escalate_after failed attempts on one model before the
 #                                                                  next goes a tier up (default 3; 0 = off)
 #   --max-attempts N        plan              $PLAN/max_attempts   attempts a task may spend across runs before it
@@ -64,7 +64,7 @@
 #                                                                  options as in a lane file (group=g,first,...);
 #                                                                  repeatable; replaces --verify and the lanes
 #                                                                  of an earlier invocation
-#   --verify-parallel N     run retry integrate  $PLAN/verify_parallel  lanes run at once (1-32, default 3)
+#   --verify-parallel N     run retry integrate verify $PLAN/verify_parallel  lanes run at once (1-32, default 3)
 PP_SHIFT=2
 PP_RETRY_FAILED=0
 PP_INFRA_RETRIES=0
@@ -159,14 +159,14 @@ forge_pp_flag() {
       PP_SHIFT=1
       rm -f "$plan/escalate_effort" ;;
     --verify-retries)
-      case "$cmd" in run|retry|integrate) ;; *) return 1 ;; esac
+      case "$cmd" in run|retry|integrate|verify) ;; *) return 1 ;; esac
       pp_nonneg --verify-retries "${2:-}"
       printf '%s' "$2" > "$plan/verify_retries" ;;
     --verify-lane)
       case "$cmd" in run|retry) ;; *) return 1 ;; esac
       pp_lane "$plan" "${2-}" ;;
     --verify-parallel)
-      case "$cmd" in run|retry|integrate) ;; *) return 1 ;; esac
+      case "$cmd" in run|retry|integrate|verify) ;; *) return 1 ;; esac
       case "${2:-}" in ''|*[!0-9]*) die "--verify-parallel needs an integer from 1 to 32" ;; esac
       [ "$2" -ge 1 ] && [ "$2" -le 32 ] || die "--verify-parallel needs an integer from 1 to 32"
       printf '%s' "$2" > "$plan/verify_parallel" ;;

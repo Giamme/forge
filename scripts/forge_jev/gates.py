@@ -88,7 +88,7 @@ def _excerpt(repo: Path, files: str) -> dict:
 
 
 def _memory(repo: Path) -> str:
-    path = repo / '.forge' / 'memory.md'
+    path = _memory_md(repo)
     try:
         return path.read_text(errors='replace')[:MEMORY_CHARS] if path.is_file() else ''
     except OSError:
@@ -296,3 +296,12 @@ def predict_drift(repo, *, goal: str, task_id: str, title: str, declared: str,
             predicted.append((name, round(probability, 3)))
     predicted.sort(key=lambda item: item[1], reverse=True)
     return predicted
+
+
+def _memory_md(repo) -> Path:
+    """repo's .forge/memory.md, in the main checkout when repo is a linked worktree (#159)."""
+    try:
+        import forge_memory_home
+    except ImportError:
+        return Path(repo) / '.forge' / 'memory.md'
+    return forge_memory_home.memory_file(repo)

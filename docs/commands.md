@@ -874,8 +874,10 @@ forge-parallel.sh retry     <plan-dir> <task-id> [--dwarf <spec>] [--answer <tex
                                      [--escalate-after N] [--escalate-effort | --no-escalate-effort]
 forge-parallel.sh accept    <plan-dir> <task-id> --reason "<why>" --approved
 forge-parallel.sh adopt     <plan-dir> <commit|a..b> | --head --reason "<why>" [--qa <spec>] [--yolo-qa] [--approved]
+                                     [--resubmit <adopt-dir>] [--decide resubmit]
 forge-parallel.sh review    <plan-dir> [--qa <spec>] [--yolo-qa] [--qa-threshold P0|P1|P2|P3|none|default]
 forge-parallel.sh attribute <plan-dir> [--force]
+forge-parallel.sh verify    <plan-dir> [--verify-retries N] [--verify-parallel N]
 forge-parallel.sh integrate <plan-dir> --approved [--final-review <qa-spec>] [--verify-retries N]
                                      [--verify-parallel N]
 forge-parallel.sh split     <plan-dir> <new-plan-dir> --tasks <id,id> [--dry-run]
@@ -889,6 +891,8 @@ forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <c
 | `run` | schedule ready tasks; per task: worktree → dwarf → diff → QA → status; merge passing tasks onto the integration branch |
 | `retry` | re-run **one** failed task in the worktree it already has, with its reviewer's findings in the prompt; with `--answer` or `--answer-file`, answer a `NEEDS_INPUT` task and run it; with `--decide` or `--dwarf` plus `--reason` and `--approved`, decide a `NEEDS_DECISION` task and run it |
 | `attribute` | after a failed combined verification, search the merge order for **a merge that breaks it**; merges, revises and accepts nothing. See below |
+| `adopt` | review a range made outside forge on its own and bring it into the integration branch. A range that extends a refused one (or `--resubmit <adopt-dir>`) is reviewed as the next submission: the reviewer gets the previous findings, the commits and diff since, and settles each finding and its siblings first. After `--escalate-after` refusals (3 by default) the work waits for a decision: `--decide resubmit`, `--approved`, or adopt it in parts |
+| `verify` | run the plan's verification of its integration branch again, and nothing else: after a lane was fixed, or to tell a flaky failure from a real one. Dispatches no model; refuses a branch that moved outside the run (adopt it first) |
 | `integrate` | **never automatic** — merge the integration branch into your branch |
 | `accept` | **only on your explicit instruction** — merge a `FAIL`/`UNKNOWN` task's reviewed work anyway, recording why |
 | `review` | **opt-in, spends QA quota** — one reviewer reads the whole combined result; read-only |

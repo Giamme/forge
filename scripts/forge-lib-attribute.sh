@@ -357,7 +357,7 @@ attribute_search() { # attribute_search <plan> <force 0|1>
   if verify_lanes_present "$ATTR_PLAN/verification.lanes.d"; then ATTR_SOURCE="lanes:$ATTR_PLAN/verification.lanes.d"
   elif [ -s "$ATTR_PLAN/verification.command" ]; then ATTR_SOURCE="command:$ATTR_PLAN/verification.command"
   elif [ "$force" = 1 ]; then
-    src="$(verify_source_for "$ATTR_PLAN" "$ATTR_REPO")"; kind="${src%%$'\t'*}"; loc="${src#*$'\t'}"
+    src="$(verify_source_for "$ATTR_PLAN" "$ATTR_REPO" "$(cat "$ATTR_PLAN/wt_root" 2>/dev/null)/_integration")"; kind="${src%%$'\t'*}"; loc="${src#*$'\t'}"
     case "$kind" in
       lanes:*) ATTR_SOURCE="lanes:$loc" ;;
       command:*) ATTR_SOURCE="command:$loc" ;;

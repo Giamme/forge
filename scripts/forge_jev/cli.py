@@ -886,7 +886,7 @@ def cmd_memory_curate(args) -> int:
     from . import memory as memory_module
 
     existing = []
-    path = Path(args.repo) / '.forge' / 'memory.md'
+    path = _memory_md(args.repo)
     if path.is_file():
         try:
             existing = [line.strip(' -') for line in path.read_text(errors='replace').splitlines()
@@ -1056,3 +1056,12 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     finally:
         use_repo(None)
+
+
+def _memory_md(repo) -> Path:
+    """repo's .forge/memory.md, in the main checkout when repo is a linked worktree (#159)."""
+    try:
+        import forge_memory_home
+    except ImportError:
+        return Path(repo) / '.forge' / 'memory.md'
+    return forge_memory_home.memory_file(repo)

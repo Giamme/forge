@@ -105,6 +105,10 @@ counting that keeps `memory.md` honest.
 If you contribute to someone else's repo, gitignore it. A pull request containing forge's
 notes to itself is noise to a reviewer who does not use forge.
 
+From a linked worktree (`git worktree add`) whose `.forge/` is not tracked, forge keeps the memory
+in the main checkout's `.forge/`, so `git worktree remove` cannot take learnings with it; see
+[the reference](../references/memory.md#committing-ignoring-disabling).
+
 ## `scripts/forge-memory.sh`
 
 ```
@@ -113,6 +117,7 @@ forge-memory.sh note <planner|dwarf|qa>            # the instruction to append
 forge-memory.sh record <repo> --last <file> --role <r> [--run-id X] [--task T]
                               [--model M] [--verdict V] [--duration S]
 forge-memory.sh show <repo>
+forge-memory.sh where <repo>                       # the checkout whose .forge/ holds the memory
 forge-memory.sh prune <repo>                       # re-apply staleness and the cap now
 forge-memory.sh spend <repo> [--run <run-id>]      # what forge has cost this repo
 forge-memory.sh learnings <repo> [--json]          # every ledger learning and its state, as JSON (forge memory learnings)

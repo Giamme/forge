@@ -27,6 +27,26 @@ if [ "$1" = run ]; then echo "fake run output"; exit "${FAKE_RUN_RC:-0}"; fi
 if [ "$1" = retry ] && [ "$3" = "${FAKE_RETRY_FAIL:-}" ]; then echo "retry refused" >&2; exit 2; fi
 exit 0
 '''
+# Holds an exclusive flock on argv[1], says so, and keeps it until its stdin closes.
+HOLD_LOCK = (
+    'import sys\n'
+    'sys.path.insert(0, %r)\n'
+    'import forge_flock\n'
+    'h = open(sys.argv[1], "a")\n'
+    'forge_flock.flock(h, forge_flock.LOCK_EX | forge_flock.LOCK_NB)\n'
+    'print("held", flush=True)\n'
+    'sys.stdin.read()\n' % str(ROOT / 'scripts'))
+# Prints free or busy: whether an exclusive flock on argv[1] can be taken now.
+PROBE_LOCK = (
+    'import sys\n'
+    'sys.path.insert(0, %r)\n'
+    'import forge_flock\n'
+    'h = open(sys.argv[1], "a")\n'
+    'try:\n'
+    '    forge_flock.flock(h, forge_flock.LOCK_EX | forge_flock.LOCK_NB)\n'
+    '    print("free")\n'
+    'except OSError:\n'
+    '    print("busy")\n' % str(ROOT / 'scripts'))
 _MODULE = None
 
 
@@ -158,6 +178,45 @@ class ResumeTests(unittest.TestCase):
         self.assertEqual((self.plan / 'tasks' / 'a' / 'attempt').read_text().strip(), '1')
         self.assertEqual([p['task'] for p in data['prepared']], ['a'])
         self.assertEqual(self.calls(), [f'retry {self.plan} a --no-dispatch'])
+
+    def test_a_plan_lock_held_by_another_command_changes_nothing(self):
+        # #157: a forge command that holds schedule.lock (a `run` starting its scheduler, a retry) is
+        # working on the plan; resume must not reset its worktrees nor restart it.
+        wt = self.worktree('a')
+        self.dirty(wt)
+        tdir = self.task_files('a', attempt=1)
+        before = {p: p.read_bytes() for p in tdir.iterdir()}
+        holder = subprocess.Popen([sys.executable, '-c', HOLD_LOCK, str(self.plan / 'schedule.lock')],
+                                  stdout=subprocess.PIPE, stdin=subprocess.PIPE, text=True)
+        self.addCleanup(holder.stdout.close)
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.stdin.close)
+        self.assertEqual(holder.stdout.readline().strip(), 'held')
+        (self.plan / 'schedule.holder').write_text(json.dumps({'pid': holder.pid, 'command': 'run', 'at': time.time()}))
+        env = dict(self.env)
+        env.pop('FORGE_HANDOFF_NO_START')
+        result = self.resume('--json', env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual((data['locked'], data['recovered'], data['prepared'], data['started']), (True, [], [], None))
+        self.assertEqual({p: p.read_bytes() for p in tdir.iterdir()}, before)
+        self.assertEqual((wt / 'a.txt').read_text(), 'changed\n')
+        self.assertTrue((wt / 'new.txt').exists())
+        self.assertEqual(self.calls(), [])
+        text = self.resume().stdout
+        self.assertIn(f'the plan is locked by forge-parallel.sh run (pid {holder.pid})', text)
+
+    def test_the_lock_is_free_again_when_the_task_is_prepared(self):
+        # `retry --no-dispatch` takes the plan lock itself: resume must have let it go by then.
+        self.worktree('a')
+        self.task_files('a', attempt=1)
+        probe = self.root / 'probe-parallel.sh'
+        probe.write_text(FAKE.replace('exit 0\n', 'python3 -c "$PROBE" "$2/schedule.lock" >> "$FAKE_LOG"\nexit 0\n'))
+        probe.chmod(0o755)
+        env = dict(self.env, FORGE_HANDOFF_PARALLEL=str(probe), PROBE=PROBE_LOCK)
+        data = json.loads(self.resume('--json', env=env).stdout)
+        self.assertEqual([r['task'] for r in data['recovered']], ['a'])
+        self.assertEqual(self.calls(), [f'retry {self.plan} a --no-dispatch', 'free'])
 
     def test_clean_worktree_writes_an_empty_diff(self):
         self.worktree('a')

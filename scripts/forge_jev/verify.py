@@ -242,7 +242,7 @@ def _remembered_commands(fact: str) -> list[str]:
 
 
 def _memory_verify(repo: Path, found, seen) -> None:
-    path = repo / '.forge' / 'memory.md'
+    path = _memory_md(repo)
     for fact in _memory_facts(repo, 'verify'):
         # A memory fact is prose ("pytest -q runs the suite; make test also lints and
         # is 4x slower"), not a bare command -- pull out anything that looks like a
@@ -289,7 +289,7 @@ _MEMORY_SECTIONS = {'verify': '## Verify', 'trap': '## Known traps',
 def _memory_facts(repo: Path, category: str) -> list[str]:
     """The `- ` bullets under one heading of a rendered .forge/memory.md."""
     heading = _MEMORY_SECTIONS.get(category)
-    path = Path(repo) / '.forge' / 'memory.md'
+    path = _memory_md(repo)
     if not heading or not path.is_file():
         return []
     try:
@@ -477,3 +477,11 @@ def discover(repo, *, config=None, run_dir=None) -> dict | None:
                runtime_level=runtime_level, source=picked_candidate['source'],
                evidence=picked_candidate['evidence'], coverage=coverage)
 
+
+def _memory_md(repo) -> Path:
+    """repo's .forge/memory.md, in the main checkout when repo is a linked worktree (#159)."""
+    try:
+        import forge_memory_home
+    except ImportError:
+        return Path(repo) / '.forge' / 'memory.md'
+    return forge_memory_home.memory_file(repo)

@@ -27,6 +27,7 @@
 #   forge-parallel.sh integrate <plan-dir> --approved [--verify-retries N] [--final-review <qa-spec>]
 #   forge-parallel.sh review <plan-dir> [--qa <spec>] [--yolo-qa] [--qa-threshold Pn|none|default]
 #   forge-parallel.sh attribute <plan-dir> [--force]   (find a merge that breaks the failed verification)
+#   forge-parallel.sh verify <plan-dir> [--verify-retries N] [--verify-parallel N]   (verify the integration branch again, nothing else)
 #   forge-parallel.sh accept <plan-dir> <task-id> --reason "<why>" --approved
 #   forge-parallel.sh adopt <plan-dir> <commit|a..b> | --head --reason "<why>" [--qa <spec>] [--approved]
 #                                     (a commit made outside forge, reviewed alone, comes into the run)
@@ -1009,7 +1010,7 @@ PY
   # Uncommitted work is invisible to every dwarf, because worktrees branch from a
   # commit. That is the likeliest way to get a confusingly wrong result, so it is
   # stated loudly rather than left for the user to deduce from an odd diff.
-  if [ ! -s "$PLAN/after" ] && [ -z "${CHAIN_PREV:-}" ] && [ -n "$(cd "$REPO" && git status --porcelain 2>/dev/null)" ]; then
+  if [ ! -s "$PLAN/after" ] && [ -z "${CHAIN_PREV:-}" ] && [ -n "$(user_tree_changes "$REPO")" ]; then
     note "WARNING: '$REPO' has uncommitted changes. Task worktrees branch from HEAD,"
     note "         so those edits will NOT be visible to any dwarf. Commit or stash first"
     note "         if the tasks depend on them."
@@ -1350,6 +1351,13 @@ try:
     n = open(plan + '/retry_per_model', encoding='utf-8').read().strip()
 except OSError:
     sys.exit(0)
+# The scheduler and forge-route.py read only 1-99 and treat anything else as no file (#158): a
+# hand-edited value is named as ignored, never shown as the setting with a worst case that assumes it.
+if not re.fullmatch(r'[0-9]{1,9}', n) or not 1 <= int(n) <= 99:
+    print('retry per model: ignored, %s holds %r and not a number from 1 to 99; the run uses --escalate-after '
+          '(plan --retry-per-model N sets it, --no-retry-per-model removes the file)' % (plan + '/retry_per_model', n[:40]))
+    sys.exit(0)
+n = str(int(n))
 print('retry per model: %s (a task may fail %s times on each model the retry policy gives it, then it moves a rung up)' % (n, n))
 try:
     raw = subprocess.check_output([sys.executable, route, 'worst-case', '--plan', plan], text=True)
@@ -2087,7 +2095,7 @@ do_task_body() (
       echo "On retry, fix the findings in the existing work; preserve parts not criticised. Explain any finding you reject."
       # With repository verification configured, the whole suite runs after the merge, never per attempt.
       echo; python3 "$SKILL_DIR/scripts/forge-contract.py" dwarf $([ ! -f "$PLAN/pre_review_tests" ] || echo --pre-review) \
-        $([ -z "$(verify_source_for "$PLAN" "$REPO")" ] || echo --verify-after-merge)
+        $([ -z "$(verify_source_for "$PLAN" "$REPO" "$(cat "$PLAN/wt_root" 2>/dev/null)/_integration")" ] || echo --verify-after-merge)
       echo; /bin/bash "$MEMORY" note dwarf
       # Last, after the memory note. Nothing is printed when retro is off.
       forge_retro_prompt "$PLAN" dwarf
@@ -3081,7 +3089,12 @@ verify_result_body() { # plan, checkout, artifact directory[, fixed source]
       note "combined result UNVERIFIED: the fixed verification source $fixed is missing or empty"; return 0
     fi
   else
-    vsource="$(verify_source_for "$plan" "$repo")"
+    vsource="$(verify_source_for "$plan" "$repo" "$wt")"
+    # The checkout's own lanes or command run (#151): say where the root's copy differs.
+    case "${vsource%%$'\t'*}" in
+      *:checkout) local diffline
+        while IFS= read -r diffline; do note "$diffline"; done < <(verify_root_difference "$vsource" "$repo") ;;
+    esac
   fi
   case "$vsource" in command:*) cmd="$(cat "${vsource#*$'\t'}")" ;; esac
   # A lanes snapshot belongs to the verification that wrote it: a run on a command, or on
@@ -3507,8 +3520,14 @@ do_run() {
   case "$MAXP" in ''|*[!0-9]*) die "--max-parallel must be positive" ;; esac
   [ "$MAXP" -gt 0 ] || die "--max-parallel must be positive"
   # Said once, before any dispatch. The run itself still follows retry_per_model.
-  if [ -f "$PLAN/retry_per_model" ] && [ -f "$PLAN/escalate_after" ]; then
-    note "retry-per-model $(tr -d '[:space:]' < "$PLAN/retry_per_model") replaces --escalate-after for this plan"
+  if [ -f "$PLAN/retry_per_model" ]; then
+    local rpm; rpm="$(tr -d '[:space:]' < "$PLAN/retry_per_model")"
+    # The reading forge-route.py and the scheduler use: 1 to 99, at most 9 digits.
+    if [[ "$rpm" =~ ^[0-9]{1,9}$ ]] && [ "$((10#$rpm))" -ge 1 ] && [ "$((10#$rpm))" -le 99 ]; then
+      [ ! -f "$PLAN/escalate_after" ] || note "retry-per-model $((10#$rpm)) replaces --escalate-after for this plan"
+    else
+      note "retry_per_model holds '$(printf '%.40s' "$rpm")', not a number from 1 to 99, so this run ignores it"
+    fi
   fi
   local T="$PLAN/tasks.tsv" W="$PLAN/waves.tsv"
   [ -s "$W" ] || die "no waves.tsv — run the plan subcommand first"
@@ -3634,7 +3653,7 @@ do_run() {
     advisory|gated) forge_brief_start "$PLAN" ;;
   esac
   # Say now, before any model is paid for, which suites the verify command will not run.
-  verify_coverage_report "$REPO" "$(verify_command_for "$PLAN" "$REPO")" "$PLAN/verification.coverage.txt"
+  verify_coverage_report "$REPO" "$(verify_command_for "$PLAN" "$REPO" "$int_wt")" "$PLAN/verification.coverage.txt"
   local sched_rc=0 paused=0 sched_args=()
   [ "$PP_RETRY_FAILED" -gt 0 ] && sched_args+=(--retry-failed "$PP_RETRY_FAILED")
   [ "$PP_INFRA_RETRIES" -gt 0 ] && sched_args+=(--infra-retries "$PP_INFRA_RETRIES")
@@ -3785,11 +3804,22 @@ do_run() {
     /bin/bash "$MEMORY" spend "$REPO" --run "$run_id" 2>/dev/null | sed 's/^/  /'
     echo
   fi
-  if [ ! -f "$PLAN/no_memory" ] && [ -s "$REPO/.forge/memory.md" ]; then
-    echo "project memory: $(grep -c '^- ' "$REPO/.forge/memory.md") fact(s) in .forge/ —"
-    echo "  uncommitted, and the only thing forge wrote outside its own branches."
-    echo
-    echo "Your branch and working tree were not touched, apart from .forge/ above."
+  local mem_home=""
+  [ -f "$PLAN/no_memory" ] || mem_home="$(/bin/bash "$MEMORY" where "$REPO" 2>/dev/null)"
+  if [ -n "$mem_home" ] && [ -s "$mem_home/.forge/memory.md" ]; then
+    if [ "$mem_home" = "$REPO" ]; then
+      echo "project memory: $(grep -c '^- ' "$mem_home/.forge/memory.md") fact(s) in .forge/ —"
+      echo "  uncommitted, and the only thing forge wrote outside its own branches."
+      echo
+      echo "Your branch and working tree were not touched, apart from .forge/ above."
+    else
+      # #159: a linked worktree's learnings live in the main checkout, so removing it loses none.
+      echo "project memory: $(grep -c '^- ' "$mem_home/.forge/memory.md") fact(s) in $mem_home/.forge/ —"
+      echo "  the main checkout's, since $REPO is a linked worktree: removing that worktree loses none of them."
+      echo "  Uncommitted, and the only thing forge wrote outside its own branches."
+      echo
+      echo "Your branch and working tree were not touched."
+    fi
   else
     echo "Your branch and working tree were not touched."
   fi
@@ -3797,6 +3827,45 @@ do_run() {
   [ "$paused" = 1 ] && return 8
   [ "$failed" = 1 ] && return 5
   return 0
+}
+
+# The changes in the user's checkout that make it dirty, as `git status --porcelain` lines, leaving
+# out forge's own project memory (#156): .forge/memory.md and .forge/ledger.tsv are written into the
+# repository by forge and never committed by it, so they must not block forge's own integrate, nor be
+# what a person is told to commit or stash.
+user_tree_changes() { # user_tree_changes <repo>
+  git -C "$1" status --porcelain -- . ':(exclude).forge/memory.md' ':(exclude).forge/ledger.tsv' 2>/dev/null
+}
+
+# --- verify -------------------------------------------------------------------
+# The plan's verification of its integration branch, and nothing else (#151): after a lane was
+# fixed, or to tell a flaky failure from a real one, without a `run` that has nothing to dispatch.
+# The same lanes or command a run would use, on the same checkout, with its results in the plan.
+do_verify() {
+  local PLAN="${1:?verify needs a plan dir}"; shift
+  while [ $# -gt 0 ]; do
+    if forge_pp_flag verify "$PLAN" "$@"; then shift "$PP_SHIFT"; else die "verify: unknown option '$1'"; fi
+  done
+  [ -s "$PLAN/tasks.tsv" ] || die "no tasks.tsv in '$PLAN'" 3
+  [ -s "$PLAN/wt_root" ] && [ -s "$PLAN/repo" ] && [ -s "$PLAN/accepted.integration" ] \
+    || die "this plan has never been run, so it has no integration branch to verify" 3
+  local REPO int_wt
+  REPO="$(cat "$PLAN/repo")"; int_wt="$(cat "$PLAN/wt_root")/_integration"
+  [ -e "$int_wt/.git" ] || die "the integration worktree $int_wt is missing" 3
+  [ "$(git -C "$int_wt" rev-parse HEAD 2>/dev/null)" = "$(cat "$PLAN/accepted.integration")" ] \
+    || die "integration branch changed outside this run. To bring those commits into the run: forge-parallel.sh adopt $PLAN --head --reason \"...\"" 3
+  verify_lanes_check "$PLAN" "$REPO" "$int_wt"
+  local left="" lid
+  for lid in $(all_ids "$PLAN/tasks.tsv"); do
+    case "$(task_status "$PLAN" "$lid")" in PENDING|BLOCKED|RUNNING) left="${left:+$left }$lid" ;; esac
+  done
+  [ -z "$left" ] || note "tasks still to run ($left): this verifies the integration branch as it is now, without them"
+  local rc=0
+  verify_result "$PLAN" "$int_wt" "$PLAN" || rc=$?
+  write_results "$PLAN"
+  report_verify_notes "$PLAN"
+  echo "verification of $(git -C "$int_wt" rev-parse --short HEAD 2>/dev/null): $(cat "$PLAN/verification.status" 2>/dev/null || echo UNVERIFIED)"
+  case "$rc" in 0) return 0 ;; 130) return 130 ;; *) return 5 ;; esac
 }
 
 # --- integrate ----------------------------------------------------------------
@@ -3816,7 +3885,9 @@ do_integrate() {
   cur="$(cd "$REPO" && git rev-parse --abbrev-ref HEAD)"
   [ "$cur" = HEAD ] && die "integration requires a checked-out user branch" 3
   [ "$cur" = "$int_br" ] && die "you are already on $int_br"
-  [ -n "$(cd "$REPO" && git status --porcelain)" ] && die "working tree is dirty — commit or stash before integrating"
+  local dirty; dirty="$(user_tree_changes "$REPO")"
+  [ -z "$dirty" ] || die "working tree is dirty — commit or stash before integrating (forge's own .forge/memory.md and .forge/ledger.tsv do not count):
+$(printf '%s\n' "$dirty" | head -10)"
   # Verify the actual combined candidate, including changes on the user's branch.
   local parent target candidate candidate_sha out
   parent="$(git -C "$REPO" rev-parse HEAD)" || return 3
@@ -3859,7 +3930,7 @@ do_integrate() {
   [ "$(git -C "$REPO" rev-parse --abbrev-ref HEAD)" = "$cur" ] &&
     [ "$(git -C "$REPO" rev-parse HEAD)" = "$parent" ] &&
     [ "$(git -C "$REPO" rev-parse "$int_br")" = "$target" ] &&
-    [ -z "$(git -C "$REPO" status --porcelain)" ] || die "branch or working tree changed during verification" 3
+    [ -z "$(user_tree_changes "$REPO")" ] || die "branch or working tree changed during verification" 3
   git -C "$REPO" merge --ff-only "$candidate_sha" || return 6
   # The user's branch has moved: the run shipped. Recorded now, because the cleanup below
   # can still fail and make the command's exit code say otherwise.
@@ -4139,7 +4210,7 @@ if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
   forge_fractal_help
   exit 0
 fi
-[ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|auto|run|retry|accept|adopt|review|integrate|split|attribute|combine> <plan-dir> [...]"
+[ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|auto|run|retry|accept|adopt|review|integrate|split|attribute|verify|combine> <plan-dir> [...]"
 CMD="$1"; shift
 [ ! -f "${1:-}/no_ripwire" ] || export FORGE_RIPWIRE=off
 if [ -d "${1:-}" ]; then
@@ -4147,7 +4218,7 @@ if [ -d "${1:-}" ]; then
 fi
 case "$CMD" in
   # `combine` takes a plan dir that does not exist yet and locks its sources itself.
-  run|retry|integrate|accept|adopt|review|split|attribute)
+  run|retry|integrate|accept|adopt|review|split|attribute|verify)
     if [ "$(forge_posix_path "${FORGE_PLAN_LOCK:-}")" != "${1:-}" ]; then
       exec python3 "$SKILL_DIR/scripts/forge-schedule.py" lock "$SELF" "$CMD" "$@"
     fi ;;
@@ -4156,7 +4227,7 @@ esac
 # path (die included). Installed after the lock re-exec, so it fires once, in the process
 # that did the work; `_task` and `_merge` are parts of a `run` and are not recorded alone.
 case "$CMD" in
-  plan|run|retry|integrate|accept|adopt|review|split|attribute|combine)
+  plan|run|retry|integrate|accept|adopt|review|split|attribute|verify|combine)
     FORGE_DATASET_INVOCATION="inv-$(date +%s)-$$-$RANDOM"; export FORGE_DATASET_INVOCATION
     FORGE_DATASET_STARTED="$(date +%s)"
     FORGE_DATASET_ARGV=("$@")
@@ -4167,7 +4238,7 @@ esac
 need_fn() { declare -F "$1" >/dev/null || die "'$CMD' is not available: $1 is missing" 3; }
 # A plan with a frozen profile asks its decision-model gates from that copy (`plan` does it itself,
 # after it freezes). The internal subcommands inherit it from the `run` that started them.
-case "$CMD" in run|retry|integrate|accept|adopt|review|split|attribute) forge_profile_export "${1:-}" ;; esac
+case "$CMD" in run|retry|integrate|accept|adopt|review|split|attribute|verify) forge_profile_export "${1:-}" ;; esac
 case "$CMD" in
   plan)      do_plan "$@"; rc=$?; forge_update_notice; exit "$rc" ;;
   auto)      do_auto "$@" ;;
@@ -4205,6 +4276,7 @@ case "$CMD" in
   review)    need_fn do_review;  do_review "$@" ;;
   split)     need_fn do_split;   do_split "$@" ;;
   attribute) need_fn do_attribute; do_attribute "$@" ;;
+  verify)    do_verify "$@" ;;
   combine)   need_fn do_combine; do_combine "$@" ;;
   _task)     do_task "$@" ;;
   _merge)    merge_task "$@" ;;
