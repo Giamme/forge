@@ -80,6 +80,7 @@ from pathlib import Path
 SCRIPTS = os.path.dirname(os.path.realpath(__file__))
 if SCRIPTS not in sys.path:
     sys.path.insert(0, SCRIPTS)
+import forge_decompose  # noqa: E402
 import forge_flock as fcntl  # noqa: E402
 import forge_infra  # noqa: E402
 import forge_legacy  # noqa: E402
@@ -499,7 +500,21 @@ def show(plan, rows):
             if len(log) == LOG_SHOWN:
                 break
     return dict(plan=plan, run_id=get('run_id') or os.path.basename(plan).removeprefix('forge-'),
-                live=live, removed='Fractal' if forge_legacy.was_fractal(plan) else None, run=run, tasks=tasks, log=log)
+                live=live, removed='Fractal' if forge_legacy.was_fractal(plan) else None, run=run, tasks=tasks, log=log,
+                decomposition=decomposition(plan))
+
+
+def decomposition(plan):
+    """The plan's limits and its tree of nodes, through every level (#153). A subtask is controlled in
+    its own plan dir (`plan` in each node): `forge control ... <that dir>`."""
+    try:
+        nodes = forge_decompose.tree(plan)
+        limits = dict(forge_decompose.limits(plan), frozen=forge_decompose.is_frozen(plan))
+    except (OSError, ValueError, forge_decompose.Invalid):
+        return None
+    keys = ('id', 'task', 'parent', 'level', 'plan', 'run', 'title', 'status', 'difficulty', 'model', 'qa', 'decision',
+            'reason', 'by', 'children', 'merged')
+    return dict(limits=limits, nodes=[{k: n.get(k) for k in keys} for n in nodes])
 
 
 # ------------------------------------------------------------------------------------ changes
@@ -848,11 +863,12 @@ def check_row(plan, rows, task):
     return dwarf, qa
 
 
-def queue(args, plan, verb, task, dwarf, decision=None, accept_reason=None, answer=None):
+def queue(args, plan, verb, task, dwarf, decision=None, accept_reason=None, answer=None, subtasks=None):
     """Write the request under the control lock, live only; log it with its id.
     decision: a retry's (--decide choice or None, reason, approved) for a NEEDS_DECISION task.
     accept_reason: an accept's reason; it is given with --approved (#138).
-    answer: a NEEDS_INPUT task's answer (#147); the log records that there was one, never the text."""
+    answer: a NEEDS_INPUT task's answer (#147); the log records that there was one, never the text.
+    subtasks: a split's checked subtasks (#153), as the name of the file they are stored in under the task."""
     with control_lock(plan):
         probe(plan, 'control.log')
         if not is_live(plan):
@@ -866,6 +882,8 @@ def queue(args, plan, verb, task, dwarf, decision=None, accept_reason=None, answ
         request = dict(verb=verb, task=task, dwarf=dwarf, at=time.time(), actor=args.actor)
         if decision:
             request.update(decide=decision[0], reason=decision[1], approved=True)
+        if subtasks:
+            request['subtasks'] = subtasks
         extra = {}
         if accept_reason is not None:
             request.update(reason=accept_reason, approved=True)
@@ -891,6 +909,8 @@ def queue(args, plan, verb, task, dwarf, decision=None, accept_reason=None, answ
 
 
 DECISION = re.compile(r'retry=(?:[1-9]|1[0-9]|20)|threshold=P[0-3]')
+SPLIT = re.compile(r'split(?:=keep|=fresh)?')   # a split into subtasks (#153): not only for a NEEDS_DECISION task
+DECIDE_TAKES = '--decide takes retry=N (1 to 20), threshold=P0|P1|P2|P3, or split | split=fresh with --subtasks FILE'
 
 
 def decision_of(plan, args, dwarf):
@@ -898,6 +918,22 @@ def decision_of(plan, args, dwarf):
     A NEEDS_DECISION task is resumed only by a decision: --decide or --dwarf, with --reason and
     --approved. --decide is for no other task."""
     status = task_status(plan, args.task, strict=True)
+    if args.decide is not None and SPLIT.fullmatch(args.decide):
+        if dwarf is not None:
+            raise Invalid("--decide split does not take --dwarf: the subtasks are routed with the plan's pools")
+        if status in forge_decompose.NOT_SPLITTABLE or status == 'NEEDS_INPUT':
+            raise Refused(f'task {args.task} is {status}: only a task that has not passed, is not running and is not '
+                          'waiting for an answer can be split')
+        if forge_decompose.is_split(plan, args.task):
+            raise Refused(f'task {args.task} is already split into subtasks ({forge_decompose.sub_dir(plan, args.task)}): '
+                          'they are kept, never made twice')
+        if not args.subtasks:
+            raise Invalid('--decide split needs --subtasks FILE: the subtasks, as a forge-plan block or its JSON '
+                          '(forge-planner.py node-prompt describes it). To ask a planner instead, with no run live: '
+                          f'forge-parallel.sh retry {plan} {args.task} --decide split --planner SPEC --reason TEXT --approved')
+        return args.decide, decision_words(args), True
+    if args.subtasks:
+        raise Invalid('--subtasks goes with --decide split')
     if status != 'NEEDS_DECISION':
         if args.decide is not None:
             hint = ' (retry without --decide)' if status in (
@@ -909,15 +945,81 @@ def decision_of(plan, args, dwarf):
         head = ' '.join(line.strip() for line in (read_file(plan, f'tasks/{args.task}/decision.md') or '').splitlines()[:3]
                         if line.strip())
         raise Refused(f'task {args.task} is waiting for your decision, and only a decision resumes it: {head or "see decision.md"} '
-                      '(retry --decide retry=N | threshold=Pn, or --dwarf SPEC, each with --reason TEXT --approved)')
+                      '(retry --decide retry=N | threshold=Pn | split, or --dwarf SPEC, each with --reason TEXT --approved)')
     if args.decide is not None and not DECISION.fullmatch(args.decide):
-        raise Invalid('--decide takes retry=N (1 to 20) or threshold=P0|P1|P2|P3')
+        raise Invalid(DECIDE_TAKES)
+    return args.decide, decision_words(args), True
+
+
+def decision_words(args):
+    """The reason of a decision, on one line. A decision needs it, and --approved."""
     reason = re.sub(r'\s+', ' ', args.reason or '').strip()
     if not reason:
         raise Invalid('a decision needs --reason TEXT: it is recorded with the task')
     if not args.approved:
         raise Invalid('a decision needs --approved: it resumes a task forge stopped, and is only given on the user\'s instruction')
-    return args.decide, reason, True
+    return reason
+
+
+def forge_script(name):
+    script = os.path.join(SKILL, 'scripts', name)
+    return forge_proc.bash_cmd(script) if forge_proc.IS_WINDOWS else ['bash', script]
+
+
+def passed_through(args, command):
+    """Run a forge command for this call. With --json, stdout is the JSON: the command's own words go to stderr."""
+    if args.json:
+        done = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        sys.stderr.write(done.stdout + done.stderr)
+    else:
+        done = subprocess.run(command, stdin=subprocess.DEVNULL)
+    return done.returncode
+
+
+def retry_split(args, plan, decision):
+    """A split into subtasks (#153). Live: the subtasks are checked now and stored beside the task, and the
+    request names that file; the scheduler makes the sub-plan and runs it. Not live: the split is made
+    now, as `forge-parallel.sh retry --decide split --no-dispatch` does, and the next `run` runs it."""
+    if not os.path.isfile(args.subtasks):
+        raise Invalid(f'--subtasks {args.subtasks}: not a readable file')
+    if not is_live(plan):
+        rc = passed_through(args, forge_script('forge-parallel.sh') + [
+            'retry', plan, args.task, '--decide', decision[0], '--subtasks', args.subtasks,
+            '--reason', decision[1], '--approved', '--no-dispatch'])
+        if rc == 0 and args.json:
+            json.dump(dict(queued=False, prepared=True, split=True), sys.stdout)
+            sys.stdout.write('\n')
+        elif rc == 0:
+            print(f'no run is live: task {args.task} is split; the next `forge-parallel.sh run {plan}` runs its subtasks')
+        return rc
+    name = f'split.request.{time.time_ns()}-{os.getpid()}.json'
+    stored = os.path.join(plan, 'tasks', args.task, name)
+    checked = subprocess.run([sys.executable, os.path.join(SKILL, 'scripts', 'forge-planner.py'), 'node-parse', '--plan', plan,
+                              '--task', args.task, '--reply', args.subtasks, '--out', stored],
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    if checked.returncode != 0:
+        raise Refused((checked.stdout + checked.stderr).strip() or 'the subtasks were refused')
+    try:
+        proposal = json.loads(Path(stored).read_text(encoding='utf-8'))
+        forge_decompose.check_split(plan, args.task, proposal.get('tasks'))
+    except forge_decompose.Atomic:
+        with contextlib.suppress(OSError):
+            os.unlink(stored)
+        raise Refused('the subtasks are one task, not a split: a split has at least two')
+    except forge_decompose.Bounded as limit:
+        with contextlib.suppress(OSError):
+            os.unlink(stored)
+        raise Refused(f'{limit}. {forge_decompose.describe(forge_decompose.limits(plan))}')
+    except (OSError, ValueError, forge_decompose.Invalid) as error:
+        with contextlib.suppress(OSError):
+            os.unlink(stored)
+        raise Refused(f'the subtasks were refused: {error}')
+    try:
+        return queue(args, plan, 'retry', args.task, None, decision, subtasks=name)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(stored)
+        raise
 
 
 ANSWER_MAX = 8000          # characters; the scheduler reads the same limit
@@ -984,27 +1086,18 @@ def retry_prepared(args, plan, answer):
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as handle:
             handle.write(answer + '\n')
-        script = os.path.join(SKILL, 'scripts', 'forge-parallel.sh')
-        if forge_proc.IS_WINDOWS:
-            base = forge_proc.bash_cmd(script)
-        else:
-            base = ['bash', script]
-        command = base + ['retry', plan, args.task, '--answer-file', tmp, '--no-dispatch']
-        if args.json:   # stdout is the JSON: the command's own words go to stderr
-            done = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True)
-            sys.stderr.write(done.stdout + done.stderr)
-        else:
-            done = subprocess.run(command, stdin=subprocess.DEVNULL)
+        rc = passed_through(args, forge_script('forge-parallel.sh') + [
+            'retry', plan, args.task, '--answer-file', tmp, '--no-dispatch'])
     finally:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
-    if done.returncode == 0 and args.json:
+    if rc == 0 and args.json:
         json.dump(dict(queued=False, prepared=True), sys.stdout)
         sys.stdout.write('\n')
-    elif done.returncode == 0:
+    elif rc == 0:
         print(f'no run is live: task {args.task} is prepared with your answer; the next `forge-parallel.sh run {plan}` '
               'dispatches it')
-    return done.returncode
+    return rc
 
 
 def cmd_retry(args):
@@ -1024,6 +1117,8 @@ def cmd_retry(args):
         dwarf = clean_spec(args.dwarf, '--dwarf')
     refuse_task(plan, args.task)   # before the doctor: a MERGED task needs no model check
     decision = decision_of(plan, args, dwarf)
+    if decision and decision[0] and SPLIT.fullmatch(decision[0]):
+        return retry_split(args, plan, decision)
     if dwarf:
         doctor(dwarf)
     return queue(args, plan, 'retry', args.task, dwarf, decision)
@@ -1110,6 +1205,17 @@ def cmd_show(args):
     widths = [max(len(r[i]) for r in table) for i in range(len(columns))]
     for r in table:
         print('  ' + '  '.join(c.ljust(w) for c, w in zip(r, widths)).rstrip())
+    tree = controls.get('decomposition')
+    if tree:
+        print('  decomposition limits: ' + forge_decompose.describe(tree['limits']) + (' (frozen)' if tree['limits'].get('frozen') else ''))
+        drawn = forge_decompose.render(plan, split_only=True)
+        if drawn:
+            print('subtasks (each split task has a plan of its own; control a subtask there):')
+            for line in drawn.splitlines():
+                print('  ' + line)
+            for node in tree['nodes']:
+                if node['children']:
+                    print(f"  {node['id']}: {forge_decompose.sub_dir(node['plan'], node['task'])}")
     if controls['log']:
         print('changes, newest first:')
         for e in controls['log']:
@@ -1159,7 +1265,9 @@ def parser():
     common(p)
     p.add_argument('task')
     p.add_argument('--dwarf', metavar='SPEC', help='the implementer for this retry (an explicit escalation)')
-    p.add_argument('--decide', metavar='CHOICE', help='decide a NEEDS_DECISION task: retry=N (1 to 20) or threshold=P0..P3')
+    p.add_argument('--decide', metavar='CHOICE', help='decide a NEEDS_DECISION task: retry=N (1 to 20) or threshold=P0..P3; '
+                   'or split | split=fresh, which splits any task that has not passed into subtasks')
+    p.add_argument('--subtasks', metavar='FILE', help='with --decide split: the subtasks, a forge-plan block or its JSON')
     p.add_argument('--answer', metavar='TEXT', help="answer a NEEDS_INPUT task's question (1 to 8000 characters)")
     p.add_argument('--answer-file', metavar='FILE', help='the answer, read from FILE (- for stdin)')
     p.add_argument('--reason', metavar='TEXT', help='why (a decision needs it)')

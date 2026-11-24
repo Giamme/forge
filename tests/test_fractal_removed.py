@@ -141,7 +141,7 @@ class LegacyModuleTests(unittest.TestCase):
     def test_no_fractal_code_is_left_outside_the_old_record_readers(self):
         # The names that may still say it: the removal note and what reads an old run.
         allowed = {'forge', 'scripts/forge_legacy.py', 'scripts/forge-lib-task.sh', 'scripts/forge-parallel.sh',
-                   'scripts/forge-solo.sh', 'scripts/forge-lib-plans.sh', 'scripts/forge-compare.py',
+                   'scripts/forge-solo.sh', 'scripts/forge-lib-plans.sh', 'scripts/forge-lib-decompose.sh', 'scripts/forge-compare.py',
                    'scripts/forge-control.py', 'scripts/forge-handoff.py', 'scripts/forge-du.py', 'scripts/forge-runs.py',
                    'scripts/forge_storage.py', 'scripts/forge_decide/profiles.py', 'scripts/forge_dataset/cli.py',
                    'scripts/forge_dataset/harvest.py', 'scripts/forge_dataset/importer.py',

@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'scripts' / 'forge-handoff.py'
 FORGE = ROOT / 'forge'
-KEYS = {'run', 'choices', 'flags', 'scheduler', 'tasks', 'needs_you', 'changes', 'stale', 'notes', 'driver', 'next'}
+KEYS = {'run', 'choices', 'flags', 'scheduler', 'tasks', 'needs_you', 'changes', 'stale', 'notes', 'driver', 'next', 'subtasks'}
 
 
 def dead_pid():

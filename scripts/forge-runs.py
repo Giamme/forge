@@ -16,6 +16,11 @@ deletes a run, after its traces are in the dataset and an archive exists (script
 keeps every run and takes back what it holds for nothing: leftover review snapshots and, with
 --logs, gzipped log copies (scripts/forge-runs-compact.py). Both change things; listing never does.
 
+`forge runs tree <run-dir> [--json]` prints a run's tasks and, under each task that was split, its subtasks
+through every level, with the decision recorded for each (split, kept whole, or kept whole at a limit) and
+the run's limits. A split task's subtasks are a plan of their own under it, `<run-dir>/tasks/<id>/sub`:
+the list above counts them on the run's line and never lists them as runs.
+
 `forge runs rerun <run-dir> --dwarf SPEC` and `forge runs compare <run-dir-A> <run-dir-B>` (scripts/forge-compare.py)
 run a plan again under another implementer, from the same starting commit and never merging, and set two runs
 side by side per task. Starting the rerun spends tokens, so it takes `--run --yes` after it has shown the forecast.
@@ -38,7 +43,7 @@ import forge_registry  # noqa: E402
 from forge_ui import reader  # noqa: E402
 
 FIELDS = ('key', 'run_id', 'kind', 'goal', 'repo', 'path', 'created', 'updated', 'task_count', 'counts',
-          'verification_status', 'final_review', 'after', 'removed')
+          'verification_status', 'final_review', 'after', 'removed', 'decomposition')
 
 
 def repo_of(start: Path) -> Path:
@@ -101,7 +106,10 @@ def line(run: dict, now: float, with_repo: bool = False) -> str:
     # A run of a backend forge no longer has (Fractal): still listed and readable, never run again.
     gone = run.get('removed') or {}
     removed = f"  made with {gone.get('name')}, removed in v{gone.get('since')}" if gone else ''
-    return (f"{run['run_id'] or run['key']}  {run['kind']}{repo}  {age(run['updated'], now)}  {counts}{checks}{chain}{removed}"
+    # Tasks that were split (#153): their subtasks are plans of their own under the run dir, counted here.
+    tree = run.get('decomposition') or {}
+    split = f"  {tree['subtasks']} subtasks in {tree['split']} split task{'' if tree['split'] == 1 else 's'}" if tree.get('split') else ''
+    return (f"{run['run_id'] or run['key']}  {run['kind']}{repo}  {age(run['updated'], now)}  {counts}{split}{checks}{chain}{removed}"
             f"  {goal}\n    {run['path']}")
 
 
@@ -135,16 +143,44 @@ def compare_runs(argv) -> int:
     return module.main(argv)
 
 
+def tree(argv) -> int:
+    """`forge runs tree <run-dir> [--json]`: the run's tasks and, under each task that was split, its
+    subtasks through every level (#153), with the decision recorded for each and the run's limits."""
+    import forge_decompose
+    parser = argparse.ArgumentParser(prog='forge runs tree', description="A run's tasks and the subtasks of every task that was "
+                                     'split, through every level, with the decision recorded for each. Read-only.')
+    parser.add_argument('run_dir', type=Path, metavar='RUN_DIR', help='the plan dir (the one with tasks.tsv)')
+    parser.add_argument('--json', action='store_true', help='print {limits, nodes} as JSON, for scripts and agents')
+    args = parser.parse_args(argv)
+    if not (args.run_dir / 'tasks.tsv').is_file():
+        parser.error(f'{args.run_dir} is not a plan dir (no tasks.tsv); a solo run has one task and no tree')
+    nodes = forge_decompose.tree(args.run_dir)
+    limits = dict(forge_decompose.limits(args.run_dir), frozen=forge_decompose.is_frozen(args.run_dir))
+    if args.json:
+        json.dump(dict(limits=limits, nodes=nodes), sys.stdout, indent=2)
+        sys.stdout.write('\n')
+        return 0
+    print('decomposition limits: ' + forge_decompose.describe(limits) + (' (frozen)' if limits['frozen'] else ''))
+    print(forge_decompose.render(args.run_dir))
+    for node in nodes:
+        if node['children']:
+            print(f"subtasks of {node['id']}: {forge_decompose.sub_dir(node['plan'], node['task'])}")
+    return 0
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv[:1] == ['rm']:
         return remove(argv[1:])
+    if argv[:1] == ['tree']:
+        return tree(argv[1:])
     if argv[:1] == ['compact']:
         return compact(argv[1:])
     if argv[:1] in (['rerun'], ['compare']):
         return compare_runs(argv)
     parser = argparse.ArgumentParser(prog='forge runs', description="This repo's recent forge runs, newest first. Listing is read-only.",
-                                     epilog='Delete a run, keeping its traces: forge runs rm <run-dir> (forge runs rm --help). Take back the space runs '
+                                     epilog='The subtasks of a run\'s split tasks: forge runs tree <run-dir>. '
+                                            'Delete a run, keeping its traces: forge runs rm <run-dir> (forge runs rm --help). Take back the space runs '
                                             'hold for nothing, keeping every run: forge runs compact --help. Rerun a plan with another '
                                             'implementer and compare: forge runs rerun --help, forge runs compare --help')
     which = parser.add_mutually_exclusive_group()

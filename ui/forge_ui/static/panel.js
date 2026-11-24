@@ -483,6 +483,21 @@ window.ForgePanel = (() => {
     if (up && typeof up === 'object' && up.key && up.task) {
       rows.push(['Subtasks of', link(`${up.task}${up.run_id ? ' · ' + up.run_id : ''}`, '#/runs/' + encodeURIComponent(up.key) + '/tasks/' + encodeURIComponent(up.task)), true]);
     }
+    // The limits a split works within, and how much of the run was split (run.decomposition, when the plan records any).
+    const tree = run.decomposition, lim = tree && tree.limits;
+    if (lim && typeof lim === 'object') {
+      const off = lim.depth === 0 || lim.nodes === 0;
+      const text = off ? 'splitting is off for this run' : `depth ${lim.depth} · up to ${lim.children} subtasks per split · ${lim.nodes} subtasks in the run`;
+      const used = tree.split ? ` · ${tree.subtasks} subtask${tree.subtasks === 1 ? '' : 's'} in ${tree.split} split task${tree.split === 1 ? '' : 's'}` : '';
+      rows.push(['Decomposition', text + (lim.frozen ? ' (frozen)' : '') + used]);
+    }
+    // A goal larger than one plan: the stage this plan is, and the stages its planner proposed after it.
+    const later = run.later;
+    if (later && typeof later === 'object') {
+      const names = list(later.stages).map(st => st && st.title).filter(Boolean);
+      if (num(later.stage) !== null) rows.push(['Stage', `${later.stage} of a larger goal`]);
+      if (names.length) rows.push(['Later stages', names.join(' · ')]);
+    }
     const prev = run.after;
     if (prev && typeof prev === 'object') {
       const label = prev.run_id || prev.key;
@@ -1017,14 +1032,19 @@ window.ForgePanel = (() => {
   }
 
   /* ---------- decomposition: the decision on a task, and the subtasks a split task has ---------- */
-  const money = v => num(v) === null ? '—' : '$' + (v < 1 ? v.toFixed(3) : v.toFixed(2));
+  // What a node spent, in tokens (input + output): forge records tokens, never a price.
+  const spent = t => t && typeof t === 'object' ? (num(t.input) || 0) + (num(t.output) || 0) : null;
+  const tok = v => v === null ? null : (v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(1) + 'k' : String(v)) + ' tokens';
   const DECISIONS = { atomic: 'kept whole', split: 'split', bounded: 'kept whole at a limit' };
-  // task.decomposition: {decision, reason, by, sub: {key, run_id} | null, nodes: [{id, parent, run, task, title, status,
-  // difficulty, decision, reason, model, cost, has_diff}]}, the nodes in tree order through every level below the task.
+  // task.decomposition: {decision, reason, by, at, sub: {key, run_id, path} | null, merged, waiting, start, kept,
+  // nodes: [{id, parent, run, run_id, task, level, title, status, difficulty, model, qa, decision, reason, by, attempts,
+  // tokens, has_diff}]}, the nodes in tree order through every level below the task. Absent on a plan with no record.
   function decompositionSection(host, ctx, task) {
     const D = task.decomposition, nodes = D ? list(D.nodes) : [];
     if (ctx.onSubtasks) ctx.onSubtasks(task.id, nodes.length ? nodes : null);
     if (!D || (!D.decision && !nodes.length)) return;
+    // A task nobody decided about is one piece, as every task was before: nothing to say.
+    if (D.decision === 'atomic' && D.by === 'default' && !nodes.length) return;
     const ds = section(host, 'Decomposition');
     const chips = el('div', undefined, 'chips');
     if (D.decision) chips.append(el('span', DECISIONS[D.decision] || D.decision, 'tag'));
@@ -1032,15 +1052,19 @@ window.ForgePanel = (() => {
     ds.append(chips);
     if (D.reason) ds.append(el('p', D.reason));
     if (!nodes.length) return;
-    const cost = nodes.reduce((a, n) => a + (num(n.cost) || 0), 0), merged = nodes.filter(n => n.status === 'MERGED').length;
-    muted(ds, `${nodes.length} subtask${nodes.length === 1 ? '' : 's'} · ${merged} merged into this task's branch · ${money(cost)} · a subtask opens in its own sub-plan`);
+    const total = nodes.reduce((a, n) => a + (spent(n.tokens) || 0), 0), merged = nodes.filter(n => n.status === 'MERGED').length;
+    muted(ds, [`${nodes.length} subtask${nodes.length === 1 ? '' : 's'}`, `${merged} merged`, total ? tok(total) : null,
+      D.merged ? "their work is on this task's branch, and the task is reviewed on all of it" : 'the task is reviewed on all of their work once every one has merged',
+      D.start === 'fresh' ? 'started over from the task\'s base' + (D.kept ? ` (earlier work kept at ${String(D.kept).slice(0, 12)})` : '') : null].filter(Boolean).join(' · '));
+    if (list(D.waiting).length) ds.append(el('p', 'Waiting for: ' + list(D.waiting).join(', '), 'muted'));
+    if (D.sub && D.sub.key) { const open = el('p', undefined, 'muted'); open.append(link('Open the subtasks as a plan of their own →', '#/runs/' + encodeURIComponent(D.sub.key))); ds.append(open); }
     const T = RM.nodeTree(nodes), ul = el('ul', undefined, 'node-tree');
     for (const n of nodes) {
       const li = el('li', undefined, 'ft-node ft-d' + Math.min(6, (T.pos[n.id] || {}).depth || 0));
       li.append(el('i', undefined, 'led st-' + String(n.status || 'unknown').toLowerCase()));
       const a = el('a', n.task || n.id); a.href = ctx.nodeHash ? ctx.nodeHash(n) : '#'; li.append(a);
       if (n.model) li.append(plate(n.model));
-      li.append(el('span', [n.status, n.difficulty, num(n.cost) !== null ? money(n.cost) : null].filter(Boolean).join(' · '), 'muted'));
+      li.append(el('span', [n.status, n.difficulty, num(n.attempts) > 1 ? `${n.attempts} attempts` : null, tok(spent(n.tokens))].filter(Boolean).join(' · '), 'muted'));
       if (n.decision && n.decision !== 'atomic') li.append(el('span', DECISIONS[n.decision] || n.decision, 'tag'));
       if (n.has_diff && ctx.nodeHash) { const d = el('a', 'diff', 'diff-link small'); d.href = ctx.nodeHash(n) + '/diff'; li.append(d); }
       li.title = [n.title, n.reason].filter(Boolean).join('\n');
@@ -1228,6 +1252,6 @@ window.ForgePanel = (() => {
     if (sel.kind === 'integration') return integrationView(host, ctx);
     return runView(host, ctx);
   }
-  return { render, cache, trailLine, reasonText, linkModel, headerActions, summaryBank, changeSummaries, answerOutcome };
+  return { render, cache, trailLine, reasonText, linkModel, headerActions, summaryBank, changeSummaries, answerOutcome, decompositionSection };
 })();
 if (typeof module === 'object' && module.exports) module.exports = window.ForgePanel;

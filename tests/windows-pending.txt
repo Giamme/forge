@@ -31,6 +31,9 @@ forge:test_control_answer
 forge:test_control_requests
 forge:test_dataset
 forge:test_dataset_history
+forge:test_decompose_control
+forge:test_decompose_run
+forge:test_decompose_tools
 forge:test_dispatch
 forge:test_effort_step
 forge:test_efforts
@@ -265,3 +268,8 @@ ui:test_projects_state.RecordStateTests
 ui:test_projects_state.ReviewRuleTests
 ui:test_reader.SummaryExtensionTests
 ui:test_run_checks.Now
+
+# native decomposition (#153), written after the first Windows runs and never run there: they compare plan paths as text
+forge:test_decompose
+forge:test_planner_split
+ui:test_decomposition

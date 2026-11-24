@@ -193,3 +193,108 @@ test('the Handoff section names the driver and lists the notes, newest first; a 
   assert.match(sections(none)[0].textContent, /Driver: none recorded/);
   assert.equal(sections(render(planRun({ handoff: null }))).length, 0);
 });
+
+// ---- #153: the limits and stages on a run, and the tree of subtasks on a task.
+
+function subtask(id, extra) {
+  const parts = id.split('/');
+  return Object.assign({
+    id, parent: parts.length > 2 ? parts.slice(0, -1).join('/') : null, run: 'k' + parts.length, run_id: 'plan-b--d',
+    task: parts[parts.length - 1], level: parts.length - 1, title: 'Part ' + id, status: 'PENDING', difficulty: 'low',
+    model: 'sol', qa: 'opus', decision: 'atomic', reason: null, by: 'default', attempts: 0, tokens: null, has_diff: false,
+  }, extra);
+}
+
+function splitTask(extra) {
+  return Object.assign({
+    id: 'd', title: 'The whole of D', status: 'RUNNING', deps: [], files: ['src/'], difficulty: 'high', attempts: [],
+    executions: [], escalations: [], reviews: [],
+    decomposition: {
+      decision: 'split', reason: 'two halves that can be reviewed apart', by: 'user', at: 1,
+      sub: { key: 'subkey123456', run_id: 'plan-b--d', path: '/tmp/plans/b/tasks/d/sub' },
+      merged: false, waiting: ['b'], start: 'fresh', kept: '0123456789abcdef0123',
+      nodes: [
+        subtask('d/a', { status: 'MERGED', decision: 'split', reason: 'two steps', by: 'planner', attempts: 2,
+          tokens: { input: 1200, cached: 900, output: 300 }, has_diff: true }),
+        subtask('d/a/one', { status: 'MERGED', tokens: { input: 400, cached: 0, output: 100 } }),
+        subtask('d/b', { status: 'FAIL', decision: 'bounded', reason: 'the run already has 24 subtasks' }),
+      ],
+    },
+  }, extra);
+}
+
+function renderTask(task, extra) {
+  // The section alone: the rest of a task's page needs a browser.
+  const host = document.createElement('div'), seen = [];
+  P.decompositionSection(host, Object.assign({
+    run: planRun({ tasks: [task] }), now: 0, hash: () => '#/here', onSelect() {},
+    nodeHash: n => `#/runs/${n.run}/tasks/${n.task}`, onSubtasks: (id, nodes) => seen.push([id, nodes && nodes.length]),
+  }, extra), task);
+  return { host, seen };
+}
+
+function sectionOf(host, title) {
+  return host.querySelectorAll('section.insp-section').find(s => s.children[0] && s.children[0].textContent === title) || null;
+}
+
+test('a run shows the limits a split works within, what was split, and the stages of a larger goal', () => {
+  const run = render(planRun({
+    decomposition: { limits: { depth: 2, children: 6, nodes: 24, frozen: true }, split: 1, subtasks: 3, statuses: {} },
+    later: { stages: [{ title: 'The API' }, { title: 'The UI' }], stage: 2, first: 'aaaaaaaaaaaa' },
+  }));
+  const fields = fieldMap(run);
+  assert.equal(fields.get('Decomposition').textContent,
+    'depth 2 · up to 6 subtasks per split · 24 subtasks in the run (frozen) · 3 subtasks in 1 split task');
+  assert.equal(fields.get('Stage').textContent, '2 of a larger goal');
+  assert.equal(fields.get('Later stages').textContent, 'The API · The UI');
+  const off = fieldMap(render(planRun({ decomposition: { limits: { depth: 0, children: 6, nodes: 24, frozen: false }, split: 0, subtasks: 0 } })));
+  assert.equal(off.get('Decomposition').textContent, 'splitting is off for this run');
+  // A plan with no record reads as it did before these rows existed.
+  const plain = labels(render(planRun({})));
+  for (const label of ['Decomposition', 'Stage', 'Later stages', 'Subtasks of']) assert.equal(plain.includes(label), false, label);
+});
+
+test('the subtasks of a split task link the task they belong to, in the plan above', () => {
+  const sub = render(planRun({ parent: { key: 'bbbbbbbbbbbb', run_id: 'plan-b', task: 'd' } }));
+  assert.deepEqual(fieldMap(sub).get('Subtasks of').querySelectorAll('a').map(a => [a.textContent, a.href]),
+    [['d · plan-b', '#/runs/bbbbbbbbbbbb/tasks/d']]);
+});
+
+test('a split task shows its decision, who made it, why, and every subtask below it', () => {
+  const { host, seen } = renderTask(splitTask());
+  const s = sectionOf(host, 'Decomposition');
+  assert.ok(s, 'the section is there');
+  assert.deepEqual(s.querySelectorAll('div.chips span').map(span => span.textContent), ['split', 'decided by user']);
+  const text = s.textContent;
+  assert.ok(text.includes('two halves that can be reviewed apart'));
+  assert.ok(text.includes('3 subtasks · 2 merged · 2.0k tokens'), text);
+  assert.ok(text.includes('the task is reviewed on all of their work once every one has merged'));
+  assert.ok(text.includes("started over from the task's base (earlier work kept at 0123456789ab)"));
+  assert.ok(text.includes('Waiting for: b'));
+  assert.deepEqual(s.querySelectorAll('p a').map(a => a.href), ['#/runs/subkey123456']);
+  const rows = s.querySelectorAll('ul.node-tree li');
+  assert.deepEqual(rows.map(li => li.className), ['ft-node ft-d0', 'ft-node ft-d1', 'ft-node ft-d0']);
+  assert.deepEqual(rows.map(li => li.children[1].href), ['#/runs/k2/tasks/a', '#/runs/k3/tasks/one', '#/runs/k2/tasks/b']);
+  assert.ok(rows[0].textContent.includes('MERGED · low · 2 attempts · 1.5k tokens'), rows[0].textContent);
+  assert.deepEqual(rows[0].querySelectorAll('a.diff-link').map(a => a.href), ['#/runs/k2/tasks/a/diff']);
+  assert.deepEqual(rows.map(li => li.querySelectorAll('span.tag').map(t => t.textContent)), [['split'], [], ['kept whole at a limit']]);
+  assert.equal(rows[0].title, 'Part d/a\ntwo steps');
+  assert.equal(rows[1].querySelectorAll('a.diff-link').length, 0);
+  assert.deepEqual(seen, [['d', 3]]);
+});
+
+test('a task the planner kept whole says why, and a task nobody decided about says nothing', () => {
+  const kept = renderTask(splitTask({ decomposition: { decision: 'atomic', reason: 'one coherent change', by: 'planner', sub: null, nodes: [] } }));
+  const s = sectionOf(kept.host, 'Decomposition');
+  assert.deepEqual(s.querySelectorAll('div.chips span').map(span => span.textContent), ['kept whole', 'decided by planner']);
+  assert.ok(s.textContent.includes('one coherent change'));
+  assert.equal(s.querySelectorAll('ul.node-tree').length, 0);
+  assert.deepEqual(kept.seen, [['d', null]]);
+  const quiet = renderTask(splitTask({ decomposition: { decision: 'atomic', reason: null, by: 'default', sub: null, nodes: [] } }));
+  assert.equal(sectionOf(quiet.host, 'Decomposition'), null);
+  const none = renderTask(splitTask({ decomposition: undefined }));
+  assert.equal(sectionOf(none.host, 'Decomposition'), null);
+  const bounded = renderTask(splitTask({ decomposition: { decision: 'bounded', reason: 'the run is 2 levels deep already', by: 'planner', sub: null, nodes: [] } }));
+  assert.deepEqual(sectionOf(bounded.host, 'Decomposition').querySelectorAll('div.chips span').map(span => span.textContent),
+    ['kept whole at a limit', 'decided by planner']);
+});

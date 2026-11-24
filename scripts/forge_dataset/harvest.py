@@ -24,7 +24,8 @@ import time
 from pathlib import Path
 
 from . import SCRIPTS, put_blob, put_file, sha256
-import forge_legacy  # noqa: E402  (scripts/ is on sys.path once the package is imported)
+import forge_decompose  # noqa: E402  (scripts/ is on sys.path once the package is imported)
+import forge_legacy  # noqa: E402
 
 DISPATCH_ROLES = ('dwarf', 'qa', 'planner', 'side')
 # The file role stays `side`. Harvest records side_<kind> (see dispatch_event);
@@ -930,6 +931,49 @@ def decision_snapshot(repo: str, rows: dict, head: str | None) -> dict | None:
     return excerpts
 
 
+def decomposition_of(plan: Path) -> tuple:
+    """(parent, decomposition, chain) of a plan, each None when the plan has no such record (#153).
+
+    parent: for the sub-plan of a split task (`<plan>/tasks/<id>/sub`), the run and the task it holds the
+    subtasks of: {run, run_id, task, level, root, start, by, reason}. `level` is how deep its tasks are
+    (1 for the subtasks of a plan's own task), `root` the run at the top of the tree.
+    decomposition: {limits, frozen, nodes: {task: {decision, reason, by, children, limit}}}, the decision
+    recorded for each task of this plan: atomic, split or bounded.
+    chain: {stage, first, previous, later}: where a plan made by `next` stands in its goal, and how many
+    stages its planner proposed after it."""
+    plan = Path(plan)
+    parent = None
+    if plan.name == 'sub' and plan.parent.parent.name == 'tasks' and (plan.parents[2] / 'tasks.tsv').exists():
+        link = read_json(plan / 'parent.json')
+        if isinstance(link, dict):
+            above, level, root = plan.parents[2], 1, plan.parents[2]
+            while root.name == 'sub' and root.parent.parent.name == 'tasks' and (root.parents[2] / 'tasks.tsv').exists() \
+                    and level < 16:
+                root, level = root.parents[2], level + 1
+            parent = dict(run=run_uid(above, create=False), run_id=first_line(above / 'run_id') or above.name,
+                          task=plan.parent.name, level=level, root=run_uid(root, create=False),
+                          start=link.get('start'), by=link.get('by'), reason=link.get('reason'))
+    decomposition = None
+    record = read_json(plan / 'decomposition.json')
+    if isinstance(record, dict):
+        nodes = {}
+        for task, node in (record.get('nodes') or {}).items() if isinstance(record.get('nodes'), dict) else ():
+            if isinstance(node, dict):
+                used = node.get('limits_used') if isinstance(node.get('limits_used'), dict) else {}
+                nodes[task] = dict(decision=node.get('decision'), reason=node.get('reason'), by=node.get('by'),
+                                   children=used.get('children'), limit=used.get('limit'))
+        # The limits in force are the root plan's, each default where it set none.
+        decomposition = dict(limits=forge_decompose.limits(plan), frozen=forge_decompose.is_frozen(plan), nodes=nodes)
+    chain = None
+    link, later = read_json(plan / 'chain.json'), read_json(plan / 'later.json')
+    stages = later.get('later') if isinstance(later, dict) and isinstance(later.get('later'), list) else []
+    if isinstance(link, dict) or stages:
+        link = link if isinstance(link, dict) else {}
+        chain = dict(stage=link.get('stage'), first=link.get('first'), previous=link.get('previous'),
+                     later=[s.get('title') for s in stages if isinstance(s, dict)])
+    return parent, decomposition, chain
+
+
 def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True, head: str | None = None) -> dict:
     rows = tasks_rows(plan / 'tasks.tsv')
     declared_path = plan / 'tasks.declared.tsv'
@@ -988,6 +1032,15 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
         later['collapsed'] = collapsed_record
     if plan_gate is not None:
         later['plan_gate'] = plan_gate
+    # The decisions about the plan's tasks (#153), hashed without their times: a task split after the
+    # plan was first recorded is a new revision of the plan, and reading the same file again is not.
+    parent, decomposition, chain = decomposition_of(plan)
+    if parent is not None:
+        later['parent'] = [parent['run'], parent['task']]
+    if decomposition is not None:
+        later['decomposition'] = [decomposition['limits'], decomposition['nodes']]
+    if chain is not None:
+        later['chain'] = chain
     inputs = json.dumps([text(plan / 'goal.txt'), text(plan / 'tasks.tsv'), text(declared_path),
                          {t: [r['prompt'], r['approach']] for t, r in per_task.items()}] + ([later] if later else []),
                         sort_keys=True, default=str)
@@ -1038,6 +1091,13 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
             data['collapsed_from'] = origin
     if plan_gate is not None:
         data['plan_gate'] = plan_gate
+    # Recursive decomposition (#153). Absent on a plan with no such record, so an older plan keeps its shape.
+    if parent is not None:
+        data['parent'] = parent
+    if decomposition is not None:
+        data['decomposition'] = decomposition
+    if chain is not None:
+        data['chain'] = chain
     # Who started the plan: `auto` for forge-parallel.sh auto. Absent for a plan built by hand.
     orchestrator = first_line(plan / 'orchestrator')
     if orchestrator:

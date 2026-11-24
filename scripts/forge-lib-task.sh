@@ -780,8 +780,12 @@ PYEOF
       echo "  accept it as it is:     forge-parallel.sh accept $PLAN $id --reason \"...\" --approved"
       echo "                          (merges it; its findings become known issues)" ;;
     esac
-    echo "  split it:               replace its row in $PLAN/tasks.tsv with smaller tasks (each with a"
-    echo "                          tasks/<id>/prompt.md) and point its dependents at them, then forge-parallel.sh run $PLAN"
+    echo "  split it into subtasks: forge-parallel.sh retry $PLAN $id --decide split --subtasks <file> --reason \"...\" --approved"
+    echo "                          (<file> holds the subtasks, each owning paths inside this task's files; or --planner <spec>"
+    echo "                          to have a planner write them. They build on the work so far, run as a plan of their own in"
+    echo "                          tasks/$id/sub and merge into this task, which is then reviewed on all of it."
+    echo "                          --decide split=fresh starts over from the task's base instead and keeps the old work on a ref)"
+    echo "                          $(python3 "$SKILL_DIR/scripts/forge_decompose.py" limits "$PLAN" 2>/dev/null)"
   } > "$tmp" && mv "$tmp" "$tdir/decision.md" || { rm -f "${tmp:?}"; note "$id: could not write decision.md; the task stays FAIL"; return 1; }
   rm -f "${tdir:?}/decided.left"
   echo "$from" > "$tdir/decision.from"
@@ -814,6 +818,17 @@ decision_after_attempt() { # decision_after_attempt <plan> <id> <stop-before> <c
 # decision offered to a task that waits for none. Runs before anything is written.
 retry_decision_gate() { # retry_decision_gate <plan> <id> <status> <decide> <dwarf> <reason> <approved 0|1>
   local PLAN="$1" id="$2" st="$3" decide="$4" dwarf="$5" reason="$6" approved="$7" n
+  # A split (#153) is a decision any task that has not passed can take, not only one that stopped for it.
+  if [ "$st" != NEEDS_DECISION ] && forge_decide_is_split "$decide"; then
+    case "$st" in
+      MERGED|PASS|RUNNING|IMPLEMENTED|NEEDS_INPUT)
+        die "retry: '$id' is $st: only a task that has not passed, is not running and waits for no answer can be split" ;;
+    esac
+    reason="$(printf '%s' "$reason" | tr '\n\r\t' '   ' | sed 's/^ *//; s/ *$//')"
+    [ -n "$reason" ] || die "retry: a decision needs --reason \"<why>\": it is recorded with the task"
+    [ "$approved" = 1 ] || die "retry: a decision needs --approved: a split changes the plan, and is only given on the user's instruction"
+    return 0
+  fi
   if [ "$st" != NEEDS_DECISION ]; then
     if [ -n "$decide" ]; then
       case "$st" in
@@ -828,7 +843,7 @@ retry_decision_gate() { # retry_decision_gate <plan> <id> <status> <decide> <dwa
   if [ -z "$decide" ] && [ -z "$dwarf" ]; then
     die "retry: '$id' is waiting for your decision, and only a decision resumes it:
 $(sed -n '1,3p' "$PLAN/tasks/$id/decision.md" 2>/dev/null)
-read $PLAN/tasks/$id/decision.md, then retry with --decide retry=N or --decide threshold=Pn, or --dwarf <spec>, each with --reason \"...\" --approved; or accept the task"
+read $PLAN/tasks/$id/decision.md, then retry with --decide retry=N, --decide threshold=Pn or --decide split, or --dwarf <spec>, each with --reason \"...\" --approved; or accept the task"
   fi
   case "$decide" in
     "") ;;
@@ -836,7 +851,8 @@ read $PLAN/tasks/$id/decision.md, then retry with --decide retry=N or --decide t
              case "$n" in ''|*[!0-9]*) n=0 ;; esac
              [ "${#n}" -le 3 ] && [ "$n" -ge 1 ] && [ "$n" -le 20 ] || die "retry: --decide retry=N takes N from 1 to 20" ;;
     threshold=P[0-3]) ;;
-    *) die "retry: --decide takes retry=N (1 to 20) or threshold=P0|P1|P2|P3, not '$decide'" ;;
+    split|split=keep|split=fresh) ;;
+    *) die "retry: --decide takes retry=N (1 to 20), threshold=P0|P1|P2|P3 or split (split=fresh), not '$decide'" ;;
   esac
   reason="$(printf '%s' "$reason" | tr '\n\r\t' '   ' | sed 's/^ *//; s/ *$//')"
   [ -n "$reason" ] || die "retry: a decision needs --reason \"<why>\": it is recorded with the task"
@@ -922,7 +938,7 @@ report_decisions() { # report_decisions <plan>
   echo "decide with (each needs --reason \"...\" --approved; decision.md has the commands filled in):"
   echo "  forge-parallel.sh retry $plan <task-id> --decide retry=N | --decide threshold=Pn | --dwarf <spec>"
   [ "$acceptable" = 0 ] || echo "  forge-parallel.sh accept $plan <task-id>    (merge it with its findings as known issues)"
-  echo "  or split it: replace its row in $plan/tasks.tsv with smaller tasks, then forge-parallel.sh run $plan"
+  echo "  or split it into subtasks: forge-parallel.sh retry $plan <task-id> --decide split --subtasks <file> | --planner <spec>"
   echo "several side by side: add --no-dispatch to each retry, which records the decision and starts nothing, then:"
   echo "  forge-parallel.sh run $plan"
   echo
@@ -1270,6 +1286,14 @@ retry_for_scheduler() { # retry_for_scheduler <plan> <id> [--resume | --prompt |
   done
   st="$(task_status "$PLAN" "$id")"
   retry_decision_gate "$PLAN" "$id" "$st" "$decide" "$newdwarf" "$reason" "$approved"
+  if forge_decide_is_split "$decide"; then
+    # A split queued into the live run (#153): `forge control retry --decide split` checked the subtasks and
+    # stored them as the task's proposal. The split grants the one attempt that reviews the whole task.
+    attempt_cap_gate "$PLAN" "$id" "$st" retry=1 || return 4
+    retry_split "$PLAN" "$id" "$decide" "$reason" "" "" user || return $?
+    rm -f "$PLAN/tasks/$id/status"
+    return 0
+  fi
   # At its attempt cap (#69), a scheduler's or a control's retry is stopped for a decision, not dispatched.
   attempt_cap_gate "$PLAN" "$id" "$st" "$decide" || return 4
   if [ "$st" = NEEDS_DECISION ]; then

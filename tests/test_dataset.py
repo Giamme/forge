@@ -2123,7 +2123,9 @@ class IndependenceTests(unittest.TestCase):
                     if 'forge-dataset.py' in line:
                         # The reads: run's advisory forecast and plan's slow-effort notes, printed to the
                         # operator only; the end of a run's outcome harvest writes outcomes and prints nothing.
+                        # `plan` is capture too: the record of a split task's sub-plan, and of its plan again.
                         self.assertRegex(line, r'forge-dataset\.py" (event|invocation|forecast "\$1" --run 2>/dev/null|'
+                                               r'plan "\$1" >/dev/null 2>&1 \|\| true$|'
                                                r'slow-notes "\$PLAN" 2>/dev/null \|\| true$|'
                                                r'outcomes --repo "\$repo" --deadline "\$limit" --quiet \\$)', str(path))
                     if '-m forge_dataset' in line:

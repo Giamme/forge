@@ -478,6 +478,215 @@ def _removed(reader):
                      'not run, retried or resumed')
 
 
+# --- decomposition (#153): a split task's subtasks are a plan of their own, <plan>/tasks/<id>/sub ---
+
+_DECISIONS = ('atomic', 'split', 'bounded')
+_DECIDERS = ('planner', 'user', 'auto', 'default')
+_DEFAULT_LIMITS = dict(depth=2, children=6, nodes=24)    # scripts/forge_decompose.DEFAULT_LIMITS
+_MAX_TREE_NODES = 600      # the limit on subtasks in a run tops out at 500
+_MAX_TREE_DEPTH = 8        # the depth limit tops out at 6
+
+
+def sub_plan(path, ident):
+    """The sub-plan of a split task, `<plan>/tasks/<id>/sub` with a task table, or None."""
+    sub = Path(path) / 'tasks' / ident / 'sub'
+    try:
+        return sub if (sub / 'tasks.tsv').is_file() else None
+    except (OSError, ValueError):
+        return None
+
+
+def sub_plans(path, depth=0):
+    """Every sub-plan under a plan dir, a task's before those of its subtasks. A plan with no
+    decomposition.json has none: a split always writes one, so an older plan costs one stat."""
+    path = Path(path)
+    try:
+        if depth >= _MAX_TREE_DEPTH or not (path / 'decomposition.json').is_file():
+            return
+        children = sorted((path / 'tasks').iterdir())
+    except (OSError, ValueError):
+        return
+    for child in children:
+        sub = sub_plan(path, child.name)
+        if sub is not None:
+            yield sub
+            yield from sub_plans(sub, depth + 1)
+
+
+def _parent_plan(path):
+    """(plan dir, task id) of the task a sub-plan belongs to, read off its path; None for any other plan."""
+    path = Path(path)
+    if path.name != 'sub' or path.parent.parent.name != 'tasks':
+        return None
+    try:
+        if not (path / 'parent.json').is_file() or not (path.parents[2] / 'tasks.tsv').is_file():
+            return None
+    except (OSError, ValueError):
+        return None
+    return path.parents[2], path.parent.name
+
+
+def _parent(reader):
+    """RunSummary `parent`: `{key, task, run_id, path}` of the split task a sub-plan holds the subtasks of, else None."""
+    found = _parent_plan(reader.path)
+    if found is None:
+        return None
+    plan, task = found
+    reader.exists('parent.json')
+    return dict(key=run_key(plan), task=task, run_id=_first_line(plan, 'run_id'), path=str(plan))
+
+
+def _nodes_file(reader):
+    """decomposition.json as ({task: record}, limits or None, frozen); empty for a plan that has none."""
+    if not reader.exists('decomposition.json'):
+        return {}, None, False
+    data = reader.object('decomposition.json') or {}
+    nodes = data.get('nodes')
+    limits = data.get('limits')
+    if isinstance(limits, dict):
+        limits = {key: limits[key] if type(limits.get(key)) is int else default for key, default in _DEFAULT_LIMITS.items()}
+    else:
+        limits = None
+    return (nodes if isinstance(nodes, dict) else {}), limits, data.get('frozen') is True
+
+
+def _node_decision(record, split):
+    """(decision, reason, by, at) of one task's record. An undecided task is what it is on disk."""
+    record = record if isinstance(record, dict) else {}
+    decision = record.get('decision') if record.get('decision') in _DECISIONS else ('split' if split else 'atomic')
+    if split:
+        decision = 'split'
+    elif decision == 'split':
+        decision = 'atomic'       # recorded as split, and its sub-plan is gone
+    by = record.get('by') if record.get('by') in _DECIDERS else 'default'
+    reason = record.get('reason') if isinstance(record.get('reason'), str) else ''
+    at = record.get('at') if _is_number(record.get('at')) else None
+    return decision, reason[:2000] or None, by, at
+
+
+def _run_limits(reader):
+    """The limits of the run a plan belongs to: the root plan's, with whether its first run froze them."""
+    path, hops = reader.path, 0
+    while hops < _MAX_TREE_DEPTH:
+        found = _parent_plan(path)
+        if found is None:
+            break
+        path, hops = found[0], hops + 1
+    if path == reader.path:
+        _nodes, limits, frozen = _nodes_file(reader)
+    else:
+        _nodes, limits, frozen = _nodes_file(_Read(path))
+    return dict(limits or _DEFAULT_LIMITS, frozen=frozen)
+
+
+def _sub_statuses(reader, plan_path, ids, prefix='', depth=0):
+    """[{id, status}] for the tasks of the sub-plans of these tasks of a plan dir, through every level, in
+    tree order. An id is the path from the plan's own task (`d/a`, `d/a/one`). The sub-plans' status files
+    move `updated`, so a run whose subtasks are working reads as active."""
+    out = []
+    if depth >= _MAX_TREE_DEPTH:
+        return out
+    for ident in ids:
+        sub_path = sub_plan(plan_path, ident)
+        if sub_path is None:
+            continue
+        sub = _Read(sub_path)
+        for child in _tasks(sub):
+            out.append(dict(id=f"{prefix}{ident}/{child['id']}", status=child['status']))
+            out += _sub_statuses(reader, sub.path, [child['id']], f'{prefix}{ident}/', depth + 1)
+        if sub.updated is not None and (reader.updated is None or sub.updated > reader.updated):
+            reader.updated = sub.updated
+        if len(out) > _MAX_TREE_NODES:
+            break
+    return out
+
+
+def _decomposition_summary(reader, tasks):
+    """RunSummary `decomposition`: `{limits, split, subtasks, statuses}`, or None for a plan no decision was
+    recorded in.
+
+    `split` counts this plan's tasks that have a sub-plan, `subtasks` the tasks of every sub-plan below it,
+    and `statuses` is `[{id, status}]` for those, in tree order."""
+    if not reader.exists('decomposition.json'):
+        return None
+    split = sum(1 for task in tasks if sub_plan(reader.path, task['id']) is not None)
+    statuses = _sub_statuses(reader, reader.path, [task['id'] for task in tasks]) if split else []
+    return dict(limits=_run_limits(reader), split=split, subtasks=len(statuses), statuses=statuses)
+
+
+def _node_tokens(sub, task):
+    """What a subtask spent, summed over its executions: {input, cached, output}, or None when none reported any."""
+    total, seen = dict(input=0, cached=0, output=0), False
+    for item in _task_execs(sub, task):
+        tokens = item.get('tokens')
+        if isinstance(tokens, dict):
+            for key in total:
+                if _is_number(tokens.get(key)):
+                    total[key] += tokens[key]
+                    seen = True
+    return total if seen else None
+
+
+def _tree_nodes(reader, sub_path, parent_id, level, budget):
+    """The nodes of one sub-plan and of every sub-plan below it, in tree order. `budget` is a one-item
+    list: how many more nodes may be read, so a damaged tree cannot grow the answer without bound."""
+    sub = _Read(sub_path)
+    records = _nodes_file(sub)[0]
+    key, run_id, out = run_key(sub.path), sub.line('run_id'), []
+    for task in _tasks(sub):
+        if budget[0] <= 0:
+            reader.truncated.append('decomposition')
+            break
+        budget[0] -= 1
+        ident = task['id']
+        below = sub_plan(sub.path, ident) if level < _MAX_TREE_DEPTH else None
+        decision, reason, by, _at = _node_decision(records.get(ident), below is not None)
+        task['attempts'], task['attempt'] = _attempt_state(sub, f'tasks/{ident}')
+        node_id = f'{parent_id}/{ident}'
+        out.append(dict(id=node_id, parent=parent_id, run=key, run_id=run_id, task=ident, level=level,
+                        title=_brief(task['title']), status=task['status'], difficulty=task['difficulty'] or None,
+                        model=task['dwarf'], qa=task['qa'], decision=decision, reason=reason, by=by,
+                        attempts=len(task['attempts']), tokens=_node_tokens(sub, task),
+                        has_diff=_nonempty(sub, f'tasks/{ident}/changes.diff')))
+        if below is not None:
+            out += _tree_nodes(reader, below, node_id, level + 1, budget)
+    if sub.updated is not None and (reader.updated is None or sub.updated > reader.updated):
+        reader.updated = sub.updated
+    reader.warnings += [f'{parent_id}/sub: {warning}' for warning in sub.warnings]
+    return out
+
+
+def _attach_decomposition(reader, tasks):
+    """Set `decomposition` on every task of a plan (#153): the decision about it and, for a split task,
+    its subtasks through every level. A plan that has no decomposition.json gains nothing: no key.
+
+    {decision, reason, by, at, sub: {key, run_id, path} | None, merged, waiting, start, kept, nodes}:
+    `merged` says the subtasks' work is on the task's branch, `waiting` lists the subtasks it waits for,
+    `start` is keep or fresh, and `kept` the commit a fresh split set the earlier work aside at."""
+    records = _nodes_file(reader)[0]
+    present = reader.exists('decomposition.json')
+    budget = [_MAX_TREE_NODES]
+    for task in tasks:
+        ident = task['id']
+        sub = sub_plan(reader.path, ident)
+        if not present and sub is None:
+            continue
+        decision, reason, by, at = _node_decision(records.get(ident), sub is not None)
+        entry = dict(decision=decision, reason=reason, by=by, at=at, sub=None, merged=None, waiting=None, start=None,
+                     kept=None, nodes=[])
+        if sub is not None:
+            prefix = f'tasks/{ident}'
+            link = reader.object(prefix + '/sub/parent.json') or {}
+            entry.update(sub=dict(key=run_key(sub), run_id=_first_line(sub, 'run_id'), path=str(sub)),
+                         merged=reader.exists(prefix + '/sub.merged'),
+                         waiting=[line.strip() for line in (reader.text(prefix + '/sub.waiting') or '').splitlines()
+                                  if line.strip()][:50] or None,
+                         start=link.get('start') if link.get('start') in ('keep', 'fresh') else 'keep',
+                         kept=reader.line(prefix + '/sub.kept'),
+                         nodes=_tree_nodes(reader, sub, ident, 1, budget))
+        task['decomposition'] = entry
+
+
 def _summary(reader, source):
     result = dict(key=run_key(reader.path), path=str(reader.path), source=source, kind='plan',
                   run_id=reader.line('run_id'), repo=reader.line('repo'),
@@ -496,6 +705,12 @@ def _summary(reader, source):
     final_review_outdated = _published_outdated(reader, tasks)
     after = _predecessor(reader)
     result['removed'] = _removed(reader)
+    # Recursive decomposition (#153). Absent, not null, on a plan that has none of it: its JSON does not change.
+    parent, tree = _parent(reader), _decomposition_summary(reader, tasks)
+    if parent is not None:
+        result['parent'] = parent
+    if tree is not None:
+        result['decomposition'] = tree
     result.update(updated=reader.updated, created=_created(reader.path, _PLAN_START_FILES),
                   task_count=len(tasks), counts=counts,
                   task_statuses=[dict(id=task['id'], status=task['status'], difficulty=task['difficulty'] or None,
@@ -2538,8 +2753,31 @@ def detail(path, source='plan') -> dict:
                 owner.setdefault(member, item['id'])
         for task in tasks:
             task['group'] = owner.get(task['id'])
+    _attach_decomposition(reader, tasks)
+    later = _later(reader)
+    if later is not None:
+        result['later'] = later
     result.update(tasks=tasks, warnings=reader.warnings, truncated=reader.truncated, updated=reader.updated)
     return result
+
+
+def _later(reader):
+    """RunDetail `later`: the stages a planner proposed after this plan (goal -> plans, #153), and where this
+    plan stands in its chain: `{stages: [{title, goal}], stage, first}`. None (and no key) for a plan that is
+    the whole goal."""
+    stages = []
+    if reader.exists('later.json'):
+        raw = (reader.object('later.json') or {}).get('later')
+        for item in raw if isinstance(raw, list) else []:
+            if isinstance(item, dict) and isinstance(item.get('title'), str) and item['title'].strip():
+                goal = item.get('goal') if isinstance(item.get('goal'), str) else ''
+                stages.append(dict(title=item['title'].strip()[:200], goal=goal[:4000]))
+    chain = (reader.object('chain.json') or {}) if reader.exists('chain.json') else {}
+    stage = chain.get('stage') if type(chain.get('stage')) is int else None
+    if not stages and stage is None:
+        return None
+    first = chain.get('first') if isinstance(chain.get('first'), str) else None
+    return dict(stages=stages[:10], stage=stage, first=dict(key=run_key(first), path=_real_path(first)) if first else None)
 
 
 # --- lazy details: one task, one execution, one final review ------------------------------
@@ -3478,33 +3716,56 @@ class Catalog:
         """The keys of every run the list shows, without summarizing any of them."""
         return {run_key(path) for path, _source in discover(**self.options)}
 
+    def _where(self, key, found=None):
+        """(found, (path, source)) for the run with this key; the pair is None for an unknown key.
+
+        A sub-plan (#153, the subtasks of a split task) is never listed: it is found under the listed
+        plan it belongs to, with source `sub`, and only when no listed run has the key."""
+        found = discover(**self.options) if found is None else found
+        for path, source in found:
+            if run_key(path) == key:
+                return found, (path, source)
+        for path, _source in found:
+            for sub in sub_plans(path):
+                if run_key(sub) == key:
+                    return found, (Path(os.path.realpath(sub)), 'sub')
+        return found, None
+
+    def _batch(self, key):
+        """batch() over the listed runs, with the run of this key added when it is a sub-plan."""
+        found, where = self._where(key)
+        if where is not None and where[1] == 'sub':
+            found = found + [where]
+        return batch(found)
+
     def identity(self, key):
         """The identity of the run with this key, resolved in the same batch as the list; None for no such run."""
-        listed, identities = batch(discover(**self.options))
+        listed, identities = self._batch(key)
         for path, _source, entry in listed:
             if run_key(path) == key:
                 return identities[entry[0]]
         return None
 
     def _find(self, key, read, *args):
-        for path, source in discover(**self.options):
-            if run_key(path) == key:
-                result = read(path, *args, source=source)
-                return result if _kind(path) else None
-        return None
+        _found, where = self._where(key)
+        if where is None:
+            return None
+        path, source = where
+        result = read(path, *args, source=source)
+        return result if _kind(path) else None
 
     def locate(self, key):
         """(path, kind) of the run with this key, kind 'plan' or 'solo'; None for an unknown key.
 
         The only way a write finds a run dir: the client names a key, never a path."""
-        for path, _source in discover(**self.options):
-            if run_key(path) == key:
-                kind = _kind(path)
-                return (str(path), kind) if kind else None
-        return None
+        _found, where = self._where(key)
+        if where is None:
+            return None
+        kind = _kind(where[0])
+        return (str(where[0]), kind) if kind else None
 
     def get(self, key):
-        listed, identities = batch(discover(**self.options))
+        listed, identities = self._batch(key)
         for path, source, entry in listed:
             if run_key(path) == key:
                 result = _with_repo(detail(path, source=source), identities[entry[0]])

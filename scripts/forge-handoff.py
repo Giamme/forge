@@ -3,7 +3,8 @@
 
   show [RUN_DIR | --repo DIR] [--json]     (the default subcommand: `forge handoff RUN_DIR`)
       Everything a new session, or another harness, needs to carry a run on, in one output:
-      the run, the choices it was launched with, whether a scheduler lives, each task, what
+      the run, the choices it was launched with, whether a scheduler lives, each task (and under
+      a task that was split, its subtasks with the sub-plan dir they are tasks of), what
       needs a person, the last human changes, tasks left RUNNING by a dead scheduler, the
       handoff notes and driver, and the exact commands to run next.
       With no RUN_DIR it picks --repo's (default: this checkout's) newest run that is live or
@@ -35,7 +36,8 @@
       INTERRUPTED and the attempt counter rewound when attempts.tsv has no row for it (unless
       the attempt reached its commit: it was stopped during its review, and the retry re-runs
       only that review). Every
-      INTERRUPTED task is prepared with `forge-parallel.sh retry --no-dispatch`, and the run is
+      INTERRUPTED task is prepared with `forge-parallel.sh retry --no-dispatch` (the subtasks of a split
+      task are recovered and prepared the same way, in the task's sub-plan), and the run is
       started again, detached, from run.flags.json (log: resume-<epoch>.log; the exit code goes to
       resume-<epoch>.done). Without run.flags.json it prints the run command to finish by hand.
       FORGE_HANDOFF_NO_START=1 prints the command and starts nothing.
@@ -94,7 +96,7 @@ OPTION_FILES = (
 FLAG_KEYS = ('retry_failed', 'infra_retries', 'sweep', 'sweep_max', 'sweep_plausible', 'sweep_ahead',
              'max_parallel', 'timeout', 'verify', 'argv', 'at')
 JSON_KEYS = ('run', 'choices', 'flags', 'scheduler', 'tasks', 'needs_you', 'changes', 'stale', 'notes',
-             'driver', 'next')
+             'driver', 'next', 'subtasks')
 NOTE_MAX = 2000
 SESSION_MAX = 200
 # A different driver last seen longer ago than this is replaced without --take-over. Tests patch it.
@@ -283,7 +285,52 @@ def tasks_section(plan):
     return rows
 
 
-def needs_you_section(plan, tasks, now):
+SUB_DEPTH = 8   # the depth limit of a run's decomposition tops out at 6
+
+
+def split_state(plan, task):
+    """None for a task with no sub-plan, else `open` (its subtasks' work is not on its branch yet) or `merged`."""
+    if not plan.exists(f'tasks/{task}/sub/tasks.tsv'):
+        return None
+    return 'merged' if plan.exists(f'tasks/{task}/sub.merged') else 'open'
+
+
+def subtasks_section(plan, tasks, prefix='', depth=0):
+    """The subtasks of every task that was split (#153), through every level, in tree order:
+    [{id, task, parent, plan, status, dwarf, split}]. `id` is the path from the run's own task (`d/a`),
+    `plan` the sub-plan dir the subtask is a task of: every command about it names that dir."""
+    rows = []
+    if depth >= SUB_DEPTH:
+        return rows
+    for task in tasks:
+        state = split_state(plan, task['id'])
+        if state is None:
+            continue
+        sub = Plan(plan.path / 'tasks' / task['id'] / 'sub')
+        children = tasks_section(sub)
+        plan.warnings.extend(f'{prefix}{task["id"]}/sub: {w}' for w in sub.warnings)
+        for child in children:
+            rows.append(dict(id=f'{prefix}{task["id"]}/{child["id"]}', task=child['id'], parent=prefix + task['id'],
+                             plan=str(sub.path), status=child['status'], dwarf=child['dwarf'],
+                             split=split_state(sub, child['id'])))
+            rows += subtasks_section(sub, [child], f'{prefix}{task["id"]}/', depth + 1)
+    return rows
+
+
+def needs_you_section(plan, tasks, now, subtasks=()):
+    items = needs_of(plan, tasks, now)
+    # A subtask that waits for a person waits in its own sub-plan: the item carries that plan dir.
+    by_plan = {}
+    for row in subtasks:
+        by_plan.setdefault(row['plan'], []).append(row)
+    for where, rows in by_plan.items():
+        for item in needs_of(Plan(where), [dict(id=row['task'], status=row['status']) for row in rows], now):
+            path = next(row['id'] for row in rows if row['task'] == item['task'])
+            items.append(dict(item, plan=where, path=path))
+    return items
+
+
+def needs_of(plan, tasks, now):
     items = []
     pauses = None
     for task in tasks:
@@ -365,12 +412,19 @@ def next_section(plan, run, scheduler, tasks, needs):
     elif open_tasks:
         steps.append(dict(command=f'forge handoff resume {q(here)}', why='no scheduler is live and work is left'))
     for item in needs:
+        # A subtask's commands name its own sub-plan dir (#153).
+        where, name = q(item.get('plan') or here), item.get('path') or item['task']
+        verb = f'forge control retry {where} {q(item["task"])}' if live else f'{PARALLEL} retry {where} {q(item["task"])}'
         if item['kind'] == 'NEEDS_INPUT':
-            verb = f'forge control retry {q(here)} {q(item["task"])}' if live else f'{PARALLEL} retry {q(here)} {q(item["task"])}'
-            steps.append(dict(command=verb + ' --answer "…"', why=f'answer the question of {item["task"]}'))
-        elif item['kind'] == 'NEEDS_DECISION' and live:
-            steps.append(dict(command=f'forge control retry {q(here)} {q(item["task"])} --decide retry=N --reason "…" --approved',
-                              why=f'{item["task"]} needs a decision (or --decide threshold=Pn, or --dwarf SPEC)'))
+            steps.append(dict(command=verb + ' --answer "…"', why=f'answer the question of {name}'))
+        elif item['kind'] == 'NEEDS_DECISION':
+            if live:
+                steps.append(dict(command=f'forge control retry {where} {q(item["task"])} --decide retry=N --reason "…" --approved',
+                                  why=f'{name} needs a decision (or --decide threshold=Pn, or --dwarf SPEC)'))
+            if 'split' in [word.strip() for word in (item['reasons'] or '').replace('reasons:', '').split(',')]:
+                steps.append(dict(command=verb + ' --decide split --subtasks FILE --reason "…" --approved',
+                                  why=f'{name} stopped on split: split it into subtasks, only on the user\'s word '
+                                      '(FILE holds the subtasks; without a live run, --planner SPEC asks a planner instead)'))
     if tasks and not open_tasks and run['kind'] != 'solo':
         steps.append(dict(command=f'{PARALLEL} integrate {q(here)} --approved',
                           why='every task is merged; run this only on the user\'s word'))
@@ -388,10 +442,14 @@ def report(path):
     run = run_section(plan, kind)
     scheduler = scheduler_section(plan)
     tasks = tasks_section(plan)
-    needs = needs_you_section(plan, tasks, time.time())
+    subtasks = subtasks_section(plan, tasks) if kind != 'solo' else []
+    needs = needs_you_section(plan, tasks, time.time(), subtasks)
     stale = [] if scheduler['live'] else [dict(task=task['id'], note='left RUNNING with no live process')
                                           for task in tasks if task['status'] == 'RUNNING']
+    if not scheduler['live']:
+        stale += [dict(task=row['id'], note='left RUNNING with no live process') for row in subtasks if row['status'] == 'RUNNING']
     out = dict(run=run, choices=choices_section(plan), flags=flags_section(plan), scheduler=scheduler, tasks=tasks,
+               subtasks=subtasks,
                needs_you=needs, changes=changes_section(plan), stale=stale, notes=notes_section(plan),
                driver=driver_section(plan), next=next_section(plan, run, scheduler, tasks, needs))
     out['warnings'] = plan.warnings
@@ -447,20 +505,35 @@ def render(data):
         h = sched['holder']
         out.append(f'  schedule.holder: {h["command"]} (pid {h["pid"]}, since {when(h["at"])})')
     head('Tasks')
+    below = {}
+    for row in data.get('subtasks') or []:
+        below.setdefault(row['parent'], []).append(row)
+
+    def subtasks_of(parent, depth):
+        # A split task's subtasks, under it: each is a task of the sub-plan dir printed on the first line.
+        rows = below.get(parent) or []
+        if rows:
+            out.append(f'  {"  " * depth}subtasks, in {rows[0]["plan"]}:')
+        for row in rows:
+            out.append(f'  {"  " * depth}{row["task"]:<{max(1, 24 - 2 * depth)}} {row["status"]:<15} {row["dwarf"] or "-"}')
+            subtasks_of(row['id'], depth + 1)
+
     for task in data['tasks']:
         out.append(f'  {task["id"]:<24} {task["status"]:<15} {task["dwarf"] or "-"}')
+        subtasks_of(task['id'], 1)
     if not data['tasks']:
         out.append('  (none)')
     head('Needs you')
     for item in data['needs_you']:
+        name = item.get('path') or item['task']
         if item['kind'] == 'NEEDS_INPUT':
-            out.append(f'  {item["task"]}: NEEDS_INPUT, the question:')
+            out.append(f'  {name}: NEEDS_INPUT, the question:')
             out.extend('    ' + line for line in (item['question'] or '(needs_input.md missing)').splitlines())
         elif item['kind'] == 'NEEDS_DECISION':
-            out.append(f'  {item["task"]}: NEEDS_DECISION  {item["reasons"] or "(decision.md missing)"}')
+            out.append(f'  {name}: NEEDS_DECISION  {item["reasons"] or "(decision.md missing)"}')
         else:
             where = '/'.join(part for part in (item['harness'], item['model']) if part) or 'unknown'
-            line = f'  {item["task"]}: INFRA, {item["cause"]} on {where}'
+            line = f'  {name}: INFRA, {item["cause"]} on {where}'
             if item['stage']:
                 line += f' ({item["stage"]} stage)'
             if item['needs_you']:
@@ -989,6 +1062,48 @@ def recover_task(ctrl, plan, wt_root, run_id, task, warn):
     return row
 
 
+def resume_subtasks(ctrl, plan, warn, out, depth=0):
+    """The same recovery one level down (#153): in the sub-plan of every split task whose subtasks' work is
+    not on the task's branch yet, a subtask left RUNNING by a dead run is saved, reset and marked
+    INTERRUPTED, and every INTERRUPTED subtask is prepared. Each sub-plan is worked on under its own plan
+    lock; one a live run still holds is left alone, and said. Rows carry `plan`, the sub-plan dir."""
+    if depth >= SUB_DEPTH:
+        return
+    for task in tasks_section(Plan(plan)):
+        if split_state(Plan(plan), task['id']) != 'open':
+            continue
+        sub = os.path.join(str(plan), 'tasks', task['id'], 'sub')
+        view = Plan(sub)
+        wt_root, run_id = view.line('wt_root'), view.line('run_id')
+        if wt_root and run_id:      # else it has never run: nothing can be stale in it
+            lock = take_plan_lock(sub)
+            if lock is None:
+                warn(f'{task["id"]}: its subtasks ({sub}) are locked by {lock_holder(sub)}; nothing there was recovered')
+                continue
+            try:
+                if scheduler_section(Plan(sub))['live']:
+                    warn(f'{task["id"]}: a run of its subtasks ({sub}) is live; nothing there was recovered')
+                    continue
+                for child in tasks_section(Plan(sub)):
+                    if child['status'] == 'RUNNING':
+                        row = recover_task(ctrl, sub, wt_root, run_id, child['id'], warn)
+                        if row is not None:
+                            out['recovered'].append(dict(row, plan=sub))
+            finally:
+                try:
+                    forge_flock.flock(lock, forge_flock.LOCK_UN)
+                except (OSError, ValueError):
+                    pass
+                lock.close()
+            for child in tasks_section(Plan(sub)):
+                if child['status'] == 'INTERRUPTED':
+                    result = dict(prepare_task(sub, child['id']), plan=sub)
+                    out['prepared'].append(result)
+                    if not result['ok']:
+                        warn(f'{task["id"]}/{child["id"]}: could not be prepared for a retry: {result["message"]}')
+        resume_subtasks(ctrl, sub, warn, out, depth + 1)
+
+
 def take_plan_lock(plan):
     """schedule.lock, the plan lock every forge-parallel.sh command that changes a plan holds (#157).
 
@@ -1107,6 +1222,7 @@ def cmd_resume(args):
             out['prepared'].append(result)
             if not result['ok']:
                 warn(f'{task["id"]}: could not be prepared for a retry: {result["message"]}')
+    resume_subtasks(ctrl, plan, warn, out)
 
     flags_view = Plan(plan)
     flags = flags_view.json('run.flags.json')

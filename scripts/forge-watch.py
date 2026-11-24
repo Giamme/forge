@@ -3,7 +3,8 @@
 
 Follow forge runs from the terminal and hear about them without keeping forge-ui open.
 
-A line is printed whenever a task changes status. A run that finishes or fails, a task that fails
+A line is printed whenever a task changes status; the subtasks of a task that was split are
+followed too, named by their path (`d/a` is subtask a of task d). A run that finishes or fails, a task that fails
 and a final review's verdict are also events: each raises a desktop notification where one can be
 shown (notify-send on Linux, osascript on macOS; on a headless machine or in CI there is no
 notifier and the events only print), and runs the optional hooks:
@@ -68,7 +69,11 @@ def run_state(summary: dict) -> str:
 
 
 def statuses(summary: dict) -> dict:
-    return {item['id']: item['status'] for item in summary.get('task_statuses') or []}
+    """Every task's status, and every subtask's under a task that was split (#153), named by its path (`d/a`)."""
+    found = {item['id']: item['status'] for item in summary.get('task_statuses') or []}
+    for item in (summary.get('decomposition') or {}).get('statuses') or []:
+        found[item['id']] = item['status']
+    return found
 
 
 def goal_of(summary: dict) -> str:
