@@ -202,7 +202,16 @@ else:
     except (ValueError, AttributeError):
         pass
     if status and status.strip():
-        ver.append('status: %s' % text(status))
+        status_text = text(status)
+        if status_text == 'STALE':
+            vcommit = read(os.path.join(vdir, 'verification.commit'))
+            short_sha = text(vcommit)[:7] if vcommit and vcommit.strip() else ''
+            if short_sha:
+                ver.append('status: STALE (verified %s, before later merges)' % short_sha)
+            else:
+                ver.append('status: STALE (verified an earlier commit, before later merges)')
+        else:
+            ver.append('status: %s' % status_text)
         cmd = read(os.path.join(vdir, 'verification.command'))
         if lanes is not None:
             # Lanes: each one's state; a flaky lane passed only on its rerun, a known lane failed

@@ -161,8 +161,16 @@ def build(path: Path, source: str, scrub, texts: bool) -> tuple[str, str]:
         out += ['- `%s` %s: %s' % (scrub(t['id']), cell(scrub(t['title'])), t['status']) for t in other]
         out += ['', 'These tasks are not part of the integration branch.', '']
     verification = d.get('verification_status')
+    ver_commit = ((d.get('verification') or {}).get('commit') or '').strip()
+    if verification == 'STALE':
+        if ver_commit:
+            ver_text = 'STALE (verified `%s`, before later merges)' % ver_commit[:7]
+        else:
+            ver_text = 'STALE (verified an earlier commit, before later merges)'
+    else:
+        ver_text = verification or 'not recorded'
     review = d.get('final_review')
-    out += ['## Checks', '', '- Verification: %s' % (verification or 'not recorded')]
+    out += ['## Checks', '', '- Verification: %s' % ver_text]
     if review:
         note = ''
         if review.get('outdated'):

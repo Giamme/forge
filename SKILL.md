@@ -39,7 +39,9 @@ Read the one that applies before acting; every flag is in [commands](docs/comman
 Runners default to summary output. Read each `dwarf.last` and `qa.last` once; retrieve raw logs only
 when needed. Report findings faithfully and name verification limits. Source or review mutations
 invalidate acceptance. A missing verdict is UNKNOWN. No repository verification command means
-UNVERIFIED, even when QA passes. Read `<plan>/control.log` and mention any human change made mid-run
+UNVERIFIED, even when QA passes. `STALE` means verification ran on an earlier commit: the
+integration tip is unverified until `run` or `integrate` verifies it. Read `<plan>/control.log`
+and mention any human change made mid-run
 (`forge control show <plan>` lists them). Keep execution completion, QA acceptance and verification
 apart. Offer the leftover findings as issues ([findings](references/findings.md)).
 
@@ -83,15 +85,15 @@ apart. Offer the leftover findings as issues ([findings](references/findings.md)
 
 | Opt-in flag | Where | What it does |
 |---|---|---|
-| `--retry-failed N`, `--infra-retries M` | `run` | retry failed or infrastructure-stopped tasks automatically |
-| `--shadow-qa SPEC` | `plan` | a second, never-read review of sampled attempts, to measure agreement |
+| `--retry-failed N`, `--infra-retries M` | `run` | auto-retry failed or infra-stopped tasks |
+| `--shadow-qa SPEC` | `plan` | second, never-read review of sampled attempts (measures agreement) |
 | `--reviewer-session`, `--implementer-session` | `plan` | continue the reviewer's / implementer's session across rounds |
-| `--sweep Pn` / `--sweep-ahead` | `run` | fix tolerated findings at Pn or worse once all merged, one task per file / hand a task the open findings in its files |
-| `--fail-first` | solo, `plan` | new tests also run without the non-test changes; ones that still pass are P2; needs `.forge/verify-subset` |
+| `--sweep Pn` / `--sweep-ahead` | `run` | fix tolerated Pn+ findings after merge (one task/file) / pass open findings in owned files |
+| `--fail-first` | solo, `plan` | re-run new tests without code changes (still-passing are P2; needs `.forge/verify-subset`) |
 | `--pre-review-tests` | `plan` | run the affected tests before review; a red attempt goes back unreviewed |
 | `--auto-split`; `--split-depth\|children\|nodes N` | `run`; `plan` | the planner splits a task stopped on `split`; split limits, shown with the table ([subtasks](references/decompose.md#subtasks-a-task-split-at-any-level)) |
-| `--groups`, `--group-review` | `plan` | one review for several small, related, low-risk tasks; keep high-risk tasks per task ([groups](references/decompose-opt-in.md#groups-and-group-review-opt-in)) |
-| `--fast ROLES` | any | faster service tier, billed higher ([fast tier](references/harnesses.md#fast-service-tier)): a run without it on the account stays standard and prints a note, not a failure; openclaude, opencode, antigravity and grok exit 3; solo takes only `dwarf`, `qa`, `none` |
+| `--groups`, `--group-review` | `plan` | shared review for small, related, low-risk tasks; keep high-risk tasks per task ([groups](references/decompose-opt-in.md#groups-and-group-review-opt-in)) |
+| `--fast ROLES` | any | faster service tier, billed higher ([fast tier](references/harnesses.md#fast-service-tier)): absent on account stays standard with a note; openclaude, opencode, antigravity and grok exit 3; solo takes `dwarf`, `qa`, `none` |
 | retro, brief, summaries | `plan` | [opt-in modes](references/decompose-opt-in.md); brief and summaries need a model the user names |
 
 ## Existing runs
@@ -134,8 +136,8 @@ apart. Offer the leftover findings as issues ([findings](references/findings.md)
    unless the user asks for a live probe.
 3. One implementation: [solo](references/solo.md). `--decompose-level low|medium|high`: read
    [planning a plan](references/decompose.md). With `--planner`, call `forge-parallel.sh auto` once, as
-   one blocking command (in the background where the harness limits foreground commands; wait for its
-   notice, do not poll or read its logs), without `--approved` unless the user pre-approved; show the
+   one blocking command (backgrounded if foreground commands time out; wait for its notice, do
+   not poll or read logs), without `--approved` unless the user pre-approved; show the
    table and wait. Otherwise write the task table, get approval, then `forge-parallel.sh plan/run`.
    `auto` preflights the planner and re-dispatches once on a send-back. Write the request verbatim to
    `request.md`, pass `--decompose-level` with the level you split at (even when the user named none),
