@@ -223,9 +223,9 @@ first-try PASS rate per task, with tasks unlikely to pass first time flagged. It
 and `--no-forecast` turns it off. See [plan forecast](../references/dataset.md#plan-forecast).
 
 `integrate` refuses without `--approved`, and refuses on a dirty working tree.
-For Fractal execution, pass tier pools to `plan` and backend/limit flags to `run`.
-`--max-parallel` limits task pipelines; the shared `--fractal-concurrency` limit includes
-all their child invocations and QA. See [decomposed Fractal execution](../references/decompose.md#fractal-within-decomposed-tasks).
+A task that turns out to be several pieces can be split into subtasks without editing the plan:
+see [Splitting a task into subtasks](#splitting-a-task-into-subtasks). `--max-parallel` bounds the
+whole run, subtasks included.
 
 A plan can start from a finished plan's integration branch. `A` and `B` are plan directories:
 
@@ -263,10 +263,14 @@ operations for the same plan are excluded by an advisory lock.
 To pause a run on purpose, drain it instead of signalling it (see below): nothing is
 interrupted, and `forge control resume` continues the same run.
 
-For a Fractal-backed run, use `forge fractal resume RUN_ID` to recover recorded execution
-and pipeline checkpoints. A task/subtree selector resumes only that execution scope.
-Explicit `retry` retains the backend and frozen pools; a replacement dwarf must already
-belong to that pool. See [recovery](../references/fractal.md#limits-and-lifecycle).
+A split task resumes the same way. Its subtasks are a plan of their own
+(`<plan-dir>/tasks/<id>/sub`): `run <plan-dir>` enters the task again, runs the subtasks that
+have not merged, and never makes a subtask twice. A failed subtask is retried in that plan
+(`retry <plan-dir>/tasks/<id>/sub <subtask>`).
+
+A plan made with Fractal, the backend forge 0.23 removed, can still be read (`forge runs`,
+forge-ui) but `run`, `retry` and `forge handoff resume` refuse it (exit 3). Start a new run for
+the work that is left.
 
 ### From another session or harness
 
@@ -285,7 +289,7 @@ matching run exits 3.
 `forge handoff resume RUN_DIR` carries a decomposed run on. It claims the run first; a
 refused claim exits 3 and changes nothing else. A live scheduler is followed and nothing is
 started — leave that run to `forge control show`, and do not start `run` beside it. A
-Fractal plan is not restarted here; resume names `forge fractal resume`. When another forge
+plan made with Fractal (removed in forge 0.23) is not restarted, and resume says so. When another forge
 command holds the plan's lock (`schedule.lock`), resume says which and changes and starts
 nothing; otherwise it holds that lock while it recovers, so a `run` started meanwhile is refused
 instead of racing the reset. Each task still `RUNNING` is then recovered, and only when its worktree is exactly `<wt_root>/<id>`
@@ -302,10 +306,16 @@ is prepared with `retry --no-dispatch`. `run` then starts again, detached, from
 `run.flags.json`. Output goes to `resume-<epoch>.log`; the exit code is written to
 `resume-<epoch>.done` when the run ends. A launch that fails exits 1.
 
+The same recovery is done one level down, in the sub-plan of every split task whose subtasks
+have not merged into the task yet: a subtask left `RUNNING` is saved, reset and marked
+`INTERRUPTED` under that sub-plan's own lock, and every `INTERRUPTED` subtask is prepared.
+Those rows carry `plan`, the sub-plan's directory. A sub-plan another command holds is left
+alone, with a warning.
+
 `run` writes `run.flags.json` at each real start. A dry run and a `retry` do not, and a
 split or rerun does not copy it. The fields are `retry_failed`, `infra_retries`, `sweep`,
 `sweep_max`, `sweep_plausible`, `sweep_ahead`, `max_parallel`, `timeout`, `verify`,
-`fractal`, `argv` and `at`. `retry_failed` and `infra_retries` are the budgets the
+`argv` and `at`. `retry_failed` and `infra_retries` are the budgets the
 scheduler removes when it stops (`retry_budget`, `infra_budget`, and each task's
 `retry_budget`), so resume can pass them again. Resume rebuilds the `run` command from
 those fields; it does not replay `argv` as typed. A run from before 0.19 has no file:
@@ -405,7 +415,7 @@ Each change is validated, written under `control.lock`, and says when it applies
   says a pin waits (`pinned; after the QA-only re-run`) only when the next entry really
   re-runs QA: a `resume` marker, or an unreviewed verdict, that still matches the
   worktree. A marker the next retry will discard is reported as `pinned`.
-  Fractal plans never apply pins, and a MERGED task refuses one.
+  A MERGED task refuses one.
 - **Who decided an escalation.** The last column of `tasks/<id>/escalations.tsv` is `policy`
   (`--escalate-after`), `retry` (a typed `retry --dwarf`), `pin` or `fallback`
   (`--infra-fallback` moved a task off a model at capacity); rows from before it was added
@@ -422,6 +432,110 @@ Every change is appended to `control.log` (one JSON line: `at`, `actor` `cli` or
 human interventions are on the record next to what the policy did. Setting a control to the
 value it already has changes and logs nothing.
 
+## Splitting a task into subtasks
+
+A task can itself be split, and so can each of its subtasks: goal, plans, tasks and subtasks
+follow one rule at every level. Nothing outside forge is needed.
+
+A split task's subtasks are a plan of their own, in `<plan-dir>/tasks/<id>/sub`. They are routed
+with the plan's difficulty pools, each owns paths inside the task's `files`, they depend only on
+each other, and they run on the same scheduler under the run's one `--max-parallel`. Each
+subtask is built in its own worktree and reviewed against its own prompt. When every subtask has
+merged, their work is brought onto the task's branch and **the task is reviewed once more, on
+the whole diff**, against the task's own prompt. Only then does the task merge into the run.
+
+There are three ways a task gets split. None is forced: keeping a task whole is always a valid
+answer, and it is recorded with its reason.
+
+| Who | How | Recorded as decided by |
+|---|---|---|
+| the planner, when it plans | a task of its reply carries `subtasks` (and a one-line `reason`); `plan` makes the sub-plan and shows it under the table | `planner` |
+| you, for a task that stopped | `retry <plan-dir> <id> --decide split --subtasks FILE --reason "…" --approved`, or `--planner SPEC` instead of the file to ask a planner | `user` |
+| the run, when you asked for it | `run --auto-split [--split-planner SPEC]`: a task that stops for a decision with `split` among its reasons is split by the planner without waiting | `auto` |
+
+Without `--auto-split`, a task that stops on `split` waits for your choice, as every
+`NEEDS_DECISION` does. Its `decision.md` names the split among the choices.
+
+```bash
+# the subtasks, as a forge-plan block or its bare JSON (forge-planner.py node-prompt describes it)
+cat > /tmp/halves.md <<'JSON'
+{"reason": "the parser and the docs can be reviewed apart",
+ "tasks": [
+  {"id": "parser", "deps": [], "difficulty": "medium", "files": ["src/config.py"],
+   "title": "Parse the limits section", "approach": "",
+   "prompt": "…\n\n## Acceptance criteria\n\n- …"},
+  {"id": "docs", "deps": ["parser"], "difficulty": "low", "files": ["docs/config.md"],
+   "title": "Document the limits section", "approach": "",
+   "prompt": "…\n\n## Acceptance criteria\n\n- …"}]}
+JSON
+bash scripts/forge-parallel.sh retry "$PLAN" config --decide split --subtasks /tmp/halves.md \
+  --reason "two halves that can be reviewed apart" --approved
+```
+
+`retry --decide split` makes the sub-plan and runs it, then reviews the task. With
+`--no-dispatch` it only makes it, and the next `run` runs it. On a live run, use
+`forge control retry <plan-dir> <id> --decide split --subtasks FILE --reason "…" --approved`:
+the scheduler makes the split and runs it. The split is refused, and nothing changes, when a
+subtask's file is outside the task's `files`, a dependency is not a sibling, the ids repeat or
+form a cycle, or the task is `MERGED`, `RUNNING` or already split. One task in the answer means
+"keep it whole": that is recorded, and the task stays as it was.
+
+**The task's existing work.** `--decide split` keeps it: the subtasks start from the task's
+branch as it stands and are told what the last review found. `--decide split=fresh` starts over
+from the task's base; the earlier work stays on `refs/forge/kept/<run>/<id>`.
+
+**Limits.** Three limits bound every split. `plan` shows them under the task table, so they are
+approved with the plan, and the first `run` freezes them: a later `plan` that would change one is
+refused.
+
+| Flag (on `plan`) | Default | Bounds |
+|---|---|---|
+| `--split-depth N` | 2 | levels of subtasks below a task of the plan; `0` turns splitting off |
+| `--split-children N` | 6 | subtasks one split may make |
+| `--split-nodes N` | 24 | subtasks in the whole run, over every level |
+
+A split that would pass a limit is not made. The task is recorded as `bounded`, with the limit
+it met, and runs as one task.
+
+**When a subtask fails.** The task waits (`BLOCKED`, with the subtasks it waits for in
+`tasks/<id>/sub.waiting`); no attempt of the task is spent. Retry the subtask in its own plan,
+then run the plan again:
+
+```bash
+bash scripts/forge-parallel.sh retry "$PLAN/tasks/config/sub" docs
+bash scripts/forge-parallel.sh run "$PLAN"
+```
+
+`run --retry-failed N` and `--infra-retries M` apply to the subtasks too. Retrying the task
+itself continues its subtasks: accepted decisions are kept and no subtask is made twice.
+
+**Reading the tree.** `forge runs tree <plan-dir>` prints every level with each node's status,
+decision and reason, and where each sub-plan is. `forge control show`, `forge handoff` and
+`forge watch` list subtasks by path (`config/docs`). forge-ui shows the tree on the task, with
+the decision, who made it, its reason, the model, the tokens and the diff of every node. A
+subtask is a task of its sub-plan, so every command that takes a plan dir and a task id works
+on it: `forge control pin <plan-dir>/tasks/config/sub docs sol:high`.
+
+The record is `decomposition.json` in each plan of the tree: one node per task with `decision`
+(`atomic`, `split` or `bounded`), `reason`, `by` (`planner`, `user`, `auto` or `default`) and
+the limits in force when it was decided. The root plan's file also holds `limits` and `frozen`.
+
+## A goal larger than one plan
+
+A planner that finds the goal too large for one plan plans the first coherent stage and lists
+the stages that follow in `later` (a title and a goal each). `plan` shows them under the table.
+When the plan has merged, plan the next stage:
+
+```bash
+bash scripts/forge-parallel.sh next "$PLAN"   # the new plan dir is <first plan dir>-<stage>, or name one
+```
+
+`next` refuses unless every task of `$PLAN` is `MERGED`. The new plan starts from `$PLAN`'s
+integration branch (as `plan --after` does), takes its pools, options and limits, and is planned
+by the same planner (`--planner SPEC` names another) from the code as it now is. It stops at the
+table: each plan of a chain is approved on its own, then run. `integrate --approved` on the
+last plan brings the whole chain.
+
 ## Splitting and combining plans
 
 `run --retry-failed N` removes most of the reason to split a plan (a failed task no longer holds
@@ -433,8 +547,8 @@ instead of hand-built git plumbing:
   findings, reviewed commit, status) into a new plan: their branches and worktrees are renamed to
   the new run (`forge/<new>/<id>`), the new integration branch starts at the source's accepted
   tip, dependencies on already-merged tasks are dropped, and the source forgets the moved rows
-  (`split-<new>.txt` records them). It refuses — changing nothing — for a Fractal-backed plan, a
-  MERGED or RUNNING task, a selection that leaves a dependent behind, or a dependency that is
+  (`split-<new>.txt` records them). It refuses — changing nothing — for a plan made with Fractal
+  (removed in forge 0.23), a MERGED or RUNNING task, a selection that leaves a dependent behind, or a dependency that is
   neither moving nor merged. Copy first, delete last; an interrupted split rolls back.
 - `combine <new-plan> <plan-a> <plan-b>…` joins plans whose tasks are **all `MERGED`** into one
   plan: a new integration branch merges each source's, the per-task records are copied, and

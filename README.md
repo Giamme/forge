@@ -182,7 +182,7 @@ python3 ui/tools/demo_runs.py /tmp/forge-demo
 | [Install and update](docs/install.md) | npm or a git checkout, the doctor, what the installer does per CLI, updating |
 | [Command reference](docs/commands.md) | every `/forge` flag with examples, the `forge` command, the runner scripts and their exit codes |
 | [Models, efforts and harnesses](docs/models.md) | the `alias:effort:harness` spec, effort ladders and clamping, yolo mode, the model registry |
-| [Decomposed runs](docs/decomposed-runs.md) | decompose levels and difficulty, routing, waves, capsules, planning, resuming, split and combine, `tasks.tsv` |
+| [Decomposed runs](docs/decomposed-runs.md) | decompose levels and difficulty, routing, waves, capsules, planning, splitting a task into subtasks, resuming, split and combine, `tasks.tsv` |
 | [Reviews, retries and recovery](docs/reviews.md) | verdicts, retries, infrastructure stops, severity thresholds, accepting, whole-run and shadow reviews, guards, verification, fail-first |
 | [Project memory](docs/memory.md) | `.forge/memory.md` and the ledger, what each role is told, whether to commit it, spend |
 | [forge-ui](docs/forge-ui.md) | the run viewer: commands, the shared server, environment variables, privacy |

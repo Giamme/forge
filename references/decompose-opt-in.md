@@ -26,7 +26,7 @@ What the orchestrator does in each mode:
 ## Groups and group review (opt-in)
 
 Two opt-ins share `groups.tsv`. A planner may name groups, and those are identity only
-(`review=task`): they do not change dispatch or the estimate, and they are fine under Fractal.
+(`review=task`): they do not change dispatch or the estimate.
 `plan --groups` with `--group-review` is the other opt-in: one QA review covers several tasks.
 Offer either; never add them unprompted. The user-facing tradeoff is in
 [group review](../docs/reviews.md#group-review-opt-in). The data layer is `scripts/forge_groups`
@@ -94,9 +94,6 @@ removes `groups.frozen`. A `groups.frozen` with no `groups.tsv` fails the check.
 `run` calls `forge-groups.py check` when `groups.tsv` or `groups.frozen` exists, a dry run
 included, before any dispatch. A mismatch, a missing file, or groups that cannot be read
 refuses with `groups.tsv or a member's deps/files changed since plan; run plan again`.
-
-Group review and Fractal do not combine. `--fractal`, or a plan that is already fractal,
-makes `plan` and `run` exit 2: `group review does not support Fractal yet`.
 
 ### The member lifecycle and `IMPLEMENTED`
 
@@ -309,7 +306,6 @@ decision and the rearm above. Exit codes and flags are in
 ### Out of scope
 
 - Shadow reviews of groups. A member skips shadow, and the group dispatch is one fresh QA.
-- Fractal. `group review does not support Fractal yet`.
 - A reviewer session across rounds. The group dispatch does not continue a session.
 - Fail-first on a member. Pre-review tests still run, as above.
 

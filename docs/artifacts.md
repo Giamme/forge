@@ -131,6 +131,18 @@ A decomposed run adds:
   verification.coverage.txt            suites the verify command does not run (advisory)
   verify_cmd, verify.d/                the plan's --verify command, or its --verify-lane lanes (one file per lane)
   verify_parallel                      lanes run at once (--verify-parallel; default 3)
+  decomposition.json                   the split decisions of this plan's tasks: nodes (decision atomic|split|bounded, reason, by, at, limits_used); a root plan also holds limits (depth, children, nodes) and frozen
+  auto_split, split_planner            present while run --auto-split is on; the planner it asks (--split-planner)
+  later.json, chain.json               the stages a planner proposed after this plan; the stage this plan is, the first and the previous plan (written by next)
+  tree.slots/                          root plan only: one lock file per task the whole tree may run at once (--max-parallel)
+  tasks/<id>/sub/                      the subtasks of a split task: a plan dir of its own (tasks.tsv, run_id <run>--<id>, tasks/...), plus parent.json (task, run_id, start keep|fresh, by, at, reason)
+  tasks/<id>/sub.merged                commit of the subtasks' work, once it is on the task's branch
+  tasks/<id>/sub.waiting               the subtasks the task waits for, one per line (the task is BLOCKED and spent no attempt)
+  tasks/<id>/sub.kept                  --decide split=fresh: the commit of the earlier work, kept on refs/forge/kept/<run>/<id>
+  tasks/<id>/sub.out                   output of the subtasks' run
+  tasks/<id>/split.prompt, split/      the question asked of a planner about this task, and that dispatch (planner.prompt, planner.out, planner.last)
+  tasks/<id>/split.reason, split.refused   why the planner kept the task whole; why proposed subtasks were refused
+  tasks/<id>/decisions.tsv             also holds `retry=1 split` or `retry=1 split=fresh`: the decision to split
 ```
 
 `verification.runs.tsv` is tab-separated, one row per run: `n`, `kind` (`initial` or `rerun`; runs
@@ -148,6 +160,9 @@ with worktrees and branches at:
 <repo>/../.forge-worktrees/<run-id>/_group-<gid> group-review candidate; kept for the merge
 forge/<run-id>/<task-id>                         task branch
 forge/<run-id>-integration                       integration branch
+<repo>/../.forge-worktrees/<run-id>--<task-id>/<subtask-id>   a subtask's worktree (its run id is <run-id>--<task-id>)
+forge/<run-id>--<task-id>/<subtask-id>           a subtask's branch
+forge/<run-id>--<task-id>-integration            the subtasks' integration branch, merged into forge/<run-id>/<task-id>
 ```
 
 A group review's files are what each outcome writes. The rules are in

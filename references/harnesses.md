@@ -7,13 +7,6 @@ Everything below was verified by running the CLIs on this machine, not read from
 several of these behaviours are undocumented and a few contradict what the `--help` text
 implies.
 
-Fractal uses this same dispatcher for all six harnesses through its `agents.py` bridge.
-It is an optional execution backend, not a seventh model harness or a replacement for
-`alias:effort:harness`. The same effort and permission rules apply to each fresh nested
-work step. Use `./forge fractal doctor --spec SPEC` for runtime and advertised capability
-checks; authentication and live provider availability still require an explicitly requested
-provider test. See [Fractal execution](fractal.md).
-
 ## Contents
 
 - [At a glance](#at-a-glance)
@@ -67,7 +60,7 @@ Implementation notes worth keeping, because they were arrived at the hard way: t
 started with `exec` inside its subshell, so the pid forge holds is the backend itself rather than
 a wrapper it would be useless to kill. macOS has no `setsid` binary, so the harness is launched
 through `forge-guard.py session` (python's `os.setsid()` then `exec`, same pid, pgid == pid)
-unless `FORGE_ORPHAN_GUARD=off` or the run is Fractal. That gives a process group to signal as a
+unless `FORGE_ORPHAN_GUARD=off`. That gives a process group to signal as a
 unit: the watchdog (TERM, then KILL for a CLI that traps TERM) and the exit trap signal the whole
 group in addition to `pkill -P`, and after a normal exit `forge-guard.py reap` lists and stops
 anything still alive in it (`<role>.orphans`). Tools can leave the group (codex runs commands in

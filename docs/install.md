@@ -74,9 +74,10 @@ Clone anywhere you like — the installer works out its own location and links f
 `~/.claude/skills/forge` is just the tidiest home: claude reads that path directly, and
 opencode and grok scan it on their own.
 
-The installer also offers optional Fractal support in an interactive terminal. Declining
-or a Fractal installation failure does not prevent ordinary Forge setup. See
-[Fractal installation](fractal.md#install-the-optional-runtime) for prerequisites and a separate install.
+forge needs no runtime beyond the harness CLIs. Fractal, the optional backend earlier versions
+could install, was removed in forge 0.23: splitting a task into subtasks is part of forge
+itself ([Splitting a task into subtasks](decomposed-runs.md#splitting-a-task-into-subtasks)).
+`forge du` shows what an old Fractal runtime left on disk.
 
 ## Windows: MSYS2 mode
 
@@ -118,7 +119,7 @@ To set MSYS2 mode up:
    ```
 
    MSYS2 mode has only been tried from a git checkout: neither the npm package nor
-   `scripts/forge-install.sh` (links into the other harnesses, optional Fractal) has been tried
+   `scripts/forge-install.sh` (links into the other harnesses) has been tried
    in it.
 
 What differs in MSYS2 mode:

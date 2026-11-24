@@ -89,6 +89,7 @@ apart. Offer the leftover findings as issues ([findings](references/findings.md)
 | `--sweep Pn` / `--sweep-ahead` | `run` | fix tolerated findings at Pn or worse once all merged, one task per file / hand a task the open findings in its files |
 | `--fail-first` | solo, `plan` | new tests also run without the non-test changes; ones that still pass are P2; needs `.forge/verify-subset` |
 | `--pre-review-tests` | `plan` | run the affected tests before review; a red attempt goes back unreviewed |
+| `--auto-split`; `--split-depth\|children\|nodes N` | `run`; `plan` | the planner splits a task that stops on `split`; the limits of any split, shown with the table ([subtasks](references/decompose.md#subtasks-a-task-split-at-any-level)) |
 | `--groups`, `--group-review` | `plan` | one review for several small, related, low-risk tasks; keep high-risk tasks per task ([groups](references/decompose-opt-in.md#groups-and-group-review-opt-in)) |
 | `--fast ROLES` | any | faster service tier, billed higher ([fast tier](references/harnesses.md#fast-service-tier)): a run without it on the account stays standard and prints a note, not a failure; openclaude, opencode, antigravity and grok exit 3; solo takes only `dwarf`, `qa`, `none` |
 | retro, brief, summaries | `plan` | [opt-in modes](references/decompose-opt-in.md); brief and summaries need a model the user names |
@@ -107,8 +108,9 @@ apart. Offer the leftover findings as issues ([findings](references/findings.md)
 - A task at `NEEDS_DECISION` waits for the user: present `tasks/<id>/decision.md`'s reasons and choices.
   Run `retry --decide`, `retry --dwarf` or `accept` (`--reason`, `--approved`) only on the user's explicit
   word, never to keep a run going; on a live run use `forge control retry … --decide` or `forge control
-  accept`. The split choice replaces the row in `tasks.tsv` for a later `run`, only when the user asks
+  accept`. The split choice is `--decide split` with the subtasks; the task is then reviewed on all their work
   ([when reviews don't converge](references/decompose-recovery.md#when-reviews-dont-converge)).
+- `waiting for their subtasks:` is a split task whose subtask failed or waits: act in its `tasks/<id>/sub` plan, then `run`.
 - A group at `NEEDS_DECISION`: present `forge group show <plan>`; run `forge group retry <plan> <gid>
   --tasks <ids>` only on the user's word. An oversized group is split in `groups.tsv` and planned again,
   not retried.

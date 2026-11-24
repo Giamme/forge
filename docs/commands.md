@@ -14,9 +14,9 @@ harness (`/forge`); this command installs forge and drives its optional tools.
 | `forge install [--dry-run]` | link forge into each agent harness on this machine; see [install](install.md) |
 | `forge update` | fast-forward a git checkout and refresh every harness installation; on an npm install it names the npm command instead. See [updating](install.md#updating-all-harness-installations) |
 | `forge version [--check]` | the installed version, and whether a newer release is out |
-| `forge fractal …` | opt-in Fractal execution; see [the command group](fractal.md#forge-fractal-command-group) |
-| `forge runs [--repo DIR \| --all] [--limit N] [--json]` | this repo's recent runs, newest first: run id, kind, age, task states, verification and final review, goal, `after <run>` when the plan was chained, and the run dir. Read-only; the same summaries forge-ui shows |
-| `forge handoff [show] [RUN_DIR \| --repo DIR] [--json]` / `note RUN_DIR TEXT [--actor A] [--json]` / `claim RUN_DIR --harness H [--session S] [--take-over] [--json]` / `resume RUN_DIR [--take-over] [--harness H] [--session S] [--json]` | the run for the next session. `show` is the default (`forge handoff` and `forge handoff RUN_DIR`); it writes nothing. `--repo DIR`, or no argument inside a checkout, reports that repo's newest registered plan that is live or still has a task not `MERGED`. The report has the run, its option files and `run.flags.json`, scheduler liveness, task states, what needs a person, the last `control.log` changes, tasks left `RUNNING`, notes newest first, the driver and the next commands. `note` appends one line to `handoff.notes.jsonl` (`--actor` defaults to `cli`; whitespace collapses; empty text, text over 2000 characters and text that is not UTF-8 are refused). `claim` requires `--harness H` (`[a-z0-9._-]{1,40}`) and writes `handoff.driver.json` (`harness`, `session`, `since`, `last_seen`); `--session S` is an id with no whitespace, at most 200 characters. A different driver last seen under 12 hours ago is refused unless `--take-over` (one `control.log` line, action `take-over`, actor `cli`, and a dataset `control` event). `resume` claims (`--harness` defaults to `unknown`), follows a live scheduler and starts nothing, names `forge fractal resume` for a Fractal plan, and otherwise saves each stale `RUNNING` task's diff, resets that worktree, marks it `INTERRUPTED` without counting the attempt twice, prepares every `INTERRUPTED` task and restarts `run` detached from `run.flags.json`. Exit 0 ok, 2 usage or not a run dir, 3 no run to report or another driver holds the run; a restart that cannot be launched exits 1. See [from another session](decomposed-runs.md#from-another-session-or-harness) |
+| `forge runs [--repo DIR \| --all] [--limit N] [--json]` | this repo's recent runs, newest first: run id, kind, age, task states, `N subtasks in M split task(s)` when tasks were split, verification and final review, goal, `after <run>` when the plan was chained, and the run dir. Read-only; the same summaries forge-ui shows. A split task's sub-plan is part of its run and is not listed by itself |
+| `forge runs tree RUN_DIR [--json]` | a plan's tasks and, under each split task, its subtasks through every level: status, title, the decision (`split into N`, kept whole, `bounded`) and its reason, the limits of the run, and each sub-plan's directory. Read-only. See [Splitting a task into subtasks](decomposed-runs.md#splitting-a-task-into-subtasks) |
+| `forge handoff [show] [RUN_DIR \| --repo DIR] [--json]` / `note RUN_DIR TEXT [--actor A] [--json]` / `claim RUN_DIR --harness H [--session S] [--take-over] [--json]` / `resume RUN_DIR [--take-over] [--harness H] [--session S] [--json]` | the run for the next session. `show` is the default (`forge handoff` and `forge handoff RUN_DIR`); it writes nothing. `--repo DIR`, or no argument inside a checkout, reports that repo's newest registered plan that is live or still has a task not `MERGED`. The report has the run, its option files and `run.flags.json`, scheduler liveness, task states, what needs a person, the last `control.log` changes, tasks left `RUNNING`, notes newest first, the driver and the next commands. `note` appends one line to `handoff.notes.jsonl` (`--actor` defaults to `cli`; whitespace collapses; empty text, text over 2000 characters and text that is not UTF-8 are refused). `claim` requires `--harness H` (`[a-z0-9._-]{1,40}`) and writes `handoff.driver.json` (`harness`, `session`, `since`, `last_seen`); `--session S` is an id with no whitespace, at most 200 characters. A different driver last seen under 12 hours ago is refused unless `--take-over` (one `control.log` line, action `take-over`, actor `cli`, and a dataset `control` event). `resume` claims (`--harness` defaults to `unknown`), follows a live scheduler and starts nothing, restarts nothing for a plan made with Fractal (removed in forge 0.23) and says so, and otherwise saves each stale `RUNNING` task's diff, resets that worktree, marks it `INTERRUPTED` without counting the attempt twice, prepares every `INTERRUPTED` task, does the same for the subtasks of each split task in their own plan, and restarts `run` detached from `run.flags.json`. `show` lists subtasks under their task (`subtasks` in `--json`), and what needs you names a subtask by path with the plan dir to answer it in. Exit 0 ok, 2 usage or not a run dir, 3 no run to report or another driver holds the run; a restart that cannot be launched exits 1. See [from another session](decomposed-runs.md#from-another-session-or-harness) |
 | `forge control show\|set\|pin\|unpin\|drain\|resume\|stop\|retry\|add PLAN_DIR …` | change a live plan: `set` takes `qa-threshold` (`P0`..`P3`, `none` or `default` for the plan, `inherit` per task), `timeout`, `escalate-after`, `escalate-effort` (`on`/`off`), `verify-retries`, `infra-backoff` (a backoff shape; `none` drops it), `infra-fallback` (`on`/`off`), `max-attempts` (a non-negative integer, `0` = no cap, and only with `--confirm`), `converge-window` (a non-negative integer), `pre-review-tests` (`on`/`off`), `pre-review-parallel` (1-64), `summaries` (`on`/`off`; on a finished run it also starts `forge summarize`), `retry-budget`, `infra-retries` or `max-parallel` (1-64) (the last three only while a scheduler runs; `--task ID` for `qa-threshold`, `retry-budget` and `summaries`, value `inherit` drops the override); `pin PLAN_DIR TASK SPEC` sets the model the task's next full retry uses once, `unpin` drops it. While a scheduler runs: `drain` starts nothing new until `resume` (a run with nothing left to start ends as usual); `stop [--now]` ends the run once the running tasks finish (`--now` interrupts them; `run` exits 130 without verifying, unless every task had merged by then: it then verifies and exits 0 as usual); `retry PLAN_DIR TASK [--dwarf SPEC]` queues a retry, including a `STALE` task (its `prompt.md` or `approach.md` changed during the attempt: it is re-dispatched with the new text on the same implementer, and `--dwarf` is refused). `retry PLAN_DIR TASK --answer TEXT` (or `--answer-file F`, `-` for stdin) answers a `NEEDS_INPUT` task: 1 to 8000 characters after stripping, no NUL, and not combined with `--dwarf` or `--decide`. On a live run it is queued and the scheduler writes `tasks/<id>/answer.md` and resumes the task; with no live run it prepares the task through `forge-parallel.sh retry --answer-file --no-dispatch` for the next `run` (`forge-parallel.sh retry --answer` itself is unchanged). `--json` prints `{"queued": true, "request"}` when queued and `{"queued": false, "prepared": true}` when prepared. `control.log` records the value `answer` and `answer_chars`, never the text (`--actor` `ui` or `cli`, default `cli`). A `NEEDS_DECISION` task instead needs `--decide retry=N` or `--decide threshold=Pn`, or `--dwarf SPEC`, each with `--reason TEXT --approved`; `add PLAN_DIR TASK` (a row appended to `tasks.tsv`) queues a request the scheduler applies or refuses. `show` (`--json` for JSON) also says whether the run is drained or stopping, prints an `INFRA` task's cause, and, while a scheduler is live, lists each infrastructure pause with its reset and "needs you". The text table lists each task's attempts against its cap (`9/8`, or `9/-` when there is no cap). Every change and every request's outcome is logged in `control.log`. Exit 2 invalid input, 3 refused. See [live controls](decomposed-runs.md#changing-a-run-while-it-works) |
 | `forge config show [--repo DIR] [--json]` / `forge config set <key> <value> [--repo DIR] [--json]` / `forge config unset <key> [--repo DIR] [--json]` | one view of every config source (registry, the legacy Jev file, decide, the user `features`, the repo's `.forge/verify`, `setup` and `verify-subset`, dataset, `FORGE_*` variables with secrets hidden); `set` / `unset` edit `repo.verify`, `repo.setup`, `repo.verify-subset` (must contain `{files}` or `{changed}`; `--repo` required) and `decide.gate.<gate>`, `decide.gate.<gate>.provider`, `decide.gate.<gate>.model` (`off`, `shadow` or `on`; those write the user level and do not need `--repo`). They also set the user feature keys: `retro` (`off` or `on`), `brief` (`off`, `advisory`, `gated` or `strict`), `brief.scope` (`task`, `wave` or `plan`), `brief.model` (a spec), `summaries` (`off` or `on`), `summaries.model` (a spec), `storage.compact` (`auto`, the default, or `off`) and `storage.warn-gb` (gigabytes, `20` by default, or `off`; see [forge du](#forge-du)). Those write the user file and ignore `--repo`; `unset` removes one key. A bad value exits 2 and writes nothing. A model spec is checked for its form when it is set; whether it resolves is checked when `plan` uses it. Unset of a `decide.gate.*` key is refused: set the mode to `off`. `-` as a value reads stdin for the per-repo files. Exit 2 on invalid input |
 | `forge config profile list\|show\|create\|edit\|set\|unset\|rm\|use` | named bundles of routing, policy, gates and budget in `decide.json`; see [below](#forge-config-profile) |
@@ -336,7 +336,7 @@ dataset has history, and the command that starts it. `--run --yes` starts it (`-
 refused, so the cost is read first); `--dry-run` creates nothing at all. It never merges: the
 rerun only writes its own `forge/<new id>…` branches and worktrees, and your branch, the original
 run and its branches are not touched. A plan that has a task still `RUNNING`, a solo run (no task
-table), a plan that never started, and a Fractal-backed plan are refused, and a rerun that fails to
+table), a plan that never started, and a plan made with Fractal (removed in forge 0.23) are refused, and a rerun that fails to
 set up is removed again. Exit 0 ok, 2 bad input, 3 refused.
 
 `forge runs compare <run-dir-A> <run-dir-B>` sets two runs of one repository side by side per
@@ -493,7 +493,7 @@ a digit.
 | `use --none` | clear `default_profile` at this level |
 
 `set` and `unset` accept `routing.dwarf.<tier>`, `routing.qa.<tier>` (`tier` is `any`,
-`low`, `medium` or `high`), `routing.planner`, `routing.fractal_planner`,
+`low`, `medium` or `high`), `routing.planner`,
 `routing.final_reviewer`, `routing.escalate_after`, `routing.escalate_effort`,
 `policy.qa_threshold`, `policy.retry_failed`, `policy.infra_retries`,
 `policy.verify_retries`, `policy.timeout`, `policy.explore`, `policy.shadow_rate`,
@@ -538,11 +538,10 @@ file takes the flags on `run` or `retry` and freezes them then.
                 [--yolo-dwarf] [--yolo-qa] [--repo <dir>] [--native-review]
                 [--no-memory] [--gate NAME=MODE[,...]] [--no-gates]
                 [--decide-budget tokens=N[,usd=X]]
-                [--timeout <seconds>] [--ui | --no-ui] [--fractal | --no-fractal]
-                [--fractal-auto-decompose] [--fractal-planner <spec>]
-                [--fractal-depth <n>] [--fractal-children <n>] [--fractal-nodes <n>]
-                [--fractal-iterations <n>] [--fractal-concurrency <n>] [--fractal-deadline <s>]
+                [--timeout <seconds>] [--ui | --no-ui]
                 [--decompose-level low|medium|high] [--collapse-chains]
+                [--split-depth <n>] [--split-children <n>] [--split-nodes <n>]
+                [--auto-split [--split-planner <spec>]]
                 [--plan auto|always|never] [--max-parallel <n>]
                 [--dwarf-high <spec>] [--dwarf-medium <spec>] [--dwarf-low <spec>]
                 [--qa-high <spec>] [--qa-medium <spec>] [--qa-low <spec>]
@@ -571,25 +570,19 @@ file takes the flags on `run` or `retry` and freezes them then.
 | `--max-parallel <n>` | `3` | concurrent task pipelines |
 | `--dwarf-high/-medium/-low` | — | per-difficulty routing; comma-list pools models |
 | `--qa-high/-medium/-low` | — | same, for reviewers |
-| `--fractal` / `--no-fractal` | ask interactively; off unattended | mutually exclusive, per-run backend choice |
-| `--fractal-auto-decompose` | off | enables Fractal with automatic recursive split-or-atomic decisions |
-| `--fractal-planner <spec>` | top-level planner, then task root spec | frozen decision model; requires automatic mode |
-| `--fractal-depth <n>` | `2` | nested levels below each Forge implementation node |
-| `--fractal-children <n>` | `3` | unsettled direct children per node |
-| `--fractal-nodes <n>` | `12` | lifetime nodes per Forge task, including implementation |
-| `--fractal-iterations <n>` | `6` | per node per execution attempt |
-| `--fractal-concurrency <n>` | `3` | shared model slots across nested trees and QA |
-| `--fractal-deadline <s>` | `2700` | task attempt deadline, excluding explicit pauses |
-| `--fractal-max-cost <amount>` | unsupported | returns an error; the bridge cannot enforce dollar caps |
+| `--split-depth <n>` | `2` | decomposed runs: levels of subtasks a task may be split into; `0` turns splitting off. See [Splitting a task into subtasks](decomposed-runs.md#splitting-a-task-into-subtasks) |
+| `--split-children <n>` | `6` | most subtasks one split may make |
+| `--split-nodes <n>` | `24` | most subtasks in the whole run, over every level |
+| `--auto-split` | off | a task that stops for a decision on `split` is split by the planner within those limits, without waiting for you |
+| `--split-planner <spec>` | the run's planner | the model `--auto-split` asks |
 
-Fractal's task deadline still applies when `--timeout 0` disables the ordinary
-per-dispatch timeout. Child routing uses the dwarf tier flags; QA stays at the Forge
-task boundary. Pools and Fractal limits are frozen for an existing run.
+`--fractal`, `--no-fractal` and every `--fractal-…` flag were removed with Fractal in forge
+0.23, as was `forge fractal`: each exits 2 with one line that says so. A task is split into
+subtasks by forge itself now.
 
-Before an interactive run, forge asks **“Use Fractal for this run? [y/N]”** once.
-Pass `--fractal` or `--no-fractal` to answer explicitly; unattended runs default off.
-It also asks **“Open forge-ui to watch this run? [y/N]”** (`--ui` / `--no-ui`); on a yes,
-the [forge-ui](forge-ui.md) page opens as soon as the run exists. Resume and retry never ask.
+Before an interactive run, forge asks **“Open forge-ui to watch this run? [y/N]”** (`--ui` /
+`--no-ui`); on a yes, the [forge-ui](forge-ui.md) page opens as soon as the run exists. Resume
+and retry never ask.
 
 For what `--native-review` trades away, see [native review](reviews.md#native-review).
 
@@ -727,7 +720,7 @@ because that wake-up can come many minutes later. `<role>.resolved` records `res
 On `3` or `4`, forge shows you the actual error rather than substituting a different model —
 quietly swapping backends hides the fact that the one you picked is broken.
 
-**Process hygiene.** Unless `FORGE_ORPHAN_GUARD=off` (or the run is a Fractal one), the harness
+**Process hygiene.** Unless `FORGE_ORPHAN_GUARD=off`, the harness
 is started in its own session, and after it exits any process still alive in that session is
 listed in `<role>.orphans` and stopped, so a backgrounded measurement cannot outlive the
 dispatch. The timeout watchdog and the exit trap signal the whole session too. A tool that leaves
@@ -763,8 +756,7 @@ forge-solo.sh <run-dir> --repo <dir> --dwarf <spec> [--qa <spec>]
               [--gate NAME=MODE[,...]] [--no-gates] [--decide-budget tokens=N[,usd=X]]
               [--fail-first] [--qa-threshold P0|P1|P2|P3|none]
               [--fast dwarf|qa|none] [--profile NAME | --no-profile]
-              [--fractal | --no-fractal] [--fractal-<limit> <n>]
-              [--dwarf-low <pool>] [--dwarf-medium <pool>] [--dwarf-high <pool>] [--retry]
+              [--retry]
 ```
 
 `--profile` and `--fast` are the same flags as on `plan`, with two solo limits: `--fast`
@@ -787,11 +779,10 @@ You write two files into the run directory; forge does the rest:
 | `changes.diff` | exactly what the reviewer read |
 | `verdict` | `PASS`, `FAIL`, `UNKNOWN` or `NOCHANGES` |
 | `<role>.{input,log,resolved,cmd}` | the prompt, the transcript, the resolution, the command |
-| `fractal-selection.json` | persisted backend choice; enabled runs include their managed run ID |
 
-With Fractal, per-step dispatch artifacts live in the managed run while the solo directory
-retains the aggregate diff and Forge QA result. `--retry` starts a new Fractal attempt;
-`forge fractal resume RUN_ID` continues preserved execution and pipeline checkpoints.
+A solo run has one implementer: `--dwarf-low`, `--dwarf-medium` and `--dwarf-high`, which only
+routed Fractal's child tasks, were removed with it in forge 0.23 and exit 2. A solo directory an
+earlier forge ran under Fractal (`fractal-selection.json` says so) can be read but not run again.
 
 ```bash
 RUN="$(mktemp -d /tmp/forge-XXXXXX)"
@@ -852,6 +843,7 @@ forge-parallel.sh plan      <plan-dir> --repo <dir> [--after <plan-dir>] [routin
                                      [--converge-window N] [--no-infra-fallback]
                                      [--retro | --no-retro] [--brief advisory|gated|strict|off] [--brief-scope task|wave|plan]
                                      [--brief-model SPEC] [--summaries on|off] [--summaries-model SPEC]
+                                     [--split-depth N] [--split-children N] [--split-nodes N]
 forge-parallel.sh auto      <plan-dir> --repo <dir> --goal-file <file> [--planner <spec>]
                                      [--decompose-level L] [--plan auto|always|never]
                                      [--one-task-difficulty low|medium|high]
@@ -865,9 +857,11 @@ forge-parallel.sh run       <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo
                                      [--escalate-after N] [--escalate-effort | --no-escalate-effort]
                                      [--sweep P0|P1|P2|P3 [--sweep-plausible] [--sweep-max N]]
                                      [--sweep-ahead | --no-sweep-ahead] [--attribute | --no-attribute]
-                                     [--fractal | --no-fractal] [--fractal-<limit> <n>]
+                                     [--auto-split [--split-planner <spec>] | --no-auto-split]
 forge-parallel.sh retry     <plan-dir> <task-id> [--dwarf <spec>] [--answer <text> | --answer-file <file>]
                                      [--decide retry=N|threshold=Pn] [--reason "<why>" --approved]
+                                     [--decide split|split=fresh (--subtasks <file> | --planner <spec>)
+                                      --reason "<why>" --approved] [--no-dispatch]
                                      [--timeout S]
                                      [--qa-threshold P0|P1|P2|P3|none|default] [--verify-retries N]
                                      [--verify <cmd> | --verify-lane 'name[opts]=cmd' ...] [--verify-parallel N]
@@ -882,6 +876,7 @@ forge-parallel.sh integrate <plan-dir> --approved [--final-review <qa-spec>] [--
                                      [--verify-parallel N]
 forge-parallel.sh split     <plan-dir> <new-plan-dir> --tasks <id,id> [--dry-run]
 forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <cmd>] [--dry-run]
+forge-parallel.sh next      <plan-dir> [<new-plan-dir>] [--planner <spec>] [plan flags...]
 ```
 
 | Subcommand | Does |
@@ -897,6 +892,12 @@ forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <c
 | `accept` | **only on your explicit instruction** — merge a `FAIL`/`UNKNOWN` task's reviewed work anyway, recording why |
 | `review` | **opt-in, spends QA quota** — one reviewer reads the whole combined result; read-only |
 | `split` / `combine` | move tasks into a plan of their own / join fully merged plans into one |
+| `next` | plan the next stage of a goal larger than one plan, once `<plan-dir>` has merged: the new plan starts from its integration branch with its pools, options and limits, and stops at its table. See [A goal larger than one plan](decomposed-runs.md#a-goal-larger-than-one-plan) |
+
+A `<plan-dir>` may be the sub-plan of a split task (`<plan-dir>/tasks/<id>/sub`): `retry`,
+`accept` and `forge control` work on a subtask there as on any task. `run` on the plan above
+runs it; `integrate`, `split`, `combine` and `next` refuse a sub-plan (exit 3), and `split` refuses
+to move a task that has subtasks.
 
 A `tasks.tsv` row whose `dwarf` column is `script` runs the executable `tasks/<id>/run`. `plan` exits 2 when that file is missing or not executable, does not route the row, skips its implementer doctor, shows it in the table and counts no implementer dispatch. The `qa` column is still a model. See [Scripted tasks](../references/decompose.md#scripted-tasks).
 
@@ -915,6 +916,10 @@ A `tasks.tsv` row whose `dwarf` column is `script` runs the executable `tasks/<i
 | `--converge-window N` | plan | `converge_window` | reviews the non-converging signal looks at (default `4` when the file is absent; below `2` it never fires). Changing it later is `forge control set converge-window N` |
 | `--max-attempts N` | plan | `max_attempts` | attempts a task may spend across runs before it stops for a decision (default `8` when the file is absent; `0` means no cap). Changing it later is `forge control set max-attempts N --confirm` |
 | `--retry-per-model N` / `--no-retry-per-model` | plan | `retry_per_model` | a task may fail `N` times (1 to 99) on each model the retry policy gives it, then it moves one rung up and the count starts again. With `escalate_effort` on, the same `N` applies to each effort of that model. Replaces `--escalate-after` for this plan: when `escalate_after` is also present, `run` says so and follows `retry_per_model`. `--no-retry-per-model` removes the file; a re-plan with neither keeps it. Automatic retries still need `--retry-failed` above 0. See [a budget per model](reviews.md#a-budget-per-model---retry-per-model-n) |
+| `--decide split` / `--decide split=fresh` | retry | `tasks/<id>/sub`, `decomposition.json`, `decisions.tsv` | split a task that has not passed and is not running (`FAIL`, `UNKNOWN`, `INTERRUPTED`, `NEEDS_DECISION`, or not started yet) into subtasks, with `--subtasks FILE` (a `forge-plan` block or its JSON: `reason` and `tasks`) or `--planner SPEC` (one read-only planner dispatch about this task). `split` keeps the task's work and the subtasks build on it; `split=fresh` starts from the task's base and keeps the earlier work on `refs/forge/kept/<run>/<id>`. Needs `--reason` and `--approved`. Exit 2 when the task was not split: the answer kept it whole, a limit bounded it, or the subtasks were refused. See [Splitting a task into subtasks](decomposed-runs.md#splitting-a-task-into-subtasks) |
+| `--split-depth N` / `--split-children N` / `--split-nodes N` | plan | `decomposition.json` (`limits`) | the limits of every split: levels of subtasks (default `2`, `0` = no splitting), subtasks per split (`6`), subtasks in the whole run (`24`). Shown under the task table. The first `run` freezes them; a `plan` that would change one after that exits 2 |
+| `--auto-split` / `--no-auto-split` | run | `auto_split` | a task that stops for a decision with `split` among its reasons is split by the planner within the limits, once per task, and the run goes on with its subtasks. Off by default: the task waits for your `retry --decide split` |
+| `--split-planner SPEC` | run | `split_planner` | the model `--auto-split` asks; default the planner the plan was made with. With neither, `--auto-split` exits 2: forge does not pick a model |
 | `--decide retry=N` / `--decide threshold=Pn` | retry | no — this retry only | resume a `NEEDS_DECISION` task: `N` more attempts (`N` from 1 to 20) or this task's blocking threshold (`P0`..`P3`) and then one retry. Needs `--reason` and `--approved`. Refused on any other status |
 | `--qa-threshold P0\|P1\|P2\|P3\|none\|default` | plan, run, retry, review | `qa_threshold` | the least severe CONFIRMED finding that still blocks (default `P2`); milder ones become known issues; `none` means P3, `default` removes the setting. Solo takes `P0`..`P3` or `none`. See [the verdict rule](reviews.md#verdicts-and-failure) |
 | `--verify-retries N` | run, retry, integrate | `verify_retries` | reruns of a failed verify command, or of each failed lane (default `1`, `0` = strict single run); with `.forge/verify-subset`, a failed command's failing test files run alone first and confirm a regression without a full rerun |
@@ -992,9 +997,9 @@ select `balanced` by itself. `--no-profile` removes `profile.json`. `routed.json
 so a later profile can still tell a model routing wrote from one written by hand.
 
 `run` and `retry` read three things from the frozen file when this invocation did not pass
-the flag: `policy.retry_failed`, `policy.infra_retries`, and `routing.fractal_planner`
-(the last only with `--fractal-auto-decompose` and no `--fractal-planner`). A flag of the
-invocation wins, and those two retry budgets are not written back. `run`, `retry`,
+the flag: `policy.retry_failed` and `policy.infra_retries`. A flag of the
+invocation wins, and those two retry budgets are not written back. (`routing.fractal_planner`,
+in a profile saved before forge 0.23, is still accepted and never applied or shown.) `run`, `retry`,
 `integrate`, `accept`, `review`, `split` and `attribute` export the frozen gates and
 budget. `integrate` with no `--final-review`, when the profile names
 `routing.final_reviewer`, reviews the whole run: the spec already in `final_qa` if that
@@ -1003,9 +1008,7 @@ The other routing and policy keys were copied into plan files when the profile w
 
 Solo freezes the same file in the solo run dir. From a profile it takes the dwarf and the
 qa at the medium tier, else the `any` tier, plus the QA threshold, the timeout and the
-fast roles (`dwarf` and `qa` only) that no flag gave. Fractal tier pools, and
-`routing.fractal_planner`, apply only when Fractal is on (the planner only with
-`--fractal-auto-decompose` and no `--fractal-planner`). It prints the profile line before
+fast roles (`dwarf` and `qa` only) that no flag gave. It prints the profile line before
 it takes the run lock. It writes `profile.json` only under that lock, not on `--dry-run`,
 and only when this call chose a new profile. With neither flag, a later run of the same
 directory keeps the frozen copy. `--no-profile` removes it.
@@ -1032,7 +1035,7 @@ stays at standard speed, exits 0, and forge prints `forge: claude ran at standar
 Codex can do the same when the tier is unsupported (EU data residency for GPT-6 models,
 for example): it continues at the default tier, exits 0, and forge prints one note. The
 note never changes the exit. openclaude, opencode, antigravity and grok are refused,
-exit 3, before anything runs. Fractal dispatches ignore the file; forge prints `fast tier is not applied to Fractal dispatches` once. A whole-run review still asks.
+exit 3, before anything runs. A whole-run review still asks.
 `auto` forwards `--fast` to `plan`, and the planner dispatch uses the tier when `planner`
 is a fast role. The per-harness command lines are in
 [the fast service tier](../references/harnesses.md#fast-service-tier).

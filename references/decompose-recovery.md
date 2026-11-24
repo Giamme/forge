@@ -106,7 +106,8 @@ turns it off):
   recorded in `escalations.tsv` and `tasks.tsv` like a `retry --dwarf`.
 - **Stop:** when nothing is above (the model is in the top tier, or in no tier pool at
   all), the task stops as `NEEDS_DECISION` with reason `split` (see [When reviews don't converge](#when-reviews-dont-converge)).
-  `tasks/<id>/split.suggested` still says to split it or name a model. `run --retry-failed` does not retry it,
+  `tasks/<id>/split.suggested` still says to split it or name a model; the split is one choice
+  ([Subtasks](decompose.md#subtasks-a-task-split-at-any-level)), made by the user or, with `run --auto-split`, by the planner. `run --retry-failed` does not retry it,
   and a plain `retry` refuses (exit 2).
 - **Effort step** (`--escalate-effort` on `run` or `retry`, kept in the plan as `escalate_effort`;
   `--no-escalate-effort` removes it; off by default): when no higher tier has another model, the
@@ -120,8 +121,7 @@ turns it off):
 - **Overrides:** an explicit `retry --dwarf <spec>` is the human's choice and skips the policy, even
   with the same model. The dwarf column itself cannot tell a pin from a pool pick, so it does
   not; `--escalate-after 0` does.
-- **Fractal plans** keep their frozen eligible set and are not escalated; neither is a
-  QA-only resume, which spends no implementer attempt.
+- A QA-only resume is not escalated: it spends no implementer attempt.
 - **Reporting:** the policy's state is decided after every attempt, so a run whose retry budget ran out
   still reports `its next retry goes to <spec>` or the split suggestion under the results.
   A pending pin is reported ahead of both, as `its next retry goes to <spec> (pinned)`, or
@@ -232,7 +232,14 @@ The choices:
   as one row, such as `retry=2 dwarf=sol:high`.
 - `forge-parallel.sh accept <plan> <id> --reason "…" --approved` merges it; the findings become
   known issues.
-- Split it by hand: `tasks/<id>/decision.md` and the run summary say to replace its row in
+- `forge-parallel.sh retry <plan> <id> --decide split --subtasks <file> --reason "…" --approved`
+  splits it into subtasks (`--planner <spec>` instead of the file asks a planner; `split=fresh`
+  starts over from the task's base). `tasks.tsv` is not edited: the subtasks run as the task's own
+  plan and the task is then reviewed on all of their work. One task in the answer keeps it whole,
+  and a limit of the run can refuse the split; both leave the task `NEEDS_DECISION` and exit 2.
+  See [Subtasks](decompose.md#subtasks-a-task-split-at-any-level).
+- Or replace it by hand, when the pieces should be tasks of the plan itself (other tasks will
+  depend on one of them, or they need files the task does not own): replace its row in
   `tasks.tsv` with smaller tasks, then `forge-parallel.sh run <plan>`, which reads that file
   again and recomputes `waves.tsv`. `forge control drain` and `add` do not do it: they need a
   scheduler that is still live (exit 3 once `scheduler.live` is gone, which it is by the time
@@ -280,13 +287,13 @@ run. `pin <task> <spec>` sets the model the task's next full retry uses, once (c
 `source=pin`, clears `escalation.stop`/`split.suggested`, then consumes the pin. A symlinked
 `escalations.tsv`, or a symlink in any directory from the plan down to it, is not written:
 the pin stays and nothing is retried. A QA-only resume leaves it for the next full retry;
-Fractal plans never apply pins; a MERGED task refuses one.
+A MERGED task refuses one.
 The last column of `escalations.tsv` says who decided: `policy`, `retry` (an explicit
 `--dwarf`) or `pin`; four-column rows read as `policy`. Older rows may say `fallback`.
 A sideways move is recorded in `lateral.tsv`, not here (see [Infrastructure failures](#infrastructure-failures)).
 Every change goes to `control.log` (JSON lines: `at`, `actor` `cli|ui`, `action`, `task`, `key`,
 `value`, `previous`) and to the dataset as a `control` event. Exit 2 invalid input, 3 refused (not
-live, MERGED, Fractal, failing doctor, lock busy over 5 s). Report them; never set one yourself
+live, MERGED, failing doctor, lock busy over 5 s). Report them; never set one yourself
 unless asked.
 
 Five more commands steer a live scheduler (exit 3 when none is live):
@@ -309,7 +316,8 @@ Five more commands steer a live scheduler (exit 3 when none is live):
   task is re-dispatched with the changed prompt on the same implementer, and `--dwarf` is
   refused. The others are prepared exactly as `forge-parallel.sh retry` does. A
   `NEEDS_DECISION` task is resumed only by `--decide` or `--dwarf`, each with `--reason` and
-  `--approved`. It spends no automatic retry budget; an `INFRA` task is the scheduler's own
+  `--approved`. `--decide split[=fresh]` takes `--subtasks FILE` here (never `--planner`): control
+  checks the subtasks, stores them, and the scheduler makes the split and runs it. It spends no automatic retry budget; an `INFRA` task is the scheduler's own
   to resume. `add` takes a row the human appended to `tasks.tsv` (with its
   `tasks/<id>/prompt.md`) whose dependencies this run already knows, and refreshes `waves.tsv`.
   A request never outlives the scheduler that was live when it was queued; one left behind is
@@ -339,13 +347,13 @@ interrupted task, releases the plan lock and exits **130**. A signal that arrive
 verification stops the verify command's whole process tree (TERM, then KILL after a few
 seconds) and records `verification.status` `INTERRUPTED`; that verification is not rerun.
 
-**Fractal resume:** discover the managed ID with `<skill_dir>/forge fractal runs --repo
-"$REPO" --json`, then use `<skill_dir>/forge fractal resume RUN_ID`. Run-level resume
-recovers execution and the recorded Forge pipeline, retaining accepted stages and pinned
-baselines. A control scoped with `--task` or `--task ... --node ...` only resumes that
-execution scope; it does not relaunch the full pipeline. Use `retry "$PLAN" TASK_ID` for
-an explicitly requested new attempt, with the existing backend, bounds and eligible pool.
-Pause, stop and inspection preserve both the work and diagnostics.
+**A split task resumes with its subtasks.** `run <plan>` enters a split task again and runs its
+sub-plan (`<plan>/tasks/<id>/sub`) where it stands: merged subtasks are skipped, and no subtask
+is made twice. A task `BLOCKED` with `sub.waiting` is waiting for subtasks that failed or need a
+person; deal with each in the sub-plan (`retry <plan>/tasks/<id>/sub <subtask> …`), then `run
+<plan>`. `forge handoff resume` recovers stale `RUNNING` subtasks in each sub-plan the same way
+it recovers tasks. A plan made with Fractal (removed in 0.23) is never resumed: `run`, `retry`
+and `forge handoff resume` refuse it, exit 3.
 
 ## Infrastructure failures
 
@@ -399,8 +407,7 @@ clear by itself.
 **Lateral recovery** is on for a new plan. `plan` writes `infra_fallback` as `on`;
 `plan --no-infra-fallback` writes `off`, and a re-plan keeps the file as it is. A plan with no file stays off. `run --infra-fallback` and
 `run --no-infra-fallback` write the file, and `forge control set infra-fallback on|off` applies at
-the next infrastructure stop. It runs at the dwarf stage and at the QA stage, and not on a Fractal
-plan:
+the next infrastructure stop. It runs at the dwarf stage and at the QA stage:
 
 - a **dwarf-stage** stop takes the next healthy model of the tier the task is running in: the tier
   recorded at its newest assignment (the plan's pick, explored or not, an escalation, a pin, a
@@ -445,8 +452,7 @@ scheduler is live, on each pause line. forge-ui shows the same facts; the words 
 [forge-ui](ui.md).
 
 A dwarf that exits 0 with an empty final message *and* an empty diff is `class=empty`: it never
-really ran. Under Fractal a dwarf-side stop still ends as Fractal's own `failed`; QA-side stops
-behave as above, and `scripts/forge_fractal/pipeline.py` resets `INFRA` to `PENDING` on resume.
+really ran.
 
 A planned pause (a provider maintenance window, a quota reset) is `forge control drain`, not a
 signal: running tasks finish, nothing new starts, and `forge control resume` continues the same
@@ -457,7 +463,7 @@ run.
 forge records what it observed about how each dwarf behaved, never what the dwarf claimed:
 HEAD or the checked-out ref moved (**self-commit / branch switch**), processes left alive in the
 harness's session after it exited, or started by it in a session of their own (**orphans**, listed in `dwarf.orphans` and stopped; disabled by
-`FORGE_ORPHAN_GUARD=off` or under Fractal), and a final message that **promises later work**.
+`FORGE_ORPHAN_GUARD=off`), and a final message that **promises later work**.
 They are written to `tasks/<id>/guard.txt`, added to the QA prompt as "Implementer guard notes" and
 shown in the run summary. They never change a status. The dwarf prompt itself tells the
 implementer not to commit, not to start background processes, to finish every measurement before
@@ -507,8 +513,8 @@ Four subcommands act on plans after tasks have run. Full usage and refusal condi
   user's branch is never touched. Nothing runs unless one of them is invoked.
 - **`split <plan> <new-plan> --tasks a,b`** copies the selected tasks' saved state to a new plan,
   renames their branches and worktrees to the new run id, starts a new integration branch at the
-  source's accepted tip and removes them from the source (refuses Fractal-backed plans, `MERGED`
-  or `RUNNING` tasks, and selections that strand a dependent).
+  source's accepted tip and removes them from the source (refuses plans made with Fractal, a sub-plan, a task that has
+  subtasks, `MERGED` or `RUNNING` tasks, and selections that strand a dependent).
 - **`combine <new-plan> <plan>…`** merges the integration branches of fully merged plans into one
   new plan whose `run` only verifies. Task branches keep their original names.
 

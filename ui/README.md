@@ -38,7 +38,7 @@ blocks on a plate, with cables between them and lamps that light up as things ha
 - **Beyond one run:** a full-screen **run cloud** of every run, grouped by project, in five
   layouts with filters and runs you can drag anywhere; **diffs** with each finding under the
   line it names; each dwarf's and reviewer's **conversation**, read from its CLI's log; a
-  **model leaderboard**; a **files heatmap**; **Fractal** child-task trees;
+  **model leaderboard**; a **files heatmap**; the **subtasks** of a split task as a tree;
   **quick jump** and **notifications**; and **export** of a run as one HTML file. See
   [What you see](#what-you-see).
 
@@ -347,12 +347,16 @@ keep one meaning everywhere (amber running, green merged or passed, red failed, 
   check or an environment problem (`/event/<n>` opens it there and stops following the end).
 
   <img src="docs/media/conversation.png" width="760" alt="A dwarf's conversation: its thinking, the files it wrote, a test run that failed with exit 1 and the run that passed after the fix.">
-- **Fractal child tasks:** when a run used Fractal, a task's inspector shows the tree it was split
-  into (status, difficulty, model, phase, cost, the split decision), and the opened task in 3D
-  carries the same tree floating above it. A node (`…/tasks/<id>/fractal/<node>`) shows its goal,
-  paths, timings, cost and tokens, its decomposition and the children it admitted, its last
-  messages, and its candidate diff. Fractal's state is read under `$XDG_STATE_HOME/forge/fractal`
-  (default `~/.local/state`), only read, without following symlinks.
+- **Subtasks:** when a task was split into subtasks, its inspector has a **Decomposition**
+  section: the decision (split, kept whole, or kept whole at a limit), who made it (the planner,
+  you, or the run with `--auto-split`) and why, then the tree of its subtasks through every
+  level, each with its status, model, difficulty, attempts, tokens and a link to its diff. The
+  opened task in 3D carries the same tree above it. A subtask opens as a task of its own, with
+  its attempts, reviews, findings and controls; *Open the subtasks as a plan of their own* shows
+  the sub-plan as a run, and that run links back to its task. The run's header shows the limits
+  every split works within, how much of the run was split, and, for a goal larger than one plan,
+  the stage this plan is and the stages after it. forge records tokens, not prices, so the tree
+  shows tokens. A run made with Fractal, which forge 0.23 removed, still opens, read-only.
 - **Export:** *Export…* in a run's header downloads the run as one HTML file that opens in any
   browser without forge-ui, offline included (in 2D; in 3D when cdn.jsdelivr.net is reachable).
   It asks each time: by default prompts, reviewer reports, logs, finding details and diffs are
@@ -393,7 +397,7 @@ takes effect, except a brief answer, which is sent when you press *Send*. The ro
   infra-retry budgets. A task has a threshold override (`Inherit`, P0–P3 or `None`, which
   exempts it from the run's threshold), its own retry budget and a **model pin**: the model
   its next full retry uses, once. A control that cannot apply (no live scheduler, a merged
-  task) is disabled and says why. A Fractal plan's pin control is hidden.
+  task) is disabled and says why.
 - **Open findings (`forge issues`):** the findings a run, or every run of its repository,
   left open. The list opens from a quick offline listing and then fills in what is already
   filed; select findings to file as GitHub issues, or dismiss them (and undo that).
@@ -452,8 +456,8 @@ turns all of it off: no token is issued, every change is a 405, and the controls
   responses it reads, the 3D stage's modules as one module text, a hash-based policy).
 - `forge_ui/static/modelstats.js`, `leaderboard.js`: the leaderboard's aggregation (outcomes as
   `scripts/forge_dataset/export.py` labels them, the interval of its `routing.py`) and its page.
-- `forge_ui/diffs.py`, `fractal.py`, `models.py`: diff parsing and finding pins, the Fractal state
-  reader, and the facts behind the model leaderboard.
+- `forge_ui/diffs.py`, `models.py`: diff parsing and finding pins, and the facts behind the model
+  leaderboard.
 - `forge_ui/static/search.js`, `notify.js`, `favicon.svg`: the quick jump and the notifications
   (ranking and change detection are in `runmodel.js`).
 - `tests/`: reader, executions, endpoints, server, static-script and browser checks; `run_fixture.py`

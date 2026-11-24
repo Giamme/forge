@@ -129,8 +129,7 @@ option:
 - the worktree is still exactly that commit: no edits since (a timed-out or interrupted attempt
   leaves some), nothing committed on top;
 - the dwarf resolves to the same harness, model and effort, so an escalation (`--escalate-after`,
-  a pin, `retry --dwarf`) starts fresh;
-- the plan is not Fractal.
+  a pin, `retry --dwarf`) starts fresh.
 
 A continue the harness refuses or that fails at once (dispatch exit **9**, nothing changed in the
 worktree) is followed by a fresh dispatch of the same prompt, which decides the attempt. One that
@@ -138,7 +137,7 @@ fails after it already changed files is a failed implementer (`ERROR`), as a fre
 running another on top would pay for the attempt twice. One row per attempt goes to
 `tasks/<id>/implementer_sessions.tsv`: row, attempt, `continued`, `fresh` or `failed`, the reason
 (`same-spec`, `first-attempt`, `no-findings`, `work-changed`, `no-session`, `invalid-session`,
-`spec-changed`, `harness-unsupported`, `fractal`, `continue-unsupported`, `continue-failed`) and
+`spec-changed`, `harness-unsupported`, `continue-unsupported`, `continue-failed`; `fractal` only in rows from before 0.23) and
 the session id it considered. The dataset tags a continued dwarf dispatch `session_continue`, and
 `forge dataset status` counts implementer continues apart from reviewer ones.
 `plan --no-implementer-session` turns it off; `split` and `combine` carry it (combine only when
@@ -176,7 +175,7 @@ turns shadow reviews off again.
   status. Once the primary is done, the shadow gets as long again as the primary took
   (at least 5 minutes), then it is stopped. It dies with its task, including on Ctrl-C of
   a manual `retry`.
-- **Scope:** parallel mode only, and never under Fractal.
+- **Scope:** parallel mode only.
 
 `./forge dataset status` reports the agreement rate, overall and per model pair, and
 `./forge dataset pairs` splits it by what differs between the two reviewers: effort within one

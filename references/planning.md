@@ -1,16 +1,5 @@
 ## Planning
 
-Fractal selection applies to the later implementation stage. It does not turn a planner
-dispatch or `forge-parallel.sh plan` into nested execution, install a runtime during
-planning, or bypass the task/model approval table. Pass `--fractal` or `--no-fractal` to
-the eventual solo runner or decomposed `run`. See [Fractal](fractal.md).
-
-For automatic recursive decisions during execution, use `--fractal-auto-decompose`.
-Its `--fractal-planner` selects the per-node decision model, independently of the
-top-level `--planner` that designs the whole run. Without an override it reuses that
-planner when configured, then each task's initial root model. Child planning must
-preserve the approved interfaces and ownership established here.
-
 By default **you** plan: before dispatching, decide the approach and put it in the prompt,
 so the dwarf builds the agreed thing rather than inventing a shape nobody has seen. In a
 decomposed run that matters more, because the capsule prevents two dwarves from touching
@@ -53,14 +42,17 @@ moment the plan is free; after it, changing the plan costs a whole run.
 
 `scripts/forge-planner.py` is the contract between a planner and forge, so no session has to
 turn a free-form reply into `tasks.tsv` by hand. A later `forge-parallel.sh auto` calls
-`prompt` and `parse`; you can call them yourself. Standard library only, and every
-subcommand refuses (exit 2) a plan dir that already has `tasks.tsv`.
+`prompt` and `parse`; you can call them yourself. Standard library only. `prompt`, `parse`,
+`gate` and `one-task` refuse (exit 2) a plan dir that already has `tasks.tsv`; `node-prompt` and
+`node-parse` are about one task of a plan that exists.
 
 ```bash
 python3 <skill_dir>/scripts/forge-planner.py prompt --plan "$PLAN" --goal-file goal.md [--level low|medium|high]
 python3 <skill_dir>/scripts/forge-planner.py parse  --plan "$PLAN" --reply reply.txt
 python3 <skill_dir>/scripts/forge-planner.py gate     --plan "$PLAN" --goal-file goal.md
 python3 <skill_dir>/scripts/forge-planner.py one-task --plan "$PLAN" --goal-file goal.md [--difficulty medium]
+python3 <skill_dir>/scripts/forge-planner.py node-prompt --plan "$PLAN" --task ID [--start keep|fresh]
+python3 <skill_dir>/scripts/forge-planner.py node-parse  --plan "$PLAN" --task ID --reply reply.txt [--out FILE]
 ```
 
 **`prompt`** writes `$PLAN/planner.prompt` and prints its path: the planner's role (read-only),
@@ -73,7 +65,7 @@ criteria` and never asks for the whole suite. A planner you dispatch by hand (ab
 given this same prompt file as `--prompt-file`.
 
 **The reply** holds exactly one fenced block opened by ```` ```forge-plan ```` whose body is JSON
-with the key `tasks` and, optionally, `groups`:
+with the key `tasks` and, optionally, `groups` and `later`:
 
 ```
 {"tasks": [{"id": "parse-config", "deps": [], "difficulty": "medium", "risk": "low",
@@ -90,15 +82,35 @@ one group per wave of the plan's dependency order. Each group has a short title 
 sentence that says what is true once its tasks are done. A group may hold one task, and a task
 may be left out of every group. Omit the key to return no groups.
 
+**Subtasks and later stages (optional).** A task that is itself several pieces that can be
+built and reviewed apart may carry `subtasks`: a list of 2 to 20 objects with the same keys as a
+task. Each subtask's `files` are inside its parent's `files`, its `deps` name sibling subtasks
+only, and a subtask may carry `subtasks` of its own (at most 6 levels in a reply; the run's
+limits decide what is made). A task may also carry `reason`, one line of at most 500 characters:
+why it is split this way, or why it is kept whole. A split is never required. When the request
+is too large for one plan, the reply puts the first coherent stage in `tasks` and lists the
+stages that follow in `later`: 1 to 10 objects with exactly `title` (one line) and `goal` (at
+most 4000 characters).
+
+```
+{"tasks": [{"id": "config", "deps": [], "difficulty": "high", "files": ["src/config/", "docs/config.md"],
+            "title": "The limits section", "approach": "…", "prompt": "… ## Acceptance criteria …",
+            "reason": "the parser and its documentation can be reviewed apart",
+            "subtasks": [{"id": "parser", "deps": [], "difficulty": "medium", "files": ["src/config/"], …},
+                         {"id": "docs", "deps": ["parser"], "difficulty": "low", "files": ["docs/config.md"], …}]}],
+ "later": [{"title": "Serve the limits", "goal": "The API returns the limits the config holds. …"}]}
+```
+
 **`parse`** is strict and never guesses or repairs. It refuses a reply unless: there is exactly
 one `forge-plan` block whose body is an object with the key `tasks` and no keys other than the
-optional `groups`; `tasks` is 1 to 20 objects with exactly the keys `id, deps, difficulty, files,
+optional `groups` and `later`; `tasks` is 1 to 20 objects with exactly the keys `id, deps, difficulty, files,
 title, approach, prompt`; each `id` matches `^[a-z0-9][a-z0-9-]{0,39}$` and is unique; `deps` are
 known ids with no cycle; `difficulty` is `low`, `medium` or `high`; `files` is a non-empty list of
 repo-relative paths (no absolute path, no `..`, no tab, comma or newline); `title` is one
 non-empty line without a tab; `approach` is a string (it may be empty); `prompt` is non-empty and
-has a `## Acceptance criteria` heading. `risk` (#122) is the one optional task key and never
-refuses a reply: `low`, `medium` or `high` is written to `tasks/<id>/risk`, anything else (or no
+has a `## Acceptance criteria` heading. A task has three optional keys: `subtasks` and `reason`
+(above; a `subtasks` list that breaks a rule, or a `reason` that is not one line, refuses the
+reply) and `risk` (#122), which never refuses a reply: `low`, `medium` or `high` is written to `tasks/<id>/risk`, anything else (or no
 key) writes nothing.
 
 `groups`, when present, is a list of objects with exactly the keys `id`, `title`, `goal` and
@@ -112,7 +124,10 @@ the reply. The planner never sets
 
 On success it writes `tasks.tsv` (dwarf and qa `-`), `tasks/<id>/prompt.md` (the task's prompt,
 then `## The whole request` and `$PLAN/request.md` verbatim, so no requirement is lost) and, for
-a non-empty approach, `tasks/<id>/approach.md`. When the reply includes `groups`, it also writes
+a non-empty approach, `tasks/<id>/approach.md`. A task with `subtasks` also gets
+`tasks/<id>/split.proposal.json`, which `forge-parallel.sh plan` turns into its sub-plan within
+the run's limits; a task with only a `reason` gets `tasks/<id>/split.reason`, recorded with the
+decision to keep it whole. `later` is written to `later.json`. When the reply includes `groups`, it also writes
 `groups.tsv` (`id`, `review`, `qa`, `members`, `title`, `goal`; a header alone when the list is
 empty) in that same pass. A reply with no `groups` key writes no `groups.tsv`, and the other
 files are unchanged. `$PLAN/request.md` must hold the user's request (exit 2 when missing). On a
@@ -137,3 +152,18 @@ the planner for small goals.
 
 **`one-task`** writes a one-row plan with no planner: id `task`, files `.`, the request as the
 prompt followed by one acceptance criterion, and the request's first line as the title.
+
+**`node-prompt`** asks about one task of a plan that already exists: split it into subtasks
+inside its own files, or keep it whole and say why. It writes `tasks/<id>/split.prompt` and
+prints its path: the task's prompt verbatim, why it stopped (`decision.md`) and the tail of its
+last review when there are any, the rules, the run's limit on subtasks per split, and the reply
+format. `--start fresh` says the work so far is set aside; the default `keep` says the subtasks
+build on it. `forge-parallel.sh retry <plan> <id> --decide split --planner SPEC` and
+`run --auto-split` call it and dispatch the planner (read-only, in the task's worktree).
+
+**`node-parse`** is the strict parse of that reply, or of subtasks a person wrote: the
+`forge-plan` block when the text has one, else the text as the bare JSON object. The object has
+`tasks` (1 to 20; one task means keep it whole) and optionally `reason`. It writes
+`tasks/<id>/split.proposal.json` (or `--out FILE`). On a refusal it writes
+`tasks/<id>/split.refused`, prints `subtasks refused: <reason>` and exits 4. `retry --decide
+split --subtasks FILE` calls it on FILE.
