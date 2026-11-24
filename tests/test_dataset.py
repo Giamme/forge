@@ -532,7 +532,7 @@ class EndToEndTests(StoreCase):
         reviews = sorted((c['task'], c['expected']['passes'], '+fixed' in c['state']['diff'])
                          for c in cases if c['slice'] == 'review')
         self.assertEqual(reviews, [('a', False, False), ('a', True, True), ('b', True, False)])
-        self.assertEqual({c['state']['reviewer']['model'] for c in cases if c['slice'] == 'review'}, {'opus'})
+        self.assertEqual({c['state']['reviewer']['model'] for c in cases if c['slice'] == 'review'}, {'claude-opus-5-5'})   # the claude row's exact id
         severities = sorted((c['task'], c['expected']['passes'], c['expected'].get('severity'))
                             for c in cases if c['slice'] == 'review')
         self.assertEqual(severities, [('a', False, 'P1'), ('a', True, 'none'), ('b', True, 'none')])

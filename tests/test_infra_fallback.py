@@ -46,7 +46,7 @@ class PickTests(unittest.TestCase):
         pool = ['sol', 'astra', 'sonnet']
         self.assertEqual(self.pick('sol', pool, 'codex/gpt-6.2-astra'), 'sonnet')
         self.assertEqual(self.pick('sol', pool, 'codex/*'), 'sonnet')
-        self.assertIsNone(self.pick('sol', pool, 'codex/gpt-6.2-astra,claude/sonnet'))
+        self.assertIsNone(self.pick('sol', pool, 'codex/gpt-6.2-astra,claude/claude-sonnet-5-5'))
 
     def test_a_model_of_another_tier_is_never_picked(self):
         pools = {'low': ['sonnet'], 'medium': ['sol', 'astra'], 'high': ['opus']}
