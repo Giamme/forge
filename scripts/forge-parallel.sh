@@ -27,7 +27,7 @@
 #   forge-parallel.sh integrate <plan-dir> --approved [--verify-retries N] [--final-review <qa-spec>]
 #   forge-parallel.sh review <plan-dir> [--qa <spec>] [--yolo-qa] [--qa-threshold Pn|none|default]
 #   forge-parallel.sh attribute <plan-dir> [--force]   (find a merge that breaks the failed verification)
-#   forge-parallel.sh verify <plan-dir> [--verify-retries N]   (verify the integration branch again, nothing else)
+#   forge-parallel.sh verify <plan-dir> [--verify-retries N] [--verify-parallel N]   (verify the integration branch again, nothing else)
 #   forge-parallel.sh accept <plan-dir> <task-id> --reason "<why>" --approved
 #   forge-parallel.sh adopt <plan-dir> <commit|a..b> | --head --reason "<why>" [--qa <spec>] [--approved]
 #                                     (a commit made outside forge, reviewed alone, comes into the run)

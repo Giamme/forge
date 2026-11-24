@@ -877,7 +877,7 @@ forge-parallel.sh adopt     <plan-dir> <commit|a..b> | --head --reason "<why>" [
                                      [--resubmit <adopt-dir>] [--decide resubmit]
 forge-parallel.sh review    <plan-dir> [--qa <spec>] [--yolo-qa] [--qa-threshold P0|P1|P2|P3|none|default]
 forge-parallel.sh attribute <plan-dir> [--force]
-forge-parallel.sh verify    <plan-dir> [--verify-retries N]
+forge-parallel.sh verify    <plan-dir> [--verify-retries N] [--verify-parallel N]
 forge-parallel.sh integrate <plan-dir> --approved [--final-review <qa-spec>] [--verify-retries N]
                                      [--verify-parallel N]
 forge-parallel.sh split     <plan-dir> <new-plan-dir> --tasks <id,id> [--dry-run]
