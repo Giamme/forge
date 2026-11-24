@@ -9,16 +9,15 @@ allowed-tools: [Read, "Bash(forge *)", "Bash(bash ${CLAUDE_SKILL_DIR}/scripts/*)
 
 Run an implementer (**dwarf**) followed by an independent **QA** review of its actual
 changes. Use the scripts for dispatch and capture; do not reconstruct harness commands.
-For explanation requests, explain the workflow without spending model quota. `<skill_dir>`
-below is the directory that holds this file (`${CLAUDE_SKILL_DIR}` in Claude Code). You
+`<skill_dir>` below is the directory that holds this file (`${CLAUDE_SKILL_DIR}` in Claude Code). You
 orchestrate: write prompts and plan files, run forge's commands, and report; do not edit the
 repository's source yourself.
 
 ## References
 
-Read the one that applies before acting; the full flag list is in [commands](docs/commands.md).
+Read the one that applies before acting; every flag is in [commands](docs/commands.md).
 
-- [Planning](references/planning.md): `--planner` (including `forge-parallel.sh auto`) or an agreed approach.
+- [Planning](references/planning.md): `--planner` (and `forge-parallel.sh auto`) or an agreed approach.
 - [Solo](references/solo.md): command, snapshots, artifacts, exit codes and native-review limits.
 - Decomposition: [planning a plan](references/decompose.md) (task schema, routing, profiles, waves, size,
   gates, plan shape), [reviews and verdicts](references/decompose-review.md),
@@ -26,15 +25,14 @@ Read the one that applies before acting; the full flag list is in [commands](doc
   [integration and verification](references/decompose-integration.md),
   [opt-in modes](references/decompose-opt-in.md) (groups, retro, brief, summaries).
 - [Leftover findings](references/findings.md): filing them as issues, triage, `--file-issues`.
-- [Harnesses](references/harnesses.md): invocation troubleshooting, the fast service tier, adding a harness.
-- [Memory](references/memory.md): `.forge/` learning and spend records (`--no-memory` disables them;
-  written to the user's repository, excluded from implementation diffs).
+- [Harnesses](references/harnesses.md): invocation troubleshooting, the fast tier, adding a harness.
+- [Memory](references/memory.md): `.forge/` learning and spend records (`--no-memory` disables them).
 - [forge-ui](references/ui.md): the opt-in run viewer; `forge ui open|status|stop`, `FORGE_UI=off`, privacy.
 - [Dataset](references/dataset.md): every run's inputs and outcomes, outside the repo; `FORGE_DATASET=off`.
 - [Decision models](references/decision-models.md): optional Jev or Clef gates, off until opted in with `forge decide`,
   fail-open; they never change a tier, pick a model or stand in for QA or verification (`--jev-act` changes nothing).
 - [Ripwire](references/ripwire.md): automatic context when compatible; `--no-ripwire` or `FORGE_RIPWIRE=off`
-  disables it for every role, a separately dispatched planner included. Runners offer installation once.
+  disables it for every role, a dispatched planner included. Runners offer installation once.
 
 ## Reporting
 
@@ -81,7 +79,7 @@ apart. Offer the leftover findings as issues ([findings](references/findings.md)
 - Never set a control, pin, `drain|stop|retry`, delete or compact a run (`forge control`, `forge runs
   rm|compact`) unless the user asks; `forge du` only reads.
 - Relay a `forge X is available (you have Y): <command>` line once; update only when asked (then restart
-  the harness session). `FORGE_UPDATE_CHECK=off` silences it.
+  the harness session).
 
 | Opt-in flag | Where | What it does |
 |---|---|---|
@@ -112,6 +110,8 @@ apart. Offer the leftover findings as issues ([findings](references/findings.md)
   word, never to keep a run going; on a live run use `forge control retry … --decide` or `forge control
   accept`. The split choice is `--decide split` with the subtasks; the task is then reviewed on their work
   ([when reviews don't converge](references/decompose-recovery.md#when-reviews-dont-converge)).
+- A live `run` prints `forge: needs you: <task> <STATUS> (<why>) -> <file>` when a task stops for the user:
+  relay it at once; the run goes on. Can't read background output live? Run `forge watch <plan>`.
 - `waiting for their subtasks:` a subtask failed or waits: act in its `tasks/<id>/sub` plan, then `run`.
 - A group at `NEEDS_DECISION`: present `forge group show <plan>`; run `forge group retry <plan> <gid>
   --tasks <ids>` only on the user's word. An oversized group is split in `groups.tsv` and planned again,

@@ -13,6 +13,13 @@ Part of the decomposition reference; planning is in [decompose.md](decompose.md)
 
 ## Retrying, and resuming an interrupted run
 
+A live `run` says at once when a task stops for the user while the rest goes on (#193):
+`forge: needs you: <task> NEEDS_DECISION (<reasons>) -> <plan>/tasks/<task>/decision.md`, the same with
+`NEEDS_INPUT (a question to answer)` and `needs_input.md`, and `forge: stopped: <task> INFRA (<cause>, no
+attempt spent) -> …/infra.txt` for an infrastructure stop the run is waiting out. Put a `needs you` task to
+the user then. A driver that cannot read the run's output as it comes runs `forge watch <plan>` (one line
+per status change, exits with the run); neither is polling, which is re-reading logs or statuses in a loop.
+
 A failed task keeps its branch and its worktree. `retry` is what acts on them:
 
 ```bash

@@ -222,6 +222,21 @@ bash scripts/forge-parallel.sh integrate "$PLAN" --approved
 first-try PASS rate per task, with tasks unlikely to pass first time flagged. It is advisory only,
 and `--no-forecast` turns it off. See [plan forecast](../references/dataset.md#plan-forecast).
 
+While it works, `run` prints a line when it dispatches a task (`forge: dispatched <task> -> <worktree>`),
+when it retries one, and when a task stops for you while the others go on:
+
+```
+forge: needs you: auth NEEDS_DECISION (plan) -> /tmp/forge-auth/tasks/auth/decision.md
+forge: needs you: docs NEEDS_INPUT (a question to answer) -> /tmp/forge-auth/tasks/docs/needs_input.md
+forge: stopped: api INFRA (rate_limit, no attempt spent) -> /tmp/forge-auth/tasks/api/infra.txt
+```
+
+An agent that started the run in the background and cannot read its output as it comes can follow
+it with `forge watch "$PLAN"` instead: one line per task status change, ending when the run does
+(see [`forge watch`](commands.md#forge-watch)). Either way it learns of the stop at once and can put
+the decision to you while the run continues. Re-reading the logs or the task statuses in a loop is
+the polling the skill avoids; these two are not.
+
 `integrate` refuses without `--approved`, and refuses on a dirty working tree.
 A task that turns out to be several pieces can be split into subtasks without editing the plan:
 see [Splitting a task into subtasks](#splitting-a-task-into-subtasks). `--max-parallel` bounds the
