@@ -16,8 +16,6 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTROL = ROOT / 'scripts' / 'forge-control.py'
 sys.path.insert(0, str(ROOT / 'scripts'))
 
-from forge_dataset import export, harvest  # noqa: E402
-
 TASKS = 'a\t-\tlow\ta.txt\tsol\topus\tFirst\nb\ta\tlow\tb.txt\tsol\topus\tSecond\n'
 
 
@@ -99,6 +97,7 @@ class SteerControlTests(unittest.TestCase):
 
 class SteerDatasetTests(unittest.TestCase):
     def test_the_attempt_row_lists_the_messages_it_was_given(self):
+        from forge_dataset import harvest
         with tempfile.TemporaryDirectory() as tmp:
             tdir = Path(tmp)
             self.assertEqual(harvest.steered_of(tdir, 1), ([], None))
@@ -112,6 +111,7 @@ class SteerDatasetTests(unittest.TestCase):
             self.assertEqual(harvest.steered_of(tdir, None), ([], None))
 
     def test_runs_leave_out_a_task_from_its_first_steered_attempt_unless_asked(self):
+        from forge_dataset import export
         def ev(kind, task, attempt, **d):
             return dict(kind=kind, src='live', repo='r', run='run1', run_id='i', mode='parallel', task=task,
                         attempt=attempt, ts=attempt, d=d, prov={})

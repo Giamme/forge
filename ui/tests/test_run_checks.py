@@ -140,7 +140,7 @@ class Waiting(Base):
         plan = self.base / 'plan'
         self.assertEqual(self.statuses()['t1'], 'INTERRUPTED')
         self.assertEqual(waiting['t1'], {'kind': 'stale', 'status': 'RUNNING',
-                                         'command': 'forge handoff resume ' + shlex.quote(str(plan))})
+                                         'command': 'forge handoff resume ' + shlex.quote(str(plan.resolve()))})
         self.assertEqual((scheduler['live'], scheduler['stale']), (False, ['t1']))
         summary = reader.summarize(plan, 'plan')
         self.assertEqual(summary['counts'].get('RUNNING'), None)
