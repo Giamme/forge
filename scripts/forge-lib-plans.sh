@@ -130,7 +130,7 @@ plans_make_integration() { # plans_make_integration <repo> <branch> <commit> <wt
 
 # Per-plan option files carried to a derived plan. The cost-bearing choices a user made
 # for this plan apply to the plan made from it; `planner` does not (nothing plans again).
-PLANS_OPTION_FILES="no_ripwire no_memory yolo_dwarf yolo_qa reviewer_session reviewer_session_rate reviewer_session_tasks implementer_session fast pre_review_tests pre_review_parallel qa_threshold timeout verify_retries verify_cmd verify_parallel setup_cmd final_qa shadow_qa shadow_rate explore escalate_after retry_per_model fractal-routing.json fractal-selection.json jev-selection.json profile.json routed.json retro_mode brief brief_scope brief_model summaries summaries_model groups.tsv groups.frozen group_max_tasks group_max_diff_kb after"
+PLANS_OPTION_FILES="no_ripwire no_memory yolo_dwarf yolo_qa reviewer_session reviewer_session_rate reviewer_session_tasks implementer_session fast pre_review_tests pre_review_parallel qa_threshold timeout verify_retries verify_cmd verify_parallel setup_cmd final_qa shadow_qa shadow_rate explore escalate_after retry_per_model dwarf-routing.json fractal-routing.json jev-selection.json profile.json routed.json retro_mode brief brief_scope brief_model summaries summaries_model groups.tsv groups.frozen group_max_tasks group_max_diff_kb after"
 
 # --- plan --after: a plan that starts from another plan's integration branch (#143) -------
 # $PLAN/after holds the previous plan's absolute path; $PLAN/integration.base the commit its work
@@ -923,7 +923,7 @@ sys.exit(0 if key(sys.argv[1]) == key(sys.argv[2]) else 1)' "$p/profile.json" "$
       [ -s "$p/verify_cmd" ] && { cp -p "$p/verify_cmd" "$NEW/verify_cmd"; break; }
     done
   fi
-  for f in fractal-routing.json jev-selection.json; do
+  for f in dwarf-routing.json fractal-routing.json jev-selection.json; do
     for p in "${SRC[@]}"; do [ -f "$p/$f" ] && { cp -p "$p/$f" "$NEW/$f"; break; }; done
   done
   {
@@ -985,16 +985,9 @@ do_split() {
   done
   PICKED="$(printf '%s' "$SEL" | sed 's/^ *//; s/ *$//')"
 
-  # Fractal binds a task's state to hashed output paths under the plan directory; moving
-  # the task out would orphan it, and no honest way to re-bind it exists.
-  if [ -s "$PLAN/fractal-selection.json" ]; then
-    python3 -c 'import json, sys
-try:
-    sys.exit(0 if json.load(open(sys.argv[1])).get("enabled") is False else 1)
-except Exception:
-    sys.exit(1)' "$PLAN/fractal-selection.json" \
-      || die "this plan runs under Fractal, which binds each task to output paths under the plan directory; a Fractal-backed plan cannot be split" 3
-  fi
+  # A plan made with Fractal (removed in forge 0.23) kept each task's state under paths of its own
+  # runtime: its tasks cannot be moved to a plan that runs.
+  forge_refuse_fractal_run "$PLAN" split
   for f in repo run_id wt_root accepted.integration; do
     [ -s "$PLAN/$f" ] || die "plan has no $f: it has not run far enough to split ('run' it first)" 3
   done

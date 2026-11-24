@@ -56,7 +56,6 @@ DISPATCH="$SKILL_DIR/scripts/forge-dispatch.sh"
 MEMORY="$SKILL_DIR/scripts/forge-memory.sh"
 source "$SKILL_DIR/scripts/forge-artifact.sh"
 source "$SKILL_DIR/scripts/forge-metrics.sh"
-source "$SKILL_DIR/scripts/forge-fractal-options.sh"
 source "$SKILL_DIR/scripts/forge-ui-options.sh"
 source "$SKILL_DIR/scripts/forge-lib-task.sh"
 JEV_OPTS=0
@@ -67,8 +66,8 @@ ORIGINAL_ARGS=("$@")
 die()  { printf 'forge: %s\n' "$1" >&2; exit "${2:-2}"; }
 note() { printf 'forge: %s\n' "$*" >&2; }
 
-# forge_metric_begin's EXIT trap calls this, before runtime finish and Fractal's
-# _outcome read status. Only this script defines it. It must not change the exit code.
+# forge_metric_begin's EXIT trap calls this, before runtime finish reads status.
+# Only this script defines it. It must not change the exit code.
 forge_metric_on_exit() {
   local rc="${1:-}" status="" word="" cls="" n=0 pick=""
   [ -n "${RUN:-}" ] || return 0
@@ -108,8 +107,6 @@ forge_metric_on_exit() {
 
 if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
   sed -n '18,47s/^# *//p' "$0"
-  forge_fractal_help
-  echo 'Explicit Fractal retry: repeat the original command with --retry.'
   exit 0
 fi
 RUN="${1:-}"; [ -n "$RUN" ] || die "usage: forge-solo.sh <run-dir> --repo <dir> --dwarf <spec> [--qa <spec>]"
@@ -124,11 +121,6 @@ REPO="$PWD"; DWARF=""; QA="opus"; APPROACH=""; YD=""; YQ=""; NATIVE=""; TIMEOUT=
 FAST_GIVEN=0; FAST_PARSED=""; QA_GIVEN=0; PF_NAME=""; PF_NONE=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --fractal) forge_fractal_flag on || exit $?; shift ;;
-    --fractal-auto-decompose) forge_fractal_flag on || exit $?; FRACTAL_ARGS+=("$1"); shift ;;
-    --no-fractal) forge_fractal_flag off || exit $?; shift ;;
-    --retry) export FORGE_FRACTAL_RETRY=1; shift ;;
-    --fractal-*|--dwarf-low|--dwarf-medium|--dwarf-high) FRACTAL_ARGS+=("$1" "${2:?}"); shift 2 ;;
     --output) OUTPUT="${2:?}"; shift 2 ;;
     --repo)       REPO="${2:?--repo needs a value}"; shift 2 ;;
     --dwarf)      DWARF="${2:?--dwarf needs a spec}"; shift 2 ;;
@@ -163,6 +155,11 @@ while [ $# -gt 0 ]; do
           2) exit 2 ;;
         esac
       fi
+      forge_removed_flag "$1"
+      # Solo took these only to route Fractal's child tasks.
+      case "$1" in --dwarf-low|--dwarf-medium|--dwarf-high|--retry)
+        die "$1 was removed with Fractal in forge $FORGE_FRACTAL_REMOVED_IN: a solo run has one implementer, --dwarf" ;;
+      esac
       die "unknown option '$1'" ;;
   esac
 done
@@ -183,14 +180,6 @@ pf_args=()
 [ -z "$QA_THR" ] || pf_args+=(--given qa_threshold)
 [ -z "$TIMEOUT" ] || pf_args+=(--given timeout)
 [ "$FAST_GIVEN" != 1 ] || pf_args+=(--given fast)
-pf_auto=0; pf_planner=0
-for pf_arg in ${FRACTAL_ARGS[@]+"${FRACTAL_ARGS[@]}"}; do
-  case "$pf_arg" in
-    --dwarf-low|--dwarf-medium|--dwarf-high) pf_args+=(--given "${pf_arg#--}") ;;
-    --fractal-auto-decompose) pf_auto=1 ;;
-    --fractal-planner) pf_planner=1; pf_args+=(--given fractal-planner) ;;
-  esac
-done
 PF_LINE=""
 pf_out="$(forge_profile_py solo "$RUN" --repo "$REPO" ${pf_args[@]+"${pf_args[@]}"})" || exit $?
 while IFS="$(printf '\t')" read -r pf_key pf_val; do
@@ -200,12 +189,6 @@ while IFS="$(printf '\t')" read -r pf_key pf_val; do
     qa_threshold) QA_THR="$pf_val" ;;
     timeout) TIMEOUT="$pf_val" ;;
     fast) forge_fast_parse "$pf_val" solo; FAST_GIVEN=1 ;;
-    # Fractal's tier pools and planner count only where Fractal is selected (and the planner
-    # only with automatic decomposition, which --fractal-planner needs).
-    pool.low) [ "$FRACTAL_CHOICE" != on ] || FRACTAL_ARGS+=(--dwarf-low "$pf_val") ;;
-    pool.medium) [ "$FRACTAL_CHOICE" != on ] || FRACTAL_ARGS+=(--dwarf-medium "$pf_val") ;;
-    pool.high) [ "$FRACTAL_CHOICE" != on ] || FRACTAL_ARGS+=(--dwarf-high "$pf_val") ;;
-    fractal_planner) [ "$FRACTAL_CHOICE$pf_auto$pf_planner" != on10 ] || FRACTAL_ARGS+=(--fractal-planner "$pf_val") ;;
     line) PF_LINE="$pf_val" ;;
     # The gates and budget of the copy this run uses, for it and everything it starts.
     decide) [ -z "$pf_val" ] || export FORGE_DECIDE_PROFILE_JSON="$pf_val" ;;
@@ -230,6 +213,8 @@ case "$(cd "$RUN" && pwd)/" in
 esac
 
 RUN="$(cd "$RUN" && pwd)"
+# A run directory an earlier forge ran under Fractal is read, never run again (#154).
+[ "$DRY" = 1 ] || forge_refuse_fractal_run "$RUN" forge-solo.sh
 # The frozen copy, atomically. Only the process that holds the run's lock writes it (a refused
 # second start, or a dry run, must not change what an active run froze): the first pass above
 # only read and checked, and the re-exec under the lock chooses again from the same arguments.
@@ -244,7 +229,7 @@ REPO="$(cd "$REPO" && pwd)"
 # Before any decision-model step: the privacy floor and the run budget read these.
 [ "$JEV_OPTS" = 1 ] && forge_decide_env "$REPO" "$RUN"
 if [ "$DRY" != 1 ] && [ "$(forge_posix_path "${FORGE_SOLO_LOCK:-}")" != "$RUN" ]; then
-  exec python3 "$SKILL_DIR/scripts/forge-fractal.py" _lock "$RUN" "$0" "${ORIGINAL_ARGS[@]}"
+  exec python3 "$SKILL_DIR/scripts/forge-solo-lock.py" "$RUN" "$0" "${ORIGINAL_ARGS[@]}"
 fi
 # After the lock re-exec, so the process that dispatches is the one that writes it.
 forge_fast_store "$RUN"
@@ -253,28 +238,8 @@ export FORGE_CAPABILITY_CACHE="$RUN/capabilities"
 TFLAG=""; [ -n "$TIMEOUT" ] && TFLAG="--timeout $TIMEOUT"
 GOAL="$(head -1 "$RUN/goal.txt" 2>/dev/null || true)"
 
-FFLAGS=()
-[ -z "$YD" ] || FFLAGS+=(--yolo-dwarf)
-[ -z "$YQ" ] || FFLAGS+=(--yolo-qa)
-forge_fractal_select "$RUN" "$REPO" solo "$DRY" --dwarf "$DWARF" --qa "$QA" ${FFLAGS[@]+"${FFLAGS[@]}"} || exit $?
-forge_fast_fractal_note "$RUN"
-# Computed after Fractal selects, so a Fractal dispatch is not asked for the tier.
 ft_dwarf="$(forge_fast_tier "$RUN" dwarf)"
 ft_qa="$(forge_fast_tier "$RUN" qa)"
-if [ -n "${FORGE_FRACTAL_RUN:-}" ]; then
-  # The UI choice is per invocation: a tmux resume replays these args and must not open it again.
-  REMEMBER_ARGS=()
-  for arg in "${ORIGINAL_ARGS[@]}"; do
-    case "$arg" in --ui|--no-ui) ;; *) REMEMBER_ARGS+=("$arg") ;; esac
-  done
-  python3 "$SKILL_DIR/scripts/forge-fractal.py" _remember "$0" ${REMEMBER_ARGS[@]+"${REMEMBER_ARGS[@]}"} || exit $?
-fi
-if [ -n "${FORGE_FRACTAL_RUN:-}" ] && [ "$DRY" != 1 ] && [ "${FORGE_FRACTAL_RETRY:-}" != 1 ]; then
-  python3 "$SKILL_DIR/scripts/forge-fractal.py" _checkpoint "$REPO"
-  checkpoint_rc=$?
-  [ "$checkpoint_rc" != 0 ] || exit 0
-  [ "$checkpoint_rc" = 1 ] || exit "$checkpoint_rc"
-fi
 
 # The dispatches see a review snapshot, not the repo, so the run dir names it for the dataset.
 [ "$DRY" = 1 ] || printf '%s\n' "$REPO" > "$RUN/repo"
@@ -325,14 +290,10 @@ forge_metric_phase preflight
 /bin/bash "$DISPATCH" doctor --spec "$DWARF" --role dwarf $YD $TFLAG $ft_dwarf || exit $?
 /bin/bash "$DISPATCH" doctor --spec "$QA" --role qa $YQ $NATIVE $TFLAG $ft_qa || exit $?
 /bin/bash "$SKILL_DIR/scripts/forge-install-ripwire.sh" || true
-# After the _lock re-exec and the Fractal checkpoint exit, so it runs once per run.
+# After the lock re-exec, so it runs once per run.
 forge_ui_launch "$RUN"
 forge_metric_phase snapshot
-if [ -n "${FORGE_FRACTAL_RUN:-}" ] && [ -s "$RUN/start.tree" ]; then
-  START="$(cat "$RUN/start.tree")"
-else
-  START="$(forge_tree "$REPO")" || die "cannot record starting snapshot" 3
-fi
+START="$(forge_tree "$REPO")" || die "cannot record starting snapshot" 3
 echo "$START" > "$RUN/start.tree"
 git -C "$REPO" diff --binary HEAD "$START" -- . ':(exclude).forge' > "$RUN/existing.diff"
 forge_metric_phase dispatch

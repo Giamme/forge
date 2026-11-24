@@ -14,14 +14,13 @@ A run dir holds, by what this module calls them:
               or of a review stopped by a signal.
   logs        `*.log`, `*.jsonl` and their `.gz`. `compressible` lists the ones `compact --logs`
               gzips: a dwarf's or reviewer's own log in its execution record,
-              `attempts/<role>-<32 hex>/<role>.log` (role dwarf or qa), of at least LOG_MIN bytes,
-              outside a Fractal tree. Those copies are written once, when the execution ends; the
+              `attempts/<role>-<32 hex>/<role>.log` (role dwarf or qa), of at least LOG_MIN bytes.
+              Those copies are written once, when the execution ends; the
               log a running agent writes, and every log a retry reads, is the one in the task dir,
               which is never touched. forge-ui reads the copy, plain or gzipped.
   strays      what forge does not create: a dependency directory (DEP_DIRS) or a `.git` outside a
               snapshot, such as a dependency install someone ran by hand inside a run dir. Reported
               with its size, never removed.
-  fractal     Fractal's own workspaces (`.../nodes/<id>/product`), opt-in and managed by Fractal.
   other       everything else: prompts, diffs, verdicts, metrics, the run's own records.
 
 Sizes are disk usage (allocated blocks, as `du` counts them), and a file with several hard links
@@ -87,7 +86,7 @@ def is_compressible_log(path, info=None) -> bool:
     match = ATTEMPT_DIR.fullmatch(os.path.basename(parent))
     if not match or os.path.basename(path) != match.group(1) + '.log':
         return False
-    if os.path.basename(os.path.dirname(parent)) != 'attempts' or 'nodes' in Path(parent).parts:
+    if os.path.basename(os.path.dirname(parent)) != 'attempts':
         return False
     info = info if info is not None else _lstat(path)
     return info is not None and stat.S_ISREG(info.st_mode) and info.st_size >= LOG_MIN
@@ -139,13 +138,13 @@ def scan(run_dir, deadline=None) -> dict:
 
     {path, total, snapshots: {bytes, count, items: [{path, bytes}]},
      logs: {bytes, gz_bytes, compressible_bytes, compressible: [{path, bytes, size}]},
-     strays: [{path, bytes, kind}], fractal, other, parts: [path], complete}
+     strays: [{path, bytes, kind}], other, parts: [path], complete}
     """
     root = os.path.realpath(os.fspath(run_dir))
     seen = _Seen()
     out = dict(path=root, total=0, snapshots=dict(bytes=0, count=0, items=[]),
                logs=dict(bytes=0, gz_bytes=0, compressible_bytes=0, compressible=[]),
-               strays=[], fractal=0, other=0, parts=[], complete=True)
+               strays=[], other=0, parts=[], complete=True)
     stack = [root]
     while stack:
         if deadline is not None and time.monotonic() > deadline:
@@ -168,10 +167,6 @@ def scan(run_dir, deadline=None) -> dict:
                     out['snapshots']['items'].append(dict(path=entry.path, bytes=size))
                     out['snapshots']['bytes'] += size
                     out['snapshots']['count'] += 1
-                    out['complete'] = out['complete'] and done
-                elif entry.name == 'product' and 'nodes' in Path(directory).parts:
-                    size, done = tree_usage(entry.path, seen, deadline)
-                    out['fractal'] += size
                     out['complete'] = out['complete'] and done
                 elif entry.name in DEP_DIRS or entry.name == '.git':
                     size, done = tree_usage(entry.path, seen, deadline)
@@ -198,7 +193,7 @@ def scan(run_dir, deadline=None) -> dict:
                 out['other'] += size
     stray = sum(s['bytes'] for s in out['strays'])
     out['total'] = (out['snapshots']['bytes'] + out['logs']['bytes'] + out['logs']['gz_bytes'] + stray
-                    + out['fractal'] + out['other'])
+                    + out['other'])
     out['snapshots']['items'].sort(key=lambda s: s['path'])
     out['strays'].sort(key=lambda s: -s['bytes'])
     return out
@@ -447,13 +442,29 @@ def data_home_parts(home: Path, deadline=None) -> dict:
     return dict(path=str(home), bytes=sum(parts.values()), parts=parts)
 
 
+def removed_state(deadline=None) -> list:
+    """What removed parts of forge left on disk: [{name, path, bytes, since, complete}]. Reads only."""
+    _scripts()
+    import forge_legacy
+    path = forge_legacy.state_dir()
+    if path.is_symlink() or not path.is_dir():
+        return []
+    size, done = tree_usage(str(path), deadline=deadline)
+    return [dict(name='Fractal', path=str(path), bytes=size, since=forge_legacy.REMOVED_IN, complete=done)]
+
+
 def report(repo=None, home=None, budget_s: float = 600.0, progress=None) -> dict:
     """What forge takes on disk, for one repository (a path) or, None, every one (`forge du`, forge-ui's Disk screen).
 
     {repo, computed, complete, runs: [{path, run_id, repo, updated, total, snapshots, snapshot_count, logs, gz,
-     compressible, strays, fractal, other, reclaimable, complete}],
+     compressible, strays, other, reclaimable, complete}],
      strays: [{path, bytes, kind, run}], worktrees: [{repo, run_id, path, bytes, complete}],
-     data_home: {path, bytes, parts} | None, totals: {runs, worktrees, data_home, reclaimable, snapshots, logs}}
+     data_home: {path, bytes, parts} | None, totals: {runs, worktrees, data_home, reclaimable, snapshots, logs},
+     removed: [{name, path, bytes, since, complete}]}
+
+    `removed` is what a part of forge that no longer exists left on this machine: today the state directory of
+    Fractal, the execution backend forge 0.23 removed. It belongs to no repository, so it is listed whatever
+    `repo` is. Nothing reads it and forge never deletes it.
     """
     _scripts()
     import forge_locations
@@ -475,7 +486,7 @@ def report(repo=None, home=None, budget_s: float = 600.0, progress=None) -> dict
         runs.append(dict(path=path, run_id=run_id, repo=named, updated=updated, total=scanned['total'],
                          snapshots=scanned['snapshots']['bytes'], snapshot_count=scanned['snapshots']['count'],
                          logs=scanned['logs']['bytes'], gz=scanned['logs']['gz_bytes'],
-                         compressible=scanned['logs']['compressible_bytes'], fractal=scanned['fractal'],
+                         compressible=scanned['logs']['compressible_bytes'],
                          strays=sum(s['bytes'] for s in scanned['strays']), other=scanned['other'],
                          reclaimable=reclaimable(scanned), complete=scanned['complete']))
         strays.extend(dict(s, run=path) for s in scanned['strays'])
@@ -505,8 +516,10 @@ def report(repo=None, home=None, budget_s: float = 600.0, progress=None) -> dict
                   data_home=home_parts['bytes'] if home_parts else 0, reclaimable=sum(r['reclaimable'] for r in runs),
                   snapshots=sum(r['snapshots'] for r in runs), logs=sum(r['logs'] + r['gz'] for r in runs),
                   strays=sum(s['bytes'] for s in strays))
+    removed = removed_state(deadline)
     return dict(repo=str(repo) if repo is not None else None, computed=time.time(), complete=complete, runs=runs,
-                strays=sorted(strays, key=lambda s: -s['bytes']), worktrees=worktrees, data_home=home_parts, totals=totals)
+                strays=sorted(strays, key=lambda s: -s['bytes']), worktrees=worktrees, data_home=home_parts, totals=totals,
+                removed=removed)
 
 
 def footprints_of(result: dict) -> dict:

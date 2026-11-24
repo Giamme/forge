@@ -98,7 +98,7 @@ class RouteTests(unittest.TestCase):
 
     def task(self, dwarf, pools, attempts, effort=False):
         (self.plan / 'tasks.tsv').write_text('a\t-\thigh\ta.txt\t%s\topus\tA\n' % dwarf)
-        (self.plan / 'fractal-routing.json').write_text(json.dumps(pools))
+        (self.plan / 'dwarf-routing.json').write_text(json.dumps(pools))
         (self.tdir / 'attempts.tsv').write_text(attempts)
         path = self.plan / 'escalate_effort'
         if effort:

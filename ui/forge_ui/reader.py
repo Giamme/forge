@@ -25,7 +25,7 @@ finally:
     if _inserted and _SCRIPTS in sys.path:
         sys.path.remove(_SCRIPTS)
 
-from forge_ui import checks, diffs, executions, findings, fractal, groups, links, repos, transcripts
+from forge_ui import checks, diffs, executions, findings, groups, links, repos, transcripts
 from forge_ui.findings import verdict as _verdict
 
 
@@ -452,6 +452,32 @@ def _followers(listed, target):
     return found
 
 
+# scripts/forge_legacy.REMOVED_IN and its selection file: a run made with Fractal stays readable.
+_REMOVED_IN = '0.23'
+_OLD_SELECTION = 'fractal-selection.json'
+
+
+def _removed(reader):
+    """RunSummary `removed`: {name, since, note} for a run made with Fractal, which forge removed, else None.
+
+    The rule of scripts/forge_legacy.was_fractal: the old selection file says `enabled`, and one that
+    cannot be read or parsed counts, since nothing may resume a run whose backend cannot be told."""
+    if not reader.exists(_OLD_SELECTION):
+        return None
+    raw = reader.text(_OLD_SELECTION)
+    if raw is not None and not raw.strip():
+        return None
+    try:
+        data = json.loads(raw) if raw is not None else None
+    except ValueError:
+        data = None
+    if isinstance(data, dict) and not data.get('enabled', True):
+        return None
+    return dict(name='Fractal', since=_REMOVED_IN,
+                note=f'made with Fractal, which forge {_REMOVED_IN} removed: it can be read here, '
+                     'not run, retried or resumed')
+
+
 def _summary(reader, source):
     result = dict(key=run_key(reader.path), path=str(reader.path), source=source, kind='plan',
                   run_id=reader.line('run_id'), repo=reader.line('repo'),
@@ -469,6 +495,7 @@ def _summary(reader, source):
     # accepted.integration (or the published verdict / review.meta) moves the activity time.
     final_review_outdated = _published_outdated(reader, tasks)
     after = _predecessor(reader)
+    result['removed'] = _removed(reader)
     result.update(updated=reader.updated, created=_created(reader.path, _PLAN_START_FILES),
                   task_count=len(tasks), counts=counts,
                   task_statuses=[dict(id=task['id'], status=task['status'], difficulty=task['difficulty'] or None,
@@ -505,7 +532,8 @@ def _solo_summary(reader, source):
     goal = reader.line('goal.txt')
     # Before `updated` is copied out: a present `after` file is part of what the summary read.
     after = _predecessor(reader)
-    return dict(key=run_key(reader.path), path=str(reader.path), source=source, kind='solo',
+    removed = _removed(reader)
+    return dict(key=run_key(reader.path), path=str(reader.path), source=source, kind='solo', removed=removed,
                 run_id=reader.path.name, repo=reader.line('repo'), goal=goal,
                 decompose_level=None, verification_status=None, updated=reader.updated,
                 created=_created(reader.path, _SOLO_START_FILES),
@@ -2299,7 +2327,7 @@ def _solo_detail(reader, source):
                              _github_origin(reader))
     task['trail'] = _trail(reader, logged, execs, 'retry_sources.tsv', [], _queued_retries(reader).get('solo', ()))
     result.update(timeline=_timeline(execs, [], []), integration=None, final_review=None, final_reviews=[], adoptions=[],
-                  deferrals=[], findings_available=findings.available(), fractal=fractal.summary(reader),
+                  deferrals=[], findings_available=findings.available(),
                   scheduler=None, sweep=None)
     result.update(tasks=[task], warnings=reader.warnings, truncated=reader.truncated, updated=reader.updated)
     return result
@@ -2494,7 +2522,6 @@ def detail(path, source='plan') -> dict:
     result['adoptions'] = _adoptions(reader)
     result['deferrals'] = [line.strip() for line in (reader.text('deferrals.txt') or '').splitlines() if line.strip()]
     result['findings_available'] = findings.available()
-    result['fractal'] = fractal.summary(reader)
     brief = _attach_brief(reader, tasks)
     result['brief'] = brief
     # Absent, not empty, when brief is off: proposals/ is not listed, so the run JSON does not change.
@@ -3298,33 +3325,6 @@ def files_detail(path, source='plan'):
                 overlaps=overlaps, deferrals=deferrals, truncated=truncated, warnings=reader.warnings)
 
 
-# --- Fractal: the child tasks inside a task ---------------------------------------------------
-
-def _fractal(path, task_id, read, *args):
-    reader = _Read(path)
-    kind = _kind(reader.path)
-    if kind == 'solo' and task_id == 'solo':
-        target = str(reader.path)
-    elif kind == 'plan' and any(task['id'] == task_id for task in _tasks(reader)):
-        # forge hands Fractal the task dir as --run-dir, resolved: its realpath names the Fractal task.
-        target = os.path.realpath(reader.path / 'tasks' / task_id)
-    else:
-        return None
-    return read(reader, run_key(reader.path), task_id, target, *args)
-
-
-def fractal_detail(path, task_id, source='plan'):
-    return _fractal(path, task_id, fractal.task)
-
-
-def fractal_node(path, task_id, node, source='plan'):
-    return _fractal(path, task_id, fractal.node, node)
-
-
-def fractal_node_diff(path, task_id, node, source='plan'):
-    return _fractal(path, task_id, fractal.node_diff, node)
-
-
 # --- verification logs by path ---------------------------------------------------------------
 
 LANE_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}')
@@ -3556,15 +3556,6 @@ class Catalog:
 
     def findings(self, key):
         return self._find(key, run_findings)
-
-    def fractal(self, key, task_id):
-        return self._find(key, fractal_detail, task_id)
-
-    def fractal_node(self, key, task_id, node):
-        return self._find(key, fractal_node, task_id, node)
-
-    def fractal_node_diff(self, key, task_id, node):
-        return self._find(key, fractal_node_diff, task_id, node)
 
     def verification_log(self, key, lane=None, k=None, first=None, retry=False):
         return self._find(key, verification_log, lane, k, first, retry)

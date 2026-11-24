@@ -1,39 +1,8 @@
 # Offline validation
 
-Fractal contract tests run without Fractal installed. To include the real pinned
-Fractal 1.2.0 and tmux integration suite with fake model CLIs:
-
-```sh
-FORGE_TEST_FRACTAL_RUNTIME=/absolute/path/to/isolated/fractal-venv bash tests/check.sh
-```
-
-The runtime must contain the pinned revision documented in
-[Fractal](../references/fractal.md). These tests create their own managed state and
-repositories, exercise all six harnesses, nested routing/ownership/dependencies,
-shared concurrency, dirty snapshots, source drift, deadlines, pause/resume, stop,
-worker-crash recovery, retries, QA checkpoints and decomposed integration. They
-make no paid provider requests. tmux tests need permission to create local sockets.
-On a host with real Ripwire installed, set `FORGE_RIPWIRE=off` for deterministic
-ordinary-dispatch tests; dedicated Ripwire tests supply their own fake binaries.
-
-Inspection tests hash artifacts before/after reads, reject path and symlink escapes,
-and check complete offline exports with large logs and hostile HTML text. The
-[development-only browser suite](test_dashboard_browser.py) uses Python Playwright and
-installed Chrome. It exercises changing snapshots, pane/log scroll and focus, deep links,
-Back/Forward, scoped reads, history paging, disconnection, pause and recovery, delayed
-responses, mobile navigation and an offline `file:` report with HTTP disabled. It uses
-only temporary managed fixtures and no model providers:
-
-```sh
-python3 -m venv /tmp/forge-dashboard-browser
-/tmp/forge-dashboard-browser/bin/python -m pip install playwright
-/tmp/forge-dashboard-browser/bin/python -m unittest discover -s tests -p test_dashboard_browser.py -v
-```
-
-Chrome must be installed for Playwright's `channel='chrome'`. The browser suite skips in
-the standard dependency-free check when Playwright is absent. For interactive inspection,
-`python3 tests/dashboard_fixture.py` prints a temporary loopback URL. See
-[Fractal verification](fractal-verification.md) for earlier implementation evidence.
+Tests make no paid provider requests: model CLIs are fakes. On a host with real Ripwire
+installed, set `FORGE_RIPWIRE=off` for deterministic ordinary-dispatch tests; dedicated
+Ripwire tests supply their own fake binaries.
 
 Run `bash tests/check.sh`. Python's standard-library unittest suite uses temporary Git
 repositories and fake model CLIs. `tests/run_tests.py` runs it and forge-ui's suite with every

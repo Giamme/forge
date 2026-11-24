@@ -85,8 +85,8 @@ class StorePrimitiveTests(StoreCase):
         self.assertNotEqual(store.put_blob(data, 'prompt')['sha'], ref['sha'])
 
     def test_concurrent_writers_lose_and_duplicate_nothing(self):
-        # Parallel tasks capture at the same moment, from processes and from Fractal's
-        # threads; every distinct event lands once and a repeated rid is ignored.
+        # Parallel tasks capture at the same moment, from several processes
+        # and threads; every distinct event lands once and a repeated rid is ignored.
         script = (
             'import sys; sys.path.insert(0, %r)\n'
             'import forge_dataset as s\n'
@@ -1539,6 +1539,47 @@ class ImportTests(StoreCase):
             self.assertEqual(importer.main(args), 0)
         self.assertEqual([e['task'] for e in self.events(kind='fractal_node')], ['task-1/root'])
 
+    def test_an_old_fractal_run_still_imports(self):
+        # The fixture of a run made with Fractal, which forge 0.23 removed: a plan that selected it
+        # (its tier pools under the old file name) and the state dir its runtime kept. Nothing
+        # writes these any more, and the importer still reads both.
+        state = Path(self.tmp.name) / 'state'
+        plan = Path(self.tmp.name) / 'old-fractal'
+        plan.mkdir()
+        (plan / 'dataset.uid').write_text('uid-old-fractal\n')
+        (plan / 'tasks.tsv').write_text('a\t-\tlow\ta.txt\tsol\topus\tA\n')
+        (plan / 'repo').write_text('/nonexistent/repo\n')
+        (plan / 'run_id').write_text('old-fractal\n')
+        (plan / 'goal.txt').write_text('goal\n')
+        (plan / 'fractal-selection.json').write_text(json.dumps(dict(enabled=True, run='run-' + '0' * 20)))
+        (plan / 'fractal-routing.json').write_text(json.dumps(dict(low=['sol'], high=['astra'])))
+        (plan / 'tasks' / 'a').mkdir(parents=True)
+        (plan / 'tasks' / 'a' / 'status').write_text('PASS\n')
+        task = state / 'forge' / 'fractal' / 'runs' / ('run-' + '0' * 20) / 'tasks' / 'task-1'
+        (task / 'nodes' / 'root').mkdir(parents=True)
+        (task / 'request.json').write_text(json.dumps(dict(repo='/nonexistent/repo', output=str(plan / 'tasks' / 'a'))))
+        (task / 'nodes' / 'root' / 'node.json').write_text(json.dumps(dict(id='root', iteration=1, status='completed')))
+        (task / 'outcome.json').write_text(json.dumps(dict(acceptance='pass')))
+        from forge_dataset import importer
+        args = type('A', (), dict(paths=[str(plan)], registry=False, fractal=True, ledger=[], include_temp=True,
+                                  dry_run=False))()
+        with patch.dict(os.environ, {'XDG_STATE_HOME': str(state)}), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(importer.main(args), 0)
+        [planned] = self.events(kind='plan')
+        self.assertEqual(planned['data']['fractal_selection']['enabled'], True)
+        self.assertEqual(planned['data']['pools'], dict(low=['sol'], high=['astra']))
+        self.assertEqual([e['task'] for e in self.events(kind='fractal_node')], ['task-1/root'])
+        self.assertEqual(self.errors(), '')
+        # A plan made since has no such key: nothing writes the selection any more.
+        (plan / 'fractal-selection.json').unlink()
+        (plan / 'fractal-routing.json').rename(plan / 'dwarf-routing.json')
+        (plan / 'goal.txt').write_text('another goal\n')
+        with patch.dict(os.environ, {'XDG_STATE_HOME': str(state)}), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(importer.main(args), 0)
+        latest = self.events(kind='plan')[-1]
+        self.assertNotIn('fractal_selection', latest['data'])
+        self.assertEqual(latest['data']['pools'], dict(low=['sol'], high=['astra']))
+
 
 class MemoryTests(StoreCase):
     def test_curation_and_cap_evictions_are_recorded_with_their_reasons(self):
@@ -1598,26 +1639,6 @@ class JevCaptureTests(StoreCase):
         with patch.dict(os.environ, dict(env, FORGE_JEV_FIXTURES=str(fixtures_dir))):
             self.assertIsNotNone(client.ask({'diff': 'x'}, qs, site='jev-drift', run_dir=run))
         self.assertEqual(len(self.events(kind='jev')), 1)
-
-
-class FractalCaptureTests(StoreCase):
-    def test_steps_captured_from_many_threads_are_each_recorded_once(self):
-        task = Path(self.tmp.name) / 'runs' / 'run-x' / 'tasks' / 'task-1'
-        task.mkdir(parents=True)
-        (task / 'request.json').write_text(json.dumps(dict(repo='/r', output='/o')))
-        steps = [task / 'nodes' / 'implementation' / 'steps' / ('%032x' % i) for i in range(16)]
-        for step in steps:
-            step.mkdir(parents=True)
-        node = dict(id='implementation', iteration=0, model='sol', status='active')
-        threads = [threading.Thread(target=capture.fractal_step, args=(task, node, step),
-                                    kwargs=dict(phase='implementation', iteration=0, rc=0, cost=None, resolved='m'))
-                   for step in steps]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-        self.assertEqual(len(self.events(kind='fractal_step')), 16)
-        self.assertEqual(self.errors(), '')
 
 
 class ReviewerSessionTests(StoreCase):
@@ -2174,8 +2195,8 @@ class IndependenceTests(unittest.TestCase):
             self.assertIn(path.name, allowed, path)
             for line in text.splitlines():
                 if 'forge_dataset' in line and 'import' in line:
-                    self.assertRegex(line, r'from forge_dataset(\.capture)? import (capture|point|jev|fractal_step|'
-                                           r'fractal_outcome|mint_run_uid)|from forge_dataset\.cli import main|'
+                    self.assertRegex(line, r'from forge_dataset(\.capture)? import (capture|point|jev|'
+                                           r'mint_run_uid)|from forge_dataset\.cli import main|'
                                            r'from forge_dataset import DatasetError, data_home, dataset_dir, enabled, '
                                            r'harvest, importer, record, record_strict|'
                                            r'from forge_dataset import data_home$', str(path))

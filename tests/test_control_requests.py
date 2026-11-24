@@ -180,8 +180,10 @@ class CliTests(Base):
                 result = self.control(*args)
                 self.assertEqual(result.returncode, code, result.stdout + result.stderr)
         self.live()
-        (self.plan / 'fractal-selection.json').write_text('{"enabled": true}')
-        self.assertEqual(self.control('retry', self.plan, 'a').returncode, 3)
+        (self.plan / 'fractal-selection.json').write_text('{"enabled": true}')   # made with Fractal, which forge removed
+        refused = self.control('retry', self.plan, 'a')
+        self.assertEqual(refused.returncode, 3)
+        self.assertIn('made with Fractal, which forge 0.23 removed', refused.stderr)
         (self.plan / 'fractal-selection.json').unlink()
         self.assertEqual(self.requests(), [])
         self.assertEqual(self.control('retry', self.plan, 'a').returncode, 0)   # the valid control

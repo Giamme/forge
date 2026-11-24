@@ -53,6 +53,20 @@ class RunsTests(unittest.TestCase):
         every = json.loads(self.forge('--all', '--limit', '0', '--json', cwd=self.repos['a']))
         self.assertEqual([r['path'] for r in every], [str(p) for p in reversed(self.runs)])
 
+    def test_a_run_made_with_fractal_is_still_listed_with_a_note(self):
+        # forge 0.23 removed Fractal: its old plan and solo runs stay in the list, marked.
+        old = self.runs[4]
+        (old / 'fractal-selection.json').write_text(json.dumps({'enabled': True, 'run': 'run-' + '0' * 20}))
+        os.utime(old / 'fractal-selection.json', (1, 1))            # an old file: the list keeps its order
+        out = self.forge(cwd=self.repos['a'])
+        lines = out.splitlines()
+        marked = [i for i, line in enumerate(lines) if 'made with Fractal, removed in v0.23' in line]
+        self.assertEqual(len(marked), 1, out)
+        self.assertEqual(lines[marked[0] + 1].strip(), str(old))
+        listed = json.loads(self.forge('--json', cwd=self.repos['a']))
+        self.assertEqual([(r['removed'] or {}).get('name') for r in listed if r['path'] == str(old)], ['Fractal'])
+        self.assertEqual([r['removed'] for r in listed if r['path'] != str(old)], [None, None])
+
     def test_a_repo_with_no_runs_says_so(self):
         empty = Path(self.tmp.name) / 'c'; empty.mkdir()
         out = self.forge(cwd=empty)

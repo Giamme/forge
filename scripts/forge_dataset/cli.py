@@ -292,7 +292,7 @@ def parser() -> argparse.ArgumentParser:
     p = sub.add_parser('import', help='capture run dirs, archives and ledgers that predate live capture')
     p.add_argument('paths', nargs='*', help='run/plan dirs, dirs to scan, or .tar.gz archives')
     p.add_argument('--registry', action='store_true', help='every run dir listed in the Jev runs registry')
-    p.add_argument('--fractal', action='store_true', help='the Fractal state dir')
+    p.add_argument('--fractal', action='store_true', help='the state dir of Fractal (removed in forge 0.23): its old runs, to import before deleting it')
     p.add_argument('--ledger', action='append', default=[], metavar='REPO', help="a repo's .forge/ledger.tsv")
     p.add_argument('--include-temp', action='store_true', help='also import runs whose repo is a temp dir (test runs)')
     p.add_argument('--dry-run', action='store_true')

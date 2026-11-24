@@ -27,7 +27,6 @@ Read the one that applies before acting; the full flag list is in [commands](doc
   [opt-in modes](references/decompose-opt-in.md) (groups, retro, brief, summaries).
 - [Leftover findings](references/findings.md): filing them as issues, triage, `--file-issues`.
 - [Harnesses](references/harnesses.md): invocation troubleshooting, the fast service tier, adding a harness.
-- [Fractal](references/fractal.md): opt-in nested execution, its question, limits, recovery and reporting.
 - [Memory](references/memory.md): `.forge/` learning and spend records (`--no-memory` disables them;
   written to the user's repository, excluded from implementation diffs).
 - [forge-ui](references/ui.md): the opt-in run viewer; `forge ui open|status|stop`, `FORGE_UI=off`, privacy.
@@ -62,10 +61,9 @@ apart. Offer the leftover findings as issues ([findings](references/findings.md)
   machine needs the user's explicit word: offer it, never add it. That covers every flag below,
   `--yolo-dwarf` / `--yolo-qa` (only for the role they name; Bash can still mutate files with editing
   tools disabled) and `--fast` (offer only when the user asks for speed).
-- Ask **"Use Fractal for this run? [y/N]"** and **"Open forge-ui to watch this run? [y/N]"** once at the
-  start of every new interactive run, unless a flag answered it, and pass the answers on (details:
-  [Fractal](references/fractal.md#for-the-orchestrator), [forge-ui](references/ui.md)). Never ask on
-  resume or retry; unattended runs leave both off. Relay the `forge-ui:` URL; a UI failure never changes the run.
+- Ask **"Open forge-ui to watch this run? [y/N]"** once at the start of every new interactive run,
+  unless a flag answered it, and pass the answer on ([forge-ui](references/ui.md)). Never ask on
+  resume or retry; unattended runs leave it off. Relay the `forge-ui:` URL; a UI failure never changes the run.
 - One implementer per tree. Solo edits stay uncommitted; decomposed runs commit only on forge's task and
   integration branches. Updating the user's branch needs separate authorization and `integrate
   --approved`. Never push.
@@ -100,7 +98,7 @@ apart. Offer the leftover findings as issues ([findings](references/findings.md)
 - When a session starts on a repo with an active or unfinished run, or the user names one, run `forge
   handoff` first and work from its output. Never start `run` while its scheduler is live: continue with
   `forge handoff resume <plan> --harness <this harness>`, which follows a live run and restarts a stopped
-  one with its recorded flags (a Fractal plan: `forge fractal resume`). Take over another driver only on
+  one with its recorded flags. Take over another driver only on
   the user's word (`--take-over`). Record what is not on disk with `forge handoff note`.
 - Exit `130` / `INTERRUPTED`: signalled or stopped; `forge handoff resume <plan>` carries it on; relay the
   `retry` lines it printed.
@@ -138,8 +136,8 @@ apart. Offer the leftover findings as issues ([findings](references/findings.md)
    `auto` preflights the planner and re-dispatches once on a send-back. Write the request verbatim to
    `request.md`, pass `--decompose-level` with the level you split at (even when the user named none),
    end each `prompt.md` with `## Acceptance criteria` the reviewer can check, and keep tasks small
-   (`plan` names any over 7K characters or 9 files). `--timeout`, the Fractal choice and tier pools go
-   to the runner. If `plan` exits 4, read `<plan>/plan.sendback.md`, fix each listed prompt and cover
+   (`plan` names any over 7K characters or 9 files). `--timeout` and tier pools go to the
+   runner. If `plan` exits 4, read `<plan>/plan.sendback.md`, fix each listed prompt and cover
    each listed requirement (with `--planner`, re-dispatch with that file appended), then run `plan`
    once more; forge never sends the same thing back twice.
 4. After the run (the `run` that `auto` printed, or `auto --approved`), read `<plan>/results.tsv` and each

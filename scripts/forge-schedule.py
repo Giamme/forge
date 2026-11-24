@@ -389,22 +389,6 @@ def drained(plan: object) -> bool:
     return _read_small(plan, 'drain') is not None
 
 
-def _fractal_plan(plan: object) -> bool:
-    """fractal-selection.json enabled (unreadable counts: fail closed, as forge-control does)."""
-    try:
-        text = Path(_resolve(plan, 'fractal-selection.json')).read_text()
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return True
-    if not text.strip():
-        return False
-    try:
-        return bool(json.loads(text).get('enabled'))
-    except (ValueError, AttributeError):
-        return True
-
-
 def live_capacity(plan: object, default: int) -> int:
     """`forge control set max-parallel` (1-64), else the argument the run started with."""
     text = _read_small(plan, 'max_parallel')
@@ -722,7 +706,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     retries = {}       # automatic reviewer-driven retries used per task, this run
     per_model_seen = {}  # task -> the per-model answer that allowed its latest automatic retry
     refused = {}       # task -> budget at the time its retry could not be prepared
-    retried = set()    # tasks whose next dispatch is a retry (FORGE_FRACTAL_RETRY=1)
+    retried = set()    # tasks whose next dispatch is a retry
     offsets = {}       # how much of each task.out was already echoed under --output full
     infra_seen = []    # tasks stopped by an infrastructure failure, awaiting resume
     held = set()       # INFRA tasks not resumed: their pin could not be applied
@@ -745,7 +729,6 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         if (plan / 'tasks' / name / 'retry.prepared').exists():
             retried.add(name)
             human.add(name)
-    fractal = _fractal_plan(plan)
     drain_told = False # the drained message was printed for this drain
     sweep_asked = False  # this invocation already asked for the finding sweep
     sweep_checked = {}   # the answer of this invocation's one `plan --check`
@@ -1013,7 +996,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         implementer to the next healthy model of its tier, or, when only its reviewer is held, the reviewer
         to a peer. Tried once for each set of pauses and models: a move changes the models, so a task with
         both on the paused harness moves its implementer, then its reviewer. True when the task moved."""
-        if interrupted or graceful or fractal or _read_small(plan, 'infra_fallback') != 'on':
+        if interrupted or graceful or _read_small(plan, 'infra_fallback') != 'on':
             return False
         pairs = next_pairs(name)
         seen = (frozenset(pauses), tuple(pairs))
@@ -1071,7 +1054,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         exhausted pair is excluded (and a harness stop excludes the whole harness); a pool all
         stopped cannot bounce the task forever. True when the task moved, and so left the pause."""
         stage = info.get('stage')
-        if interrupted or graceful or fractal or _read_small(plan, 'infra_fallback') != 'on':
+        if interrupted or graceful or _read_small(plan, 'infra_fallback') != 'on':
             return False
         # A pin waits for the next full retry, which a review's move is not.
         if stage not in ('dwarf', 'qa') or (stage == 'dwarf' and _pinned(plan, name)):
@@ -1987,10 +1970,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                     base = subprocess.check_output(['git', '-C', str(worktree), 'rev-parse', 'HEAD'])
                     (root / 'base_ref').write_bytes(base)
                 log = open(root / 'task.out', 'ab')
-                # A retried task runs with the same environment `retry` gives it, so the
-                # no-progress guard (byte-identical diff) applies under Fractal too.
-                env = (dict(os.environ, FORGE_FRACTAL_RETRY='1',
-                            FORGE_DATASET_TRIGGER='human' if name in human else 'auto')
+                # A retried task runs with the dataset trigger `retry` gives it.
+                env = (dict(os.environ, FORGE_DATASET_TRIGGER='human' if name in human else 'auto')
                        if name in retried else None)
                 human.discard(name)
                 _remove(plan, 'tasks', name, 'retry.prepared')

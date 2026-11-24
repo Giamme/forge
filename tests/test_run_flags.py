@@ -18,7 +18,7 @@ VERIFY = "echo 'a\"b'\n"
 FLAGS = ['--max-parallel', '2', '--retry-failed', '2', '--infra-retries', '4',
          '--sweep', 'P3', '--sweep-max', '2', '--timeout', '600', '--verify', VERIFY]
 KEYS = {'retry_failed', 'infra_retries', 'sweep', 'sweep_max', 'sweep_plausible', 'sweep_ahead',
-        'max_parallel', 'timeout', 'verify', 'fractal', 'argv', 'at'}
+        'max_parallel', 'timeout', 'verify', 'argv', 'at'}
 
 
 class RunFlagsTests(unittest.TestCase):
@@ -80,7 +80,6 @@ class RunFlagsTests(unittest.TestCase):
         self.assertEqual(data['max_parallel'], 2)
         self.assertEqual(data['timeout'], 600)
         self.assertEqual(data['verify'], VERIFY)
-        self.assertIs(data['fractal'], False)
         self.assertEqual(data['argv'], FLAGS)
         for key in ('retry_failed', 'infra_retries', 'sweep_max', 'max_parallel', 'timeout'):
             self.assert_number(data[key])
@@ -107,7 +106,6 @@ class RunFlagsTests(unittest.TestCase):
         self.assertEqual(data['max_parallel'], 3)
         self.assertIsNone(data['timeout'])
         self.assertIsNone(data['verify'])
-        self.assertIs(data['fractal'], False)
         self.assertEqual(data['argv'], [])
         self.assert_number(data['retry_failed'])
         self.assert_number(data['infra_retries'])

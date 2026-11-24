@@ -78,7 +78,7 @@ class RunningTierTests(unittest.TestCase):
             plan = Path(tmp)
             (plan / 'tasks/a').mkdir(parents=True)
             (plan / 'tasks.tsv').write_text(f'a\t-\t{difficulty}\tf\t{dwarf}\t{qa}\tA\n')
-            (plan / 'fractal-routing.json').write_text(json.dumps(pools))
+            (plan / 'dwarf-routing.json').write_text(json.dumps(pools))
             if route_record:
                 (plan / 'tasks/a/route.jsonl').write_text(route_record + '\n')
             if unrecorded:
@@ -88,7 +88,7 @@ class RunningTierTests(unittest.TestCase):
                 subprocess.run([sys.executable, str(ROOT / 'scripts/forge-route.py'), 'record', '--plan', tmp,
                                 '--task', 'a', '--line', '1\t1\t' + '\t'.join(row)], check=True)
             if replanned:
-                (plan / 'fractal-routing.json').write_text(json.dumps(replanned))
+                (plan / 'dwarf-routing.json').write_text(json.dumps(replanned))
             done = subprocess.run([sys.executable, str(ROOT / 'scripts/forge-route.py'), 'fallback', '--plan', tmp,
                                    '--task', 'a', '--exclude', exclude], capture_output=True, text=True)
             self.assertEqual(done.returncode, 0 if done.stdout else 1, done.stderr)
@@ -206,7 +206,7 @@ class RunningTierTests(unittest.TestCase):
                 plan = Path(tmp)
                 (plan / 'tasks/a').mkdir(parents=True)
                 (plan / 'tasks.tsv').write_text('a\t-\tmedium\tf\tsol\tkimi\tA\n')
-                (plan / 'fractal-routing.json').write_text(json.dumps(pools))
+                (plan / 'dwarf-routing.json').write_text(json.dumps(pools))
                 (plan / 'tasks/a/running.tier').write_text('high\tsol\n')
                 os.utime(plan / 'tasks/a/running.tier', (pinned_at, pinned_at))
                 (plan / 'tasks/a/route.jsonl').write_text(
@@ -219,7 +219,7 @@ class RunningTierTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             plan = Path(tmp)
             (plan / 'tasks.tsv').write_text('a\t-\tmedium\tf\tastra\topus\tA\n')
-            pools = plan / 'fractal-routing.json'
+            pools = plan / 'dwarf-routing.json'
             pools.write_text(json.dumps({'low': ['sol'], 'medium': ['astra'], 'high': ['sol', 'sonnet']}))
             for seed in range(30):
                 subprocess.run([sys.executable, str(ROOT / 'scripts/forge-route.py'), 'explore', '--plan', tmp,

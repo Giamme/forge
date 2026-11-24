@@ -31,10 +31,10 @@ test('sizes read like du', () => {
 
 const DATA = {
   runs: [
-    { repo: '/r/app', snapshots: 600, logs: 50, gz: 10, other: 30, fractal: 10, strays: 0 },
-    { repo: '/r/app', snapshots: 100, logs: 0, gz: 0, other: 0, fractal: 0, strays: 200 },
-    { repo: '/r/lib', snapshots: 0, logs: 5, gz: 0, other: 5, fractal: 0, strays: 0 },
-    { repo: null, snapshots: 1, logs: 0, gz: 0, other: 0, fractal: 0, strays: 0 },
+    { repo: '/r/app', snapshots: 600, logs: 50, gz: 10, other: 40, strays: 0 },
+    { repo: '/r/app', snapshots: 100, logs: 0, gz: 0, other: 0, strays: 200 },
+    { repo: '/r/lib', snapshots: 0, logs: 5, gz: 0, other: 5, strays: 0 },
+    { repo: null, snapshots: 1, logs: 0, gz: 0, other: 0, strays: 0 },
   ],
   worktrees: [{ repo: '/r/lib', bytes: 2000 }],
   data_home: { bytes: 89 },

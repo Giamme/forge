@@ -22,7 +22,6 @@ usage() {
     '' \
     'commands:' \
     '  install   link forge into each agent harness on this machine; --dry-run previews' \
-    '  fractal   opt-in Fractal execution: install, doctor, runs, status, tree, logs, open, report, ...' \
     '  decide    decision-model gates: status, gate, provider, budget, privacy, doctor, migrate, report, replay' \
     '  jev       the old decision-model commands, replaced by decide (kept for one release)' \
     '  dataset   every run'"'"'s inputs and outcomes: status, dump, import, export, outcomes, ...' \
@@ -77,9 +76,9 @@ case "${1:-}" in
     exec /bin/bash "$ROOT/scripts/forge-install.sh" "$@"
     ;;
   fractal)
-    shift
-    help_if_bare $# python3 "$ROOT/scripts/forge-fractal.py"
-    exec python3 "$ROOT/scripts/forge-fractal.py" "$@"
+    # Removed in forge 0.23 (#154): one line and exit 2, like a removed flag.
+    printf '%s\n' 'forge: forge fractal was removed with Fractal in forge 0.23. Task decomposition is native now (see docs/decomposed-runs.md); forge du shows what the old runtime left on disk.' >&2
+    exit 2
     ;;
   decide)
     shift

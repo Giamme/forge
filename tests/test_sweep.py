@@ -218,7 +218,7 @@ class Planner(PlanBase):
                          ['Problem 10.', 'Problem 9.'])
 
     def test_the_plans_low_tier_implements_the_fixes(self):
-        (self.plan / 'fractal-routing.json').write_text(json.dumps({'low': ['luna:low'], 'high': ['sol:xhigh']}))
+        (self.plan / 'dwarf-routing.json').write_text(json.dumps({'low': ['luna:low'], 'high': ['sol:xhigh']}))
         self.task('a', {'a.txt': 'alpha\n'}, known('- [P3][CONFIRMED] a.txt:1 — Tolerated.'), dwarf='sol:xhigh')
         self.sweep('--severity', 'P3')
         self.assertEqual((self.record()['tasks'][0]['dwarf'], self.record()['tasks'][0]['qa']), ('luna:low', 'opus'))
@@ -472,7 +472,7 @@ class EndToEnd(unittest.TestCase):
 
     def test_the_sweeps_implementer_is_checked_before_any_model_is_paid_for(self):
         plan = self.plan('-')
-        (plan / 'fractal-routing.json').write_text(json.dumps({'low': ['literal:typo:codex']}))
+        (plan / 'dwarf-routing.json').write_text(json.dumps({'low': ['literal:typo:codex']}))
         self.assertEqual(self.run_script('forge-parallel.sh', 'run', plan, '--dry-run', '--sweep', 'P3').returncode, 0)
         result = self.run_script('forge-parallel.sh', 'run', plan, '--sweep', 'P3')
         self.assertEqual(result.returncode, 2, result.stdout)

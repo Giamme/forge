@@ -293,9 +293,8 @@ print(json.dumps(dict(gates=gates, no_gates=no_gates == "1", budget=budget), sor
 
 # forge_jev_record <run-dir> — freeze the resolved selection into
 # <run-dir>/jev-selection.json. A resumed or retried run must make the same
-# decisions as the original run, the same reason fractal-selection.json is
-# frozen for Fractal: settings must not silently drift between the first
-# attempt and a later resume/retry of the same run directory.
+# decisions as the original run: settings must not silently drift between the
+# first attempt and a later resume/retry of the same run directory.
 forge_jev_record() {
   local run="$1" caps_json="{}" entry cap val first=1
   for entry in ${JEV_CAPS[@]+"${JEV_CAPS[@]}"}; do
@@ -395,8 +394,7 @@ EOF
 # forge_jev_settle <plan-dir> — what `run` and `retry` do about Jev.
 #
 # `plan` is the command that makes the choice and freezes it. A later run or retry of
-# the same plan must make the same decisions, for the reason fractal-selection.json is
-# frozen: a resumed run that quietly changed its mind about whether a judgment may act
+# the same plan must make the same decisions: a resumed run that quietly changed its mind about whether a judgment may act
 # is a run nobody can reason about afterwards.
 #
 # So a frozen selection wins over a flag passed here, and saying so out loud beats

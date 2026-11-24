@@ -114,7 +114,7 @@ SITE_CAPABILITY = {
 RETIRED_CAPABILITIES = frozenset(('routing',))
 
 # Loaded via importlib rather than a package-relative import: forge-runtime.py lives one
-# directory up and is not itself part of a package (same trick as forge_fractal).
+# directory up and is not itself part of a package.
 _runtime_spec = importlib.util.spec_from_file_location('forge_runtime', SCRIPTS / 'forge-runtime.py')
 _runtime = importlib.util.module_from_spec(_runtime_spec)
 _runtime_spec.loader.exec_module(_runtime)

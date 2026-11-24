@@ -36,11 +36,14 @@ import tempfile
 import unicodedata
 
 from . import GATES, MODES, load_repo, load_user
+import forge_legacy  # noqa: E402  (scripts/ is on sys.path: this package is imported from it)
 
 LEVELS = ('user', 'repo', 'builtin')
 TIERS = ('any', 'low', 'medium', 'high')
 POOLS = ('dwarf', 'qa')
-ROUTING_SPECS = ('planner', 'fractal_planner', 'final_reviewer')
+ROUTING_SPECS = ('planner', 'final_reviewer')
+# A key of profiles saved before forge 0.23 removed Fractal: still accepted, never applied or shown.
+OLD_ROUTING_KEYS = ('fractal_planner',)
 ROUTING_KEYS = POOLS + ROUTING_SPECS + ('escalate_after', 'escalate_effort')
 THRESHOLDS = ('P0', 'P1', 'P2', 'P3', 'none')
 FAST_ROLES = ('dwarf', 'qa', 'planner', 'review')
@@ -207,6 +210,8 @@ def _validate_routing(routing, out: list) -> None:
         return
     for key, value in routing.items():
         path = f'routing.{key}'
+        if key in OLD_ROUTING_KEYS:
+            continue
         if key not in ROUTING_KEYS:
             out.append(f'{path}: unknown key (known: {", ".join(ROUTING_KEYS)})')
         elif key in POOLS:
@@ -371,7 +376,7 @@ def from_plan(plan_dir) -> dict:
     plan = Path(plan_dir)
     routing: dict = {}
     policy: dict = {}
-    for key, name in (('dwarf', 'fractal-routing.json'), ('qa', 'qa-routing.json')):
+    for key, name in (('dwarf', forge_legacy.pools_path(plan).name), ('qa', 'qa-routing.json')):
         pool = _pool(plan, name)
         if pool:
             routing[key] = pool
@@ -466,6 +471,8 @@ def flat(body) -> dict:
         return out
     routing, policy = body.get('routing'), body.get('policy')
     for key, value in (routing.items() if isinstance(routing, dict) else ()):
+        if key in OLD_ROUTING_KEYS:
+            continue
         if key in POOLS and isinstance(value, dict):
             for tier, specs in value.items():
                 out[f'routing.{key}.{tier}'] = specs
@@ -731,10 +738,7 @@ def freeze_plan(plan: Path, repo, name, none, given, check_only=False, validate_
 
 
 SOLO_GIVEN = {'dwarf': None, 'qa': None, 'qa_threshold': 'policy.qa_threshold',
-              'timeout': 'policy.timeout', 'fast': 'policy.fast',
-              'fractal-planner': 'routing.fractal_planner',
-              'dwarf-low': 'routing.dwarf.low', 'dwarf-medium': 'routing.dwarf.medium',
-              'dwarf-high': 'routing.dwarf.high'}
+              'timeout': 'policy.timeout', 'fast': 'policy.fast'}
 
 
 def _first(body, pool):
@@ -749,7 +753,7 @@ def _first(body, pool):
 
 def solo_profile(run: Path, repo, name, none, given, use_frozen, write, validate_it=True) -> list:
     """The solo run's values from a profile, as `key<TAB>value` lines; writes the frozen copy
-    when `write`. Keys: dwarf, qa, qa_threshold, timeout, fast, pool.<tier>, fractal_planner, line."""
+    when `write`. Keys: dwarf, qa, qa_threshold, timeout, fast, line."""
     frozen_path = run / FROZEN
     action, chosen = _choose(repo, name, none, frozen_path, use_frozen, validate_it)
     if action == 'remove':
@@ -785,13 +789,6 @@ def solo_profile(run: Path, repo, name, none, given, use_frozen, write, validate
         out.append(f'timeout\t{keys["policy.timeout"]}')
     if 'fast' not in given and isinstance(keys.get('policy.fast'), list):
         out.append(f'fast\t{_fast_roles(keys["policy.fast"], SOLO_FAST_ROLES)}')
-    for tier in ('low', 'medium', 'high'):
-        specs = keys.get(f'routing.dwarf.{tier}')
-        if f'dwarf-{tier}' not in given and isinstance(specs, list) and specs:
-            out.append(f'pool.{tier}\t{_list(specs)}')
-    planner = keys.get('routing.fractal_planner')
-    if 'fractal-planner' not in given and isinstance(planner, str) and planner:
-        out.append(f'fractal_planner\t{planner}')
     out.append(f'line\t{table_line(shown)}')
     out.append(f'decide\t{frozen_decide(json.dumps(record)) or ""}')
     if write and action == 'new':

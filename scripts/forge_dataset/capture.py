@@ -213,40 +213,6 @@ def jev(*, site, key, canonical: bytes, ok, reason, latency, model, usage, quest
         log_error('jev:' + str(site), error)
 
 
-def fractal_step(task_dir, node: dict, step_dir, *, phase: str, iteration, rc, cost, resolved) -> None:
-    """One Fractal step, keyed by its own step uuid.
-
-    node.json is mutable (a retry resets `iteration` to 0), so a step is recorded by
-    the uuid of the dir it ran in rather than by (node, iteration), which can repeat.
-    Called from worker threads: no signals, a connection per call.
-    """
-    if not enabled():
-        return
-    try:
-        task_dir, step_dir = Path(task_dir), Path(step_dir)
-        ctx = h.fractal_context(task_dir, create=True)
-        if location_refused(ctx['repo']):
-            return
-        record([h.fractal_step_event(task_dir, node, step_dir, ctx, phase=phase, iteration=iteration, rc=rc,
-                                     cost=cost, resolved=resolved)], repo=ctx['repo'], where='fractal_step')
-    except Exception as error:
-        log_error('fractal_step', error)
-
-
-def fractal_outcome(task_dir) -> None:
-    """Every node's final state and the task outcome, once per distinct state."""
-    if not enabled():
-        return
-    try:
-        task_dir = Path(task_dir)
-        ctx = h.fractal_context(task_dir, create=True)
-        if location_refused(ctx['repo']):
-            return
-        record(h.fractal_task_events(task_dir, ctx), repo=ctx['repo'], where='fractal_outcome')
-    except Exception as error:
-        log_error('fractal_outcome', error)
-
-
 def plan_snapshot(plan: str) -> None:
     """Every routing, decomposition and scheduling decision made before the first dispatch."""
     if not enabled():

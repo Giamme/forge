@@ -107,7 +107,7 @@ class PolicyTests(unittest.TestCase):
             tdir = plan / 'tasks' / 'a'
             tdir.mkdir(parents=True)
             (plan / 'tasks.tsv').write_text('a\t-\tmedium\tf\tastra\topus\tA\n')
-            (plan / 'fractal-routing.json').write_text(json.dumps({'medium': ['sol', 'astra'], 'high': ['sonnet']}))
+            (plan / 'dwarf-routing.json').write_text(json.dumps({'medium': ['sol', 'astra'], 'high': ['sonnet']}))
             (plan / 'escalate_after').write_text('3\n')
             (tdir / 'attempts.tsv').write_text(''.join('1700000000\t%d\t%s\t\t%s\n' % row for row in attempts))
             if laterals:

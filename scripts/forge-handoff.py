@@ -28,7 +28,7 @@
   resume RUN_DIR [--take-over] [--harness H] [--session S] [--json]
       Carry a decomposed run on from any harness. It claims the run first (like claim; a refused
       claim exits 3 and does nothing else), then: with a live scheduler it only says so and points
-      at `forge control show` (nothing is started); a Fractal plan points at `forge fractal resume`;
+      at `forge control show` (nothing is started); a plan made with Fractal (removed in 0.23) is refused;
       otherwise each task left RUNNING by a dead scheduler has its worktree diff saved to
       tasks/<id>/interrupted-<epoch>.diff, the worktree reset and cleaned (only after it passes a
       guard: exactly <wt_root>/<id>, a git worktree on forge/<run_id>/<id>), the status set to
@@ -70,6 +70,7 @@ sys.path.insert(0, str(SCRIPTS))
 import forge_infra  # noqa: E402
 import forge_registry  # noqa: E402
 import forge_flock  # noqa: E402
+import forge_legacy  # noqa: E402
 
 PARALLEL = str(SCRIPTS / 'forge-parallel.sh')
 SWEEP_OK = re.compile(r'P[0-3]')
@@ -85,11 +86,13 @@ OPTION_FILES = (
     'reviewer_session_tasks', 'implementer_session', 'fast', 'pre_review_tests', 'pre_review_parallel',
     'qa_threshold', 'timeout', 'verify_retries', 'verify_cmd', 'verify_parallel', 'setup_cmd', 'final_qa',
     'shadow_qa', 'shadow_rate', 'explore', 'escalate_after', 'retry_per_model', 'fail_first',
-    'fractal-routing.json', 'fractal-selection.json', 'jev-selection.json', 'profile.json', 'routed.json',
+    'dwarf-routing.json', 'jev-selection.json', 'profile.json', 'routed.json',
+    # What a plan made before forge 0.23 has instead (forge_legacy.py): its tier pools and its Fractal choice.
+    'fractal-routing.json', 'fractal-selection.json',
     'qa-routing.json', 'retro_mode', 'brief', 'brief_scope', 'brief_model', 'summaries', 'summaries_model',
     'groups.tsv', 'groups.frozen', 'group_max_tasks', 'group_max_diff_kb', 'after', 'max_parallel')
 FLAG_KEYS = ('retry_failed', 'infra_retries', 'sweep', 'sweep_max', 'sweep_plausible', 'sweep_ahead',
-             'max_parallel', 'timeout', 'verify', 'fractal', 'argv', 'at')
+             'max_parallel', 'timeout', 'verify', 'argv', 'at')
 JSON_KEYS = ('run', 'choices', 'flags', 'scheduler', 'tasks', 'needs_you', 'changes', 'stale', 'notes',
              'driver', 'next')
 NOTE_MAX = 2000
@@ -198,6 +201,7 @@ class Plan:
 # ------------------------------------------------------------------------------------ the sections
 
 def kind_of(plan, fractal):
+    # 'fractal' is an old record: a plan made before forge 0.23 removed that backend (#154).
     if (plan.path / 'tasks.tsv').is_file():
         return 'fractal' if fractal else 'decomposed'
     if (plan.path / 'prompt.md').is_file() and (plan.path / 'repo').is_file():
@@ -206,8 +210,7 @@ def kind_of(plan, fractal):
 
 
 def is_fractal(plan):
-    data = plan.json('fractal-selection.json')
-    return bool(data and data.get('enabled'))
+    return forge_legacy.was_fractal(plan.path)
 
 
 def run_section(plan, kind):
@@ -357,11 +360,10 @@ def next_section(plan, run, scheduler, tasks, needs):
     live = scheduler['live']
     if live:
         steps.append(dict(command=f'forge control show {q(here)}', why='the run is live: its state and controls'))
+    elif open_tasks and run['kind'] == 'fractal':
+        steps.append(dict(command=f'forge ui open {q(here)}', why=forge_legacy.refusal('this run')))
     elif open_tasks:
         steps.append(dict(command=f'forge handoff resume {q(here)}', why='no scheduler is live and work is left'))
-        if run['kind'] == 'fractal':
-            steps.append(dict(command=f'forge fractal resume {q(run["run_id"] or here)}',
-                              why='a Fractal-backed run: recover its recorded executions'))
     for item in needs:
         if item['kind'] == 'NEEDS_INPUT':
             verb = f'forge control retry {q(here)} {q(item["task"])}' if live else f'{PARALLEL} retry {q(here)} {q(item["task"])}'
@@ -808,10 +810,6 @@ def run_command(plan, flags):
         command += ['--timeout', str(flags['timeout'])]
     if isinstance(flags.get('verify'), str) and flags['verify']:
         command += ['--verify', flags['verify']]
-    if flags.get('fractal') is True:
-        command.append('--fractal')
-    elif flags.get('fractal') is False:
-        command.append('--no-fractal')
     return command
 
 
@@ -1077,9 +1075,7 @@ def cmd_resume(args):
         return finish(f'the run is live (scheduler pid {scheduler["pid"]}) and is being followed; nothing was started',
                       f'forge control show {quote(plan)}')
     if is_fractal(view):
-        run_id = view.line('run_id')
-        return finish('a Fractal plan is not restarted here; recover its recorded executions:',
-                      f'forge fractal resume {quote(run_id or plan)}')
+        return finish(forge_legacy.refusal('this plan'))
 
     ctrl, wt_root, run_id = control(), view.line('wt_root'), view.line('run_id')
     # The plan lock first (#157): a command that holds it is working on the plan, and nothing here may

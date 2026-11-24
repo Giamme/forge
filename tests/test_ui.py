@@ -21,7 +21,7 @@ import test_forge
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'ui'))
-sys.path.insert(0, str(ROOT / 'scripts'))  # forge_fractal, for the Fractal replay test
+sys.path.insert(0, str(ROOT / 'scripts'))  # forge_registry
 
 from forge_ui import build_id  # noqa: E402
 from forge_ui.reader import run_key  # noqa: E402
@@ -731,27 +731,6 @@ class UiRunnerTests(unittest.TestCase):
         self.assertEqual((plan / 'max_parallel').read_text(), '2\n')
         self.assertEqual(self.registered(), [str(plan.resolve())])
         self.assertEqual(sorted(self.calls()), ['dwarf', 'dwarf', 'qa', 'qa'])
-
-    @unittest.skipUnless(os.environ.get('FORGE_TEST_FRACTAL_RUNTIME') or (Path.home() / '.local/state/forge/fractal/runtime').is_dir(),
-                         'Fractal is not installed (or set FORGE_TEST_FRACTAL_RUNTIME)')
-    def test_a_fractal_resume_does_not_replay_the_ui_choice(self):
-        from forge_fractal import ARCHIVE_SHA256, REVISION, write_json
-        runtime = os.environ.get('FORGE_TEST_FRACTAL_RUNTIME') or str(Path.home() / '.local/state/forge/fractal/runtime')
-        managed = self.state / 'forge/fractal'
-        managed.mkdir(parents=True)
-        (managed / 'runtime').symlink_to(runtime, target_is_directory=True)
-        write_json(managed / 'provenance.json', dict(revision=REVISION, archive_sha256=ARCHIVE_SHA256))
-        fake = test_forge.FAKE.replace("else 'implemented'", "else 'implemented\\nFORGE_FRACTAL: {\"done\":true}'")
-        for name in ('codex', 'claude'):
-            (self.bin / name).write_text(fake)
-        self.env['PATH'] += os.pathsep + os.environ['PATH']  # Fractal needs tmux
-        rc, out = self.solo('--fractal', '--ui', timeout=90)
-        self.assertEqual(rc, 0, out)
-        recorded = [json.loads(p.read_text()) for p in managed.glob('runs/*/run.json')]
-        self.assertEqual(len(recorded), 1)
-        argv = recorded[0]['pipeline_argv']
-        self.assertIn('--fractal', argv)  # the rest of the command is replayed as typed
-        self.assertNotIn('--ui', argv)  # a replay that carried it would open the UI a second time
 
 
 if __name__ == '__main__':

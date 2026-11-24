@@ -580,15 +580,17 @@ class PlanOpsTests(unittest.TestCase):
             (p / 'tasks/c/status').write_text('RUNNING\n')
             refused('--tasks', 'b,c', why='RUNNING')
             (p / 'tasks/c/status').write_text('BLOCKED\n')
-        with self.subTest('fractal-backed plan'):
+        with self.subTest('a plan made with Fractal, which forge removed'):
             selection = p / 'fractal-selection.json'
-            original = selection.read_text() if selection.exists() else None
             selection.write_text('{"enabled": true}')
-            refused('--tasks', 'b,c', why='Fractal')
-            if original is None:
+            try:
+                r = self.forge('split', p, new, '--tasks', 'b,c')
+                self.assertEqual(r.returncode, 3, r.stdout)
+                self.assertIn('made with Fractal, which forge 0.23 removed', r.stdout)
+            finally:
                 selection.unlink()
-            else:
-                selection.write_text(original)
+            self.assertEqual(self.snapshot(p), before)
+            self.assertFalse(new.exists())
         with self.subTest('new plan dir exists'):
             refused('--tasks', 'b,c', why='not empty', target=occupied)
             self.assertEqual([x.name for x in occupied.iterdir()], ['x'])

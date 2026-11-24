@@ -71,8 +71,7 @@ cd ui && python3 -m unittest discover -s tests -p 'test_reader.py'   # one forge
 Then run the full `bash tests/check.sh` once before you open the pull request.
 
 Optional suites skip when their dependencies are missing: the browser tests need Python
-Playwright, and the Fractal integration tests need a pinned Fractal runtime. A green run without
-them does not exercise those parts. [tests/README.md](tests/README.md) explains how to run them,
+Playwright. A green run without them does not exercise those parts. [tests/README.md](tests/README.md) explains how to run them,
 along with the fake model CLIs and the `SCENARIO` file that steers them.
 
 ### Platforms

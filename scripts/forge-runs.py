@@ -2,8 +2,9 @@
 """forge runs [--repo DIR | --all] [--limit N] [--json]: this repo's recent runs, in the terminal.
 
 Every solo run, `plan` and `run` registers its run dir (forge_registry.py); this lists them newest
-first, one line each (run id, kind, age, task states, verification, final review, goal, and
-`after <run>` when the plan was chained) with the run dir under it, so you can see what happened
+first, one line each (run id, kind, age, task states, verification, final review, goal,
+`after <run>` when the plan was chained, and `made with Fractal, removed in v0.23` for a run of
+that removed backend) with the run dir under it, so you can see what happened
 without a browser and get the dir to resume, retry or open with `forge ui open`. The repo is the
 Git top level of the current directory unless
 `--repo` names one; `--all` lists the runs of every repo. It reads the same run summaries as
@@ -37,7 +38,7 @@ import forge_registry  # noqa: E402
 from forge_ui import reader  # noqa: E402
 
 FIELDS = ('key', 'run_id', 'kind', 'goal', 'repo', 'path', 'created', 'updated', 'task_count', 'counts',
-          'verification_status', 'final_review', 'after')
+          'verification_status', 'final_review', 'after', 'removed')
 
 
 def repo_of(start: Path) -> Path:
@@ -97,7 +98,11 @@ def line(run: dict, now: float, with_repo: bool = False) -> str:
     if len(goal) > 72:
         goal = goal[:71] + '…'
     repo = f"  {Path(run['repo']).name or run['repo']}" if with_repo and run.get('repo') else ''
-    return f"{run['run_id'] or run['key']}  {run['kind']}{repo}  {age(run['updated'], now)}  {counts}{checks}{chain}  {goal}\n    {run['path']}"
+    # A run of a backend forge no longer has (Fractal): still listed and readable, never run again.
+    gone = run.get('removed') or {}
+    removed = f"  made with {gone.get('name')}, removed in v{gone.get('since')}" if gone else ''
+    return (f"{run['run_id'] or run['key']}  {run['kind']}{repo}  {age(run['updated'], now)}  {counts}{checks}{chain}{removed}"
+            f"  {goal}\n    {run['path']}")
 
 
 def remove(argv) -> int:

@@ -34,6 +34,7 @@ import time
 SKILL = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SKILL / 'scripts'))
 sys.path.insert(0, str(SKILL / 'ui'))
+import forge_legacy  # noqa: E402
 
 # Plan options that travel with a rerun, so it is judged the way the original was. Not the ones
 # `plan` writes itself (routing, Jev's frozen selection) or that a fresh plan decides (exploration).
@@ -81,16 +82,6 @@ def table(path: Path) -> list:
     return rows
 
 
-def fractal_enabled(plan: Path) -> bool:
-    raw = text(plan / 'fractal-selection.json')
-    if not raw:
-        return False
-    try:
-        return json.loads(raw).get('enabled') is not False
-    except (ValueError, AttributeError):
-        return True
-
-
 def source(run_dir: str) -> dict:
     """The plan a rerun starts from, or a Refusal saying what is missing."""
     plan = Path(run_dir).resolve()
@@ -108,9 +99,8 @@ def source(run_dir: str) -> dict:
                       'to rerun from (use it as it is: forge-parallel.sh run)' % plan)
     if git(repo, 'rev-parse', '--verify', '--quiet', base + '^{commit}')[0] != 0:
         raise Refusal('the commit %s that the run started from is not in %s any more' % (base[:7], repo))
-    if fractal_enabled(plan):
-        raise Refusal('this plan runs under Fractal, which binds each task to output paths under the plan directory; '
-                      'a Fractal-backed plan cannot be rerun')
+    if forge_legacy.was_fractal(plan):
+        raise Refusal(forge_legacy.refusal('this plan') + ' It cannot be rerun.')
     running = [r['id'] for r in rows if text(plan / 'tasks' / r['id'] / 'status') == 'RUNNING']
     if running:
         raise Refusal('task %s is RUNNING (or a run was killed); let it finish, or settle it with '

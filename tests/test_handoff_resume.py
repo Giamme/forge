@@ -19,7 +19,7 @@ SCRIPT = ROOT / 'scripts' / 'forge-handoff.py'
 RUN = 'r1'
 FULL_FLAGS = {
     'retry_failed': 2, 'infra_retries': 3, 'sweep': 'P2', 'sweep_max': 4, 'sweep_plausible': True,
-    'sweep_ahead': True, 'max_parallel': 5, 'timeout': 900, 'verify': 'make check', 'fractal': False,
+    'sweep_ahead': True, 'max_parallel': 5, 'timeout': 900, 'verify': 'make check',
     'argv': [], 'at': 1.0}
 FAKE = '''#!/bin/bash
 printf '%s\\n' "$*" >> "$FAKE_LOG"
@@ -410,7 +410,7 @@ class ResumeTests(unittest.TestCase):
         self.assertEqual(data['command'], [
             '/bin/bash', str(self.fake), 'run', str(self.plan), '--retry-failed', '2', '--infra-retries', '3',
             '--sweep', 'P2', '--sweep-max', '4', '--sweep-plausible', '--sweep-ahead', '--max-parallel', '5',
-            '--timeout', '900', '--verify', 'make check', '--no-fractal'])
+            '--timeout', '900', '--verify', 'make check'])
         self.assertEqual(self.calls(), [])     # NO_START: not even the run
 
     def test_run_command_builder(self):
@@ -419,7 +419,7 @@ class ResumeTests(unittest.TestCase):
         os.environ['FORGE_HANDOFF_PARALLEL'] = str(self.fake)
         self.addCleanup(os.environ.pop, 'FORGE_HANDOFF_PARALLEL')
         self.assertEqual(build('P', {}), base)
-        self.assertEqual(build('P', {'fractal': True, 'sweep': None, 'sweep_plausible': True}), base + ['--fractal'])
+        self.assertEqual(build('P', {'fractal': True, 'sweep': None, 'sweep_plausible': True}), base)   # an old flags file: the key is ignored
         self.assertEqual(build('P', {'sweep': 'P1'}), base + ['--sweep', 'P1'])
         self.assertEqual(build('P', {'sweep': 'rm -rf', 'max_parallel': 0, 'timeout': 'x'}), base)
 
@@ -460,14 +460,16 @@ class ResumeTests(unittest.TestCase):
         driver = json.loads((self.plan / 'handoff.driver.json').read_text())
         self.assertEqual((driver['harness'], driver['session']), ('codex', 'abc'))
 
-    def test_fractal_plan_points_at_fractal_resume(self):
+    def test_an_old_fractal_plan_is_not_resumed(self):
+        # Made with Fractal, which forge 0.23 removed: nothing is reset and no run starts.
         (self.plan / 'fractal-selection.json').write_text(json.dumps({'enabled': True}))
         wt = self.worktree('a')
         self.dirty(wt)
         self.task_files('a', attempt=1)
         result = self.resume()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(f'forge fractal resume {RUN}', result.stdout)
+        self.assertIn('made with Fractal, which forge 0.23 removed', result.stdout)
+        self.assertNotIn('forge fractal', result.stdout)
         self.assertEqual(self.status('a'), 'RUNNING')
         self.assertEqual((wt / 'a.txt').read_text(), 'changed\n')
         self.assertEqual(self.calls(), [])

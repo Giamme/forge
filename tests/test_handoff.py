@@ -174,12 +174,16 @@ class ShowTests(HandoffCase):
         self.assertIn('INFRA, auth on codex/gpt (dwarf stage)', text)
         self.assertIn('log in to codex again', text)
 
-    def test_fractal_plan_points_at_fractal_resume(self):
+    def test_an_old_fractal_plan_is_read_and_points_at_no_resume(self):
+        # Made with Fractal, which forge 0.23 removed: the summary still reads it, and its next step opens it.
         plan = self.make([('a', 'FAIL')])
         (plan / 'fractal-selection.json').write_text(json.dumps({'enabled': True}))
         data = self.data(plan)
         self.assertEqual(data['run']['kind'], 'fractal')
-        self.assertIn('forge fractal resume demo', [s['command'] for s in data['next']])
+        commands = [s['command'] for s in data['next']]
+        self.assertFalse([c for c in commands if 'resume' in c or 'retry' in c or ' run ' in c], commands)
+        step = next(s for s in data['next'] if s['command'].startswith('forge ui open '))
+        self.assertIn('made with Fractal, which forge 0.23 removed', step['why'])
         self.assertEqual(self.data(self.make(name='forge-plain', tasks=[('a', 'FAIL')]))['run']['kind'], 'decomposed')
 
     def test_missing_flags_file_warns(self):

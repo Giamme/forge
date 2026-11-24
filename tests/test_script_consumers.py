@@ -202,7 +202,7 @@ class RouteTests(unittest.TestCase):
 
     def test_escalation_check_is_idle_and_clears_markers(self):
         self.write_tasks()
-        (self.plan / 'fractal-routing.json').write_text(json.dumps({'low': ['sol'], 'high': ['astra']}))
+        (self.plan / 'dwarf-routing.json').write_text(json.dumps({'low': ['sol'], 'high': ['astra']}))
         (self.plan / 'tasks/s/attempts.tsv').write_text(
             ''.join('17000000%02d\t%d\tFAIL\t\tscript\n' % (i, i) for i in (1, 2, 3)))
         (self.plan / 'tasks/m/attempts.tsv').write_text(
@@ -223,7 +223,7 @@ class RouteTests(unittest.TestCase):
 
     def test_fallback_refuses_script_and_qa_fallback_still_picks_a_peer(self):
         self.write_tasks()
-        (self.plan / 'fractal-routing.json').write_text(json.dumps({'low': ['script', 'sol', 'astra']}))
+        (self.plan / 'dwarf-routing.json').write_text(json.dumps({'low': ['script', 'sol', 'astra']}))
         (self.plan / 'qa-routing.json').write_text(json.dumps({'low': ['opus', 'astra']}))
 
         refused = self.route('fallback', '--task', 's')
@@ -248,7 +248,7 @@ class RouteTests(unittest.TestCase):
 
     def test_assign_and_running_tier_record_nothing_for_script(self):
         self.write_tasks()
-        pools = self.plan / 'fractal-routing.json'
+        pools = self.plan / 'dwarf-routing.json'
         pools.write_text(json.dumps({'low': ['sol'], 'high': ['astra']}))
         (self.plan / 'tasks/s/running.tier').write_text('low\tsol\t1\n')
         assigned = subprocess.run(

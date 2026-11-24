@@ -418,46 +418,46 @@ export async function createStage(host, cb = {}) {
       }
       el.innerFlows.push(f);
     }
-    syncFractal(el);
+    syncSubtasks(el);
     applyLayers();
   }
-  /* ---------- Fractal: an opened task's child tasks, a small tree floating over it ---------- */
-  const FRACTAL = new Map();                                // task id → TaskFractal
-  const FR_H = { low: 12, medium: 18, high: 26 };
-  function syncFractal(el) {
+  /* ---------- decomposition: an opened split task's subtasks, a small tree floating over it ---------- */
+  const SUBTASKS = new Map();                               // task id → its decomposition nodes
+  const SUB_H = { low: 12, medium: 18, high: 26 };
+  function syncSubtasks(el) {
     if (!el || !el.inner || el.kind !== 'task') return;
-    const tid = el.data.task.id, data = FRACTAL.get(tid), nodes = data && data.available ? list(data.nodes) : [];
-    const sig = JSON.stringify([E.theme, nodes.map(n => [n.id, n.parent, n.ui_status, n.difficulty, n.model, n.reserved ? 1 : 0])]);
-    if (sig === el.fractalSig) return;
-    el.fractalSig = sig;
-    if (el.fractalG) { PICK = PICK.filter(o => !(o.userData.fractal && o.userData.fractal.task === tid)); E.disposeGroup(el.fractalG); el.fractalG = null; }
+    const tid = el.data.task.id, nodes = list(SUBTASKS.get(tid));
+    const sig = JSON.stringify([E.theme, nodes.map(n => [n.id, n.parent, n.status, n.difficulty, n.model, n.decision])]);
+    if (sig === el.subSig) return;
+    el.subSig = sig;
+    if (el.subG) { PICK = PICK.filter(o => !(o.userData.subtask && o.userData.subtask.task === tid)); E.disposeGroup(el.subG); el.subG = null; }
     if (!nodes.length) return;
-    const T = RM.fractalTree(nodes), byId = new Map(nodes.map(n => [n.id, n])), { x, y, w, d, h } = el.n;
+    const T = RM.nodeTree(nodes), byId = new Map(nodes.map(n => [n.id, n])), { x, y, w, d, h } = el.n;
     const S = 34, DX = 62, DY = 44, tw = S + (T.cols - 1) * DX, td = S + Math.max(0, T.rows - 1) * DY;
     const x0 = x + w / 2 - tw / 2, y0 = y + d / 2 - td / 2, z0 = h + 70;
-    const G = el.fractalG = new THREE.Group(); el.inner.add(G);
-    const at = id => { const p = T.pos[id], n = byId.get(id); return { x: x0 + p.col * DX, y: y0 + p.row * DY, w: S, d: S, h: FR_H[String(n.difficulty || '').toLowerCase()] || 16 }; };
+    const G = el.subG = new THREE.Group(); el.inner.add(G);
+    const at = id => { const p = T.pos[id], n = byId.get(id); return { x: x0 + p.col * DX, y: y0 + p.row * DY, w: S, d: S, h: SUB_H[String(n.difficulty || '').toLowerCase()] || 16 }; };
     const cable = E.lmat({ polygonOffsetFactor: -3, polygonOffsetUnits: -8 }); cable.color.copy(E.majorMat.color).lerp(E.accent, .45);
     for (const [pa, ch] of T.edges) { const A = at(pa), B = at(ch), [P, Q] = E.ends(A, B, z0 + A.h / 2, z0 + B.h / 2); E.polyLine(E.curve(P, Q, 3, .1), cable, G); }
     // a stem from the task's floor to each root
     const stem = E.lmat({ dashed: true, dashSize: 4 * TS, gapSize: 3 * TS }); stem.color.copy(cable.color);
     for (const n of nodes) if (T.pos[n.id] && T.pos[n.id].depth === 0) { const A = at(n.id); E.polyLine([[x + w / 2, y + d / 2, 1], [A.x + S / 2, A.y + S / 2, z0]], stem, G).computeLineDistances(); }
     for (const n of nodes) {
-      const b = at(n.id), M = E.mats(), col = E.statusColor(n.ui_status || 'unknown');
-      const m = E.solid(b.x, b.y, z0, b.w, b.d, b.h, 6, M, G, { fractal: { task: tid, node: n.id } });
-      E.paint(M, n.reserved ? .6 : 1, .6, 0, n.reserved ? .55 : 1, n.reserved ? .45 : 1, col, .3);
+      const b = at(n.id), M = E.mats(), col = E.statusColor(n.status || 'unknown');
+      const m = E.solid(b.x, b.y, z0, b.w, b.d, b.h, 6, M, G, { subtask: { task: tid, node: n.id, run: n.run, id: n.task } });
+      E.paint(M, 1, .6, 0, 1, 1, col, .3);
       PICK.push(m);
       const lab = E.tplane(S - 4, 13, E.pxIn(w, d), (cx, sc, C) => {
-        E.font(cx, 4.6, sc, 600); cx.fillStyle = C.inkHi; cx.fillText(E.ellipsis(n.id, 12), 1 * sc, 5.4 * sc);
-        E.font(cx, 3.6, sc); cx.fillStyle = C.ink; cx.fillText(E.ellipsis(n.reserved ? 'reserved' : n.model || n.status || '', 14), 1 * sc, 11 * sc);
+        E.font(cx, 4.6, sc, 600); cx.fillStyle = C.inkHi; cx.fillText(E.ellipsis(n.task || n.id, 12), 1 * sc, 5.4 * sc);
+        E.font(cx, 3.6, sc); cx.fillStyle = C.ink; cx.fillText(E.ellipsis(n.model || n.status || '', 14), 1 * sc, 11 * sc);
       }, G, M);
       E.roofAt(lab, b.x + 2, b.y + 2, z0 + b.h);
     }
   }
-  E.themeHooks.add(() => { for (const el of EL.values()) if (el.fractalG) { el.fractalSig = ''; syncFractal(el); } });
+  E.themeHooks.add(() => { for (const el of EL.values()) if (el.subG) { el.subSig = ''; syncSubtasks(el); } });
   function closeInner(el) {
     if (!el.inner) return;
-    if (el.kind === 'task') { const tid = el.data.task.id; PICK = PICK.filter(o => !(o.userData.fractal && o.userData.fractal.task === tid)); el.fractalG = null; el.fractalSig = ''; }
+    if (el.kind === 'task') { const tid = el.data.task.id; PICK = PICK.filter(o => !(o.userData.subtask && o.userData.subtask.task === tid)); el.subG = null; el.subSig = ''; }
     for (const k of el.kids || []) { EL.delete(k.id); PICK = PICK.filter(o => o.userData.el !== k.id); }
     PICK = PICK.filter(o => !(o.userData.floor && o.userData.el === el.id));
     E.disposeGroup(el.inner); el.inner = null; el.kids = []; el.innerFlows = [];
@@ -745,12 +745,12 @@ export async function createStage(host, cb = {}) {
   function selIds() {
     const s = st.sel, out = new Set(); if (!s) return out;
     if (st.view === 'atlas') { if (s.kind === 'run') out.add('r:' + s.key); return out; }
-    const tid = s.kind === 'task' ? s.id : s.kind === 'execution' || s.kind === 'fractal' ? s.task : null;
+    const tid = s.kind === 'task' ? s.id : s.kind === 'execution' ? s.task : null;
     if (tid) {
       out.add('t:' + tid);
       if (s.kind === 'execution') for (const el of EL.values()) if (el.kind === 'part' && el.data.task === tid && el.data.part.exec && el.data.part.exec.id === s.exec) out.add(el.id);
     }
-    if (s.kind === 'task' || s.kind === 'execution' || s.kind === 'fractal') {
+    if (s.kind === 'task' || s.kind === 'execution') {
       for (const el of EL.values()) {
         const it = el.data && el.data.item; if (!it) continue;
         if (s.kind !== 'execution' ? it.task === tid : it.id === s.exec || list(it.segs).some(g => g.id === s.exec)) out.add(el.id);
@@ -769,7 +769,7 @@ export async function createStage(host, cb = {}) {
     return new THREE.Color().copy(E.statusColor('pending')).lerp(E.accent, Math.sqrt(v / mx));
   }
   function retarget() {
-    const sel = selIds(), tsel = st.sel && (st.sel.kind === 'task' ? st.sel.id : st.sel.kind === 'execution' || st.sel.kind === 'fractal' ? st.sel.task : null), open = tsel && st.mode === 'plan' && st.view === 'run' ? 't:' + tsel : null;
+    const sel = selIds(), tsel = st.sel && (st.sel.kind === 'task' ? st.sel.id : st.sel.kind === 'execution' ? st.sel.task : null), open = tsel && st.mode === 'plan' && st.view === 'run' ? 't:' + tsel : null;
     const crit = st.overlay.critical && st.crit ? new Set(st.crit.ids.map(id => 't:' + id)) : new Set();
     // the route: what the chosen task waits on and what waits on it, lit like a route set on a signal box desk
     const route = new Set();
@@ -1153,7 +1153,7 @@ export async function createStage(host, cb = {}) {
     const b = st.view === 'run' ? BEACONS.pick(cx, cy) : null;
     if (b) { cb.onFinding && cb.onFinding(b.data); return; }
     const o = E.pick(cx, cy, PICK, pickable), el = elOf(o);
-    if (o && o.userData.fractal) { cb.onSelect && cb.onSelect({ kind: 'fractal', task: o.userData.fractal.task, node: o.userData.fractal.node }); return; }
+    if (o && o.userData.subtask) { cb.onOpenNode && cb.onOpenNode({ run: o.userData.subtask.run, task: o.userData.subtask.id }); return; }
     if (st.view === 'atlas') {
       if (el && el.kind === 'run') {
         st.sel = { kind: 'run', key: el.data.run.key }; retarget();
@@ -1235,7 +1235,7 @@ export async function createStage(host, cb = {}) {
     const span = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
     const pad = Math.max(st.mode === 'exec' ? 80 : 40, span * .3);
     const opening = st.mode === 'plan' && ids.some(el => el.kind === 'task');
-    const tree = opening && ids.some(el => FRACTAL.has(el.data && el.data.task && el.data.task.id)) ? hs + 130 : 0;   // a Fractal tree floats above
+    const tree = opening && ids.some(el => SUBTASKS.has(el.data && el.data.task && el.data.task.id)) ? hs + 130 : 0;   // a subtask tree floats above
     E.frameBox([Math.min(...xs) - pad, Math.min(...ys) - pad, 0, Math.max(...xs) + pad, Math.max(...ys) + pad, Math.max(tree, hs * (opening ? 2 : 1.4))], dur, opening ? 52 : 40, dir);
   }
 
@@ -1437,10 +1437,10 @@ export async function createStage(host, cb = {}) {
       return c;
     },
     get cloud() { return cloud; },
-    // a task's Fractal tree (TaskFractal, or null), drawn over the task while it is open
-    setFractal(taskId, data) {
-      if (data) FRACTAL.set(taskId, data); else FRACTAL.delete(taskId);
-      const el = EL.get('t:' + taskId); if (el && el.inner) { syncFractal(el); E.invalidate(300); }
+    // a split task's subtasks (its decomposition nodes, or null), drawn over the task while it is open
+    setSubtasks(taskId, nodes) {
+      if (nodes && nodes.length) SUBTASKS.set(taskId, nodes); else SUBTASKS.delete(taskId);
+      const el = EL.get('t:' + taskId); if (el && el.inner) { syncSubtasks(el); E.invalidate(300); }
     },
     focus() { E.canvas.focus({ preventScroll: true }); },
     // frame again what is shown, in the part of the stage the modules leave free (after a module opens, folds or resizes)

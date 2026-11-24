@@ -17,7 +17,7 @@ can still be answered from old runs.
 
 Capture is fail-open in the same way Jev is. Every entry point swallows its own errors
 into errors.log, never prints, never raises, and bounds its wait on the database with the
-SQLite busy timeout. It uses no signals, because Fractal captures from worker threads.
+SQLite busy timeout. It uses no signals, so a capture may run from any thread.
 record_strict() is the one exception, for a caller that must know an event is stored (it
 raises DatasetError instead of returning 0).
 FORGE_DATASET=off turns it off.

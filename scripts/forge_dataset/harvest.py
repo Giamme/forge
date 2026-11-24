@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 
 from . import SCRIPTS, put_blob, put_file, sha256
+import forge_legacy  # noqa: E402  (scripts/ is on sys.path once the package is imported)
 
 DISPATCH_ROLES = ('dwarf', 'qa', 'planner', 'side')
 # The file role stays `side`. Harvest records side_<kind> (see dispatch_event);
@@ -300,8 +301,9 @@ def locate(root: str | Path, role: str | None = None) -> dict:
     """Which run, mode and task a dispatch or pipeline root belongs to, from the path alone.
 
     Env vars cannot carry this reliably (the orchestrator dispatches the planner by hand,
-    Fractal steps run under tmux, and the importer has no env at all), so live capture
-    and import both derive it from where forge put the files.
+    and the importer has no env at all), so live capture and import both derive it from
+    where forge put the files. The steps/nodes shape is an old record: a run made with
+    Fractal, which forge 0.23 removed and the importer still reads.
     """
     p = Path(root).resolve()
     parts = p.parts
@@ -997,8 +999,7 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
         planner=first_line(plan / 'planner'), author='planner' if list(plan.glob('attempts/planner-*')) else 'orchestrator',
         planner_dispatches=sorted(p.name for p in plan.glob('attempts/planner-*')),
         head=head, tasks=per_task, waves=waves, deferrals=(text(plan / 'deferrals.txt') or '').splitlines(),
-        pools=read_json(plan / 'fractal-routing.json'), jev_selection=read_json(plan / 'jev-selection.json'),
-        fractal_selection=read_json(plan / 'fractal-selection.json'),
+        pools=read_json(forge_legacy.pools_path(plan)), jev_selection=read_json(plan / 'jev-selection.json'),
         jev_coupling=read_json(plan / 'jev-coupling.json'),
         options=dict({name: first_line(plan / name) for name in ('verify_retries', 'timeout', 'final_qa',
                                                             'shadow_qa', 'shadow_rate', 'explore', 'reviewer_session', 'reviewer_session_rate',
@@ -1014,6 +1015,11 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
                     inventory=put_blob(listing, 'request') if listing else None,
                     memory=put_file(_memory_md(repo)) if repo else None),
     )
+    # An old record only: a plan made before forge 0.23 says whether it ran under Fractal, and the
+    # routing analysis leaves such a run out. A plan without the file gets no such key.
+    old_selection = read_json(plan / forge_legacy.OLD_SELECTION)
+    if old_selection is not None:
+        data['fractal_selection'] = old_selection
     if plan_gates is not None:
         data['plan_gates'] = plan_gates
     if plan_shape is not None:
@@ -1041,7 +1047,9 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
                 inv=prov.get('inv'), data=data)
 
 
-# --- Fractal ------------------------------------------------------------------------------
+# --- old records: runs made with Fractal ----------------------------------------------------
+# forge 0.23 removed Fractal (#154). Nothing writes these live any more; the importer still reads
+# what such a run left on disk, so its history is not lost when its state directory is deleted.
 
 def fractal_context(task_dir: Path, create: bool) -> dict:
     request = read_json(task_dir / 'request.json') or {}

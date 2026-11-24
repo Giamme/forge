@@ -46,8 +46,7 @@ retry-budget, infra-retries, max-parallel, drain, resume, stop, retry and add.
 retry and add only queue a request in control.requests/ (one JSON file each): the scheduler
 applies or refuses it at its next pass and logs the outcome in control.log, with the same
 `request` id, as actor `scheduler`. A request never outlives the scheduler that was live
-when it was queued. A task-level change or a pin on a MERGED task, and a pin on a
-Fractal plan, are refused.
+when it was queued. A task-level change or a pin on a MERGED task is refused.
 
 A pin, a retry's --dwarf and an added row's specs are checked with `forge-dispatch.sh doctor
 --spec <spec> --role <role>`, which spends no quota, before the lock is taken.
@@ -58,7 +57,7 @@ An answer is 1 to 8000 characters (after stripping), with no NUL byte, and its r
 scheduler's 64 KiB limit. control.log records the retry with the value `answer` and `answer_chars`, never the text.
 
 Exit codes: 0 ok, 2 usage or invalid input (including an unsafe path), 3 refused (not live, MERGED,
-Fractal, a spec that fails doctor, the control lock busy for over 5 s).
+a spec that fails doctor, the control lock busy for over 5 s).
 """
 from __future__ import annotations
 
@@ -83,6 +82,7 @@ if SCRIPTS not in sys.path:
     sys.path.insert(0, SCRIPTS)
 import forge_flock as fcntl  # noqa: E402
 import forge_infra  # noqa: E402
+import forge_legacy  # noqa: E402
 import forge_posix  # noqa: E402
 import forge_proc  # noqa: E402
 
@@ -374,17 +374,6 @@ def is_live(plan):
     return forge_proc.pid_alive(pid)
 
 
-def is_fractal(plan):
-    """fractal-selection.json present and not explicitly disabled (unreadable counts: fail closed)."""
-    raw = read_file(plan, 'fractal-selection.json')
-    if raw is None or not raw.strip():
-        return False
-    try:
-        return bool(json.loads(raw).get('enabled'))
-    except (ValueError, AttributeError):
-        return True
-
-
 def task_status(plan, task, strict=False):
     try:
         if probe(plan, f'tasks/{task}/merged'):
@@ -397,12 +386,10 @@ def task_status(plan, task, strict=False):
     return words[0] if words else 'PENDING'
 
 
-def refuse_task(plan, task, pin=False, merged_ok=False):
+def refuse_task(plan, task, merged_ok=False):
     # merged_ok: a switch that changes no run behaviour (summaries) may still be set on a finished task.
     if task_status(plan, task, strict=True) == 'MERGED' and not merged_ok:
         raise Refused(f'task {task} is MERGED: nothing left to change')
-    if pin and is_fractal(plan):
-        raise Refused('this plan runs under Fractal, which never applies pins')
 
 
 def number(text):
@@ -512,7 +499,7 @@ def show(plan, rows):
             if len(log) == LOG_SHOWN:
                 break
     return dict(plan=plan, run_id=get('run_id') or os.path.basename(plan).removeprefix('forge-'),
-                live=live, fractal=is_fractal(plan), run=run, tasks=tasks, log=log)
+                live=live, removed='Fractal' if forge_legacy.was_fractal(plan) else None, run=run, tasks=tasks, log=log)
 
 
 # ------------------------------------------------------------------------------------ changes
@@ -638,15 +625,14 @@ def audit(plan, actor, action, task, key, value, previous, **extra):
     return entry
 
 
-def change(args, plan, rows, action, task, key, work, applies, summary, live_only=False, pin_guard=False,
-           merged_ok=False):
+def change(args, plan, rows, action, task, key, work, applies, summary, live_only=False, merged_ok=False):
     """Run work() -> (value, previous, changed) under the control lock, audit a change, report the result."""
     with control_lock(plan):
         probe(plan, 'control.log')   # an unsafe log refuses the change instead of leaving it unaudited
         if live_only and not is_live(plan):
             raise Refused(f'{key or action} can only change while a run is live (no live scheduler for this plan)')
         if task:
-            refuse_task(plan, task, pin_guard, merged_ok)
+            refuse_task(plan, task, merged_ok)
         value, previous, changed = work()
         if changed:   # setting a value it already has, or unpinning nothing, is not a change
             audit(plan, args.actor, action, task, key, value, previous)
@@ -750,7 +736,7 @@ def cmd_pin(args):
     spec = args.spec
     if not spec or re.search(r'[\s\x00-\x1f\x7f]', spec):
         raise Invalid('a pin is one dwarf spec such as sol:high:codex, without whitespace')
-    refuse_task(plan, args.task, pin=True)
+    refuse_task(plan, args.task)
     doctor(spec)   # before the lock: it takes a moment, and the lock is for check-and-write only
     rel = f'tasks/{args.task}/escalation.pin'
 
@@ -760,7 +746,7 @@ def cmd_pin(args):
         return spec, previous, previous != spec
 
     return change(args, plan, rows, 'pin', args.task, 'pin', work, NEXT_RETRY,
-                  lambda v: f'pinned task {args.task} to {v}', pin_guard=True)
+                  lambda v: f'pinned task {args.task} to {v}')
 
 
 def cmd_unpin(args):
@@ -875,7 +861,7 @@ def queue(args, plan, verb, task, dwarf, decision=None, accept_reason=None, answ
                               f'directly: forge-parallel.sh accept {plan} {task} --reason TEXT --approved')
             raise Refused(f'{verb} needs a live run (no live scheduler for this plan)')
         if verb == 'retry':
-            refuse_task(plan, task, pin=True)
+            refuse_task(plan, task)
         name = f'{time.time_ns()}-{os.getpid()}.json'
         request = dict(verb=verb, task=task, dwarf=dwarf, at=time.time(), actor=args.actor)
         if decision:
@@ -1026,7 +1012,7 @@ def cmd_retry(args):
     require_task(rows, args.task)
     answer = answer_of(args)
     if answer is not None:
-        refuse_task(plan, args.task, pin=True)
+        refuse_task(plan, args.task)
         status = task_status(plan, args.task, strict=True)
         if status != 'NEEDS_INPUT':
             raise Refused(f'task {args.task} is {status}, not waiting for an answer: --answer only answers a NEEDS_INPUT task')
@@ -1036,7 +1022,7 @@ def cmd_retry(args):
     dwarf = None
     if args.dwarf is not None:
         dwarf = clean_spec(args.dwarf, '--dwarf')
-    refuse_task(plan, args.task, pin=True)   # before the doctor: MERGED and Fractal need no model check
+    refuse_task(plan, args.task)   # before the doctor: a MERGED task needs no model check
     decision = decision_of(plan, args, dwarf)
     if dwarf:
         doctor(dwarf)
@@ -1092,8 +1078,9 @@ def cmd_show(args):
         return 0
     cell = lambda v: '-' if v is None else str(v)  # noqa: E731
     run = controls['run']
-    print(f"{plan}  run {cell(controls['run_id'])}  live {'yes' if controls['live'] else 'no'}"
-          f"  fractal {'yes' if controls['fractal'] else 'no'}")
+    print(f"{plan}  run {cell(controls['run_id'])}  live {'yes' if controls['live'] else 'no'}")
+    if controls['removed']:
+        print(f'read-only: {forge_legacy.removed_note()}')
     print('  ' + '  '.join(f"{k.replace('_', '-')} {cell(v)}" + (' (default)' if k == 'qa_threshold' and run['qa_threshold_source'] == 'default' else '')
                            for k, v in run.items() if k not in ('infra_paused', 'qa_threshold_source')))
     now = time.time()
@@ -1205,6 +1192,9 @@ def parser():
 def main(argv=None) -> int:
     args = parser().parse_args(argv)
     try:
+        # A plan made with Fractal, which forge removed, can be shown and never changed: nothing runs it again.
+        if args.func is not cmd_show and forge_legacy.was_fractal(args.plan):
+            raise Refused(forge_legacy.refusal('this plan'))
         return args.func(args)
     except Invalid as error:
         print(f'forge control: {error}', file=sys.stderr)

@@ -11,12 +11,14 @@ every repository with `--all`:
   worktrees   each run's worktree folder (<repo>/../.forge-worktrees/<run id>); forge-ui's Worktrees
               screen has the state of each one and the command that removes it safely
   data home   the dataset (kept: it is what forge learns from), its blobs, archives, exports, legacy
+  removed     what a removed part of forge left behind: the state directory of Fractal (removed in 0.23),
+              with the command that deletes it. forge never deletes it for you
 
 Sizes are disk usage, as `du` counts it (forge_storage.py has the rules). It reads only, and measuring a
 large tree takes a while: every file is visited. The repository's total is kept for the storage.warn-gb
 check at run start.
 
---json prints {repo, computed, complete, runs, strays, worktrees, data_home, totals, commands}.
+--json prints {repo, computed, complete, runs, strays, worktrees, data_home, totals, removed, commands}.
 """
 from __future__ import annotations
 
@@ -61,6 +63,10 @@ def commands(result: dict) -> list[dict]:
     if result['worktrees']:
         out.append(dict(label='see each worktree\'s state and the command that removes it safely', command='forge ui open',
                         bytes=result['totals']['worktrees'], note='then open Worktrees'))
+    for left in result.get('removed') or []:
+        out.append(dict(label='delete what %s left behind (forge %s removed it; nothing reads this directory, and old '
+                              'runs stay readable without it)' % (left['name'], left['since']),
+                        command='rm -rf -- %s' % shlex.quote(left['path']), bytes=left['bytes']))
     return out
 
 
@@ -94,7 +100,7 @@ def print_text(result: dict, top: int) -> None:
             name = run['run_id'] if len(run['run_id']) <= 28 else run['run_id'][:27] + '…'
             print('  %-28s %9s %10s %9s %9s %12s %12s  %s' % (
                 name, size_text(run['total']), size_text(run['snapshots']), size_text(run['logs'] + run['gz']),
-                size_text(run['other'] + run['fractal']), size_text(run['strays']) if run['strays'] else '-',
+                size_text(run['other']), size_text(run['strays']) if run['strays'] else '-',
                 size_text(run['reclaimable']), age(run['updated'], now)))
             print('    %s' % run['path'])
     if result['strays']:
@@ -114,6 +120,8 @@ def print_text(result: dict, top: int) -> None:
               '(forge dataset export writes them again); legacy %s; other %s'
               % (size_text(p['dataset']), size_text(p['blobs']), size_text(p['archive']), size_text(p['exports']),
                  size_text(p['legacy']), size_text(p['storage'] + p['other'])))
+    for left in result.get('removed') or []:
+        print('\nleft by %s, which forge %s removed: %s in %s' % (left['name'], left['since'], size_text(left['bytes']), left['path']))
     if result['commands']:
         print('\nto take space back:')
         for c in result['commands']:
@@ -157,6 +165,9 @@ def main(argv=None) -> int:
         print('forge du: no registered runs for %s' % (repo or 'any repository'))
         if result['data_home']:
             print('data home %s: %s' % (result['data_home']['path'], size_text(result['data_home']['bytes'])))
+        for left in result['removed']:
+            print('left by %s, which forge %s removed: %s in %s\n  to delete it: rm -rf -- %s'
+                  % (left['name'], left['since'], size_text(left['bytes']), left['path'], shlex.quote(left['path'])))
         return 0
     print_text(result, args.top)
     return 0

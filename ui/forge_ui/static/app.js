@@ -55,17 +55,14 @@ window.ForgeApp = (() => {
     if (sel.kind === 'adoption') return `${base}/adoptions/${e(sel.name)}`;
     if (sel.kind === 'verification') return `${base}/verification`;
     if (sel.kind === 'integration') return `${base}/integration`;
-    if (sel.kind === 'fractal') return `${base}/tasks/${e(sel.task)}/fractal/${e(sel.node)}`;
     return base;
   }
-  // a diff: {kind: 'task', task, source, file} | {kind: 'final', name, file} | {kind: 'adoption', name, file}
-  // | {kind: 'fractal', task, node, file},
+  // a diff: {kind: 'task', task, source, file} | {kind: 'final', name, file} | {kind: 'adoption', name, file},
   // opened at a file, or at one finding (its id from /findings)
   function diffHash(key, spec) {
     const e = encodeURIComponent, base = '#/runs/' + e(key), file = spec.finding ? '/finding/' + e(spec.finding) : spec.file ? '/file/' + e(spec.file) : '';
     if (spec.kind === 'final') return `${base}/final-review/${e(spec.name)}/diff${file}`;
     if (spec.kind === 'adoption') return `${base}/adoptions/${e(spec.name)}/diff${file}`;
-    if (spec.kind === 'fractal') return `${base}/tasks/${e(spec.task)}/fractal/${e(spec.node)}/diff${file}`;
     return `${base}/tasks/${e(spec.task)}/diff${spec.source && spec.source !== 'current' ? '/' + e(spec.source) : ''}${file}`;
   }
   // an execution's conversation, in the stage's place like a diff; opened at one of its events when given
@@ -91,7 +88,6 @@ window.ForgeApp = (() => {
     let sel = null, r;
     if ((r = rest.match(/^\/group\/([^/]+)\/?$/))) return { key: d(m[1]), sel: null, group: d(r[1]) };
     if ((r = rest.match(/^\/tasks\/([^/]+)\/diff(?:\/(?!file\/|finding\/)([^/]+))?(?:\/finding\/([^/]+))?(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'task', id: d(r[1]) }, diff: { kind: 'task', task: d(r[1]), source: r[2] ? d(r[2]) : 'current', finding: r[3] ? d(r[3]) : null, file: r[4] ? d(r[4]) : null } };
-    if ((r = rest.match(/^\/tasks\/([^/]+)\/fractal\/([^/]+)\/diff(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'task', id: d(r[1]) }, diff: { kind: 'fractal', task: d(r[1]), node: d(r[2]), file: r[3] ? d(r[3]) : null } };
     if ((r = rest.match(/^\/final-review\/([^/]+)\/diff(?:\/finding\/([^/]+))?(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'final', name: d(r[1]) }, diff: { kind: 'final', name: d(r[1]), finding: r[2] ? d(r[2]) : null, file: r[3] ? d(r[3]) : null } };
     if ((r = rest.match(/^\/adoptions\/([^/]+)\/diff(?:\/finding\/([^/]+))?(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'adoption', name: d(r[1]) }, diff: { kind: 'adoption', name: d(r[1]), finding: r[2] ? d(r[2]) : null, file: r[3] ? d(r[3]) : null } };
     if ((r = rest.match(/^\/(?:tasks\/([^/]+)\/)?executions\/([^/]+)\/conversation(?:\/event\/(\d{1,7}))?\/?$/))) {
@@ -111,7 +107,6 @@ window.ForgeApp = (() => {
     else if ((r = rest.match(/^\/adoptions\/([^/]+)\/?$/))) sel = { kind: 'adoption', name: d(r[1]) };
     else if (/^\/verification\/?$/.test(rest)) sel = { kind: 'verification' };
     else if (/^\/integration\/?$/.test(rest)) sel = { kind: 'integration' };
-    else if ((r = rest.match(/^\/tasks\/([^/]+)\/fractal\/([^/]+)\/?$/))) sel = { kind: 'fractal', task: d(r[1]), node: d(r[2]) };
     return { key: d(m[1]), sel };
   }
   const select = sel => { location.hash = hashFor(state.key, sel); };
@@ -317,6 +312,7 @@ window.ForgeApp = (() => {
     window.ForgeMap3D.load().then(mod => mod.createStage(stageHost, {
       onSelect: sel => select(sel),
       onOpenRun: key => { location.hash = hashFor(key, null); },
+      onOpenNode: n => { location.hash = hashFor(n.run, { kind: 'task', id: n.task }); },   // a subtask, in its sub-plan's run
       onBack: () => { location.hash = '#/'; },
       onMode: mode => setMode(mode),
       onLayers: L => { state.layers = L; store.set('layers', L); syncLayerKeys(); },   // the stage's I key
@@ -955,7 +951,9 @@ window.ForgeApp = (() => {
         refresh: () => loadRun(run.key),                    // a change made here shows at once, not at the next poll
         hash: s => hashFor(run.key, s), onSelect: s => select(s), diffHash: spec => diffHash(run.key, spec),
         convoHash: (s, event) => convoHash(run.key, s, event),
-        onFractal: (id, data) => { if (state.stage && state.stage.setFractal) state.stage.setFractal(id, data); },
+        // a split task's subtasks, drawn over it on the map; a node opens its own task in the sub-plan's run
+        onSubtasks: (id, nodes) => { if (state.stage && state.stage.setSubtasks) state.stage.setSubtasks(id, nodes); },
+        nodeHash: n => hashFor(n.run, { kind: 'task', id: n.task }),
       });
       scoped(host, run.key + ':');
     });

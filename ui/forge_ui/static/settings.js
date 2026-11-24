@@ -98,7 +98,7 @@
   // The same order as forge_decide.profiles. A tier or key the body carries and this list does not still shows, after these.
   const TIERS = ['any', 'low', 'medium', 'high'];
   const POOLS = ['dwarf', 'qa'];
-  const ROUTING_ORDER = ['planner', 'fractal_planner', 'final_reviewer', 'escalate_after', 'escalate_effort'];
+  const ROUTING_ORDER = ['planner', 'final_reviewer', 'escalate_after', 'escalate_effort'];
   const POLICY_ORDER = ['qa_threshold', 'retry_failed', 'infra_retries', 'verify_retries', 'timeout', 'explore', 'shadow_rate', 'shadow_qa', 'fast'];
   const BUDGET_PAIRS = [['run', 'run_tokens', 'run_usd'], ['daily', 'daily_tokens', 'daily_usd']];
   const PROFILE_LEVELS = ['user', 'repo', 'builtin'];

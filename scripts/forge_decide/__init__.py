@@ -18,7 +18,7 @@ File schema, the same at both levels (unknown keys are kept and ignored):
      "profiles": {"<name>": {
          "routing": {"dwarf": {"any"|"low"|"medium"|"high": [spec, ...]},
                      "qa":    {"any"|"low"|"medium"|"high": [spec, ...]},
-                     "planner": spec, "fractal_planner": spec, "final_reviewer": spec,
+                     "planner": spec, "final_reviewer": spec,
                      "escalate_after": int >= 0, "escalate_effort": bool},
          "policy":  {"qa_threshold": "P0"|"P1"|"P2"|"P3"|"none", "retry_failed": int >= 0,
                      "infra_retries": int >= 0, "verify_retries": int >= 0, "timeout": int >= 0,

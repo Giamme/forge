@@ -224,15 +224,6 @@ def build(catalog, key, texts=False, paths=False, now=None):
         snap.add(f'{base}/adoptions/{_enc(name)}')
     snap.add(f'{base}/files')
     snap.add(f'{base}/findings')
-    fractal = run.get('fractal') or {}
-    if fractal.get('enabled') and fractal.get('available'):
-        for task in tasks:
-            tree = snap.add(f"{base}/tasks/{_enc(task['id'])}/fractal")
-            for node in (tree or {}).get('nodes') or []:
-                if isinstance(node, dict) and node.get('id') and not node.get('reserved'):
-                    snap.add(f"{base}/tasks/{_enc(task['id'])}/fractal/nodes/{_enc(node['id'])}")
-                    if texts and node.get('has_diff'):
-                        snap.add(f"{base}/tasks/{_enc(task['id'])}/fractal/nodes/{_enc(node['id'])}/diff", cap=DIFF_CAP)
     if texts:
         # every diff a page of this run can open: each task's files and each review's, the final reviews'
         for task in tasks:

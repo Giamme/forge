@@ -85,7 +85,7 @@
   function breakdown(data) {
     const t = (data && data.totals) || {}, runs = list(data && data.runs);
     const sum = f => runs.reduce((n, r) => n + (Number(f(r)) || 0), 0);
-    const bytes = { snapshots: sum(r => r.snapshots), logs: sum(r => (r.logs || 0) + (r.gz || 0)), other: sum(r => (r.other || 0) + (r.fractal || 0)),
+    const bytes = { snapshots: sum(r => r.snapshots), logs: sum(r => (r.logs || 0) + (r.gz || 0)), other: sum(r => r.other || 0),
       strays: sum(r => r.strays), worktrees: t.worktrees || 0, home: (data && data.data_home && data.data_home.bytes) || 0 };
     const total = Object.values(bytes).reduce((a, b) => a + b, 0);
     return PARTS.map(p => ({ ...p, bytes: bytes[p.key], share: total ? bytes[p.key] / total : 0 }));
@@ -102,7 +102,7 @@
     const add = (g, key, n) => { n = Number(n) || 0; g.parts[key] += n; g.total += n; };
     for (const r of list(data && data.runs)) {
       const g = at(r.repo);
-      add(g, 'snapshots', r.snapshots); add(g, 'logs', (r.logs || 0) + (r.gz || 0)); add(g, 'other', (r.other || 0) + (r.fractal || 0)); add(g, 'strays', r.strays);
+      add(g, 'snapshots', r.snapshots); add(g, 'logs', (r.logs || 0) + (r.gz || 0)); add(g, 'other', r.other); add(g, 'strays', r.strays);
     }
     for (const w of list(data && data.worktrees)) add(at(w.repo), 'worktrees', w.bytes);
     return Array.from(out.values()).filter(g => g.total > 0).sort((a, b) => b.total - a.total);
