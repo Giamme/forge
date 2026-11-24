@@ -604,8 +604,15 @@ do_accept() {
   echo "$id accepted by a human and merged"
   echo "known issues recorded in $ki"
   # A live run starts the tasks that waited on it by itself.
-  if [ -z "${FORGE_ACCEPT_LIVE:-}" ] && [ "$(awk -F'\t' '$2!="MERGED" {n++} END {print n+0}' "$PLAN/results.tsv")" -gt 0 ]; then
-    echo "tasks that were waiting on it are unchanged; continue with: forge-parallel.sh run $PLAN"
+  if [ -z "${FORGE_ACCEPT_LIVE:-}" ]; then
+    local rem
+    rem="$(awk -F'\t' '$2!="MERGED" {n++} END {print n+0}' "$PLAN/results.tsv")"
+    if [ "$rem" -gt 0 ]; then
+      echo "tasks that were waiting on it are unchanged; continue with: forge-parallel.sh run $PLAN"
+    fi
+    if [ "$(cat "$PLAN/verification.status" 2>/dev/null)" = STALE ] || [ "$rem" -eq 0 ]; then
+      echo "merged result is unverified until 'run' or 'integrate' verifies it: forge-parallel.sh run $PLAN"
+    fi
   fi
   return 0
 }

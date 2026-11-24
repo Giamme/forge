@@ -614,6 +614,7 @@ merge_group() { # merge_group <plan> <gid> -> 0 merged, 1 not
   git -C "$int_wt" rev-parse HEAD > "$PLAN/accepted.integration"
   local tdir integration
   integration="$(cat "$PLAN/accepted.integration")"
+  mark_verification_stale "$PLAN" "$integration"
   for id in "${ids[@]}"; do
     tdir="$PLAN/tasks/$id"
     touch "$tdir/merged"

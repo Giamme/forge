@@ -106,11 +106,11 @@
    an outdated review, waiting for you */
 .st-merged, .st-pass, .st-accepted, .st-nochanges { --st: var(--lamp-green); --st-lit: var(--lit-green); }
 .st-running, .st-interrupted { --st: var(--lamp-amber); --st-lit: var(--lit-amber); }
-.st-pending, .st-none, .st-unknown, .st-invalidated, .st-outdated { --st: var(--lamp-off); --st-lit: var(--lamp-off); }
+.st-pending, .st-none, .st-unknown, .st-invalidated, .st-outdated, .st-stale { --st: var(--lamp-off); --st-lit: var(--lamp-off); }
 .st-fail, .st-error, .st-conflict, .st-infra, .st-timeout, .st-blocked, .st-bounced, .st-incomplete { --st: var(--lamp-red); --st-lit: var(--lit-red); }
 .st-needs_input, .st-needs_decision, .st-waiting, .st-implemented { --st: var(--lamp-wait); --st-lit: var(--lit-wait); }
 [class^="st-"], [class*=" st-"] { --st-fill: var(--st); --st-ring: var(--lamp-edge); }
-.st-accepted, .st-nochanges, .st-interrupted, .st-infra, .st-timeout, .st-blocked, .st-outdated, .st-needs_input, .st-needs_decision, .st-waiting, .st-implemented { --st-fill: transparent; --st-ring: var(--st); }
+.st-accepted, .st-nochanges, .st-interrupted, .st-infra, .st-timeout, .st-blocked, .st-outdated, .st-stale, .st-needs_input, .st-needs_decision, .st-waiting, .st-implemented { --st-fill: transparent; --st-ring: var(--st); }
 /* verification lanes: flaky passed on a rerun (amber, hollow), known passed with only baseline failures (green, hollow) */
 .st-flaky { --st: var(--lamp-amber); --st-lit: var(--lit-amber); --st-fill: transparent; --st-ring: var(--st); }
 .st-known { --st: var(--lamp-green); --st-lit: var(--lit-green); --st-fill: transparent; --st-ring: var(--st); }

@@ -120,7 +120,7 @@ A decomposed run adds:
   retry_budget, infra_budget           only while a scheduler runs: its live budgets (a number each)
   after                                absolute path of the plan this one follows (`plan --after`)
   integration.base                     commit the integration branch started from
-  verification.{status,exit,log,command,fingerprint}   the combined verification; status PASS, FAIL or INTERRUPTED (a signal stopped it)
+  verification.{status,exit,log,command,fingerprint}   the combined verification; status PASS, FAIL, STALE (a merge moved accepted.integration past verification.commit), UNVERIFIED or INTERRUPTED (a signal stopped it)
   verification.{flaky,retry.log}       only when a failing command passed on rerun (lanes: flaky alone, per lane)
   verification.commit                  the integration commit that was verified
   verification.runs.tsv                one row per run of the verify command or of a lane (below)
