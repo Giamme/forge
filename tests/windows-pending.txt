@@ -86,6 +86,7 @@ forge:test_review_deps
 forge:test_review_large_diff
 forge:test_review_sessions
 forge:test_ripwire
+forge:test_setup_stale.SetupStaleRunTests
 forge:test_run_flags
 forge:test_runs_rm
 forge:test_runtime

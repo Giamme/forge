@@ -65,6 +65,9 @@
 #                                                                  repeatable; replaces --verify and the lanes
 #                                                                  of an earlier invocation
 #   --verify-parallel N     run retry integrate verify $PLAN/verify_parallel  lanes run at once (1-32, default 3)
+#   --setup-before-verify   plan run retry integrate verify $PLAN/setup_before_verify  re-run worktree setup in
+#   --no-setup-before-verify                                       the integration checkout before verification
+#                                                                  when HEAD (or a .forge/setup-inputs file) moved
 PP_SHIFT=2
 PP_RETRY_FAILED=0
 PP_INFRA_RETRIES=0
@@ -192,6 +195,12 @@ forge_pp_flag() {
     --no-attribute)
       [ "$cmd" = run ] || return 1
       PP_SHIFT=1; rm -f "$plan/attribute_on" ;;
+    --setup-before-verify)
+      case "$cmd" in plan|run|retry|integrate|verify) ;; *) return 1 ;; esac
+      PP_SHIFT=1; printf 'on\n' > "$plan/setup_before_verify" ;;
+    --no-setup-before-verify)
+      case "$cmd" in plan|run|retry|integrate|verify) ;; *) return 1 ;; esac
+      PP_SHIFT=1; rm -f "$plan/setup_before_verify" ;;
     --final-review)
       [ "$cmd" = integrate ] || return 1
       PP_FINAL_REVIEW="${2:?--final-review needs a QA spec}"
