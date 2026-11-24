@@ -27,7 +27,10 @@ sendback and gates print nothing and exit 0 if forge_jev.plan_gates cannot be im
 
   forge-plan-check.py collapse PLAN
       Collapses a chain into one task named combined. The original table is kept as
-      tasks.precollapse.tsv and each tasks/<id>/ moves to tasks.precollapse/<id>/. A one or
+      tasks.precollapse.tsv and each tasks/<id>/ moves to tasks.precollapse/<id>/. A
+      groups.tsv is kept as groups.precollapse.tsv and rewritten: the parts become combined,
+      and a group made only of parts is dropped (the file goes when none is left);
+      collapsed.json lists the dropped groups under "groups". A one or
       branches plan is not changed. A plan that already has tasks.precollapse.tsv or
       collapsed.json exits 2.
 
@@ -205,6 +208,8 @@ NO_CRITERIA = '- (no criteria were written for this part)'
 PRECOLLAPSE_TSV = 'tasks.precollapse.tsv'
 PRECOLLAPSE_DIR = 'tasks.precollapse'
 COLLAPSED_JSON = 'collapsed.json'
+GROUPS_TSV = 'groups.tsv'
+PRECOLLAPSE_GROUPS = 'groups.precollapse.tsv'
 
 
 class PlanShapeError(Exception):
@@ -621,17 +626,60 @@ def render_tasks(original: bytes, row: dict) -> bytes:
     return (body + cells + '\n').encode('utf-8', 'surrogateescape')
 
 
-def _collapsed_text(ids: list, info: dict) -> str:
+def _collapsed_text(ids: list, info: dict, dropped_groups=None) -> str:
     payload = {
         'from': ids,
         'into': 'combined',
         'shape': {key: info[key] for key in SHAPE_KEYS},
     }
+    if dropped_groups is not None:
+        payload['groups'] = {'kept_as': PRECOLLAPSE_GROUPS, 'dropped': dropped_groups}
     return json.dumps(payload, indent=2) + '\n'
 
 
-def _rollback(plan: Path, original: bytes, moved: list, made_pre: bool, replaced: bool, made_combined: bool) -> None:
+def collapse_groups(text: str, parts) -> tuple:
+    """groups.tsv after a collapse (#257): (new text or None to remove the file, dropped group ids).
+
+    Every collapsed part becomes `combined`, once per group. A group made only of parts is
+    dropped: the plan is one task now, and a group of one task is that task's own review. A
+    member that was not a part is kept as written, so `forge_groups.validate` still reports it.
+    Comment and blank lines are kept. A row that is not six columns is kept for validate too."""
+    parts = set(parts)
+    out, dropped, kept = [], [], 0
+    for line in text.splitlines():
+        if not line.strip() or line.startswith('#'):
+            out.append(line)
+            continue
+        row = line.split('\t')
+        if len(row) != 6:
+            out.append(line)
+            kept += 1
+            continue
+        members = [m.strip() for m in row[3].split(',')]
+        if members and all(m in parts for m in members):
+            dropped.append(row[0])
+            continue
+        merged = []
+        for member in members:
+            name = 'combined' if member in parts else member
+            if name not in merged:
+                merged.append(name)
+        row[3] = ','.join(merged)
+        out.append('\t'.join(row))
+        kept += 1
+    if not kept:
+        return None, dropped
+    return '\n'.join(out) + '\n', dropped
+
+
+def _rollback(plan: Path, original: bytes, moved: list, made_pre: bool, replaced: bool, made_combined: bool,
+              groups=None) -> None:
     """Put back what collapse had changed. Leftover part dirs are not deleted."""
+    if groups is not None:
+        _atomic_write(plan / GROUPS_TSV, groups)
+        kept = plan / PRECOLLAPSE_GROUPS
+        if kept.exists():
+            kept.unlink()
     if made_combined:
         combined = plan / 'tasks' / 'combined'
         if combined.exists():
@@ -677,7 +725,7 @@ def combined_risk(risks: list):
 def commit_collapse(plan: Path, original: bytes, rows: list, row: dict, prompt: str, approach, info: dict,
                     risk=None) -> None:
     """Move the chain aside and write the combined task. A failure restores the plan."""
-    moved, made_pre, replaced, made_combined = [], False, False, False
+    moved, made_pre, replaced, made_combined, groups = [], False, False, False, None
     try:
         _atomic_write(plan / PRECOLLAPSE_TSV, original)
         pre = plan / PRECOLLAPSE_DIR
@@ -699,10 +747,23 @@ def commit_collapse(plan: Path, original: bytes, rows: list, row: dict, prompt: 
         if risk is not None:
             _atomic_write(combined / 'risk', risk + '\n')
         ids = [task['id'] for task in _parts_in_wave_order(rows)]
-        _atomic_write(plan / COLLAPSED_JSON, _collapsed_text(ids, info))
+        dropped = None
+        groups_path = plan / GROUPS_TSV
+        if groups_path.is_file():
+            # The planner's review groups name the parts; left as they were, validate refuses
+            # the collapsed plan (#257). The original is kept beside tasks.precollapse.tsv.
+            data = groups_path.read_bytes()
+            text, dropped = collapse_groups(data.decode('utf-8', 'surrogateescape'), ids)
+            _atomic_write(plan / PRECOLLAPSE_GROUPS, data)
+            groups = data
+            if text is None:
+                groups_path.unlink()
+            else:
+                _atomic_write(groups_path, text)
+        _atomic_write(plan / COLLAPSED_JSON, _collapsed_text(ids, info, dropped))
     except Exception as err:
         try:
-            _rollback(plan, original, moved, made_pre, replaced, made_combined)
+            _rollback(plan, original, moved, made_pre, replaced, made_combined, groups)
         except Exception as restore_err:
             raise PlanShapeError('collapse failed (%s) and the plan could not be restored (%s)'
                                  % (err, restore_err)) from err

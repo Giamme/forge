@@ -333,6 +333,7 @@ REVIEW="$RUN/review-$(date +%s)-$$"
 FORGE_REVIEW_SNAPSHOT="$REVIEW"          # forge_metric_begin's EXIT trap removes it, whatever the outcome (#139)
 forge_review_snapshot "$REPO" "$START" "$END" "$REVIEW" || die "cannot create review snapshot" 3
 forge_review_deps "$REPO" "$REVIEW" "$RUN/review.deps"
+forge_review_submodules "$REPO" "$REVIEW" "$RUN/review.deps"
 SOURCE_FP="$(forge_fingerprint "$REPO")" || exit 3
 [ "$(forge_tree "$REPO")" = "$END" ] || { echo INVALIDATED > "$RUN/verdict"; die "source changed while preparing QA" 5; }
 # The review snapshot is a commit; the reviewer's untracked leftovers there do not count (#95).

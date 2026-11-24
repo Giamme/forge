@@ -1049,7 +1049,9 @@ is a fast role. The per-harness command lines are in
 tasks, every wave holding one — becomes one task. Routing then fills that task's `-`
 columns. A plan whose shape is `one` or `branches` is not changed (`not collapsed: SHAPE`).
 A plan that already has `tasks.precollapse.tsv` or `collapsed.json` is not an error. Any
-other collapse failure stops `plan`.
+other collapse failure stops `plan`. Review groups that name the chain's tasks are rewritten to
+name `combined`, and a group of only those tasks is dropped; the original `groups.tsv` is kept
+as `groups.precollapse.tsv`.
 
 The merged task is always id `combined`, deps `-`. Difficulty is the highest of the parts
 (`low` < `medium` < `high`). Files are the union. Dwarf and qa are the value every part

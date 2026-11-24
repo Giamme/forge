@@ -130,6 +130,37 @@ forge_tests_note() { # QA reply: the reason, when the reviewer says its tests co
     awk -F'\t' '$1 == "could_not_run" { print ($2 == "" ? "no reason given" : $2) }'
 }
 
+forge_review_submodules() { # source checkout, review snapshot, note file (#255)
+  # A snapshot is a fresh repository, so every submodule (a gitlink) comes out an empty directory and
+  # a reviewer cannot run tests that import it. Fill each one the way a task worktree is filled
+  # (forge-submodules.py): from the submodule's own repository in the source when it has one, else a
+  # copy of the source's files. No `.git` is made there, so git does not see the files: the
+  # snapshot's fingerprint and the reviewer's `git status` stay as they were. Appends what the
+  # reviewer has to the note that forge_review_deps wrote. Never fails the review.
+  local list st path _sha detail filled="" missing=""
+  git -C "$2" ls-files -s 2>/dev/null | awk '$1 == "160000" { found = 1 } END { exit !found }' || return 0
+  list="$(mktemp "${TMPDIR:-/tmp}/forge-review-submodules.XXXXXX")" || return 0
+  python3 "$SKILL_DIR/scripts/forge-submodules.py" populate --source "$1" --worktree "$2" --out "$list" \
+    >/dev/null 2>&1 || :
+  while IFS="$(printf '\t')" read -r st path _sha detail; do
+    [ -n "$path" ] || continue
+    case "$st" in
+      exported|copied|kept) filled="$filled${filled:+, }$path" ;;
+      *) missing="$missing${missing:+; }$path (${detail:-not available})" ;;
+    esac
+  done < "$list"
+  rm -f "$list"
+  {
+    if [ -n "$filled" ]; then
+      echo "Submodules filled in your checkout with the attempt's files: $filled. Use them to run tests. They are not part of the change, and git does not see them."
+    fi
+    if [ -n "$missing" ]; then
+      echo "Submodules forge could not fill in your checkout, so their directories are empty: $missing."
+    fi
+  } >> "$3"
+  return 0
+}
+
 forge_fingerprint() { # forge_fingerprint <dir> [--tracked], as forge_tree
   local tree head index
   tree="$(forge_tree "$1" "${2:-}")" || return 1

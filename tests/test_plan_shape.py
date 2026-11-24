@@ -540,6 +540,56 @@ class CollapseTests(unittest.TestCase):
         self.assertIn('prompt.md', done.stderr)
         self.assertEqual(fingerprint(plan), before)
 
+    def test_a_review_group_of_the_chain_is_dropped_and_kept_aside(self):
+        # #257: the planner put the chain in one group; validate refused the collapsed plan.
+        groups = (b'# id\treview\tqa\tmembers\ttitle\tgoal\n'
+                  b'auth\ttask\t-\ta,b\tAuth\tboth parts\n')
+        plan, _original = self.write_plan(
+            [task('a', files='a.py', difficulty='medium'), task('b', deps='a', files='b.py', difficulty='high')],
+            extra={'groups.tsv': groups})
+        done = self.check('collapse', str(plan))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertFalse((plan / 'groups.tsv').exists())
+        self.assertEqual((plan / 'groups.precollapse.tsv').read_bytes(), groups)
+        record = json.loads((plan / 'collapsed.json').read_text())
+        self.assertEqual(record['groups'], {'kept_as': 'groups.precollapse.tsv', 'dropped': ['auth']})
+        sys.path.insert(0, str(ROOT / 'scripts'))
+        import forge_groups
+        forge_groups.validate(plan, forge_groups.load(plan))
+
+    def test_collapse_groups_maps_parts_to_combined(self):
+        text = ('# id\treview\tqa\tmembers\ttitle\tgoal\n'
+                'g1\ttask\t-\ta,b\tT\t-\n'
+                '\n'
+                'g2\ttask\t-\ta,x,b\tT\t-\n')
+        out, dropped = plan_check.collapse_groups(text, ['a', 'b'])
+        self.assertEqual(dropped, ['g1'])
+        self.assertEqual(out, '# id\treview\tqa\tmembers\ttitle\tgoal\n\ng2\ttask\t-\tcombined,x\tT\t-\n')
+        self.assertEqual(plan_check.collapse_groups('# header only\n', ['a']), (None, []))
+
+    def test_a_failed_collapse_restores_groups(self):
+        groups = b'# id\treview\tqa\tmembers\ttitle\tgoal\nauth\ttask\t-\ta,b\tAuth\t-\n'
+        plan, _original = self.write_plan(
+            [task('a', files='a.py'), task('b', deps='a', files='b.py')], extra={'groups.tsv': groups})
+        real = plan_check._collapsed_text
+
+        def boom(*args, **kwargs):
+            raise OSError('disk full')
+        plan_check._collapsed_text = boom
+        try:
+            original, rows = plan_check.read_plan(plan)
+            info = plan_check.shape(rows)
+            prompts = {row['id']: 'do ' + row['id'] + '\n' for row in rows}
+            combined, prompt, approach = plan_check.collapse_rows(rows, prompts, {})
+            with self.assertRaises(OSError):
+                plan_check.commit_collapse(plan, original, rows, combined, prompt, approach, info)
+        finally:
+            plan_check._collapsed_text = real
+        self.assertEqual((plan / 'groups.tsv').read_bytes(), groups)
+        self.assertFalse((plan / 'groups.precollapse.tsv').exists())
+        self.assertEqual((plan / 'tasks.tsv').read_bytes(), original)
+        self.assertTrue((plan / 'tasks' / 'a' / 'prompt.md').exists())
+
     def test_a_failed_collapse_leaves_the_plan_as_it_was(self):
         plan, _original = self.write_plan(
             [task('a', files='a.py'), task('b', deps='a', files='b.py')])

@@ -110,6 +110,24 @@ class PlanShapeFlowTests(unittest.TestCase):
         ran = self.run_script('forge-parallel.sh', 'run', plan)
         self.assertEqual(self.calls().count('dwarf') - before, 1, ran.stdout)
 
+    def test_collapse_chains_with_the_chain_in_a_review_group_plans_and_runs(self):
+        # #257: groups.tsv still named the parts, so validate refused the collapsed plan.
+        plan = self.write_plan('grouped', [
+            task_row('a', '-', 'medium', 'a.txt', 'Package'),
+            task_row('b', 'a', 'high', 'b.txt', 'Wire it'),
+        ])
+        (plan / 'groups.tsv').write_text('# id\treview\tqa\tmembers\ttitle\tgoal\n'
+                                         'auth\ttask\t-\ta,b\tAuth\tboth parts\n')
+        planned = self.plan(plan, '--collapse-chains')
+        self.assertEqual(planned.returncode, 0, planned.stdout)
+        self.assertIn(COLLAPSED % 2, planned.stdout)
+        self.assertEqual([row[0] for row in data_rows(plan / 'tasks.tsv')], ['combined'])
+        self.assertFalse((plan / 'groups.tsv').exists())
+        self.assertIn('a,b', (plan / 'groups.precollapse.tsv').read_text())
+        before = self.calls().count('dwarf')
+        ran = self.run_script('forge-parallel.sh', 'run', plan)
+        self.assertEqual(self.calls().count('dwarf') - before, 1, ran.stdout)
+
     def test_a_chain_without_the_flag_keeps_its_tasks_and_says_so(self):
         plan = self.write_plan('chain', [
             task_row('a', '-', 'low', 'a.txt', 'Add A'),

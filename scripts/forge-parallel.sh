@@ -2414,6 +2414,7 @@ do_task_body() (
   FORGE_REVIEW_SNAPSHOT="$review"          # forge_metric_begin's EXIT trap removes it, whatever the outcome
   forge_review_snapshot "$wt" "$base" "$reviewed" "$review" || { echo ERROR > "$tdir/status"; return 1; }
   forge_review_deps "$wt" "$review" "$tdir/review.deps"
+  forge_review_submodules "$wt" "$review" "$tdir/review.deps"
   source_fp="$(forge_fingerprint "$wt")" || return 1
   # The review copy is a commit: an untracked file the reviewer leaves there (a test run's
   # bytecode) changes nothing that merges, so only tracked content counts (#95).
