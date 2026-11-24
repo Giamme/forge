@@ -40,7 +40,7 @@ import forge_legacy  # noqa: E402
 # `plan` writes itself (routing, Jev's frozen selection) or that a fresh plan decides (exploration).
 OPTION_FILES = ('no_ripwire', 'no_memory', 'yolo_dwarf', 'yolo_qa', 'reviewer_session', 'reviewer_session_rate', 'reviewer_session_tasks', 'implementer_session', 'fast',
                 'pre_review_tests', 'pre_review_parallel', 'qa_threshold', 'qa_test_minutes', 'timeout', 'verify_retries', 'verify_cmd',
-                'verify_parallel', 'setup_cmd', 'final_qa', 'shadow_qa', 'shadow_rate', 'escalate_after', 'retry_per_model', 'fail_first', 'profile.json',
+                'verify_parallel', 'setup_cmd', 'setup_before_verify', 'final_qa', 'shadow_qa', 'shadow_rate', 'escalate_after', 'retry_per_model', 'fail_first', 'profile.json',
                 'retro_mode', 'brief', 'brief_scope', 'brief_model', 'summaries', 'summaries_model',
                 'groups.tsv', 'groups.frozen', 'group_max_tasks', 'group_max_diff_kb', 'after')
 # The feature files are rewritten from the source's effective settings (copy_plan), not only copied.

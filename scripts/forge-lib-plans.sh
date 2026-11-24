@@ -130,7 +130,7 @@ plans_make_integration() { # plans_make_integration <repo> <branch> <commit> <wt
 
 # Per-plan option files carried to a derived plan. The cost-bearing choices a user made
 # for this plan apply to the plan made from it; `planner` does not (nothing plans again).
-PLANS_OPTION_FILES="no_ripwire no_memory yolo_dwarf yolo_qa reviewer_session reviewer_session_rate reviewer_session_tasks implementer_session fast pre_review_tests pre_review_parallel qa_threshold qa_test_minutes timeout verify_retries verify_cmd verify_parallel setup_cmd final_qa shadow_qa shadow_rate explore escalate_after retry_per_model dwarf-routing.json fractal-routing.json jev-selection.json profile.json routed.json retro_mode brief brief_scope brief_model summaries summaries_model groups.tsv groups.frozen group_max_tasks group_max_diff_kb after"
+PLANS_OPTION_FILES="no_ripwire no_memory yolo_dwarf yolo_qa reviewer_session reviewer_session_rate reviewer_session_tasks implementer_session fast pre_review_tests pre_review_parallel qa_threshold qa_test_minutes timeout verify_retries verify_cmd verify_parallel setup_cmd setup_before_verify final_qa shadow_qa shadow_rate explore escalate_after retry_per_model dwarf-routing.json fractal-routing.json jev-selection.json profile.json routed.json retro_mode brief brief_scope brief_model summaries summaries_model groups.tsv groups.frozen group_max_tasks group_max_diff_kb after"
 
 # --- plan --after: a plan that starts from another plan's integration branch (#143) -------
 # $PLAN/after holds the previous plan's absolute path; $PLAN/integration.base the commit its work
@@ -885,6 +885,8 @@ Retry or accept them (or split them off into their own plan) first." 3
   done
   all=1; for p in "${SRC[@]}"; do [ -f "$p/pre_review_tests" ] || all=0; done
   [ "$all" = 1 ] && : > "$NEW/pre_review_tests"
+  all=1; for p in "${SRC[@]}"; do [ -f "$p/setup_before_verify" ] || all=0; done
+  [ "$all" = 1 ] && printf '%s\n' on > "$NEW/setup_before_verify"
   for f in qa_threshold qa_test_minutes timeout verify_retries verify_parallel pre_review_parallel fast retry_per_model; do
     same=1
     for p in "${SRC[@]}"; do

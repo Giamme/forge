@@ -119,6 +119,21 @@ A resumed run or a `retry` reuses the existing worktree and does not pay it agai
 worktree gets the same treatment, since that is where a merged result is validated — without it the
 one checkout holding every task's merged work is the one checkout that cannot build it.
 
+When tasks add dependencies or change code-generation schemas after the integration worktree was
+created, setup files generated earlier (for example `node_modules` or generated sources) predate
+those merges:
+
+- pass `--setup-before-verify` (on `plan`, `run`, `retry`, `verify`, or `integrate`) to re-run
+  worktree setup on the integration checkout right before verification whenever commits merged
+  after setup; `--no-setup-before-verify` turns it off again;
+- add `.forge/setup-inputs` in the repo (one path, directory prefix, or glob pattern per line, `#`
+  for comments) to name the files that drive setup; with it, `--setup-before-verify` only
+  re-runs when one of those paths changed since setup instead of on every run;
+- even without `--setup-before-verify`, when verification fails after a lockfile or a path listed
+  in `.forge/setup-inputs` merged since setup ran, forge records `verification.stale_setup` and
+  prints a warning; as a workaround without the flag, put the dependency/generation step at the
+  start of the verify command so every verification builds from current sources.
+
 Failure is reported and non-fatal: the dwarf gets a worktree it can still install into itself,
 which is the status quo this replaces. Output lands in `tasks/<id>/setup.out`.
 

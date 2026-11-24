@@ -86,7 +86,7 @@ TASK_OK = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456
 OPTION_FILES = (
     'no_ripwire', 'no_memory', 'yolo_dwarf', 'yolo_qa', 'reviewer_session', 'reviewer_session_rate',
     'reviewer_session_tasks', 'implementer_session', 'fast', 'pre_review_tests', 'pre_review_parallel',
-    'qa_threshold', 'qa_test_minutes', 'timeout', 'verify_retries', 'verify_cmd', 'verify_parallel', 'setup_cmd', 'final_qa',
+    'qa_threshold', 'qa_test_minutes', 'timeout', 'verify_retries', 'verify_cmd', 'verify_parallel', 'setup_cmd', 'setup_before_verify', 'final_qa',
     'shadow_qa', 'shadow_rate', 'explore', 'escalate_after', 'retry_per_model', 'fail_first',
     'dwarf-routing.json', 'jev-selection.json', 'profile.json', 'routed.json',
     # What a plan made before forge 0.23 has instead (forge_legacy.py): its tier pools and its Fractal choice.

@@ -1652,6 +1652,10 @@ PY
     sed 's/^/  /' "$d/verification.coverage.txt"
     echo
   fi
+  if [ "$(cat "$d/verification.status" 2>/dev/null)" = FAIL ] && [ -s "$d/verification.stale_setup" ]; then
+    echo "warning: stale setup ($(cat "$d/verification.stale_setup")): generated files predate merged commits; use --setup-before-verify or prepend setup to the verify command"
+    echo
+  fi
   return 0
 }
 
