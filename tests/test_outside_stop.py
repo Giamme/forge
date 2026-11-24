@@ -125,5 +125,59 @@ class OutsideStopCase(unittest.TestCase):
         self.assertNotIn('The implementer says these fixes need files outside the task', self.read(p, 'qa.input'))
 
 
+class WaitLineTests(OutsideStopCase):
+    """#193: `run` says when a task stops for the user, while the other tasks still run."""
+
+    def test_the_line_is_printed_while_another_task_runs(self):
+        import subprocess, time
+        p = self.root / 'plan'; p.mkdir()
+        (p / 'tasks.tsv').write_text('a\t-\tlow\ta.txt\tsol\topus\tA\nb\t-\tlow\tb.txt\tsol\topus\tB\n')
+        for i in 'ab':
+            (p / 'tasks' / i).mkdir(parents=True)
+            (p / 'tasks' / i / 'prompt.md').write_text('Implement change. REQUIREMENT_SENTINEL TASK_' + i)
+        r = self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--no-memory')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        # a stops for a decision at its first review; b's implementer is still at work for a while.
+        self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': finding('docs/x.md:1', '{outside=docs/x.md}')},
+                       'b.dwarf.1': {'sleep': 25}, 'b.qa.*': {'verdict': 'PASS'}})
+        out = self.root / 'run.out'
+        with open(out, 'w') as stream:
+            proc = subprocess.Popen(['bash', str(ROOT / 'scripts' / 'forge-parallel.sh'), 'run', str(p)], cwd=self.repo,
+                                    env=self.env, text=True, stdout=stream, stderr=subprocess.STDOUT)
+        try:
+            want = 'forge: needs you: a NEEDS_DECISION (plan) -> %s' % (p / 'tasks' / 'a' / 'decision.md')
+            deadline = time.time() + 120
+            while time.time() < deadline and want not in out.read_text() and proc.poll() is None:
+                time.sleep(0.2)
+            self.assertIn(want, out.read_text())
+            self.assertEqual((p / 'tasks' / 'b' / 'status').read_text().strip(), 'RUNNING')
+            self.assertIsNone(proc.poll())                       # the run goes on
+        finally:
+            proc.wait(timeout=300)
+        self.assertEqual(out.read_text().count('forge: needs you: a '), 1)
+        self.assertNotIn('forge: needs you: b ', out.read_text())
+
+    def test_each_waiting_status_has_its_line(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('forge_schedule_wait', ROOT / 'scripts' / 'forge-schedule.py')
+        schedule = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(schedule)
+        t = self.root / 'plan' / 'tasks' / 'x'
+        t.mkdir(parents=True)
+        (t / 'decision.md').write_text('reasons: converging, attempt-cap\n\nmore\n')
+        (t / 'infra.txt').write_text('class=rate_limit\n')
+        line = schedule.waiting_line
+        self.assertEqual(line(t.parent.parent, 'x', 'NEEDS_DECISION'),
+                         'forge: needs you: x NEEDS_DECISION (converging, attempt-cap) -> %s' % (t / 'decision.md'))
+        self.assertEqual(line(t.parent.parent, 'x', 'NEEDS_INPUT'),
+                         'forge: needs you: x NEEDS_INPUT (a question to answer) -> %s' % (t / 'needs_input.md'))
+        self.assertEqual(line(t.parent.parent, 'x', 'INFRA'),
+                         'forge: stopped: x INFRA (rate_limit, no attempt spent) -> %s' % (t / 'infra.txt'))
+        (t / 'decision.md').unlink()
+        self.assertIn('(see decision.md)', line(t.parent.parent, 'x', 'NEEDS_DECISION'))
+        for state in ('FAIL', 'PASS', 'RUNNING', 'MERGED'):
+            self.assertIsNone(line(t.parent.parent, 'x', state))
+
+
 if __name__ == '__main__':
     unittest.main()

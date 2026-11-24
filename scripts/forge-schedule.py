@@ -510,6 +510,26 @@ def decision_head(plan: object, name: str) -> str:
     return ' '.join(line.strip() for line in lines[:3] if line.strip())[:300]
 
 
+def waiting_line(plan: object, name: str, state: str) -> str | None:
+    """The line `run` prints when a task stops for the user while the run goes on (#193), in the form of its
+    `dispatched` and `retrying` lines: `forge: needs you: <task> <STATUS> (<why>) -> <file to read>`. An
+    INFRA stop needs no one unless its pause says so, so it reads `forge: stopped: …`. None for any other state."""
+    root = Path(plan) / 'tasks' / name
+    if state == 'NEEDS_DECISION':
+        try:
+            first = (root / 'decision.md').read_text(errors='replace').splitlines()[:1]
+        except OSError:
+            first = []
+        reasons = first[0][len('reasons: '):].strip() if first and first[0].startswith('reasons: ') else ''
+        return 'forge: needs you: %s NEEDS_DECISION (%s) -> %s' % (name, reasons or 'see decision.md', root / 'decision.md')
+    if state == 'NEEDS_INPUT':
+        return 'forge: needs you: %s NEEDS_INPUT (a question to answer) -> %s' % (name, root / 'needs_input.md')
+    if state == 'INFRA':
+        cause = forge_infra.cause_of(infra_info(root).get('class'))
+        return 'forge: stopped: %s INFRA (%s, no attempt spent) -> %s' % (name, cause, root / 'infra.txt')
+    return None
+
+
 def read_request(plan: object, name: str) -> dict | None:
     try:
         fd = forge_posix.open_nofollow(
@@ -963,6 +983,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             if status(name) == 'NEEDS_DECISION':
                 print('forge: ' + name + ' is not resumed: it is at its attempt cap and waits for your decision',
                       file=sys.stderr, flush=True)
+                print(waiting_line(plan, name, 'NEEDS_DECISION'), file=sys.stderr, flush=True)
                 return False
             held.add(name)
             print('forge: ' + name + ' is not resumed: its escalation pin could not be applied',
@@ -1768,8 +1789,19 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                     prompt_requeue(name)
                 elif state == 'IMPLEMENTED' and allow_requeue and name in group_of:
                     start_ready_groups()   # the last member in: its group is reviewed now, with no wave barrier
+                announce_wait(name)
             if not reaped:
                 return
+
+    def announce_wait(name: str) -> None:
+        """#193: say at once that a task stopped for the user, so the agent driving the run can put it to them while
+        the other tasks go on. An INFRA stop dispatched again at once, or a task already queued again, says nothing."""
+        state = status(name)
+        if state == 'INFRA' and name in pending:
+            return
+        line = waiting_line(plan, name, state)
+        if line:
+            print(line, file=sys.stderr, flush=True)
 
     summary_seen = {}      # task -> what the scheduler last saw of it (status, attempt trail, verdict, retries)
     summary_due = set()    # tasks that changed and wait for a summarize
