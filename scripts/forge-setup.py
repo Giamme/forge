@@ -12,7 +12,7 @@ Every answer lands where forge already reads it: the models and review policy in
 profile (`forge config profile use`), brief, summaries, retro and storage in decide.json's
 `features` (`forge config set`), a repository's memory choice in its git config (`forge.memory`),
 and the rest in setup.json (scripts/forge_prefs.py). Setup never calls a model, and sends nothing
-anywhere unless an answer says it will (installing Ripwire or Fractal, setting up decision models).
+anywhere unless an answer says it will (installing Ripwire, setting up decision models).
 Running it again offers the current answers as the defaults.
 """
 from __future__ import annotations
@@ -51,9 +51,9 @@ EXCLUDE_MARK = '# forge setup: project memory stays on this machine'
 KEYS = ('models', 'routing', 'qa_threshold', 'shadow_qa', 'shadow_rate', 'sweep', 'file_issues',
         'reviewer_session', 'brief', 'brief_model', 'summaries', 'summaries_model', 'retro', 'ui',
         'ui_controls', 'memory', 'decide', 'storage_compact', 'storage_warn_gb', 'update_check',
-        'ripwire', 'fractal')
+        'ripwire')
 PREF_KEYS = ('ui', 'ui_controls', 'file_issues', 'sweep', 'reviewer_session', 'update_check', 'ripwire',
-             'fractal', 'decide')
+             'decide')
 FEATURES = {   # answer -> forge config key
     'brief_model': 'brief.model', 'brief': 'brief', 'summaries_model': 'summaries.model',
     'summaries': 'summaries', 'retro': 'retro', 'storage_compact': 'storage.compact',
@@ -414,10 +414,6 @@ def apply_actions(answers: dict, before: dict, interactive: bool, report: list) 
     if answers['ripwire'] == 'install' and before.get('ripwire') != 'install':
         rc = subprocess.call(forge_proc.bash_cmd(SCRIPTS / 'forge-install-ripwire.sh', '--yes'), stdin=quiet)
         report.append(('ripwire', rc, 'Ripwire installed' if rc == 0 else 'Ripwire installation failed'))
-    if answers['fractal'] == 'install' and before.get('fractal') != 'install':
-        rc = subprocess.call(forge_proc.bash_cmd(SCRIPTS / 'forge-install-fractal.sh', '--with-prerequisites'),
-                             stdin=quiet)
-        report.append(('fractal', rc, 'Fractal support installed' if rc == 0 else 'Fractal installation failed'))
     if answers['decide'] == 'on' and before.get('decide') != 'on':
         if interactive:
             rc = subprocess.call([sys.executable, str(SCRIPTS / 'forge-jev.py'), 'setup'])
@@ -616,10 +612,6 @@ def interview(found: list, rows: list, repo, earlier: dict, asker: Asker) -> dic
     a['ripwire'] = asker.choice('  Ripwire, an optional context engine for every role:', [
         ('ask', 'offer it at the first run'), ('install', 'install the latest release now (downloads from GitHub)'),
         ('never', 'never offer it')], a['ripwire'])
-    a['fractal'] = asker.choice('  Fractal, opt-in nested execution:', [
-        ('no', 'no, and runs do not ask about it'),
-        ('install', 'install its support now (downloads its prerequisites); each run asks whether to use it')],
-        a['fractal'])
     return a
 
 

@@ -511,9 +511,7 @@ final_review_body() {
   # as this one does, by the same rule as per-task QA. Anything else is a fresh dispatch.
   local rs_mode=fresh rs_reason="" rs_id="" rs_cont=()
   if [ -f "$plan/reviewer_session" ]; then
-    if [ -n "${FORGE_FRACTAL_RUN:-}" ] || forge_plan_is_fractal "$plan"; then
-      rs_reason=fractal
-    elif [ -z "$prev" ]; then
+    if [ -z "$prev" ]; then
       rs_reason=first-round
     else
       IFS=$'\t' read -r rs_mode rs_reason rs_id < <(review_session_decide \

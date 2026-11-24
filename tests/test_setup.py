@@ -114,8 +114,9 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(self.decide().get('default_profile'), 'balanced')
         self.assertNotIn('profiles', self.decide())   # the built-in itself, no copy
         prefs = self.prefs()
-        self.assertEqual((prefs['ui'], prefs['file_issues'], prefs['ripwire'], prefs['fractal'], prefs['decide'],
-                          prefs['update_check']), ('ask', 'ask', 'ask', 'no', 'off', 'on'))
+        self.assertEqual((prefs['ui'], prefs['file_issues'], prefs['ripwire'], prefs['decide'], prefs['update_check']),
+                         ('ask', 'ask', 'ask', 'off', 'on'))
+        self.assertNotIn('fractal', prefs)   # removed in forge 0.23: setup has no such answer
         shown = self.show()
         self.assertTrue(shown['done'])
         self.assertEqual(shown['answers']['models'], 'balanced')

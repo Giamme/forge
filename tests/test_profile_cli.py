@@ -300,7 +300,7 @@ class ProfileCliTests(unittest.TestCase):
         self.write_json(self.user_file, dict(USER_KEPT))
         plan = self.base / 'plan'
         plan.mkdir()
-        (plan / 'fractal-routing.json').write_text(json.dumps({
+        (plan / 'dwarf-routing.json').write_text(json.dumps({
             'low': ['haiku:xhigh'], 'high': ['opus:high', 'sonnet:high'], 'any': []}))
         (plan / 'qa-routing.json').write_text(json.dumps({'medium': ['sonnet:high']}))
         (plan / 'planner').write_text('sonnet:high\n')

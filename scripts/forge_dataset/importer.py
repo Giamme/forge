@@ -70,6 +70,7 @@ def walk_plans(top: Path, onerror=None) -> list[Path]:
 
 
 def walk_fractal_tasks(top: Path, onerror=None) -> list[Path]:
+    """Task dirs of a run made with Fractal (removed in forge 0.23): old records, still imported."""
     found = []
     for directory, subdirs, files in os.walk(top, onerror=onerror):
         subdirs[:] = [d for d in subdirs if d not in SKIP_DIRS and not d.startswith('review-')
@@ -478,7 +479,7 @@ def _manifest(directory: Path) -> dict:
 
 
 def _member(member, path):
-    # Links are never run data (Fractal's archive carries a venv full of absolute ones),
+    # Links are never run data (an old Fractal archive carries a venv full of absolute ones),
     # and skipping them means nothing extracted can point outside the temp dir.
     if member.issym() or member.islnk():
         return None

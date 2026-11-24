@@ -21,8 +21,11 @@ run goes on, with the same exit code.
   reviewer, filterable by project, difficulty and period.
 - **Diffs with findings in place:** any task diff, the exact diff each reviewer read, or a final
   review's combined diff, with every P0–P3 finding shown under the line it names.
-- **Fractal child tasks:** the tree a Fractal task was split into, in the inspector and above
-  the opened task in 3D, each node with its decision, cost, output and candidate diff.
+- **Subtasks:** the tree a split task was split into, through every level, in the task's
+  inspector: each node with its status, model, attempts, tokens, decision (split, kept whole,
+  kept whole at a limit), who decided and why, and a link to its diff. The run shows the limits
+  and how much of it was split; a sub-plan opens as a run of its own from its task. A run made
+  with Fractal (removed in 0.23) opens read-only, with a note saying so.
 - **Controls:** change a live plan from its inspector: QA threshold, timeout, escalate-after,
   the effort step, verify retries, the infrastructure backoff, and (while a scheduler is live)
   the retry and infra-retry budgets, max parallel, Drain/Resume, Stop and Stop now; per task, a

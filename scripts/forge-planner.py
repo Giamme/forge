@@ -22,8 +22,24 @@ gate and the one-task plan. Standard library only; no shell wiring.
   forge-planner.py one-task --plan P --goal-file F [--difficulty low|medium|high]
       Writes a one-row plan without a planner: id `task`, files `.`, the request as its prompt.
 
-Every subcommand refuses (exit 2) a plan dir that already has tasks.tsv, so nothing is
-overwritten. Exit codes: 0 done, 2 usage or input problem, 4 reply refused.
+  forge-planner.py node-prompt --plan P --task ID [--start keep|fresh]
+      Writes P/tasks/ID/split.prompt, the question a planner gets about ONE task of an existing
+      plan (#153): split it into subtasks inside its own files, or keep it whole and say why.
+
+  forge-planner.py node-parse  --plan P --task ID --reply FILE
+      The strict parse of that reply, or of subtasks a person wrote (a forge-plan block, or the
+      bare JSON object): P/tasks/ID/split.proposal.json, which forge_decompose.py turns into the
+      task's sub-plan. A refusal writes P/tasks/ID/split.refused and exits 4.
+
+Recursive decomposition (#153) in a whole-plan reply: a task may carry `subtasks` (its own small
+plan, same keys, nested as deep as the reply likes) and a one-line `reason`. `parse` checks them as
+strictly as tasks, and that each subtask's files lie inside its parent's, and keeps them in
+P/tasks/<id>/split.proposal.json for `plan` to apply within the run's limits; a `reason` on a task
+kept whole goes to P/tasks/<id>/split.reason. A reply may also carry `later`, the stages of a goal
+larger than one plan: they go to P/later.json, and forge plans each when the one before has merged.
+
+prompt, parse, gate and one-task refuse (exit 2) a plan dir that already has tasks.tsv, so nothing
+is overwritten. Exit codes: 0 done, 2 usage or input problem, 4 reply refused.
 """
 from __future__ import annotations
 
@@ -36,6 +52,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import forge_decompose  # noqa: E402
 import forge_groups  # noqa: E402
 from forge_jev.coverage import split_requirements  # noqa: E402  (read-only use)
 
@@ -49,7 +66,15 @@ MAX_TASKS = 20
 TASK_KEYS = ('id', 'deps', 'difficulty', 'files', 'title', 'approach', 'prompt')
 # #122: a task's risk, recorded in shadow beside its difficulty. Optional, and the one key that never refuses a
 # reply: a missing or unknown value records nothing, because a label nothing routes on must not cost a plan.
-OPTIONAL_KEYS = ('risk',)
+# #153: `subtasks` (the task's own small plan) and `reason` (one line: why it is split, or why it is
+# kept whole). Both optional; a present one is checked strictly.
+OPTIONAL_KEYS = ('risk', 'subtasks', 'reason')
+MAX_SUBTASKS = 20
+MAX_REASON = 500
+# #153: the stages of a goal larger than one plan, in order. Optional on the reply.
+LATER_KEYS = ('title', 'goal')
+MAX_LATER = 10
+MAX_LATER_GOAL = 4000
 # #136: groups are optional on the reply. A missing key writes no groups.tsv. A present one is
 # checked strictly; the planner never sets review=group (that is plan --group-review, or an edit).
 GROUP_KEYS = ('id', 'title', 'goal', 'members')
@@ -190,6 +215,18 @@ def build_prompt(request: str, level: str | None) -> str:
         'step, form one group (usually one per wave of the plan\'s dependency order). Each group '
         'has a short title and a goal sentence that says what is true once its tasks are done. A '
         'group may have one task. A task may be left out of every group.',
+        '**Subtasks.** A task that is still large after the rules above, and whose own `files` hold '
+        'several pieces that can be built and reviewed apart, may carry `subtasks`: its own small plan. '
+        'forge runs them on the task\'s branch and then reviews the task on everything they produced. '
+        'Each subtask owns paths inside its parent\'s `files` and depends only on its sibling subtasks. '
+        'A split is never required and most tasks have none: when the pieces do not live inside one '
+        'task\'s files, make them tasks instead. Say in the task\'s `reason`, in one line, why you split '
+        'it, or why you kept whole a task that looked splittable. forge applies the run\'s limits (by '
+        'default two levels and six subtasks per task); a split beyond them runs as one task.',
+        '**A goal larger than one plan.** When the request is too large for one plan, put only its '
+        'first coherent stage in `tasks` and list the stages that follow in `later`, in order. forge '
+        'plans each later stage only when the one before has merged, from the code as it then is, so '
+        'do not write their tasks now.',
     ]
     numbered = '\n'.join(f'{n}. {rule}' for n, rule in enumerate(rules, 1))
     return f"""\
@@ -211,8 +248,8 @@ The request follows verbatim between the markers. It is the whole requirement.
 # Reply format
 
 Reply with exactly one fenced block whose opening line is ```forge-plan and whose body is one
-JSON object with the key `tasks` and, optionally, `groups`. `tasks` is a list of 1 to {MAX_TASKS}
-objects, each with exactly these keys and no others:
+JSON object with the key `tasks` and, optionally, `groups` and `later`. `tasks` is a list of 1 to
+{MAX_TASKS} objects, each with these keys and no others:
 
 - `id`: lowercase slug matching `^[a-z0-9][a-z0-9-]{{0,39}}$`, unique in the plan;
 - `deps`: list of ids of tasks that must land first (`[]` for none), no cycles;
@@ -222,7 +259,16 @@ objects, each with exactly these keys and no others:
   `..`, no tab, comma or newline in a path);
 - `title`: one line without a tab;
 - `approach`: a few lines on the intended shape (a string; `""` for none);
-- `prompt`: the task's full instruction, ending with a `## Acceptance criteria` section.
+- `prompt`: the task's full instruction, ending with a `## Acceptance criteria` section;
+- `subtasks`: optional. A list of 2 to {MAX_SUBTASKS} objects with these same keys, each `files`
+  entry inside this task's `files`, `deps` naming sibling subtasks only. Omit it for a task that
+  is one piece;
+- `reason`: optional. One line, at most {MAX_REASON} characters: why the task is split, or why it
+  is kept whole.
+
+`later`, when present, is a list of at most {MAX_LATER} objects with exactly the keys `title` (one
+short line) and `goal` (what that stage must reach, in full, since it becomes that plan's request).
+Omit the key when the request fits one plan.
 
 `groups`, when present, is a list of objects with exactly these keys and no others. Omit the key
 to return no groups:
@@ -325,13 +371,16 @@ def check_path(path, where: str):
         raise Refusal(f'{where}: file {path!r} has a .. component')
 
 
-def check_task(task, index: int, seen: set) -> dict:
-    where = f'task {index + 1}'
+MAX_SPLIT_DEPTH = 6   # forge_decompose.LIMIT_RANGE's deepest; a reply nested past it is not a plan
+
+
+def check_task(task, index: int, seen: set, depth: int = 0, prefix: str = '') -> dict:
+    where = f'{prefix}task {index + 1}' if not prefix else f'{prefix}{index + 1}'
     check_keys(task, TASK_KEYS, where, OPTIONAL_KEYS)
     tid = task['id']
     if not isinstance(tid, str) or not ID_RE.fullmatch(tid):
         raise Refusal(f'{where}: id {tid!r} does not match ^[a-z0-9][a-z0-9-]{{0,39}}$')
-    where = f'task {tid}'
+    where = f'{prefix}{tid}' if prefix else f'task {tid}'
     if tid in seen:
         raise Refusal(f'{where}: duplicate id')
     seen.add(tid)
@@ -361,7 +410,70 @@ def check_task(task, index: int, seen: set) -> dict:
     if not has_acceptance_heading(prompt):
         raise Refusal(f'{where}: prompt has no "## Acceptance criteria" heading')
     risk = task.get('risk')
-    return dict(task, risk=risk if isinstance(risk, str) and risk in RISKS else None)
+    checked = dict(task, risk=risk if isinstance(risk, str) and risk in RISKS else None)
+    reason = task.get('reason')
+    if reason is not None:
+        if not isinstance(reason, str) or LINE_BREAKS_RE.search(reason) or len(reason) > MAX_REASON:
+            raise Refusal(f'{where}: reason is not one line of at most {MAX_REASON} characters')
+        check_text(reason, where)
+    checked['reason'] = (reason or '').strip() or None
+    if 'subtasks' in task:
+        checked['subtasks'] = check_subtasks(task['subtasks'], tid, files, depth + 1)
+    return checked
+
+
+def check_subtasks(raw, parent: str, parent_files: list, depth: int = 1, low: int = 2) -> list:
+    """A task's `subtasks`: `low` to MAX_SUBTASKS tasks under the same rules, ids unique among the
+    siblings, deps naming siblings only and forming no cycle, and every file inside the parent's."""
+    where = f'task {parent}'
+    if depth > MAX_SPLIT_DEPTH:
+        raise Refusal(f'{where}: subtasks nest more than {MAX_SPLIT_DEPTH} levels deep')
+    if not isinstance(raw, list) or not low <= len(raw) <= MAX_SUBTASKS:
+        count = f' ({len(raw)})' if isinstance(raw, list) else ''
+        raise Refusal(f'{where}: subtasks must be a list of {low} to {MAX_SUBTASKS} objects{count}; '
+                      'omit the key for a task that is one piece')
+    seen: set = set()
+    checked = []
+    for index, item in enumerate(raw):
+        child = check_task(item, index, seen, depth, f'{where}: subtask ')
+        for path in child['files']:
+            if not forge_decompose.inside(path, parent_files):
+                raise Refusal(f'{where}: subtask {child["id"]}: file {path!r} is outside its parent\'s files '
+                              f'({", ".join(parent_files)})')
+        checked.append(child)
+    try:
+        check_graph(checked)
+    except Refusal as err:
+        raise Refusal(f'{where}: among its subtasks: {err}')
+    return checked
+
+
+def proposal_of(task: dict) -> dict:
+    """What forge_decompose.py reads: {reason, tasks}, each task with `split` where it has subtasks."""
+    def plain(item):
+        out = {key: item[key] for key in TASK_KEYS}
+        out['risk'] = item.get('risk')
+        if item.get('subtasks'):
+            out['split'] = proposal_of(item)
+        return out
+    return {'reason': task.get('reason') or '', 'tasks': [plain(item) for item in task['subtasks']]}
+
+
+def check_later(raw) -> list:
+    if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_LATER:
+        count = f' ({len(raw)})' if isinstance(raw, list) else ''
+        raise Refusal(f'later must be a list of 1 to {MAX_LATER} objects{count}; omit the key when the request fits one plan')
+    stages = []
+    for index, stage in enumerate(raw):
+        where = f'later {index + 1}'
+        check_keys(stage, LATER_KEYS, where)
+        check_group_line(stage['title'], f'{where}: title')
+        goal = stage['goal']
+        if not isinstance(goal, str) or not goal.strip() or len(goal) > MAX_LATER_GOAL:
+            raise Refusal(f'{where}: goal is not a non-empty text of at most {MAX_LATER_GOAL} characters')
+        check_text(goal, where)
+        stages.append({'title': stage['title'].strip(), 'goal': goal})
+    return stages
 
 
 def check_group_line(value, where: str):
@@ -478,9 +590,8 @@ def nested_deeper_than(value, limit: int) -> bool:
     return False
 
 
-def parse_reply(reply: str):
-    """(tasks, groups). groups is None when the reply has no groups key, else a list (maybe empty)."""
-    body = extract_block(reply)
+def load_block(body: str):
+    """The JSON of a forge-plan block, under the limits every reply is read with."""
     try:
         data = json.loads(body, object_pairs_hook=no_duplicate_keys, parse_int=bounded_int)
     except (ValueError, RecursionError) as err:
@@ -490,7 +601,14 @@ def parse_reply(reply: str):
         raise Refusal(f'the forge-plan body is not valid JSON: {type(err).__name__}: {str(err)[:200]}')
     if nested_deeper_than(data, MAX_JSON_DEPTH):
         raise Refusal(f'the forge-plan body is not valid JSON: nested more than {MAX_JSON_DEPTH} levels deep')
-    check_keys(data, ('tasks',), 'the forge-plan body', ('groups',))
+    return data
+
+
+def parse_plan(reply: str):
+    """(tasks, groups, later). groups is None when the reply has no groups key, else a list (maybe
+    empty); later is None when it has no later key."""
+    data = load_block(extract_block(reply))
+    check_keys(data, ('tasks',), 'the forge-plan body', ('groups', 'later'))
     tasks = data['tasks']
     if not isinstance(tasks, list) or not 1 <= len(tasks) <= MAX_TASKS:
         count = f' ({len(tasks)})' if isinstance(tasks, list) else ''
@@ -499,7 +617,14 @@ def parse_reply(reply: str):
     checked = [check_task(t, i, seen) for i, t in enumerate(tasks)]
     check_graph(checked)
     groups = check_groups(data['groups'], seen) if 'groups' in data else None
-    return checked, groups
+    later = check_later(data['later']) if 'later' in data else None
+    return checked, groups, later
+
+
+def parse_reply(reply: str):
+    """(tasks, groups), as before `later` existed: what the callers that only need the plan read."""
+    tasks, groups, _later = parse_plan(reply)
+    return tasks, groups
 
 
 def cmd_parse(args) -> int:
@@ -510,7 +635,7 @@ def cmd_parse(args) -> int:
     request = read_text(request_path, 'request')
     reply = read_text(args.reply, 'reply')
     try:
-        tasks, groups = parse_reply(reply)
+        tasks, groups, later = parse_plan(reply)
     except Refusal as err:
         # A key or path may hold a lone surrogate; escape it so the reason can be written and printed.
         reason = str(err).encode('utf-8', 'backslashreplace').decode('utf-8')
@@ -531,9 +656,18 @@ def cmd_parse(args) -> int:
         outputs.append((folder / 'prompt.md', text.encode('utf-8')))
         outputs.append((folder / 'approach.md', t['approach'].encode('utf-8') if t['approach'].strip() else None))
         outputs.append((folder / 'risk', (t['risk'] + '\n').encode('utf-8') if t['risk'] else None))
+        # #153: what the planner decided about splitting this task. `plan` applies a proposal within
+        # the run's limits (forge_decompose.py settle) and records the reason of a task kept whole.
+        split = json.dumps(proposal_of(t)).encode('utf-8') if t.get('subtasks') else None
+        outputs.append((folder / forge_decompose.PROPOSAL, split))
+        kept = (t['reason'] + '\n').encode('utf-8') if t.get('reason') and not t.get('subtasks') else None
+        outputs.append((folder / forge_decompose.REASON, kept))
     outputs.append((plan / 'tasks.tsv', ('\n'.join(rows) + '\n').encode('utf-8')))
     if groups is not None:
         outputs.append((plan / 'groups.tsv', groups_tsv_bytes(groups)))
+    # #153: the stages after this plan, for the table, the run summary and `next`.
+    chain = json.dumps({'later': later}, indent=1).encode('utf-8') + b'\n' if later else None
+    outputs.append((plan / forge_decompose.LATER, chain))
     for path, data in outputs:
         if data is None:
             path.unlink(missing_ok=True)       # an empty approach must not keep an older one alive
@@ -587,6 +721,147 @@ def cmd_one_task(args) -> int:
     return 0
 
 
+# --- one task of an existing plan (#153) -------------------------------------------------------
+
+NODE_ROLE = """\
+You are the planner of a software change that is already under way. You are read-only: inspect the
+repository as much as you need, and return a plan. Never edit, create or delete a file, and never
+run anything that changes the repository. One task of the plan is in front of you. Decide whether it
+should be split into subtasks, each built in a worktree of its own and judged by a reviewer against
+its prompt, or kept as one task."""
+
+
+def node_task(args):
+    plan = Path(args.plan)
+    row = forge_decompose.row_of(plan, args.task)
+    if row is None:
+        die(f'no task {args.task!r} in {plan}')
+    return plan, row
+
+
+def tail_text(path: Path, limit: int) -> str:
+    try:
+        text = path.read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return ''
+    return text if len(text) <= limit else '[...]\n' + text[-limit:]
+
+
+def build_node_prompt(plan: Path, row: dict, start: str) -> str:
+    tdir = plan / 'tasks' / row['id']
+    limits = forge_decompose.limits(plan)
+    most = min(limits['children'], MAX_SUBTASKS)
+    prompt = read_text(tdir / 'prompt.md', 'task prompt')
+    review = tail_text(tdir / 'qa.last', 6000).strip()
+    stopped = tail_text(tdir / 'decision.md', 1500).strip()
+    so_far = ''
+    if stopped:
+        so_far += f'\n# Why it stopped\n\n{stopped}\n'
+    if review:
+        so_far += f'\n# The last review of the work so far\n\n{review}\n'
+    if start == 'fresh':
+        work = ('The work done on this task so far is set aside: the subtasks start from the code as it was '
+                'before the task began.')
+    else:
+        work = ('The work done on this task so far stays on its branch, and the subtasks build on it: plan '
+                'what is still missing or wrong, not what is already there and right.')
+    rules = [
+        '**Keeping it whole is a valid answer**, and the right one when the task is one coherent piece. '
+        'Reply then with exactly one task (the task as it should be done) and say why in `reason`. '
+        'A split is never required.',
+        '**Each subtask owns paths inside this task\'s files** (' + ', '.join(row['files']) + '). A path '
+        'outside them refuses the whole reply.',
+        '**Never two subtasks that edit the same file**, unless a dependency orders them. `deps` names '
+        'sibling subtasks only.',
+        'Never split so fine that a subtask cannot be verified on its own: each must be reviewable and '
+        'correct by itself. Prefer subtasks that can run in parallel to a pure chain.',
+        '**Each subtask\'s `prompt`** carries the whole requirement it owns, written so that someone who '
+        'sees only that prompt can do it, and ends with a `## Acceptance criteria` section of checks a '
+        'reviewer can verify. The task\'s own prompt is attached to each subtask for context.',
+        'Rate `difficulty` by what the subtask demands of the model: `low` mechanical and local, '
+        '`medium` a self-contained implementation against a clear spec, `high` design judgment or '
+        'subtle edge cases.',
+        work,
+        f'At most {most} subtasks.',
+    ]
+    numbered = '\n'.join(f'{n}. {rule}' for n, rule in enumerate(rules, 1))
+    return f"""\
+# Role
+
+{NODE_ROLE}
+
+# The task
+
+Its id is `{row['id']}`, its difficulty `{row['difficulty']}`, its title "{row['title']}". Its prompt
+follows verbatim between the markers.
+
+<<<TASK
+{prompt}{'' if prompt.endswith(chr(10)) else chr(10)}TASK>>>
+{so_far}
+# Rules
+
+{numbered}
+
+# Reply format
+
+Reply with exactly one fenced block whose opening line is ```forge-plan and whose body is one
+JSON object with the keys `reason` (one line: why you split the task this way, or why you kept it
+whole) and `tasks`, a list of 1 to {most} objects (one means: keep it whole), each with exactly
+these keys and no others:
+
+- `id`: lowercase slug matching `^[a-z0-9][a-z0-9-]{{0,39}}$`, unique in the reply;
+- `deps`: list of ids of subtasks of this reply that must land first (`[]` for none), no cycles;
+- `difficulty`: `low`, `medium` or `high`;
+- `files`: non-empty list of repo-relative paths inside the task's files;
+- `title`: one line without a tab;
+- `approach`: a few lines on the intended shape (a string; `""` for none);
+- `prompt`: the subtask's full instruction, ending with a `## Acceptance criteria` section.
+
+Put no other `forge-plan` block in the reply. Text outside the block is ignored. Anything that
+breaks these rules makes the whole reply refused; nothing is repaired.
+"""
+
+
+def cmd_node_prompt(args) -> int:
+    plan, row = node_task(args)
+    out = plan / 'tasks' / row['id'] / 'split.prompt'
+    write_atomic(out, build_node_prompt(plan, row, args.start))
+    print(out)
+    return 0
+
+
+def parse_node(text: str, row: dict) -> dict:
+    """{reason, tasks} from a planner's reply about one task, or from subtasks a person wrote: the
+    forge-plan block when the text has one, else the text as the bare JSON object."""
+    lines = text.split('\n')
+    fenced = any(OPEN_RE.match(line.rstrip('\r')) for line in lines)
+    data = load_block(extract_block(text) if fenced else text)
+    check_keys(data, ('tasks',), 'the forge-plan body', ('reason',))
+    reason = data.get('reason')
+    if reason is not None and (not isinstance(reason, str) or LINE_BREAKS_RE.search(reason) or len(reason) > MAX_REASON):
+        raise Refusal(f'reason is not one line of at most {MAX_REASON} characters')
+    tasks = check_subtasks(data['tasks'], row['id'], row['files'], low=1)
+    return {'reason': (reason or '').strip(), 'tasks': proposal_of({'subtasks': tasks})['tasks']}
+
+
+def cmd_node_parse(args) -> int:
+    plan, row = node_task(args)
+    tdir = plan / 'tasks' / row['id']
+    reply = read_text(args.reply, 'reply')
+    try:
+        proposal = parse_node(reply, row)
+    except Refusal as err:
+        reason = str(err).encode('utf-8', 'backslashreplace').decode('utf-8')
+        write_atomic(tdir / 'split.refused', f'{reason}\nreply: {args.reply}\n')
+        print(f'subtasks refused: {reason}')
+        return 4
+    out = Path(args.out) if args.out else tdir / forge_decompose.PROPOSAL
+    write_atomic(out, json.dumps(proposal))
+    (tdir / 'split.refused').unlink(missing_ok=True)
+    print(out)
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog='forge-planner.py', description=__doc__.split('\n')[0])
     sub = ap.add_subparsers(dest='cmd', required=True)
@@ -608,6 +883,17 @@ def main(argv=None) -> int:
     p.add_argument('--goal-file', required=True)
     p.add_argument('--difficulty', choices=DIFFICULTIES, default='medium')
     p.set_defaults(fn=cmd_one_task)
+    p = sub.add_parser('node-prompt', help='write the prompt that asks a planner about one task of a plan')
+    p.add_argument('--plan', required=True)
+    p.add_argument('--task', required=True)
+    p.add_argument('--start', choices=forge_decompose.STARTS, default='keep')
+    p.set_defaults(fn=cmd_node_prompt)
+    p = sub.add_parser('node-parse', help='strictly parse the subtasks proposed for one task')
+    p.add_argument('--plan', required=True)
+    p.add_argument('--task', required=True)
+    p.add_argument('--reply', required=True)
+    p.add_argument('--out', help='where the checked subtasks go (default: tasks/<task>/split.proposal.json)')
+    p.set_defaults(fn=cmd_node_parse)
     args = ap.parse_args(argv)
     return args.fn(args)
 

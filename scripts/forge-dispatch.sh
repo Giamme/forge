@@ -39,7 +39,7 @@
 #
 # Environment: FORGE_REGISTRY      alternate registry file (default: <skill>/registry.tsv)
 #              FORGE_ORPHAN_GUARD  off = do not run the harness in its own process group
-#                                  (default on; also skipped under FORGE_FRACTAL_RUN)
+#                                  (default on)
 #              FORGE_RESULT_GRACE  claude/openclaude: seconds a log that ends in the model's final
 #                                  result may stay silent before forge ends the harness (an open
 #                                  background task keeps it up); default 1800, 0 = off. Either way
@@ -934,12 +934,11 @@ t0="$(date +%s)"
 # process running after dispatch returns, mutating the tree under whoever reads it next.
 # forge-guard.py does setsid() and then exec()s the harness, so $! is still the harness
 # pid and is now also its group id; after the harness exits, anything left in the group is
-# reaped and listed. Off by kill switch, and under Fractal (which manages its own process
-# groups and would otherwise lose the ability to signal this one). If the helper cannot
+# reaped and listed. Off by kill switch. If the helper cannot
 # even start, fall back to the plain exec: a guard failure must never cost the run.
 GUARD_ON=0; reaped=0
 case "${FORGE_ORPHAN_GUARD:-on}" in off|OFF|Off|0|no|false) ;; *)
-  if [ -z "${FORGE_FRACTAL_RUN:-}" ] && [ -r "$GUARD" ] && [ "$(python3 "$GUARD" ping 2>/dev/null)" = ok ]; then GUARD_ON=1; fi ;;
+  if [ -r "$GUARD" ] && [ "$(python3 "$GUARD" ping 2>/dev/null)" = ok ]; then GUARD_ON=1; fi ;;
 esac
 RUNCMD=("${CMD[@]}")
 # Windows MSYS2 mode (forge-win.sh): the harness gets the PATH it had in Git Bash, not MSYS2's.

@@ -914,8 +914,8 @@ class OrphanGuardTests(DispatchBase):
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assert_reaped_and_listed(self.detached())
 
-    def test_kill_switch_and_fractal_leave_it_running(self):
-        for name, extra in (('switch', {'FORGE_ORPHAN_GUARD': 'off'}), ('fractal', {'FORGE_FRACTAL_RUN': str(self.root / 'fractal')})):
+    def test_the_kill_switch_leaves_it_running(self):
+        for name, extra in (('switch', {'FORGE_ORPHAN_GUARD': 'off'}),):
             with self.subTest(name):
                 self.scenario({'*.dwarf.*': {'background': True}})
                 Path(str(self.root / 'scenario.json') + '.bgpid').unlink(missing_ok=True)

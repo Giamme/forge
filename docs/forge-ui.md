@@ -142,6 +142,19 @@ the sweep fixed and lists what it left for `forge issues`, with each reason.
 
 A review the reviewer passed but forge failed, because it listed a blocking CONFIRMED finding, shows a red `forge: FAIL (reviewer said PASS)` chip in the *Review findings* section.
 
+A task that was [split into subtasks](decomposed-runs.md#splitting-a-task-into-subtasks) has a
+*Decomposition* section: the decision (split, kept whole, or kept whole at a limit), who made it
+(the planner, you, or the run with `--auto-split`) and its reason, then every subtask below it
+as a tree, through every level. Each node shows its status, model, difficulty, attempts and
+tokens (forge records tokens, not prices) and links to its diff; a node opens as a task of its
+own, with its attempts, reviews and controls. The section says whether the subtasks' work is on
+the task's branch yet, which subtasks the task is waiting for, and whether the split started
+over from the task's base. Rest the pointer on a decision to read what it means. A task the
+planner kept whole shows the reason it gave; a task nobody decided about shows nothing. The
+run's details show the limits every split works within and how much of the run was split, and,
+for a goal larger than one plan, which stage this plan is and the stages after it. A sub-plan is
+not listed among the runs: it opens from its task, and links back to it.
+
 ### Controls
 
 forge-ui reads everything, and it changes things only by calling forge's own commands: it
@@ -307,7 +320,7 @@ button stays (worktree commands, compact commands, the `forge findings` and `for
 commands, the triage commands, and the `retry --answer` command on a waiting task). `FORGE_UI_READONLY=1 forge ui open` starts such a
 server, and the launcher never reuses a server running in the other mode; it replaces it.
 
-Also: replay, critical path, Fractal child-task trees, quick jump (Ctrl K, ⌘K on a Mac, or
+Also: replay, critical path, the tree of a split task's subtasks, quick jump (Ctrl K, ⌘K on a Mac, or
 `/`), a bell for runs that finish or fail, failed tasks and final-review verdicts (with opt-in
 browser notifications), and a run exported as one HTML file that opens without forge-ui, with
 prompts, diffs and local paths left out unless you choose them.

@@ -229,6 +229,18 @@ def _runs(catalog):
         out.append(dict(key=run['key'], path=run['path'], run_id=run['run_id'], repo=run['repo'],
                         root=run.get('repo_root') or run['repo'], tasks=tasks, live=live,
                         integration=read.exists('accepted.integration') or read.exists('integration.base')))
+        # The subtasks of a split task (#153) are a plan of their own under it, with its own run id, branches
+        # and worktree folder. It is not a listed run, and its worktrees are forge's all the same.
+        for sub in reader.sub_plans(run['path']):
+            below = reader._Read(sub)
+            run_id = below.line('run_id')
+            if not run_id:
+                continue
+            states = {t['id']: t['status'] for t in reader._tasks(below)}
+            out.append(dict(key=reader.run_key(sub), path=str(below.path), run_id=run_id, repo=run['repo'],
+                            root=run.get('repo_root') or run['repo'], tasks=states,
+                            live=live or any(s == 'RUNNING' for s in states.values()),
+                            integration=below.exists('integration.base')))
     return out
 
 

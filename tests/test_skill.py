@@ -126,7 +126,7 @@ class LauncherTests(unittest.TestCase):
     def test_a_command_group_run_alone_shows_its_help_as_a_usage_error(self):
         # Like a bare `forge`: the group's own --help, on stderr, exit 2, rather than
         # argparse's "the following arguments are required" line.
-        for name in ('fractal', 'decide', 'jev', 'dataset', 'ui', 'control', 'config'):
+        for name in ('decide', 'jev', 'dataset', 'ui', 'control', 'config'):
             with self.subTest(name):
                 result = self.forge(name)
                 self.assertEqual(result.returncode, 2, result.stderr)
@@ -147,7 +147,7 @@ class LauncherTests(unittest.TestCase):
     def test_every_subcommand_a_group_help_lists_has_a_description(self):
         # A bare group prints this help (above), so a name with no line beside it leaves
         # the user guessing. jev is left out: it is the old alias, kept for one release.
-        for name in ('fractal', 'decide', 'dataset', 'ui', 'control', 'config'):
+        for name in ('decide', 'dataset', 'ui', 'control', 'config'):
             with self.subTest(name):
                 help_text = self.forge(name, '--help').stdout
                 choices = re.search(r'^  \{([^}]*)\}$', help_text, re.M).group(1).split(',')

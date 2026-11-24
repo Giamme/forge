@@ -76,8 +76,8 @@ opencode and grok scan it on their own.
 
 On a terminal, the installer ends with `forge setup`: one short pass over what a first run needs
 (the models that build and review, review preferences, brief and summaries, forge-ui, project
-memory, decision models, storage, the update check, Ripwire and Fractal), saved as defaults so the
-first `/forge` run asks none of it. Once it is done the installer skips it, and `forge update`
+memory, decision models, storage, the update check and Ripwire), saved as defaults so the first
+`/forge` run asks none of it. Once it is done the installer skips it, and `forge update`
 never runs it. Without a terminal the installer prints the command instead.
 
 ```bash
@@ -89,8 +89,12 @@ forge setup export > s.json  # the same answers for another machine: forge setup
 
 Setup never calls a model and sends nothing anywhere unless an answer says it will. Declining an
 add-on, or one failing to install, never fails the install. See [setup](../references/setup.md)
-for every answer, and [Fractal installation](fractal.md#install-the-optional-runtime) for its
-prerequisites.
+for every answer.
+
+forge needs no runtime beyond the harness CLIs. Fractal, the optional backend earlier versions
+could install, was removed in forge 0.23: splitting a task into subtasks is part of forge
+itself ([Splitting a task into subtasks](decomposed-runs.md#splitting-a-task-into-subtasks)).
+`forge du` shows what an old Fractal runtime left on disk.
 
 ## Windows: MSYS2 mode
 
@@ -132,7 +136,7 @@ To set MSYS2 mode up:
    ```
 
    MSYS2 mode has only been tried from a git checkout: neither the npm package nor
-   `scripts/forge-install.sh` (links into the other harnesses, optional Fractal) has been tried
+   `scripts/forge-install.sh` (links into the other harnesses) has been tried
    in it.
 
 What differs in MSYS2 mode:

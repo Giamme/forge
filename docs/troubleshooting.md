@@ -24,7 +24,7 @@ Symptoms, causes and fixes, from a skill a harness cannot see to a task that wil
 | a task merged although its reviewer said FAIL | the threshold (`P2` by default) accepted it: every CONFIRMED finding was labelled and milder than the threshold. See `tasks/<id>/known_issues.md` and `qa.gate` (decision `accept`); [the verdict rule](reviews.md#verdicts-and-failure) |
 | a task FAILed although its reviewer said PASS | forge's gate: a CONFIRMED finding at or above the threshold was listed. `qa.gate` says `fail`, and the next attempt starts with a note saying so. Fix those findings, or `accept` the task if a person decides to; [the verdict rule](reviews.md#verdicts-and-failure) |
 | `accept` exits `3` "changed since it was reviewed" | the branch or worktree moved after QA, so accepting would sign off on unreviewed code. `retry` for a fresh review |
-| `combine` / `split` refuses | the message names why: unmerged task left behind, duplicate ids, locked or dirty plan, a Fractal-backed plan, or a selection that strands a dependent. Nothing was changed |
+| `combine` / `split` refuses | the message names why: unmerged task left behind, duplicate ids, locked or dirty plan, a plan made with Fractal (removed in 0.23), or a selection that strands a dependent. Nothing was changed |
 | `integrate --final-review` stops with exit `5` | the whole-run reviewer found a blocking defect (or never reached a verdict); findings are in `<plan>/…/final-review/qa.last`. Your branch is untouched. Exit `8` means the reviewer hit a quota/auth stop: run it again |
 | `FLAKY` in the summary, verification `PASS` | the verify command failed once and passed on rerun. Read `verification.log` (the first run) — an intermittent failure can be a real bug. `--verify-retries 0` restores the strict single run |
 | `verify coverage: suite '…' is not run by the verify command` | the project defines a suite your `--verify` skips. Advisory only; add it to the command (or `.forge/verify`) if it should gate the merge |
@@ -45,14 +45,11 @@ Symptoms, causes and fixes, from a skill a harness cannot see to a task that wil
 | memory stays empty | nothing durable was learned — the common, correct case. The ledger still has a row per dispatch |
 | a wrong fact keeps reappearing | `memory.md` is rebuilt from the ledger; delete the ledger rows, not the memory line |
 | dwarves build incompatible interfaces | the seam was never agreed — plan the approach, or use `--planner` |
-| Fractal was installed but a new unattended run uses ordinary execution | installation never activates it; pass `--fractal` explicitly |
-| `Fractal selected but unavailable` | run `forge fractal doctor`, then the suggested managed install; resume retains the selected backend |
-| existing run rejects a new backend, pool or limit | selection and bounds are recorded; create a new run directory for changed settings |
-| Fractal reports completion but Forge has not accepted the work | inspect QA, verdict and verification; execution completion does not establish acceptance |
-| Fractal import stops with `source_drift` | the source changed after its snapshot; preserve both versions and inspect the candidate instead of forcing import |
-| Fractal work was paused or its coordinator exited | inspect `status` and `logs`, then use explicit `resume RUN_ID`; retry starts a new attempt |
-| browser dashboard closed while work is running | execution is independent; reopen with `forge fractal open RUN_ID` |
-| costs are unknown or a dollar cap is rejected | the bridge only reports available usage; v1 cannot enforce a spending cap |
+| `--fractal…` or `forge fractal` says it `was removed with Fractal` | forge 0.23 removed that backend; drop the flag. A task is split into subtasks by forge itself: [Splitting a task into subtasks](decomposed-runs.md#splitting-a-task-into-subtasks) |
+| `run`, `retry` or `forge handoff resume` says a plan `was made with Fractal` | an old plan stays readable (`forge runs`, forge-ui) but is never run again; start a new run for the work that is left. `forge du` shows what the old runtime left on disk |
+| a task is `BLOCKED` and the summary says `waiting for their subtasks` | a subtask failed or waits for you; no attempt of the task was spent. Retry it in its own plan (`retry <plan-dir>/tasks/<id>/sub <subtask>`), then `run <plan-dir>` again |
+| `not split`, and the node reads `bounded` | the split would pass a limit of the run (`--split-depth`, `--split-children`, `--split-nodes`); the task runs as one task. The limits are frozen by the first run |
+| a `plan` that changes `--split-…` is refused | the limits cannot change once the plan has run; make a new plan for other limits |
 
 For per-harness invocation details, effort ladders and known CLI failure modes, see
 [`references/harnesses.md`](../references/harnesses.md). For decomposition mechanics, see

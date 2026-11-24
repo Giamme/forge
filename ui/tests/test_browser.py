@@ -75,18 +75,11 @@ class Page(unittest.TestCase):
         base = Path(cls.temp.name)
         cls.plan, cls.solo = F.make_plan(base / 'p'), F.make_solo(base / 's')
         cls.key = reader.run_key(cls.plan)
-        cls.xdg = os.environ.get('XDG_STATE_HOME')
-        os.environ['XDG_STATE_HOME'] = str(base / 'state')      # where the reader task's Fractal tree lives
-        F.make_fractal(base / 'state', cls.plan, 'reader')
         _serve(cls, reader.Catalog(plans=[cls.plan, cls.solo], registry=False))
 
     @classmethod
     def tearDownClass(cls):
         cls.server.shutdown(); cls.server.server_close(); cls.thread.join(timeout=2)
-        if getattr(cls, 'xdg', None) is None:
-            os.environ.pop('XDG_STATE_HOME', None)
-        else:
-            os.environ['XDG_STATE_HOME'] = cls.xdg
         cls.temp.cleanup()
 
     def open(self, cdn, view='3d', mode='plan', init='', context=None, tasks=True):
@@ -408,22 +401,6 @@ class Page(unittest.TestCase):
         page.goto(self.url + f'#/runs/{self.key}/tasks/reader')
         page.wait_for_selector('#inspector .review .tests-line.warn')
         self.assertIn('no display', page.inner_text('#inspector .review .tests-line.warn'))
-        self.assertClean(page)
-
-    def test_fractal_child_tasks_show_in_the_inspector_with_their_diffs(self):
-        page = self.open(cdn=False)
-        page.goto(self.url + f'#/runs/{self.key}/tasks/reader')
-        page.wait_for_selector('#inspector .fractal-tree li')
-        self.assertEqual(page.locator('#inspector .fractal-tree li').count(), 4)
-        self.assertEqual(page.eval_on_selector_all('#inspector .fractal-tree .tag', 'ts => ts.map(t => (t.textContent.match(/\\d+/) || [])[0])'), ['3'])   # the one split, into 3
-        page.click('#inspector .fractal-tree a:text-is("ui")')
-        page.wait_for_function("() => location.hash.endsWith('/tasks/reader/fractal/ui')")
-        node_diff = '#inspector .insp-head a.diff-link[href$="/tasks/reader/fractal/ui/diff"]'   # not the task view's link, still there until the hash is handled
-        page.wait_for_selector(node_diff)
-        self.assertIn('Add accessible status labels', page.text_content('#inspector'))
-        page.click(node_diff)
-        page.wait_for_selector('.diff-file')
-        self.assertIn('candidate.diff', page.text_content('.diff-meta'))
         self.assertClean(page)
 
     def test_the_model_leaderboard_links_a_model_to_its_runs_in_the_cloud(self):
@@ -798,6 +775,37 @@ class RetroSection(unittest.TestCase):
         page.goto(self.url + '#/runs/' + self.solo_key)
         page.wait_for_selector('#inspector details[data-keep$="run-request"]', state='attached')
         self.assertIsNone(page.evaluate(self.RETRO_SECTION))
+        self.assertClean(page)
+
+
+@unittest.skipUnless(sync_playwright, 'install Python Playwright to run browser checks')
+class OldFractalRun(unittest.TestCase):
+    """A run made with Fractal, the backend forge 0.23 removed, still opens: read-only, with a note that says so."""
+    open, assertClean = Page.open, Page.assertClean
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory(prefix='forge-ui-old-')
+        cls.plan = F.make_old_fractal(F.make_plan(Path(cls.temp.name) / 'p'))
+        cls.key = reader.run_key(cls.plan)
+        _serve(cls, reader.Catalog(plans=[cls.plan], registry=False))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown(); cls.server.server_close(); cls.thread.join(timeout=2)
+        cls.temp.cleanup()
+
+    def test_the_run_opens_read_only_with_the_removal_note(self):
+        page = self.open(cdn=False, view='2d')
+        page.goto(self.url + '#/runs/' + self.key)
+        page.locator('button.details-btn', has_text='Run details').click()
+        page.wait_for_selector('#inspector p.warn:has-text("made with Fractal")')
+        text = page.text_content('#inspector')
+        self.assertIn('forge 0.23 removed', text)
+        self.assertIn('Read-only: this run was made with Fractal', text)
+        page.goto(self.url + f'#/runs/{self.key}/tasks/reader')        # its tasks read as any run's
+        page.wait_for_selector('#inspector .insp-head')
+        self.assertIn('Read-only: this run was made with Fractal', page.text_content('#inspector'))
         self.assertClean(page)
 
 

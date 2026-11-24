@@ -8,7 +8,7 @@ const C = require(path.join(__dirname, '..', '..', 'forge_ui', 'static', 'contro
 
 // `forge control show --json` of a live plan (scripts/forge-control.py `show`)
 const show = (over = {}) => ({
-  plan: '/w/forge-runs/p', run_id: '20261016-153012-ab12', live: true, fractal: false,
+  plan: '/w/forge-runs/p', run_id: '20261016-153012-ab12', live: true,
   run: { qa_threshold: 'P2', timeout: 2700, escalate_after: 3, verify_retries: 1, retry_budget: 4, infra_budget: 2 },
   tasks: {
     reader: { status: 'MERGED', dwarf: 'sol:xhigh', qa: 'opus', qa_threshold: null, retry_budget: null, retries_used: 1, pin: null, escalation_stop: false, escalation_next: null },
@@ -86,13 +86,12 @@ test('the budgets change only while a run is live', () => {
   assert.equal(C.canEdit(idle(), 'qa-threshold', 'graph').enabled, true, 'a task threshold does not need a live run');
 });
 
-test('a merged task has nothing to change and a Fractal plan hides the pin', () => {
+test('a merged task has nothing to change', () => {
   assert.equal(C.canEdit(show(), 'qa-threshold', 'reader').enabled, false);
   assert.match(C.canEdit(show(), 'qa-threshold', 'reader').why, /merged/);
   assert.equal(C.canEdit(show(), 'pin', 'reader').enabled, false);
   assert.equal(C.canEdit(show(), 'pin', 'page').enabled, true);
-  assert.deepEqual(C.canEdit(show({ fractal: true }), 'pin', 'page'), { enabled: false, hidden: true, why: 'Fractal plans never apply pins' });
-  assert.equal(C.canEdit(show({ fractal: true }), 'qa-threshold', 'page').enabled, true, 'only pins are off under Fractal');
+  assert.deepEqual(C.canEdit(show(), 'pin', 'page'), { enabled: true, hidden: false, why: null });
 });
 
 test('each action becomes the body ui/docs/api.md shows', () => {

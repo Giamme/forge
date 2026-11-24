@@ -5,7 +5,7 @@ very differently. This report looks inside each tier with only what the dataset 
 nothing in a run.
 
 Population: the tasks `forge dataset routing` counts, whose first attempt says something about the
-implementer (fractal runs left out). Each task is described by:
+implementer (old Fractal runs left out). Each task is described by:
 
   plan time   known before dispatch, so a rule could route on it: declared files, dependencies, wave,
               the size of the task's prompt (KB)

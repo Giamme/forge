@@ -63,6 +63,7 @@ SCRIPTS = Path(__file__).resolve().parent
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 import forge_flock as fcntl  # noqa: E402
+import forge_legacy  # noqa: E402
 import forge_posix  # noqa: E402
 SEVERITIES = ('P0', 'P1', 'P2', 'P3')
 DEFAULT_MAX = 5     # fix tasks one sweep may add
@@ -371,7 +372,7 @@ def groups(kept: list, limit: int) -> tuple:
 
 def pools(plan: Path) -> dict:
     try:
-        data = json.loads(read(plan / 'fractal-routing.json') or '{}')
+        data = json.loads(read(forge_legacy.pools_path(plan)) or '{}')
     except ValueError:
         return {}
     return data if isinstance(data, dict) else {}

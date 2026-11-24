@@ -242,37 +242,6 @@ class FastRolesTests(unittest.TestCase):
         self.assertEqual(self.cmds(p, 'dwarf'), [])
         self.assertEqual(self.cmds(p, 'qa'), [])
 
-    def test_a_fractal_retry_does_not_preflight_the_fast_tier(self):
-        # do_retry preflights before Fractal is selected, so FORGE_FRACTAL_RUN is unset.
-        # The saved selection is enough: an opencode dwarf and a grok shadow are not
-        # refused, nothing is dispatched, and the run says the tier was not applied.
-        self.scenario({'a.qa.*': {'verdict': 'FAIL'}})
-        p = self.make_plan('--fast', 'dwarf', name='fractal-retry')
-        failed = self.run_plan(p)
-        self.assertEqual(failed.returncode, 5, failed.stdout)
-        opencode = self.bin / 'opencode'
-        opencode.write_text(fixtures.FAKE)
-        opencode.chmod(0o755)
-        before = self.calls()
-        plain = self.run_script('forge-parallel.sh', 'retry', p, 'a', '--dwarf', 'opus:high:opencode')
-        self.assertEqual(plain.returncode, 3, plain.stdout)
-        self.assertIn('opencode %s' % REFUSAL, plain.stdout)
-        self.assertIn('dwarf role', plain.stdout)
-        self.assertEqual(self.calls(), before)
-        (p / 'fast').write_text('dwarf\nqa\n')
-        (p / 'shadow_qa').write_text('grok\n')
-        (p / 'shadow_rate').write_text('1\n')
-        (p / 'fractal-selection.json').write_text('{"enabled": true}\n')
-        (p / 'fractal-routing.json').write_text('{"low": ["opus:high:opencode"]}\n')
-        again = self.run_script('forge-parallel.sh', 'retry', p, 'a', '--dwarf', 'opus:high:opencode')
-        self.assertNotIn(REFUSAL, again.stdout)
-        self.assertIn('retrying a with dwarf opus:high:opencode', again.stdout)
-        self.assertIn('fast tier is not applied to Fractal dispatches', again.stdout)
-        # grok is not installed here, so the shadow is dropped the ordinary way. That
-        # note is how this shows the fast-tier refusal was not what stopped it.
-        self.assertIn('shadow review spec grok is not usable here', again.stdout)
-        self.assertEqual(self.calls(), before)
-
     # --- solo -----------------------------------------------------------------------------
     def test_solo_stores_dwarf_and_qa_and_none_clears_them(self):
         first, run = self.solo_at('solo', '--fast', 'dwarf,qa')
@@ -369,66 +338,6 @@ class FastRolesTests(unittest.TestCase):
         self.assertEqual(rerun.returncode, 0, rerun.stdout)
         copied = self.root / 'plan-opus' / 'fast'
         self.assertEqual(copied.read_text(), 'planner\nreview\n')
-
-    # --- fractal: the runner ignores the file -------------------------------------------------
-    def test_fractal_dispatches_drop_the_tier_and_the_run_says_so_once(self):
-        plan = self.root / 'fractal'
-        plan.mkdir()
-        (plan / 'fast').write_text('dwarf\nqa\nreview\n')
-        (plan / 'fractal-selection.json').write_text('{"enabled": true}\n')
-        script = r'''
-note() { printf 'NOTE %s\n' "$*"; }
-die() { printf 'forge: %s\n' "$1" >&2; exit "${2:-2}"; }
-source "$1"
-dir=$2
-case "$3" in
-  during)
-    FORGE_FRACTAL_RUN=1
-    forge_fast_tier "$dir" dwarf
-    printf '\n---\n'
-    forge_fast_fractal_note "$dir"
-    forge_fast_fractal_note "$dir"
-    ;;
-  review)
-    # A whole-run review is not a Fractal dispatch, even when the plan selected Fractal.
-    forge_fast_tier "$dir" review
-    printf '\n---\n'
-    ;;
-  retry)
-    forge_fast_fractal_note "$dir"
-    forge_fast_fractal_note "$dir"
-    ;;
-  plain)
-    rm -f "$dir/fractal-selection.json"
-    unset FORGE_FRACTAL_RUN
-    forge_fast_fractal_note "$dir"
-    printf 'TIER:%s\n' "$(forge_fast_tier "$dir" qa)"
-    ;;
-esac
-'''
-        def run(mode):
-            return subprocess.run(['bash', '-c', script, 'fast', str(LIB), str(plan), mode],
-                                  text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=self.env)
-
-        during = run('during')
-        self.assertEqual(during.returncode, 0, during.stdout)
-        tier_out, notes = during.stdout.split('---', 1)
-        self.assertEqual(tier_out.strip(), '')
-        self.assertEqual(notes.strip().count('NOTE fast tier is not applied to Fractal dispatches'), 1)
-
-        review = run('review')
-        self.assertEqual(review.returncode, 0, review.stdout)
-        self.assertEqual(review.stdout.split('---', 1)[0].strip(), '--service-tier fast')
-
-        retry = run('retry')
-        self.assertEqual(retry.returncode, 0, retry.stdout)
-        self.assertEqual(retry.stdout.strip().count('NOTE fast tier is not applied to Fractal dispatches'), 1)
-
-        plain = run('plain')
-        self.assertEqual(plain.returncode, 0, plain.stdout)
-        self.assertNotIn('NOTE', plain.stdout)
-        self.assertIn('TIER:--service-tier fast', plain.stdout)
-
 
 if __name__ == '__main__':
     unittest.main()

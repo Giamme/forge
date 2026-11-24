@@ -258,15 +258,5 @@ class SecretHygieneTests(unittest.TestCase):
             self.assertIn('"key_present": true', result.stdout)
 
 
-class FractalEligibleTests(unittest.TestCase):
-    """A Fractal child's model always comes from the run's frozen eligible pool."""
-
-    SOURCE = (ROOT / 'scripts' / 'forge_fractal' / 'execution.py').read_text()
-
-    def test_the_frozen_eligible_check_is_untouched(self):
-        self.assertIn("if model not in self.config['eligible']:", self.SOURCE)
-        self.assertIn("raise ValueError('Model not in frozen eligible pool')", self.SOURCE)
-
-
 if __name__ == '__main__':
     unittest.main()

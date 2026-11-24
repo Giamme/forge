@@ -112,11 +112,15 @@ class StopTests(DecisionCase):
         for command in (f'forge-parallel.sh retry {p} a --decide retry=N --reason "..." --approved',
                         f'forge-parallel.sh retry {p} a --decide threshold=P1 --reason "..." --approved',
                         f'forge-parallel.sh retry {p} a --dwarf <spec> --reason "..." --approved',
-                        f'forge-parallel.sh accept {p} a --reason "..." --approved'):
+                        f'forge-parallel.sh accept {p} a --reason "..." --approved',
+                        # The split is one more choice of the same kind (#153), with the limits it works within.
+                        f'forge-parallel.sh retry {p} a --decide split --subtasks <file> --reason "..." --approved'):
             self.assertIn(command, text)
-        # The split is an edit of tasks.tsv and a later run: drain/add need a live scheduler, gone by now.
+        self.assertIn('decomposition limits: depth 2, at most 6 subtasks per split', text)
+        self.assertNotIn('tasks.tsv with smaller tasks', text)
+        self.assertIn(f'forge-parallel.sh run {p}', r.stdout)
+        self.assertIn('--decide split --subtasks <file> | --planner <spec>', r.stdout)
         for shown in (text, r.stdout):
-            self.assertIn(f'forge-parallel.sh run {p}', shown)
             self.assertNotIn('forge control drain', shown)
         # attempts.tsv keeps FAIL for the attempt; the status is the stop.
         attempts = [line.split('\t') for line in (p / 'tasks/a/attempts.tsv').read_text().splitlines()]

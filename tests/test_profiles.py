@@ -18,7 +18,7 @@ from forge_decide import profiles  # noqa: E402
 VALID = {
     'routing': {'dwarf': {'low': ['haiku:xhigh'], 'high': ['opus:high']},
                 'qa': {'any': ['sonnet:high']},
-                'planner': 'sonnet:high', 'fractal_planner': 'sonnet', 'final_reviewer': 'opus:high',
+                'planner': 'sonnet:high', 'final_reviewer': 'opus:high',
                 'escalate_after': 2, 'escalate_effort': True},
     'policy': {'qa_threshold': 'P2', 'retry_failed': 2, 'infra_retries': 1, 'verify_retries': 0,
                'timeout': 3600, 'explore': 0.1, 'shadow_qa': ['sonnet:high'], 'shadow_rate': 0.25,
@@ -251,7 +251,7 @@ class FromPlanTests(unittest.TestCase):
         self.assertEqual(profiles.from_plan(self.plan), {})
 
     def test_pools_and_policies_are_reproduced(self):
-        self.put('fractal-routing.json', json.dumps({'any': [], 'low': ['haiku:xhigh'],
+        self.put('dwarf-routing.json', json.dumps({'any': [], 'low': ['haiku:xhigh'],
                                                      'high': ['opus:high', 'sonnet:high']}))
         self.put('qa-routing.json', json.dumps({'any': ['sonnet:high'], 'medium': []}))
         self.put('planner', 'sonnet:high\n')
@@ -284,7 +284,7 @@ class FromPlanTests(unittest.TestCase):
         self.assertEqual(profiles.from_plan(self.plan), {'routing': {'escalate_effort': False}})
 
     def test_unreadable_files_have_no_source(self):
-        self.put('fractal-routing.json', '{not json')
+        self.put('dwarf-routing.json', '{not json')
         self.put('escalate_after', 'many')
         self.put('profile.json', 'nope')
         self.assertEqual(profiles.from_plan(self.plan), {})

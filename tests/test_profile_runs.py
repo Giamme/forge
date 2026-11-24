@@ -148,7 +148,7 @@ class ProfileRunsTests(unittest.TestCase):
                                qa_threshold='P1', timeout='111', verify_retries='2', explore='0\n',
                                shadow_qa='sol\n', shadow_rate='0.5\n', fast='dwarf\nqa\n').items():
             self.assertEqual((p / name).read_text(), text, name)
-        self.assertEqual(json.loads((p / 'fractal-routing.json').read_text()),
+        self.assertEqual(json.loads((p / 'dwarf-routing.json').read_text()),
                          {k: v for k, v in FULL['routing']['dwarf'].items()})
         self.assertEqual(json.loads((p / 'qa-routing.json').read_text()), FULL['routing']['qa'])
         lines = self.output.splitlines()
@@ -286,7 +286,7 @@ class ProfileRunsTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertEqual(self.rows(p), {'a': dict(dwarf='opus', qa='sol'), 'b': dict(dwarf='opus:low', qa='sol:low'),
                                         'c': dict(dwarf='sol:medium', qa='opus:medium')})
-        self.assertEqual(json.loads((p / 'fractal-routing.json').read_text()), {'any': ['opus']})
+        self.assertEqual(json.loads((p / 'dwarf-routing.json').read_text()), {'any': ['opus']})
         self.assertEqual(json.loads((p / 'qa-routing.json').read_text()), {'any': ['sol']})
         # a re-plan that names no profile leaves the rows as they are
         self.assertEqual(self.plan(p).returncode, 0)
@@ -550,19 +550,6 @@ class ProfileRunsTests(unittest.TestCase):
         before = self.calls().count('qa')
         self.assertEqual(self.run_script('forge-parallel.sh', 'integrate', q, '--approved').returncode, 0)
         self.assertEqual(self.calls().count('qa'), before)
-
-    def test_run_passes_the_profiles_fractal_planner_with_automatic_decomposition(self):
-        self.decide({'P': {**SMALL, 'routing': {**SMALL['routing'], 'fractal_planner': 'sol:high'}}})
-        p = self.planned('--profile', 'P')
-        r = self.run_script('forge-parallel.sh', 'run', p, '--fractal-auto-decompose', '--dry-run')
-        self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertIn('"planner": "sol:high"', r.stdout)
-        flagged = self.run_script('forge-parallel.sh', 'run', p, '--fractal-auto-decompose', '--fractal-planner', 'opus', '--dry-run')
-        self.assertEqual(flagged.returncode, 0, flagged.stdout)
-        self.assertIn('"planner": "opus"', flagged.stdout)
-        plain = self.run_script('forge-parallel.sh', 'run', p, '--fractal', '--dry-run')
-        self.assertEqual(plain.returncode, 0, plain.stdout)
-        self.assertNotIn('"planner": "sol:high"', plain.stdout)
 
     # --- solo ---------------------------------------------------------------------------
     def test_solo_takes_its_models_and_policies_from_the_profile(self):

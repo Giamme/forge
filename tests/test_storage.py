@@ -2,7 +2,7 @@
 
 On the fixtures of test_runs_rm (a plan dir with its own HOME, config home, data home and git repo), plus
 the parts a real run leaves: review snapshots (a .git beside a review.base), execution records with their
-logs, a stray dependency install and a Fractal workspace. Compact and du run as subprocesses, as the
+logs and a stray dependency install. Compact and du run as subprocesses, as the
 forge command runs them.
 """
 import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
@@ -62,9 +62,6 @@ class StorageCase(RmCase):
         self.stray = self.plan / 'export' / 'node_modules'
         (self.stray / 'pkg').mkdir(parents=True)
         (self.stray / 'pkg' / 'index.js').write_bytes(os.urandom(64 << 10))
-        self.product = self.plan / 'tasks' / 'b' / 'fractal' / 'nodes' / 'n1' / 'product'
-        (self.product / '.git').mkdir(parents=True)
-        (self.product / 'f.txt').write_text('fractal workspace\n')
         self.age(self.plan)
 
     def age(self, path):
@@ -94,7 +91,7 @@ class ScanTests(StorageCase):
         self.assertTrue(all('review-1-1' != Path(s['path']).name for s in found['snapshots']['items']))
         self.assertEqual([c['path'] for c in found['logs']['compressible']], [str(self.copy)])
         self.assertEqual([(s['path'], s['kind']) for s in found['strays']], [(str(self.stray), 'dependencies')])
-        self.assertGreater(found['fractal'], 0)
+        self.assertNotIn('fractal', found)
         self.assertTrue(found['complete'])
 
     def test_a_review_dir_without_review_base_or_a_link_is_not_a_snapshot(self):
@@ -137,7 +134,6 @@ class CompactTests(StorageCase):
         self.assertAlmostEqual(packed.stat().st_mtime, OLD, delta=1)
         self.assertEqual(self.live.read_bytes(), LOG)
         self.assertTrue((self.stray / 'pkg' / 'index.js').is_file())
-        self.assertTrue((self.product / '.git').is_dir())
         self.assertTrue(any(s['step'] == 'stray' and str(self.stray) in s['detail'] for s in run['steps']))
         self.assertGreater(run['bytes_freed'], 4 * (256 << 10))
         # the dataset kept the run before anything went, and has nothing new to learn from it afterwards
@@ -251,6 +247,30 @@ class DuTests(StorageCase):
                               capture_output=True, text=True, timeout=120).stdout
         self.assertIn('forge runs compact --repo', text)
         self.assertIn(str(self.stray), text)
+        self.assertEqual(result['removed'], [])
+        self.assertNotIn('Fractal', text)
+
+    def test_du_reports_what_the_removed_fractal_runtime_left_and_never_deletes_it(self):
+        # forge 0.23 removed Fractal: its state dir is reported with the command that deletes it, and stays.
+        state = self.root / 'state'
+        left = state / 'forge' / 'fractal'
+        (left / 'runtime').mkdir(parents=True)
+        (left / 'runtime' / 'blob').write_bytes(os.urandom(300 << 10))
+        env = dict(self.env, XDG_STATE_HOME=str(state))
+        done = subprocess.run([sys.executable, str(DU), '--repo', str(self.repo), '--json'], env=env, cwd=self.root,
+                              capture_output=True, text=True, timeout=120)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        result = json.loads(done.stdout)
+        [removed] = result['removed']
+        self.assertEqual((removed['name'], removed['path'], removed['since']), ('Fractal', str(left), '0.23'))
+        self.assertAlmostEqual(removed['bytes'] / self.du_bytes(left), 1, delta=0.05)
+        [command] = [c['command'] for c in result['commands'] if str(left) in c['command']]
+        self.assertTrue(command.startswith('rm -rf -- '), command)
+        text = subprocess.run([sys.executable, str(DU), '--repo', str(self.repo)], env=env, cwd=self.root,
+                              capture_output=True, text=True, timeout=120).stdout
+        self.assertIn('left by Fractal, which forge 0.23 removed', text)
+        self.assertIn(command, text)
+        self.assertTrue((left / 'runtime' / 'blob').is_file(), 'forge du never deletes it')
 
 
 class StartCheckTests(StorageCase):

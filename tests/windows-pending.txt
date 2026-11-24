@@ -31,7 +31,9 @@ forge:test_control_answer
 forge:test_control_requests
 forge:test_dataset
 forge:test_dataset_history
-forge:test_decomposition
+forge:test_decompose_control
+forge:test_decompose_run
+forge:test_decompose_tools
 forge:test_dispatch
 forge:test_effort_step
 forge:test_efforts
@@ -43,7 +45,7 @@ forge:test_findings_store.LockTests
 forge:test_forecast
 forge:test_forge
 forge:test_forge_submodules
-forge:test_fractal
+forge:test_fractal_removed
 forge:test_group_cli
 forge:test_group_member
 forge:test_group_review
@@ -193,7 +195,6 @@ ui:test_endpoints
 ui:test_executions.ExecutionTests
 ui:test_executions.LazyTests
 ui:test_export
-ui:test_fractal.FractalTests
 ui:test_groups
 ui:test_projects.GroupingTests
 ui:test_projects_state.OnlineStateTests
@@ -261,10 +262,14 @@ ui:test_control_endpoints.ProjectsTests
 ui:test_control_endpoints.ReadOnlyProjectsTests
 ui:test_control_endpoints.ReadOnlyWorktreesTests
 ui:test_control_endpoints.WorktreesTests
-ui:test_fractal.FractalEndpointTests
 ui:test_models
 ui:test_projects_state.OpenCountTests
 ui:test_projects_state.RecordStateTests
 ui:test_projects_state.ReviewRuleTests
 ui:test_reader.SummaryExtensionTests
 ui:test_run_checks.Now
+
+# native decomposition (#153), written after the first Windows runs and never run there: they compare plan paths as text
+forge:test_decompose
+forge:test_planner_split
+ui:test_decomposition

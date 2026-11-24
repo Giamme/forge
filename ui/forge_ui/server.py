@@ -52,7 +52,6 @@ _ADOPTION_DIFF_PATH = re.compile(_ADOPTION_PATH.pattern + '/diff')
 _FILES_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/files')
 _FINDINGS_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/findings')
 _EXPORT_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/export')
-_FRACTAL_PATH = re.compile(_TASK_PATH.pattern + r'/fractal(?:/nodes/([A-Za-z0-9][A-Za-z0-9_-]{0,100})(/diff)?)?')
 _VERIFY_LOG_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/verification(?:/(retry)|/lanes/([^/]+)(?:/runs/([^/]+))?)?/log'
                               r'(?:/lines/([^/]+))?')
 _STATIC_PATH = re.compile(r'/([A-Za-z0-9_.-]+\.(?:html|js|css|svg|woff2))')
@@ -183,15 +182,6 @@ def api_get(catalog, path):
         if k is False or first is False:
             return None
         return catalog.verification_log(key, lane, k, first, retry=bool(retry))
-    match = _FRACTAL_PATH.fullmatch(path)
-    if match:
-        key, task_id, node, diff = match.group(1), _task_id(match.group(2)), match.group(3), match.group(4)
-        if task_id is None:
-            return None
-        if node is None:
-            return catalog.fractal(key, task_id)
-        read = catalog.fractal_node_diff if diff else catalog.fractal_node
-        return read(key, task_id, node)
     return NO_ROUTE
 
 

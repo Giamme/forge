@@ -7,7 +7,7 @@
 # Usage:
 #   forge-parallel.sh plan <plan-dir> --repo <dir> [routing flags] [--decompose-level low|medium|high] [--ui]
 #                                     [--qa-threshold P0|P1|P2|P3|none|default] [--profile NAME | --no-profile]
-#                                     [--collapse-chains]
+#                                     [--collapse-chains] [--split-depth N] [--split-children N] [--split-nodes N]
 #   forge-parallel.sh auto <plan-dir> --repo <dir> --goal-file <file> [--planner <spec>] [--decompose-level L]
 #                                     [--plan auto|always|never] [--one-task-difficulty low|medium|high]
 #                                     [--no-collapse] [--approved] [plan flags...] [-- run flags...]
@@ -17,10 +17,13 @@
 #                                     [--qa-threshold P0|P1|P2|P3|none|default] [--verify-retries N] [--no-forecast]
 #                                     [--sweep P0|P1|P2|P3 [--sweep-plausible] [--sweep-max N]]
 #                                     [--sweep-ahead | --no-sweep-ahead] [--attribute | --no-attribute]
+#                                     [--auto-split [--split-planner <spec>] | --no-auto-split]
 #   forge-parallel.sh retry <plan-dir> <task-id> [--dwarf <spec>] [--setup <command>]
 #                                     [--answer <text> | --answer-file <file>]   (a NEEDS_INPUT task)
 #                                     [--decide retry=N|threshold=Pn] [--dwarf <spec>] --reason "<why>" --approved
 #                                                                              (a NEEDS_DECISION task)
+#                                     [--decide split[=fresh] [--subtasks <file> | --planner <spec>] --reason "<why>" --approved]
+#                                                (split the task into subtasks: any task that has not passed)
 #                                     [--no-dispatch]   (prepare it and start nothing: the next `run` dispatches it)
 #                                     [--timeout S] [--qa-threshold Pn|none|default] [--verify-retries N]
 #                                     [--retry-failed N] [--infra-retries M]
@@ -33,6 +36,8 @@
 #                                     (a commit made outside forge, reviewed alone, comes into the run)
 #   forge-parallel.sh split <plan-dir> <new-plan> --tasks <id,id> [--dry-run]
 #   forge-parallel.sh combine <new-plan> <plan-a> <plan-b> [<plan>...] [--verify <command>] [--dry-run]
+#   forge-parallel.sh next <plan-dir> [<new-plan>] [--planner <spec>] [plan flags...]
+#                                     (plan the next stage of a goal larger than one plan, after <plan-dir> merged)
 #   forge-parallel.sh _task <plan-dir> <task-id>     (internal; coordinator target)
 #   forge-parallel.sh _group <plan-dir> <group-id>   (internal; one QA review of a review=group group, #140)
 #   forge-parallel.sh _group_settle <plan-dir> <group-id> [--tasks a,b]
@@ -118,6 +123,13 @@
 #                           before routing, merge a chain into one task named combined.
 #                           A one-task or branching plan is left as it is, and collapsing
 #                           a plan that is already collapsed is not an error
+#   --split-depth N         recursive decomposition (#153): how many levels of subtasks a task may be
+#                           split into (default 2; 0 turns splitting off)
+#   --split-children N      most subtasks one split may make (default 6)
+#   --split-nodes N         most subtasks in the whole run, over every level (default 24)
+#                           The three limits are shown under the task table, kept in
+#                           decomposition.json and frozen by the first run: a split that would pass
+#                           one is recorded as `bounded` and the task runs as one task
 #
 # The QA threshold (plan, run, retry, review; kept for the plan):
 #   --qa-threshold Pn       the least severe CONFIRMED finding that still blocks (P0 worst ...
@@ -142,6 +154,20 @@
 #                           on its way (kept for the plan; --no-sweep-ahead turns it off)
 #   --attribute             when the run's combined verification fails, search the merge order for
 #                           a merge that breaks it (kept for the plan; --no-attribute turns it off)
+#   --auto-split            a task that stops for a decision on `split` is split into subtasks by the
+#                           planner, within the plan's limits, without waiting for you; without it the
+#                           task waits for your `retry --decide split`. The planner is --split-planner
+#                           SPEC, else the one the plan was made with. Kept for the plan;
+#                           --no-auto-split turns it off
+#
+# Subtasks (#153): a task can be split into subtasks, at plan time by the planner or later by
+# `retry <plan> <task> --decide split`. The subtasks are a plan of their own in
+# <plan-dir>/tasks/<task>/sub: they are routed with the plan's difficulty pools, own paths inside the
+# task's files, run on the same scheduler under the run's one --max-parallel, and merge into the
+# task's branch. The task is then reviewed on everything they produced. `split` keeps the task's
+# existing work and the subtasks build on it; `split=fresh` starts over from the task's base and
+# keeps the old work on refs/forge/kept/<run>/<task>. A subtask that fails is retried in its own
+# plan (retry <plan-dir>/tasks/<task>/sub <subtask>); the next `run` of the plan picks the task up.
 #
 # auto (#87, #88): from a goal to a finished run in one blocking command, with no orchestrating
 # session in between. In a NEW plan dir (created when missing; one that already has tasks.tsv
@@ -181,9 +207,8 @@ DISPATCH="$SKILL_DIR/scripts/forge-dispatch.sh"
 MEMORY="$SKILL_DIR/scripts/forge-memory.sh"
 source "$SKILL_DIR/scripts/forge-artifact.sh"
 source "$SKILL_DIR/scripts/forge-metrics.sh"
-source "$SKILL_DIR/scripts/forge-fractal-options.sh"
 source "$SKILL_DIR/scripts/forge-ui-options.sh"
-# Beside fractal's, and for the same reason: an option parser sourced from inside
+# Sourced here, at the top: an option parser sourced from inside
 # a function, after that function has already walked its arguments, cannot parse
 # anything. Every --jev flag was rejected as "unknown option" until this line.
 JEV_OPTS=0
@@ -192,7 +217,7 @@ JEV_OPTS=0
 # Flags shared by several subcommands, then the helper libraries. Functions only, resolved
 # at call time, so they may use die/note/field and friends defined below.
 source "$SKILL_DIR/scripts/forge-parallel-options.sh"
-for forge_lib in task gates verify attribute plans review adopt group; do
+for forge_lib in task gates verify attribute plans review adopt group decompose; do
   [ -f "$SKILL_DIR/scripts/forge-lib-$forge_lib.sh" ] && source "$SKILL_DIR/scripts/forge-lib-$forge_lib.sh"
 done
 OUTPUT=summary
@@ -348,22 +373,17 @@ EOF
   forge_profile_export "$PLAN"
 }
 
-# What `run` reads from the frozen profile when its flags do not say: the retry budgets,
-# and the Fractal planner (only with --fractal-auto-decompose, which --fractal-planner needs).
+# What `run` reads from the frozen profile when its flags do not say: the retry budgets.
 forge_profile_run_values() { # forge_profile_run_values <plan-dir>
-  local key val arg auto=0 planner=0
+  local key val
   [ -f "$1/profile.json" ] || return 0
-  for arg in ${FRACTAL_ARGS[@]+"${FRACTAL_ARGS[@]}"}; do
-    case "$arg" in --fractal-auto-decompose) auto=1 ;; --fractal-planner) planner=1 ;; esac
-  done
   while IFS="$(printf '\t')" read -r key val; do
     case "$key" in
       policy.retry_failed) [ "$PP_RETRY_FAILED_SET" = 1 ] || PP_RETRY_FAILED="$val" ;;
       policy.infra_retries) [ "$PP_INFRA_RETRIES_SET" = 1 ] || PP_INFRA_RETRIES="$val" ;;
-      routing.fractal_planner) [ "$auto$planner" != 10 ] || FRACTAL_ARGS+=(--fractal-planner "$val") ;;
     esac
   done <<EOF
-$(forge_profile_py value "$1/profile.json" policy.retry_failed policy.infra_retries routing.fractal_planner 2>/dev/null)
+$(forge_profile_py value "$1/profile.json" policy.retry_failed policy.infra_retries 2>/dev/null)
 EOF
 }
 
@@ -657,48 +677,21 @@ forge_groups_max_tasks() {
   printf '%s' "${value:-6}"
 }
 
-# Put back the groups a refused derive replaced, or remove the ones it just wrote.
-# A Fractal refusal must not leave a review=group groups.tsv that makes every later plan exit 2.
-forge_groups_snap_restore() { # forge_groups_snap_restore <plan> <snap dir or empty>
-  local plan="$1" snap="${2:-}"
-  if [ -n "$snap" ] && [ -f "$snap/groups.tsv" ]; then cp "$snap/groups.tsv" "$plan/groups.tsv"
-  else rm -f "$plan/groups.tsv"; fi
-  if [ -n "$snap" ] && [ -f "$snap/groups.frozen" ]; then cp "$snap/groups.frozen" "$plan/groups.frozen"
-  else rm -f "$plan/groups.frozen"; fi
-  [ -z "$snap" ] || rm -rf "$snap"
-}
-
-forge_groups_snap_drop() { [ -z "${1:-}" ] || rm -rf "$1"; }
-
 # forge_groups_plan <plan> <--groups value> <--group-review 0|1> <--group-max-tasks value>
 forge_groups_plan() {
-  local plan="$1" src="$2" review="$3" max="$4" out="" snap=""
-  # derive and a --groups file replace groups.tsv before the Fractal check can refuse them.
-  if [ -f "$plan/groups.tsv" ] || [ -f "$plan/groups.frozen" ]; then
-    snap="$(mktemp -d)" || die "could not snapshot the plan's groups" 3
-    [ ! -f "$plan/groups.tsv" ] || cp "$plan/groups.tsv" "$snap/groups.tsv" \
-      || { forge_groups_snap_drop "$snap"; die "could not snapshot $plan/groups.tsv" 3; }
-    [ ! -f "$plan/groups.frozen" ] || cp "$plan/groups.frozen" "$snap/groups.frozen" \
-      || { forge_groups_snap_drop "$snap"; die "could not snapshot $plan/groups.frozen" 3; }
-  fi
+  local plan="$1" src="$2" review="$3" max="$4" out=""
   if [ "$src" = waves ]; then
     out="$(forge_groups_py derive "$plan" --review "$([ "$review" = 1 ] && echo group || echo task)" \
-      --max-tasks "$(forge_groups_max_tasks "$plan" "$max")" 2>&1)" || { forge_groups_snap_drop "$snap"; forge_groups_die "$out"; }
+      --max-tasks "$(forge_groups_max_tasks "$plan" "$max")" 2>&1)" || forge_groups_die "$out"
   elif [ -n "$src" ]; then
-    cp "$src" "$plan/groups.tsv" || { forge_groups_snap_drop "$snap"; die "could not copy '$src' to $plan/groups.tsv" 3; }
+    cp "$src" "$plan/groups.tsv" || die "could not copy '$src' to $plan/groups.tsv" 3
   fi
   if [ ! -f "$plan/groups.tsv" ] && [ ! -f "$plan/groups.frozen" ]; then
-    forge_groups_snap_drop "$snap"
     return 0
   fi
   # validate, then resolve (writes the group qa back), then freeze
   out="$(forge_groups_py validate "$plan" --max-tasks "$(forge_groups_max_tasks "$plan" "$max")" 2>&1)" \
-    || { forge_groups_snap_drop "$snap"; forge_groups_die "$out"; }
-  if forge_groups_have_review "$plan" && forge_plan_is_fractal "$plan"; then
-    forge_groups_snap_restore "$plan" "$snap"
-    die "group review does not support Fractal yet" 2
-  fi
-  forge_groups_snap_drop "$snap"
+    || forge_groups_die "$out"
   out="$(forge_groups_py resolve "$plan" 2>&1)" || forge_groups_die "$out"
   out="$(forge_groups_py freeze "$plan" 2>&1)" || forge_groups_die "$out"
   return 0
@@ -784,6 +777,7 @@ do_plan() {
   local RETRY_PER_MODEL=""
   local COLLAPSE=0 COLLAPSED_NOW=0 FEAT_ERR="" GRP_SRC="" GRP_REVIEW=0 GRP_MAX="" GRP_DIFF=""
   local CHAIN_PREV="" CHAIN_BASE="" CHAIN_MOVE=0
+  local SPLIT_DEPTH="" SPLIT_CHILDREN="" SPLIT_NODES="" DECOMPOSE_LINES=""
   # The retro, brief and summaries choices, settled before anything is written: a refusal
   # (a bad value, no model, a spec that does not resolve) leaves the plan dir as it was.
   forge_features_scan "$@"
@@ -828,6 +822,14 @@ do_plan() {
         printf '%s' "${2:-}" | grep -Eq '^[0-9]{1,9}$' && [ "$((10#$2))" -ge 1 ] || die "--group-max-diff-kb needs a positive integer"
         GRP_DIFF="$((10#$2))"; shift 2 ;;
       --collapse-chains) COLLAPSE=1; shift ;;
+      --split-depth|--split-children|--split-nodes)
+        printf '%s' "${2:-}" | grep -Eq '^[0-9]{1,3}$' || die "$1 needs a whole number" 2
+        case "$1" in
+          --split-depth) SPLIT_DEPTH="$((10#$2))" ;;
+          --split-children) SPLIT_CHILDREN="$((10#$2))" ;;
+          *) SPLIT_NODES="$((10#$2))" ;;
+        esac
+        shift 2 ;;
       --dwarf)        D_ANY="${2:?}"; shift 2 ;;
       --dwarf-high)   D_HI="${2:?}"; shift 2 ;;
       --dwarf-medium) D_MD="${2:?}"; shift 2 ;;
@@ -879,12 +881,15 @@ do_plan() {
             2) exit 2 ;;
           esac
         fi
+        forge_removed_flag "$1"
         die "plan: unknown option '$1'"
         ;;
     esac
   done
   [ -d "$PLAN" ] || die "plan dir '$PLAN' does not exist"
   [ "$GRP_REVIEW" = 0 ] || [ "$GRP_SRC" = waves ] || die "--group-review goes with --groups waves (it sets the review of the groups waves derives)"
+  # The decomposition limits (#153): a bad value, or a change after the first run froze them, refuses the call.
+  forge_decompose_limits "$PLAN" "$SPLIT_DEPTH" "$SPLIT_CHILDREN" "$SPLIT_NODES"
   # The profile (#48) first: its gates and budget count for every decision-model step below,
   # and its values stand in for the flags this call did not give.
   forge_profile_plan
@@ -982,16 +987,18 @@ do_plan() {
   # Before any decision-model step: the privacy floor and the run budget read these.
   [ "$JEV_OPTS" = 1 ] && forge_decide_env "$REPO" "$PLAN"
   [ -s "$PLAN/run_id" ] || basename "$PLAN" | sed 's/^forge-//' > "$PLAN/run_id"
-  # Every plan, --ui or not: forge-ui's view of this repo's runs reads the registry.
-  forge_ui_register "$PLAN"
+  # Every plan, --ui or not: forge-ui's view of this repo's runs reads the registry. A sub-plan (#153)
+  # is reached through the plan it belongs to.
+  forge_is_sub_plan "$PLAN" || forge_ui_register "$PLAN"
   [ "${FORGE_RIPWIRE:-}" != off ] || touch "$PLAN/no_ripwire"
   # Persist plan choices for later run and retry processes.
   { [ "$NOMEM" = 1 ] || forge_repo_memory_off "$REPO"; } && : > "$PLAN/no_memory"
   [ -n "$PLANNER" ] && printf '%s\n' "$PLANNER" > "$PLAN/planner"
-  python3 - "$PLAN/fractal-routing.json" "$D_ANY" "$D_LO" "$D_MD" "$D_HI" <<'PY'
+  # dwarf-routing.json; a plan made before 0.23 kept these pools under another name, read once here.
+  python3 - "$PLAN/dwarf-routing.json" "$(forge_pools_file "$PLAN")" "$D_ANY" "$D_LO" "$D_MD" "$D_HI" <<'PY'
 import json,sys
 from pathlib import Path
-p=Path(sys.argv[1]); data=json.loads(p.read_text()) if p.exists() else {}
+p=Path(sys.argv[1]); old=Path(sys.argv.pop(2)); data=json.loads(old.read_text()) if old.exists() else {}
 for key,value in zip(('any','low','medium','high'),sys.argv[2:]):
     if value: data[key]=[s.strip() for s in value.split(',') if s.strip()]
 p.write_text(json.dumps(data))
@@ -1171,7 +1178,7 @@ EOF
       if [ "$dw" != UNASSIGNED ]; then
         local assigned
         assigned="$(python3 "$SKILL_DIR/scripts/forge-route.py" assign --plan "$PLAN" --task "$id" \
-          --tier "$diff" --epsilon "${EXPLORE:-0}" --default "$dw" --pools "$PLAN/fractal-routing.json" 2>/dev/null)"
+          --tier "$diff" --epsilon "${EXPLORE:-0}" --default "$dw" --pools "$(forge_pools_file "$PLAN")" 2>/dev/null)"
         [ -z "$assigned" ] || dw="$assigned"
       fi
     fi
@@ -1267,7 +1274,13 @@ EOF
   # frozen fingerprint is of the table the run will use.
   forge_groups_plan "$PLAN" "$GRP_SRC" "$GRP_REVIEW" "$GRP_MAX"
 
+  # Recursive decomposition (#153), once the table is routed: the splits a planner proposed become
+  # sub-plans within the limits, routed with this plan's pools, and every other task is recorded as
+  # kept whole. Not for a plan that is about to be refused for an unassigned task.
+  [ "$unassigned" -gt 0 ] || forge_decompose_settle "$PLAN"
+
   render_table "$PLAN"
+  forge_decompose_table "$PLAN"
   if [ -n "$qa_kept_msg" ]; then
     echo "note: --qa left existing reviewer(s) unchanged on: $qa_kept_msg (set qa to '-' in tasks.tsv to let --qa fill them)"
     echo
@@ -1605,7 +1618,7 @@ except Exception:
 for tier in ("low", "any"):
     specs = data.get(tier) if isinstance(data, dict) else None
     if isinstance(specs, list) and specs and isinstance(specs[0], str) and specs[0]:
-        print(specs[0]); break' "$1/fractal-routing.json" 2>/dev/null)"
+        print(specs[0]); break' "$(forge_pools_file "$1")" 2>/dev/null)"
   [ -n "$spec" ] || return 0
   [ -f "$1/yolo_dwarf" ] && flags=--yolo
   ft="$(forge_fast_tier "$1" dwarf)"
@@ -2000,10 +2013,6 @@ do_task_body() (
   local reviewed review source_fp review_fp
   REPO="$(cat "$PLAN/repo")"; run_id="$(cat "$PLAN/run_id")"
   tdir="$PLAN/tasks/$id"; mkdir -p "$tdir"
-  if [ -s "$PLAN/fractal-selection.json" ]; then
-    forge_fractal_select "$PLAN" "$REPO" parallel 0 || return $?
-  fi
-  forge_fast_fractal_note "$PLAN"
   forge_metric_begin "$tdir" task
   dependencies_ready "$PLAN" "$id" || return 1
   echo RUNNING > "$tdir/status"
@@ -2072,8 +2081,15 @@ do_task_body() (
     return 1
   fi
 
-  local is_script=0
+  local is_script=0 is_split=0
   task_is_script "$PLAN" "$id" && is_script=1
+  # A split task (#153) whose subtasks are not on its branch yet runs them here, where a model task
+  # runs its implementer. Once they are (sub.merged), a retry is an ordinary one: its implementer
+  # fixes the review's findings in the combined work, and no subtask runs twice.
+  if forge_split_open "$PLAN" "$id"; then
+    is_split=1
+    if [ -n "$resume" ]; then resume=""; rm -f "$tdir/resume"; attempt=$(( attempt + 1 )); echo "$attempt" > "$tdir/attempt"; fi
+  fi
   if [ -z "$resume" ]; then
     # Persist each source separately; QA receives complete context once.
     write_capsule "$PLAN" "$id" dwarf >/dev/null
@@ -2086,9 +2102,15 @@ do_task_body() (
       forge_metric_phase dispatch
       run_script_task "$PLAN" "$id" "$tdir" "$wt" "$base" || return 1
     fi
+    if [ "$is_split" = 1 ]; then
+      # The subtasks run as a plan of their own and merge into this task's branch. The snapshot and
+      # everything after it are the same: one commit, then the review of the cumulative diff.
+      forge_metric_phase dispatch
+      run_split_task "$PLAN" "$id" "$tdir" "$wt" "$base" "$attempt" || return 1
+    fi
     # The implementer's part, from here to the snapshot, belongs to model tasks only (no reindent, to
     # keep the diff of this section readable).
-    if [ "$is_script" != 1 ]; then
+    if [ "$is_script" != 1 ] && [ "$is_split" != 1 ]; then
     # --task lets Jev narrow the injected slice to facts that bear on THIS task. Without
     # it, or with Jev off, the full role slice is injected exactly as before.
     /bin/bash "$MEMORY" inject "$REPO" dwarf --task "$tdir/prompt.md" \
@@ -2114,9 +2136,7 @@ do_task_body() (
     # dispatch, and nothing here can abort the attempt: a doctor that fails means fresh.
     local is_mode=fresh is_reason="" is_id="" is_fp="" is_cont=()
     if [ -f "$PLAN/implementer_session" ]; then
-      if [ -n "${FORGE_FRACTAL_RUN:-}" ] || forge_plan_is_fractal "$PLAN"; then
-        is_reason=fractal
-      elif [ "$attempt" = 1 ]; then
+      if [ "$attempt" = 1 ]; then
         is_reason=first-attempt
       elif [ ! -s "$tdir/retry_findings.md" ]; then
         is_reason=no-findings
@@ -2200,9 +2220,7 @@ do_task_body() (
     # .forge/ is forge's own memory, rewritten in the user's tree after every run.
     # Left in, it would reach QA as if a dwarf had written it, and any task whose
     # files touched it would collide with every other task in the wave planner.
-    if [ -z "${FORGE_FRACTAL_RUN:-}" ] || [ "${FORGE_FRACTAL_RETRY:-}" = 1 ]; then
-      [ -s "$tdir/changes.diff" ] && mv "$tdir/changes.diff" "$tdir/changes.prev.diff"
-    fi
+    [ -s "$tdir/changes.diff" ] && mv "$tdir/changes.diff" "$tdir/changes.prev.diff"
     (cd "$wt" && git add -A -- . ":(exclude).forge" \
         && git diff --cached --binary "$base" -- . ":(exclude).forge") > "$tdir/changes.diff" 2>/dev/null || { echo ERROR > "$tdir/status"; return 1; }
     if [ ! -s "$tdir/changes.diff" ]; then
@@ -2219,6 +2237,10 @@ do_task_body() (
         echo "The script produced no changes." > "$tdir/qa.last"
         note "$id: the script produced an empty diff"; return 1
       fi
+      if [ "$is_split" = 1 ]; then
+        echo "The subtasks produced no changes at all." > "$tdir/qa.last"
+        note "$id: its subtasks produced an empty diff"; return 1
+      fi
       echo "The dwarf produced no changes at all." > "$tdir/qa.last"
       note "$id: dwarf produced an empty diff"; return 1
     fi
@@ -2226,7 +2248,7 @@ do_task_body() (
     # its code is reviewed rather than refused as identical: the refusal is for a diff a review
     # already judged. The same applies when the brief or threshold changed since that review (#209).
     if [ -s "$tdir/changes.prev.diff" ] && cmp -s "$tdir/changes.diff" "$tdir/changes.prev.diff" \
-        && [ "$(cat "$tdir/retry_findings.source" 2>/dev/null)" != bounce ]; then
+        && [ "$is_split" != 1 ] && [ "$(cat "$tdir/retry_findings.source" 2>/dev/null)" != bounce ]; then
       if brief_changed_since_review "$tdir" "$qa_thr"; then
         note "$id: brief changed since the last review — reviewing the unchanged diff against the updated brief"
       else
@@ -2251,7 +2273,7 @@ do_task_body() (
     fi
 
     (cd "$wt" && git -c user.name=forge -c user.email=forge@local \
-        commit --allow-empty -q -m "forge($id) attempt $attempt: $(field "$T" "$id" title)$([ "$is_script" != 1 ] || echo ' (script)')") >/dev/null 2>&1 || {
+        commit --allow-empty -q -m "forge($id) attempt $attempt: $(field "$T" "$id" title)$([ "$is_script" != 1 ] || echo ' (script)')$([ "$is_split" != 1 ] || echo ' (subtasks)')") >/dev/null 2>&1 || {
       echo ERROR > "$tdir/status"; return 1;
     }
     reviewed="$(git -C "$wt" rev-parse HEAD)" || return 1
@@ -2337,23 +2359,17 @@ do_task_body() (
     note "$id: the tests this attempt affects fail — sent back to the implementer without a review (see $tdir/prereview.md)"
     return 0
   fi
-  # What changed since the review whose findings this reviewer is handed. Fractal keeps
-  # today's prompt unless it retries, as changes.prev.diff does. dwarf.last is the reply of
+  # What changed since the review whose findings this reviewer is handed. dwarf.last is the reply of
   # the attempt under review: a dwarf run just rewrote it, or $resume (the validated QA-only
   # path, never the raw marker) guarantees the reviewed commit is the one it describes.
-  local prompt_extra=()
-  if [ -z "${FORGE_FRACTAL_RUN:-}" ] || [ "${FORGE_FRACTAL_RETRY:-}" = 1 ]; then
-    prompt_extra+=(--role qa)
-    attempt_delta "$tdir" "$wt" "$reviewed"
-    if [ -s "$tdir/changes.since.diff" ]; then
-      prompt_extra+=(--retry-diff "$tdir/changes.since.diff" --retry-stat "$tdir/changes.since.stat"
-        --retry-range "$(awk '{ print substr($1, 1, 7) ".." substr($2, 1, 7) }' "$tdir/changes.since.range")")
-    fi
-    if [ -s "$tdir/retry_findings.md" ] && [ -s "$tdir/dwarf.last" ]; then
-      prompt_extra+=(--reply "$tdir/dwarf.last")
-    fi
-  else
-    rm -f "$tdir/changes.since.diff" "$tdir/changes.since.range" "$tdir/changes.since.stat"
+  local prompt_extra=(--role qa)
+  attempt_delta "$tdir" "$wt" "$reviewed"
+  if [ -s "$tdir/changes.since.diff" ]; then
+    prompt_extra+=(--retry-diff "$tdir/changes.since.diff" --retry-stat "$tdir/changes.since.stat"
+      --retry-range "$(awk '{ print substr($1, 1, 7) ".." substr($2, 1, 7) }' "$tdir/changes.since.range")")
+  fi
+  if [ -s "$tdir/retry_findings.md" ] && [ -s "$tdir/dwarf.last" ]; then
+    prompt_extra+=(--reply "$tdir/dwarf.last")
   fi
   # A finding sweep's fix task gets the narrow review: one FIXED / NOT FIXED line per finding.
   local qa_kind=task
@@ -2443,7 +2459,7 @@ for r in json.load(sys.stdin):
   # how often two reviewers agree. It reviews its own snapshot from its own dir under
   # $PLAN/shadow/, and nothing in this script ever reads its result.
   local shadow_pid=""
-  if [ -s "$PLAN/shadow_qa" ] && [ -z "${FORGE_FRACTAL_RUN:-}" ]; then
+  if [ -s "$PLAN/shadow_qa" ]; then
     python3 "$SKILL_DIR/scripts/forge-shadow.py" run --plan "$PLAN" --task "$id" --worktree "$wt" \
         --base "$base" --reviewed "$reviewed" --attempt "$attempt" --qa "$qa" --tdir "$tdir" ${yq:+--yolo} \
         </dev/null >/dev/null 2>&1 &
@@ -2454,9 +2470,7 @@ for r in json.load(sys.stdin):
   # fresh dispatch, and nothing here can abort the round: a doctor that fails means fresh.
   local rs_mode=fresh rs_reason="" rs_id="" rs_row=1 rs_cont=()
   if [ "$rs_on" = 1 ]; then
-    if [ -n "${FORGE_FRACTAL_RUN:-}" ] || forge_plan_is_fractal "$PLAN"; then
-      rs_reason=fractal
-    elif [ -f "$PLAN/reviewer_session_rate" ] && ! grep -qxF "$id" "$PLAN/reviewer_session_tasks" 2>/dev/null; then
+    if [ -f "$PLAN/reviewer_session_rate" ] && ! grep -qxF "$id" "$PLAN/reviewer_session_tasks" 2>/dev/null; then
       rs_reason=not-sampled   # the comparison half of --reviewer-session-rate: every round is fresh
     elif [ ! -s "$tdir/retry_findings.md" ]; then
       rs_reason=first-round
@@ -2558,7 +2572,15 @@ do_task() {
   local rc
   do_task_body "$@"; rc=$?
   record_attempt "$1" "$2"
-  post_attempt "$1" "$2"
+  # A split task waiting for its subtasks (#153) was not attempted: nothing to judge or escalate.
+  [ -s "$1/tasks/$2/sub.waiting" ] || post_attempt "$1" "$2"
+  # run --auto-split (#153): a task that just stopped on `split` is split by the planner, and its
+  # subtasks run now, in this same entry, so the scheduler sees one task that took longer.
+  if forge_auto_split "$1" "$2"; then
+    do_task_body "$@"; rc=$?
+    record_attempt "$1" "$2"
+    [ -s "$1/tasks/$2/sub.waiting" ] || post_attempt "$1" "$2"
+  fi
   return $rc
 }
 
@@ -2624,7 +2646,7 @@ _retry_answer_scan() { # _retry_answer_scan <scratch-dir> <retry args...>
   while [ $# -gt 0 ]; do
     case "$1" in
       --no-ripwire|--yolo-dwarf|--yolo-qa|--no-dispatch) shift ;;
-      --output|--verify|--setup) [ $# -ge 2 ] || break; shift 2 ;;
+      --output|--verify|--setup|--subtasks|--planner) [ $# -ge 2 ] || break; shift 2 ;;
       --dwarf) [ $# -ge 2 ] || break; dwarf="$2"; shift 2 ;;
       --decide) [ $# -ge 2 ] || break; decide="$2"; shift 2 ;;
       --reason) [ $# -ge 2 ] || break; reason="$2"; shift 2 ;;
@@ -2695,7 +2717,9 @@ report_untested() { # report_untested <plan> <id>...: verdicts that rest on read
 do_retry() {
   local PLAN="${1:?retry needs a plan dir}" id="${2:?retry needs a task id}"; shift 2
   FORGE_RUN_STARTED="$(forge_now)"
+  forge_refuse_fractal_run "$PLAN" retry
   local NEWDWARF="" jev_rc=0 ANSWER="" ANSWER_FILE="" HAVE_ANSWER=0 DECIDE="" REASON="" APPROVED=0 NO_DISPATCH=0
+  local SUBTASKS="" SPLIT_PLANNER=""
   # An answer is validated before any option below writes into the plan: a rejected answer
   # changes nothing, --setup and --verify included. Only a NEEDS_INPUT task takes one. The
   # arguments are walked the way the loop below walks them (a value is never taken for a flag),
@@ -2742,7 +2766,9 @@ do_retry() {
       --no-ripwire) export FORGE_RIPWIRE=off; shift ;;
       --output) OUTPUT="${2:?}"; shift 2 ;;
       --dwarf) NEWDWARF="${2:?--dwarf needs a spec}"; shift 2 ;;
-      --decide) DECIDE="${2:?--decide needs retry=N or threshold=Pn}"; shift 2 ;;
+      --decide) DECIDE="${2:?--decide needs retry=N, threshold=Pn or split}"; shift 2 ;;
+      --subtasks) SUBTASKS="${2:?--subtasks needs a file}"; shift 2 ;;
+      --planner) SPLIT_PLANNER="${2:?--planner needs a spec}"; shift 2 ;;
       --reason) REASON="${2?--reason needs a text}"; shift 2 ;;
       --approved) APPROVED=1; shift ;;
       --no-dispatch) NO_DISPATCH=1; shift ;;
@@ -2767,6 +2793,7 @@ do_retry() {
             2) exit 2 ;;
           esac
         fi
+        forge_removed_flag "$1"
         die "retry: unknown option '$1'"
         ;;
     esac
@@ -2802,8 +2829,19 @@ do_retry() {
     die "retry: '$id' already has a decision recorded and waits for the next run; forge-parallel.sh run $PLAN starts it" 2
   fi
   retry_decision_gate "$PLAN" "$id" "$st" "$DECIDE" "$NEWDWARF" "$REASON" "$APPROVED"
+  # A split (#153): --subtasks and --planner belong to it alone, and it does not name a model for the task.
+  local is_split_decision=0 cap_decide="$DECIDE"
+  if forge_decide_is_split "$DECIDE"; then
+    is_split_decision=1
+    cap_decide="retry=1"   # the split grants the one attempt that reviews the whole task
+    [ -z "$NEWDWARF" ] || die "retry: --decide split does not take --dwarf: the subtasks are routed with the plan's pools" 2
+    [ -z "$SUBTASKS" ] || [ -z "$SPLIT_PLANNER" ] || die "retry: give --subtasks FILE or --planner SPEC, not both" 2
+    [ -n "$SUBTASKS" ] || [ -n "$SPLIT_PLANNER" ] || SPLIT_PLANNER="$(forge_split_planner "$PLAN")"
+  else
+    [ -z "$SUBTASKS$SPLIT_PLANNER" ] || die "retry: --subtasks and --planner go with --decide split" 2
+  fi
   # A task at its attempt cap (#69) is refused with the decision commands unless --decide retry=N reaches past it.
-  if ! attempt_cap_gate "$PLAN" "$id" "$st" "$DECIDE"; then write_results "$PLAN"; return 2; fi
+  if ! attempt_cap_gate "$PLAN" "$id" "$st" "$cap_decide"; then write_results "$PLAN"; return 2; fi
   # The user's answer to a NEEDS_INPUT task's question (validated above): written before
   # anything else is prepared, atomically, and kept when the preparation then refuses (the
   # same answer can be retried).
@@ -2821,7 +2859,10 @@ do_retry() {
   # A refusal (the retry policy found no stronger model, or the escalation could not be
   # written) must stop here: past this point the status is cleared and a dwarf dispatched.
   local prc=0
-  if [ "$st" = NEEDS_DECISION ]; then
+  if [ "$is_split_decision" = 1 ]; then
+    # The sub-plan is made and the decision recorded; the task's next entry runs its subtasks.
+    retry_split "$PLAN" "$id" "$DECIDE" "$REASON" "$SUBTASKS" "$SPLIT_PLANNER" user || prc=$?
+  elif [ "$st" = NEEDS_DECISION ]; then
     retry_decided "$PLAN" "$id" "$DECIDE" "$NEWDWARF" "$REASON" || prc=$?
   else
     prepare_retry "$PLAN" "$id" "$NEWDWARF" || prc=$?
@@ -2858,9 +2899,8 @@ do_retry() {
   fi
   rm -f "$tdir/retry.prepared"
 
-  note "retrying $id with dwarf $(field "$T" "$id" dwarf)"
-  forge_fast_fractal_note "$PLAN"
-  export FORGE_FRACTAL_RETRY=1
+  if forge_split_open "$PLAN" "$id"; then note "running the subtasks of $id"
+  else note "retrying $id with dwarf $(field "$T" "$id" dwarf)"; fi
   export FORGE_DATASET_TRIGGER=human
   do_task "$PLAN" "$id"
   st="$(task_status "$PLAN" "$id")"
@@ -2922,7 +2962,10 @@ do_retry() {
   for lid in $(all_ids "$T"); do
     case "$(task_status "$PLAN" "$lid")" in PENDING|BLOCKED) left="${left:+$left }$lid" ;; esac
   done
-  if [ -n "$left" ]; then
+  if forge_is_sub_plan "$PLAN"; then
+    # A sub-plan (#153) has no verification of its own; its task picks the work up at the next run.
+    note "$PLAN is the sub-plan of a split task: forge-parallel.sh run $(forge_decompose_py root "$PLAN" 2>/dev/null) brings its merged subtasks into the task and reviews it"
+  elif [ -n "$left" ]; then
     note "verification deferred: tasks still to run ($left); the next run, or integrate, verifies the integration branch"
   else
     verify_result "$PLAN" "$(cat "$PLAN/wt_root")/_integration" "$PLAN" || { write_results "$PLAN"; run_report_extras "$PLAN"; return 5; }
@@ -3423,16 +3466,15 @@ forge_brief_stale() { # forge_brief_stale <plan> <merged-task>
 # A failure here is one note; the run goes on. run.flags.json describes this run of the plan,
 # not a choice a split or rerun copies, so it is not in the plan option lists.
 forge_run_flags_write() { # forge_run_flags_write <plan> <max-parallel> [argv...]
-  local plan="$1" maxp="$2" timeout_file="" verify_file="" fractal=0 ahead=0 sweep_max=""
+  local plan="$1" maxp="$2" timeout_file="" verify_file="" ahead=0 sweep_max=""
   shift 2
   [ ! -s "$plan/timeout" ] || timeout_file="$plan/timeout"
   [ ! -f "$plan/verify_cmd" ] || verify_file="$plan/verify_cmd"
-  forge_plan_is_fractal "$plan" && fractal=1
   [ ! -f "$plan/sweep_ahead" ] || ahead=1
   [ "$PP_SWEEP_MAX_SET" = 1 ] && sweep_max="$PP_SWEEP_MAX"
   python3 - "$plan/run.flags.json" \
     "$PP_RETRY_FAILED" "$PP_INFRA_RETRIES" "$PP_SWEEP" "$sweep_max" \
-    "$PP_SWEEP_PLAUSIBLE" "$ahead" "$maxp" "$timeout_file" "$verify_file" "$fractal" \
+    "$PP_SWEEP_PLAUSIBLE" "$ahead" "$maxp" "$timeout_file" "$verify_file" \
     -- "$@" <<'PY' >/dev/null 2>&1 || note "could not write $plan/run.flags.json"
 import json, os, sys, tempfile, time
 
@@ -3447,10 +3489,10 @@ def whole(value):
     return int(value) if value != '' else None
 
 args = sys.argv[1:]
-if len(args) < 12 or args[11] != '--':
+if len(args) < 11 or args[10] != '--':
     sys.exit(1)
 dest = args[0]
-retry, infra, sweep, sweep_max, plausible, ahead, maxp, timeout_file, verify_file, fractal = args[1:11]
+retry, infra, sweep, sweep_max, plausible, ahead, maxp, timeout_file, verify_file = args[1:10]
 timeout = text(timeout_file)
 data = {
     'retry_failed': int(retry),
@@ -3462,8 +3504,7 @@ data = {
     'max_parallel': int(maxp),
     'timeout': int(timeout.strip()) if timeout is not None else None,
     'verify': text(verify_file),
-    'fractal': fractal == '1',
-    'argv': args[12:],
+    'argv': args[11:],
     'at': time.time(),
 }
 parent = os.path.dirname(dest) or '.'
@@ -3489,15 +3530,15 @@ do_run() {
   trap run_signal TERM INT
   local PLAN="${1:?run needs a plan dir}"; shift
   FORGE_RUN_STARTED="$(forge_now)"   # the summary's overridden verdicts are this run's
-  local fractal_pipeline_args=("$@")
-  local MAXP=3 DRY=0 jev_rc=0 FORECAST=1 fractal_answer=""
+  local run_argv=("$@")
+  local MAXP=3 DRY=0 jev_rc=0 FORECAST=1 AUTO_SPLIT="" SPLIT_PLANNER="" is_sub=0
+  forge_is_sub_plan "$PLAN" && is_sub=1
   while [ $# -gt 0 ]; do
     case "$1" in
       --no-forecast) FORECAST=0; shift ;;
-      --fractal) forge_fractal_flag on || exit $?; shift ;;
-      --fractal-auto-decompose) forge_fractal_flag on || exit $?; FRACTAL_ARGS+=("$1"); shift ;;
-      --no-fractal) forge_fractal_flag off || exit $?; shift ;;
-      --fractal-*) FRACTAL_ARGS+=("$1" "${2:?}"); shift 2 ;;
+      --auto-split)    AUTO_SPLIT=on; shift ;;
+      --no-auto-split) AUTO_SPLIT=off; shift ;;
+      --split-planner) SPLIT_PLANNER="${2:?--split-planner needs a spec}"; shift 2 ;;
       --no-ripwire) export FORGE_RIPWIRE=off; shift ;;
       --output) OUTPUT="${2:?}"; shift 2 ;;
       --max-parallel) MAXP="${2:?}"; shift 2 ;;
@@ -3516,13 +3557,17 @@ do_run() {
             2) exit 2 ;;
           esac
         fi
+        forge_removed_flag "$1"
         die "run: unknown option '$1'"
         ;;
     esac
   done
+  forge_refuse_fractal_run "$PLAN" run
   forge_profile_run_values "$PLAN"
   [ "$JEV_OPTS" = 1 ] && forge_jev_settle "$PLAN"
   [ -n "$PP_SWEEP" ] || [ "$PP_SWEEP_PLAUSIBLE$PP_SWEEP_MAX_SET" = 00 ] || die "--sweep-plausible and --sweep-max go with --sweep"
+  # Auto-split (#153): kept for the plan, and refused now when there is no planner to ask.
+  forge_auto_split_store "$PLAN" "$AUTO_SPLIT" "$SPLIT_PLANNER"
   case "$OUTPUT" in summary|full) ;; *) die "--output must be summary or full" ;; esac
   export FORGE_OUTPUT="$OUTPUT"
   case "$MAXP" in ''|*[!0-9]*) die "--max-parallel must be positive" ;; esac
@@ -3545,9 +3590,6 @@ do_run() {
   if [ -f "$PLAN/groups.tsv" ] || [ -f "$PLAN/groups.frozen" ]; then
     local groups_out
     groups_out="$(forge_groups_py check "$PLAN" 2>&1)" || forge_groups_die "$groups_out"
-    if forge_groups_have_review "$PLAN" && { [ "${FRACTAL_CHOICE:-}" = on ] || forge_plan_is_fractal "$PLAN"; }; then
-      die "group review does not support Fractal yet" 2
-    fi
   fi
 
   compute_waves "$PLAN"
@@ -3560,28 +3602,15 @@ do_run() {
   if [ "$DRY" != 1 ]; then
     # The concurrency limit this run was given, for forge-ui to draw; a later run rewrites it.
     printf '%s\n' "$MAXP" > "$PLAN/max_parallel"
-    # Plan registers too; this also picks up plans made before it did.
-    forge_ui_register "$PLAN"
-    forge_storage_check "$PLAN" "$REPO"
+    # Plan registers too; this also picks up plans made before it did. A sub-plan (#153) is reached
+    # through the plan it belongs to, and its limits are that plan's.
+    if [ "$is_sub" = 0 ]; then
+      forge_ui_register "$PLAN"
+      forge_storage_check "$PLAN" "$REPO"
+      # The decomposition limits do not change once the plan runs.
+      forge_decompose_py freeze "$PLAN" >/dev/null 2>&1 || note "could not freeze the decomposition limits (decomposition.json)"
+    fi
   fi
-  # --fractal and an existing selection are refused above. The other way on is this
-  # prompt, which forge_fractal_parallel_run asks only once stdin is a terminal and
-  # fractal-selection.json does not exist yet (enabled: false has already chosen).
-  # Answering y must refuse before that call writes fractal-selection.json; answering
-  # n is the same as --no-fractal, so it is not asked twice.
-  if [ "$DRY" != 1 ] && [ -t 0 ] && [ -z "${FRACTAL_CHOICE:-}" ] \
-      && [ ! -e "$PLAN/fractal-selection.json" ] && ! forge_plan_is_fractal "$PLAN" \
-      && forge_groups_have_review "$PLAN"; then
-    printf 'Use Fractal for this run? [y/N] ' >&2
-    IFS= read -r fractal_answer || fractal_answer=""
-    fractal_answer="$(printf '%s' "$fractal_answer" | tr -d '\r' | tr '[:upper:]' '[:lower:]')"
-    case "$fractal_answer" in
-      y) die "group review does not support Fractal yet" 2 ;;
-    esac
-    forge_fractal_flag off || exit $?
-  fi
-  forge_fractal_parallel_run "$PLAN" "$REPO" "$DRY" ${fractal_pipeline_args[@]+"${fractal_pipeline_args[@]}"} || return $?
-  forge_fast_fractal_note "$PLAN"
   # Durable, beside the repo — never TMPDIR. A temp worktree root has destroyed
   # real work here before: isolated worktrees are never pushed, so when the root
   # goes, the only copy of that work goes with it.
@@ -3605,7 +3634,7 @@ do_run() {
   fi
 
   # run.flags.json describes this run of the plan, not a choice a split or rerun copies.
-  forge_run_flags_write "$PLAN" "$MAXP" ${fractal_pipeline_args[@]+"${fractal_pipeline_args[@]}"}
+  forge_run_flags_write "$PLAN" "$MAXP" ${run_argv[@]+"${run_argv[@]}"}
 
   forge_metric_begin "$PLAN" parallel
   forge_metric_phase preflight
@@ -3613,6 +3642,10 @@ do_run() {
   [ ! -f "$PLAN/no_ripwire" ] || export FORGE_RIPWIRE=off
   preflight_plan "$PLAN" || return $?
   [ -z "$PP_SWEEP" ] || sweep_preflight "$PLAN" || return $?
+  # The planner --auto-split would ask, checked with the rest before any model is paid for.
+  if [ -f "$PLAN/auto_split" ] && [ -n "$(forge_split_planner "$PLAN")" ]; then
+    /bin/bash "$DISPATCH" doctor --spec "$(forge_split_planner "$PLAN")" --role planner $(forge_fast_tier "$PLAN" planner) || return $?
+  fi
   /bin/bash "$SKILL_DIR/scripts/forge-install-ripwire.sh" || true
   forge_metric_phase preparation
   mkdir -p "$wt_root"
@@ -3651,7 +3684,8 @@ do_run() {
   # history says may bounce. Advisory, budgeted and silent without history; it never stops a run.
   [ "$FORECAST" = 1 ] && forecast_report "$PLAN"
   # Invalid verification lanes stop the run here, before any model is paid for, so before the question writer below.
-  verify_lanes_check "$PLAN" "$REPO" "$int_wt"
+  # A sub-plan (#153) has no verification of its own: its task's review and the root plan's verification judge it.
+  [ "$is_sub" = 1 ] || verify_lanes_check "$PLAN" "$REPO" "$int_wt"
   # Brief mode (#135), when the plan has it on. Strict asks first and refuses to start while a question of a
   # task that has not started is unanswered; advisory and gated write the questions beside the scheduler.
   local brief_level
@@ -3661,7 +3695,14 @@ do_run() {
     advisory|gated) forge_brief_start "$PLAN" ;;
   esac
   # Say now, before any model is paid for, which suites the verify command will not run.
-  verify_coverage_report "$REPO" "$(verify_command_for "$PLAN" "$REPO" "$int_wt")" "$PLAN/verification.coverage.txt"
+  [ "$is_sub" = 1 ] || verify_coverage_report "$REPO" "$(verify_command_for "$PLAN" "$REPO" "$int_wt")" "$PLAN/verification.coverage.txt"
+  # What a split task's own run of its subtasks takes from this run (#153): the budgets, and one
+  # --max-parallel for the whole tree, counted in the root plan.
+  export FORGE_RUN_RETRY_FAILED="$PP_RETRY_FAILED" FORGE_RUN_INFRA_RETRIES="$PP_INFRA_RETRIES"
+  if [ "$is_sub" = 0 ] || [ -z "${FORGE_TREE_ROOT:-}" ]; then
+    FORGE_TREE_ROOT="$(forge_decompose_py root "$PLAN" 2>/dev/null)"; FORGE_TREE_ROOT="${FORGE_TREE_ROOT:-$PLAN}"
+    export FORGE_TREE_ROOT FORGE_TREE_CAP="$MAXP"
+  fi
   local sched_rc=0 paused=0 sched_args=()
   [ "$PP_RETRY_FAILED" -gt 0 ] && sched_args+=(--retry-failed "$PP_RETRY_FAILED")
   [ "$PP_INFRA_RETRIES" -gt 0 ] && sched_args+=(--infra-retries "$PP_INFRA_RETRIES")
@@ -3687,7 +3728,7 @@ do_run() {
   # verifying; the next `run` resumes and verifies at its end. An interrupted run has
   # merged only part of its work: a verification of that is not worth its minutes, and it
   # would run again as the rerun if it were killed.
-  if [ "$paused" = 0 ] && [ "$interrupted" = 0 ]; then
+  if [ "$paused" = 0 ] && [ "$interrupted" = 0 ] && [ "$is_sub" = 0 ]; then
     run_phase=verification
     ( verify_result_body "$PLAN" "$int_wt" "$PLAN" ) <&0 &
     run_child=$!
@@ -3771,6 +3812,8 @@ do_run() {
   fi
   # Tasks stopped for a decision (#69): why, and the choices. Not failures to retry either.
   report_decisions "$PLAN"
+  # Split tasks whose subtasks have not all merged (#153): not failures of the task either.
+  report_subtasks "$PLAN"
   # Members implemented and waiting for their group's review (#140): not failures either.
   local implemented; implemented="$(awk -F'\t' '$2=="IMPLEMENTED" {print $1}' "$PLAN/results.tsv")"
   if [ -n "$implemented" ]; then
@@ -3812,6 +3855,8 @@ do_run() {
     /bin/bash "$MEMORY" spend "$REPO" --run "$run_id" 2>/dev/null | sed 's/^/  /'
     echo
   fi
+  # A goal larger than this plan (#153): once this stage has merged, the next one can be planned.
+  [ "$failed" = 1 ] || [ "$interrupted" = 1 ] || [ "$paused" = 1 ] || report_later "$PLAN"
   local mem_home=""
   [ -f "$PLAN/no_memory" ] || mem_home="$(/bin/bash "$MEMORY" where "$REPO" 2>/dev/null)"
   if [ -n "$mem_home" ] && [ -s "$mem_home/.forge/memory.md" ]; then
@@ -3887,6 +3932,7 @@ do_integrate() {
     esac
   done
   [ "$APPROVED" = 1 ] || die "integrate needs --approved: it merges forge's work into YOUR current branch"
+  ! forge_is_sub_plan "$PLAN" || die "integrate: '$PLAN' is the sub-plan of a split task; its work merges into that task. Integrate the plan it belongs to: $(forge_decompose_py root "$PLAN" 2>/dev/null)" 3
   report_unmerged "$PLAN"
   local REPO run_id int_br cur
   REPO="$(cat "$PLAN/repo")"; run_id="$(cat "$PLAN/run_id")"; int_br="forge/$run_id-integration"
@@ -4215,10 +4261,9 @@ AUTO_PROFILE
 # --- main ---------------------------------------------------------------------
 if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
   awk '/^# Usage:/ {on=1} /^set -uo pipefail/ {on=0} on {sub(/^# ?/, ""); print}' "$SELF"
-  forge_fractal_help
   exit 0
 fi
-[ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|auto|run|retry|accept|adopt|review|integrate|split|attribute|verify|combine> <plan-dir> [...]"
+[ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|auto|run|retry|accept|adopt|review|integrate|split|attribute|verify|combine|next> <plan-dir> [...]"
 CMD="$1"; shift
 [ ! -f "${1:-}/no_ripwire" ] || export FORGE_RIPWIRE=off
 if [ -d "${1:-}" ]; then
@@ -4286,6 +4331,7 @@ case "$CMD" in
   attribute) need_fn do_attribute; do_attribute "$@" ;;
   verify)    do_verify "$@" ;;
   combine)   need_fn do_combine; do_combine "$@" ;;
+  next)      need_fn do_next;    do_next "$@" ;;
   _task)     do_task "$@" ;;
   _merge)    merge_task "$@" ;;
   _group)    need_fn do_group; do_group "$@" ;;

@@ -951,9 +951,9 @@
     return driver.stale ? line + ' (stale: another session can claim the run)' : line;
   }
 
-  /* ---------- Fractal: a task's child tasks as a tidy tree (depth across, siblings down) ---------- */
-  // nodes: TaskFractal.nodes (tree order, parent ids); returns {pos: {id: {col, row, depth}}, edges: [[parent, child]], cols, rows}
-  function fractalTree(nodes) {
+  /* ---------- decomposition: a split task's subtasks as a tidy tree (depth across, siblings down) ---------- */
+  // nodes: a task's decomposition.nodes (tree order, parent ids); returns {pos: {id: {col, row, depth}}, edges: [[parent, child]], cols, rows}
+  function nodeTree(nodes) {
     const ns = list(nodes).filter(n => n && n.id), ids = new Set(ns.map(n => n.id)), kids = new Map();
     const roots = [];
     for (const n of ns) {
@@ -979,5 +979,5 @@
     finalStatus, runReviewStatus, reviewSinceLine, reviewAt, taskStatus, statusText, statusLabel, causeLabel, resetText, taskVerdict, attemptStatus, attemptNote, attemptFailed, isWaiting,
     attributionLine, taskParts,
     taskTimes, metricValue, overlap, projectSchedule, execModel, verifyLeds, criticalPath, concurrency, stateAt, timeRange, events, lineage, structureKey, innerKey,
-    fmtDur, alias, basename, weight, searchIndex, searchRank, statusEvents, fractalTree, sweepLine, sweepState, retroSummary, handoffDriverLine };
+    fmtDur, alias, basename, weight, searchIndex, searchRank, statusEvents, nodeTree, sweepLine, sweepState, retroSummary, handoffDriverLine };
 });

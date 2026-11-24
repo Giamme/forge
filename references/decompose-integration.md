@@ -89,12 +89,18 @@ forge/<run-id>/<task-id>                        task branch
 forge/<run-id>-integration                      integration branch
 ```
 
-Fractal also keeps control repositories, isolated product candidates and per-step logs
-under `${XDG_STATE_HOME:-$HOME/.local/state}/forge/fractal/runs/<managed-run-id>/tasks/`.
-These are separate from the Forge task worktrees listed above. Candidates begin at each
-task's pinned baseline and return to its ordinary review/integration pipeline; Fractal
-initialization metadata stays outside the product diff. Managed run/task IDs are shown by
-`fractal runs` and `fractal tree`, and differ from the human-readable `tasks.tsv` IDs.
+A split task's subtasks are a run of their own, named after the task
+([Subtasks](decompose.md#subtasks-a-task-split-at-any-level)):
+
+```
+<repo>/../.forge-worktrees/<run-id>--<task-id>/<subtask-id>   subtask worktree
+forge/<run-id>--<task-id>/<subtask-id>                       subtask branch
+forge/<run-id>--<task-id>-integration                        the subtasks' integration branch, merged into forge/<run-id>/<task-id>
+refs/forge/kept/<run-id>/<task-id>                           the task's earlier work, after --decide split=fresh
+```
+
+A deeper level repeats the pattern (`<run-id>--<task-id>--<subtask-id>`). `forge runs rm
+--worktrees --branches` on the root run removes all of them; a sub-plan is not deleted by itself.
 
 ### Worktree setup
 

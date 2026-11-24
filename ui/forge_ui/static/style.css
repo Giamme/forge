@@ -753,11 +753,10 @@ a.check-cmd { color: var(--ink); text-underline-offset: 2px; }
 .ph-snapshot { background: var(--ph-3); }
 .ph-verification { background: var(--ph-4); }
 .ph-finalization { background: var(--ph-2); }
-.fractal-tree { list-style: none; margin: var(--s-2) 0; padding: 0; display: grid; gap: 3px; }
+.node-tree { list-style: none; margin: var(--s-2) 0; padding: 0; display: grid; gap: 3px; }
 .ft-node { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: var(--t-sm); }
 .ft-node > a { font-family: var(--mono); font-weight: 600; }
 .ft-node > .diff-link.small { margin-left: auto; }
-.ft-node.reserved > a { font-weight: 400; color: var(--muted); }
 .ft-node .muted { font-size: var(--t-xs); }
 .ft-d1 { padding-left: 16px; } .ft-d2 { padding-left: 32px; } .ft-d3 { padding-left: 48px; } .ft-d4 { padding-left: 64px; } .ft-d5 { padding-left: 80px; } .ft-d6 { padding-left: 96px; }
 .ft-node:not(.ft-d0) { border-left: 1px solid var(--rule-2); margin-left: 4px; }

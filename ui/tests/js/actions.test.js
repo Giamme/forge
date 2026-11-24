@@ -246,9 +246,9 @@ const disk = {
   computed: 1700000000, complete: true,
   totals: { runs: 3000, worktrees: 0, reclaimable: 1536 },
   runs: [
-    { key: '0123456789ab', run_id: 'run-a', path: '/runs/a', repo: '/r/app', total: 2000, snapshots: 100, logs: 50, gz: 0, other: 0, fractal: 0, strays: 0, reclaimable: 1536, updated: 1700000000,
+    { key: '0123456789ab', run_id: 'run-a', path: '/runs/a', repo: '/r/app', total: 2000, snapshots: 100, logs: 50, gz: 0, other: 0, strays: 0, reclaimable: 1536, updated: 1700000000,
       commands: [{ label: 'compact', command: 'forge runs compact /runs/a --logs' }, { label: 'remove', command: 'forge runs rm /runs/a --dry-run' }] },
-    { key: null, run_id: 'run-b', path: '/runs/b', repo: '/r/app', total: 1000, snapshots: 0, logs: 10, gz: 0, other: 0, fractal: 0, strays: 0, reclaimable: 100, updated: 1700000000,
+    { key: null, run_id: 'run-b', path: '/runs/b', repo: '/r/app', total: 1000, snapshots: 0, logs: 10, gz: 0, other: 0, strays: 0, reclaimable: 100, updated: 1700000000,
       commands: [{ label: 'compact', command: 'forge runs compact /runs/b --logs' }] },
   ],
   commands: [{ label: 'all', command: 'forge runs compact --all --logs' }, { label: 'du', command: 'forge du --all' }],

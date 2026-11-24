@@ -26,8 +26,8 @@ a FAIL made only of those (with no failing tests reported) is accepted, and eith
 recorded in `known_issues.md`, which `forge issues` and the sweep pick up. PLAUSIBLE findings never
 block. `--qa-threshold P3` (or `none`) makes every CONFIRMED finding block.
 
-Only a standalone final line counts, and the parser is shared by every runner (solo,
-decomposed, Fractal's QA checkpoint). The prompt shows each verdict with a dash and its
+Only a standalone final line counts, and the parser is shared by every runner (solo
+and decomposed). The prompt shows each verdict with a dash and its
 meaning, and some reviewers copy that whole line, so `FORGE_VERDICT: PASS — meaning` is
 accepted, as are trailing whitespace and CRLF line endings. Prose or a quoted marker earlier
 in the reply is never a verdict. A missing verdict is `UNKNOWN` and is treated exactly like a
@@ -241,8 +241,7 @@ nothing new until `forge control resume <plan>`, inside the same run.
 `.infra` (`dwarf.infra`/`qa.infra`) holds `class=`, `retry_after=`, `detail=`, `rc=`,
 `role=`, `harness=`, `model=`. Detection is deliberately strict: strong phrases only, and ordinary text that merely
 mentions "rate limit" in a reply that otherwise succeeded is never classified. A false
-positive costs a pause, not a spent attempt. Under Fractal a dwarf-side infrastructure stop
-still collapses to Fractal's own "failed" handling; QA-side stops propagate as above.
+positive costs a pause, not a spent attempt.
 
 ## Severity, thresholds and known issues
 
@@ -423,8 +422,8 @@ review. `--group-review` already leaves high-difficulty tasks out of the groups 
 A combined diff over `group_max_diff_kb` (256 KB unless the plan says otherwise) is not
 reviewed and not truncated: the group stops for a decision. That is separate from a
 [whole-run review](#whole-run-review-opt-in), which reads the combined result after the run
-and does truncate. Group review runs no shadow review, does not continue a reviewer session
-across rounds, and does not run under Fractal.
+and does truncate. Group review runs no shadow review and does not continue a reviewer session
+across rounds.
 
 ## Reviewer session (opt-in experiment)
 
@@ -445,15 +444,15 @@ review is not sampled.
 
 Any round that cannot continue starts a fresh session. That is the first round, a missing
 or malformed session id, a resolution that is missing or different, any harness other
-than those three, a Fractal plan, and a continue that the harness refuses or that fails
+than those three, and a continue that the harness refuses or that fails
 (dispatch exit **9**). Exit 9 means the session was not continued. Forge sends the same
 prompt again as a fresh session, and that dispatch decides the round. One row per round
 is appended to `tasks/<id>/review_sessions.tsv`: round, attempt, `continued` or `fresh`,
 the reason, and the session id the round considered (empty when there was none). The
 row describes the dispatch whose result counts, so a failed continue is a single
 `fresh` row. Reasons are `same-spec`, `first-round`, `no-session`, `invalid-session`,
-`spec-changed`, `harness-unsupported`, `fractal`, `continue-unsupported` and
-`continue-failed`. A final review records the same outcome as `session=` and
+`spec-changed`, `harness-unsupported`, `continue-unsupported` and
+`continue-failed` (`fractal` appears only in rows written before forge 0.23). A final review records the same outcome as `session=` and
 `session_reason=` in `review.meta`.
 
 A shadow review never continues a session. It stays a separate fresh review of a copy of
@@ -491,7 +490,7 @@ it did not run. forge then **observes** whether it did, rather than trusting its
 - **self-commit / branch switch** — HEAD or the checked-out ref moved during the dispatch;
 - **orphan processes** — the harness runs in its own session; anything still alive in it after
   the harness exits is listed in `<role>.orphans` and stopped (`FORGE_ORPHAN_GUARD=off`
-  disables this; it is also skipped under Fractal);
+  disables this);
 - **promised later work** — "running in the background", "will report back once it
   finishes" and similar in the final message.
 

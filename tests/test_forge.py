@@ -469,7 +469,7 @@ class ForgeTests(unittest.TestCase):
                  ('suite','Implement change.'+accept%'bash tests/check.sh'),('ci','Implement change.'+accept%'./ci.sh  --all')):
    (p/'tasks'/i).mkdir(parents=True); (p/'tasks'/i/'prompt.md').write_text(text)
   r=self.run_script('forge-parallel.sh','plan',p,'--repo',self.repo,'--no-memory'); self.assertEqual(r.returncode,0,r.stdout)
-  notes=[l.split() for l in r.stdout.split('task size and acceptance criteria')[1].splitlines()[1:] if l.strip()]
+  notes=[l.split() for l in r.stdout.split('task size and acceptance criteria')[1].split('decomposition limits:')[0].splitlines()[1:] if l.strip()]
   self.assertEqual([(n[0],' '.join(n[1:3])) for n in notes],[('big','large prompt'),('big','touches 9'),('big','no acceptance'),
                    ('suite','acceptance criteria'),('ci','acceptance criteria')])
   self.assertIn('whole suite (`bash tests/check.sh`)',r.stdout); self.assertIn('whole suite (`./ci.sh --all`)',r.stdout)

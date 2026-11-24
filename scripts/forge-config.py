@@ -724,7 +724,7 @@ _PROFILE_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$')
 _PROFILE_TEXT_MAX = 1024 * 1024
 _PROFILE_KEYS = (
     'routing.dwarf.<tier>, routing.qa.<tier> (tier is any, low, medium or high), '
-    'routing.planner, routing.fractal_planner, routing.final_reviewer, '
+    'routing.planner, routing.final_reviewer, '
     'routing.escalate_after, routing.escalate_effort, policy.qa_threshold, '
     'policy.retry_failed, policy.infra_retries, policy.verify_retries, policy.timeout, '
     'policy.explore, policy.shadow_rate, policy.shadow_qa, policy.fast')

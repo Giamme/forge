@@ -64,13 +64,13 @@ test('status events: finished and failed runs, failing tasks, review verdicts; t
   assert.deepEqual(RM.statusEvents([a0], [infra], { now: NOW }), [], 'INFRA retries are not failures');
 });
 
-test('a Fractal tree: depth across, leaves in order, parents centred, cycles and orphans survive', () => {
-  const T = RM.fractalTree([{ id: 'root' }, { id: 'a', parent: 'root' }, { id: 'b', parent: 'root' }, { id: 'b1', parent: 'b' }, { id: 'b2', parent: 'b' },
+test('a decomposition tree: depth across, leaves in order, parents centred, cycles and orphans survive', () => {
+  const T = RM.nodeTree([{ id: 'root' }, { id: 'a', parent: 'root' }, { id: 'b', parent: 'root' }, { id: 'b1', parent: 'b' }, { id: 'b2', parent: 'b' },
     { id: 'x', parent: 'y' }, { id: 'y', parent: 'x' }, { id: 'lost', parent: 'nowhere' }]);
   assert.deepEqual([T.pos.a.row, T.pos.b1.row, T.pos.b2.row], [0, 1, 2]);
   assert.equal(T.pos.b.row, 1.5); assert.equal(T.pos.root.row, .75);
   assert.equal(T.pos.b1.depth, 2); assert.equal(T.cols, 3);
   assert.deepEqual(T.edges.filter(([p]) => p === 'root').map(e => e[1]), ['a', 'b']);
   for (const id of ['x', 'y', 'lost']) assert.ok(T.pos[id], id + ' is placed');
-  assert.deepEqual(RM.fractalTree(null), { pos: {}, edges: [], cols: 0, rows: 0 });
+  assert.deepEqual(RM.nodeTree(null), { pos: {}, edges: [], cols: 0, rows: 0 });
 });

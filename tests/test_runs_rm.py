@@ -30,7 +30,7 @@ from forge_dataset import importer  # noqa: E402
 RM = ROOT / 'scripts' / 'forge-runs-rm.py'
 RUNS = ROOT / 'scripts' / 'forge-runs.py'
 SCHEDULE = ROOT / 'scripts' / 'forge-schedule.py'
-FRACTAL = ROOT / 'scripts' / 'forge-fractal.py'
+SOLO_LOCK = ROOT / 'scripts' / 'forge-solo-lock.py'
 RUN_ID = 'myrun'
 
 
@@ -718,7 +718,7 @@ class ExclusionTests(RmCase):
         run = self.make_solo()
         script = self.root / 'noop.sh'
         script.write_text('exit 0\n')
-        attempt, code, result = self.paused(run, [sys.executable, str(FRACTAL), '_lock', str(run), str(script)])
+        attempt, code, result = self.paused(run, [sys.executable, str(SOLO_LOCK), str(run), str(script)])
         self.assertEqual(attempt.returncode, 3, attempt.stderr)
         self.assertEqual(code, 0, result)
         self.assertFalse(run.exists())

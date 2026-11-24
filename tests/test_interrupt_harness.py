@@ -77,7 +77,6 @@ class InterruptHarnessTests(unittest.TestCase):
                         PROMPT=str(prompt), HARNESS_PID=str(self.pidfile),
                         FORGE_INTERRUPT_GRACE=str(self.GRACE), FORGE_ORPHAN_GUARD='on',
                         FORGE_CAPABILITY_CACHE=str(self.root / 'capabilities'))
-        self.env.pop('FORGE_FRACTAL_RUN', None)
         self.addCleanup(self.kill_harness)
 
     def kill_harness(self):

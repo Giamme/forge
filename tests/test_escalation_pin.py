@@ -207,7 +207,7 @@ class PinTests(unittest.TestCase):
         self.assertFalse(self.policy_was_asked())
 
     def test_the_policy_records_policy(self):
-        (self.plan / 'fractal-routing.json').write_text(json.dumps({'low': ['sol'], 'high': ['astra']}))
+        (self.plan / 'dwarf-routing.json').write_text(json.dumps({'low': ['sol'], 'high': ['astra']}))
         self.fail_attempts(3)
         result = self.retry(skill=ROOT)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -348,13 +348,6 @@ class PinTests(unittest.TestCase):
         self.assertEqual(self.pin_files(), ['escalation.pin'])
         self.assertEqual((self.dwarf(), self.records()), ('sol', []))
 
-    def test_a_resume_in_a_fractal_plan_leaves_the_pin(self):
-        (self.plan / 'fractal-selection.json').write_text('{"enabled": true}')
-        self.infra_stop('dwarf')
-        self.pin()
-        self.assertEqual(self.resume().returncode, 0)
-        self.assertEqual((self.dwarf(), self.pin_files()), ('sol', ['escalation.pin']))
-
     # --- the claim's destination ------------------------------------------------------------
     def test_a_claim_symlinked_out_of_the_plan_neither_moves_the_pin_out_nor_drops_it(self):
         # mv would move the pin INTO the directory the link names, out of the plan.
@@ -487,7 +480,7 @@ class PinTests(unittest.TestCase):
 
     def test_a_symlinked_escalations_file_is_not_written_by_a_policy_escalation(self):
         outside = self.outside_history()
-        (self.plan / 'fractal-routing.json').write_text(json.dumps({'low': ['sol'], 'high': ['astra']}))
+        (self.plan / 'dwarf-routing.json').write_text(json.dumps({'low': ['sol'], 'high': ['astra']}))
         self.fail_attempts(3)
         result = self.retry(skill=ROOT)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -577,23 +570,6 @@ class PinTests(unittest.TestCase):
         self.assertEqual(self.pin_files(), [])                    # and is not replayed as a same-spec pin
         self.assertIn('--set from=sol --set to=opus:high', self.event_lines()[0])
 
-    # --- Fractal ---------------------------------------------------------------------------
-    def test_a_fractal_plan_never_applies_a_pin(self):
-        (self.plan / 'fractal-selection.json').write_text('{"enabled": true}')
-        self.pin()
-        result = self.retry()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('Fractal plans never apply pins', result.stderr)
-        self.assertEqual(self.pin_files(), ['escalation.pin'])
-        self.assertEqual(self.dwarf(), 'sol')
-        self.assertEqual(self.records(), [])
-
-    def test_a_disabled_fractal_selection_is_not_a_fractal_plan(self):
-        (self.plan / 'fractal-selection.json').write_text('{"enabled": false}')
-        self.pin()
-        self.assertEqual(self.retry().returncode, 0)
-        self.assertEqual(self.dwarf(), 'opus:high')
-
     # --- the run summary ---------------------------------------------------------------------
     def report(self, skill=None):
         result = self.sh("report_escalations '%s'" % self.plan, skill=skill)
@@ -654,7 +630,7 @@ class PinTests(unittest.TestCase):
         self.assertEqual((self.tdir / 'escalation.next').read_text(), 'opus:high\n')
 
     def test_a_withdrawn_pin_leaves_the_summary_with_the_policys_verdict(self):
-        (self.plan / 'fractal-routing.json').write_text(json.dumps({'low': ['sol']}))   # no stronger model
+        (self.plan / 'dwarf-routing.json').write_text(json.dumps({'low': ['sol']}))   # no stronger model
         self.fail_attempts(3)
         self.pin()
         route = [sys.executable, str(ROUTE), 'escalation', '--plan', str(self.plan), '--task', 'a', '--check']
@@ -679,11 +655,6 @@ class PinTests(unittest.TestCase):
         (self.tdir / 'merged').write_text('x\n')
         self.assertEqual(self.report(), '')
 
-    def test_the_summary_ignores_a_pin_in_a_fractal_plan(self):
-        (self.plan / 'fractal-selection.json').write_text('{"enabled": true}')
-        self.pin()
-        self.assertEqual(self.report(), '')
-
 
 class CheckTests(unittest.TestCase):
     """`escalation --check`, the policy's marker writes and the control lock."""
@@ -696,7 +667,7 @@ class CheckTests(unittest.TestCase):
         (self.plan / 'tasks.tsv').write_text('a\t-\tlow\ta.txt\tsol\topus\tA\n')
 
     def fail_three_times(self, pools):
-        (self.plan / 'fractal-routing.json').write_text(json.dumps(pools))
+        (self.plan / 'dwarf-routing.json').write_text(json.dumps(pools))
         (self.tdir / 'attempts.tsv').write_text(''.join('17000000%02d\t%d\tFAIL\t\tsol\n' % (i, i) for i in (1, 2, 3)))
 
     def route(self, *extra, task='a'):
@@ -756,9 +727,7 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(self.route('--check').stdout, '')
         self.assertIsNone(self.next_marker())
         (self.tdir / 'resume').unlink()
-        (self.plan / 'fractal-selection.json').write_text('{"enabled": true}')
-        self.assertEqual(self.route('--check').stdout, '')
-        self.assertIsNone(self.next_marker())
+        self.assertEqual(self.route('--check').stdout, 'opus:high\n')
 
     def test_check_does_not_report_a_pin_behind_an_unreviewed_verdict_of_committed_work(self):
         (self.tdir / 'escalation.pin').write_text('opus:high\n')

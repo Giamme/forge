@@ -20,8 +20,7 @@ Each merge still checks dependency status, reviewed commit, source fingerprint a
 integration revision. A plan lock spans run/retry/integrate operations. Saved passing work
 can resume without a new dispatch; ordinary failed and interrupted work requires explicit
 retry (or an opt-in `run --retry-failed N`), while tasks paused on an infrastructure failure
-resume on the next `run` and an unjudged review re-runs QA only. Fractal has the additional
-recovery checkpoints described below.
+resume on the next `run` and an unjudged review re-runs QA only.
 
 Review repositories import self-contained tree object packs and create two commits before
 checking out the final tree. No alternates or source repository access is required afterward.
@@ -60,34 +59,24 @@ The scheduler still acts on the classes it was written for: `infra_info` folds `
 `rate_limit`, `usage_limit` and `budget` into `quota`, and `provider_down` into `network`, until
 it reads the table.
 
-## Optional Fractal adapter decision
+## Recursive decomposition is native
 
-Fractal adds a Python adapter around the existing shell pipeline instead of replacing
-Forge's dispatcher, model registry, QA or integration rules. This keeps provider effort,
-permission and attempt-record behavior in one place. The isolated runtime pins Fractal
-1.2.0 and registers `ForgeAgent` through upstream `agents.py`; no Fractal fork is required.
-Ordinary execution and inspection do not require that runtime to be installed.
+Until 0.22 a task could run under Fractal, an external runtime behind a Python adapter. forge
+0.23 removed it (#154) and splits tasks itself (#153), with the parts it already had: a split
+task's subtasks are an ordinary plan in `<plan>/tasks/<id>/sub`, run by the same
+`forge-parallel.sh run` and the same scheduler, so retries, escalation, reviews, controls and the
+dataset apply to a subtask as to any task. `scripts/forge_decompose.py` holds what is new: the
+node record (`decomposition.json`), the three limits and their freeze, the validation of a split
+(ownership inside the parent's files, sibling-only deps, no cycle) and the tree readers use.
+`scripts/forge-lib-decompose.sh` wires it into `plan`, `run`, `retry` and `next`.
 
-`forge-fractal-options.sh` records the per-run choice and selects the bridge only when
-enabled. `forge_fractal/selection.py` freezes routing and limits; `execution.py` manages
-bounded children, shared model slots, process ownership and candidate import checks;
-`pipeline.py` preserves Forge checkpoints for resume and explicit retry. Work steps use
-fresh dispatcher invocations rather than provider conversation continuation.
+One bound covers the tree. The root scheduler exports its `--max-parallel` and a slot directory
+(`tree.slots/` in the root plan); every scheduler of the tree takes a slot for each task it
+starts, and a split task gives its slot back while its subtasks run and takes one again for its
+own review. Nesting cannot multiply the limit.
 
-Each task separates a Fractal control repository from product snapshot repositories.
-That separation prevents wiki/configuration/ledger initialization from entering the product
-diff. Solo imports check source fingerprints and preserve the user's index. Decomposed
-candidates return to the task's existing pinned review and integration boundary. Explicit
-retry retains prior work and the original Forge QA baseline while recording a new attempt.
-
-Runtime and durable run records live under
-`${XDG_STATE_HOME:-$HOME/.local/state}/forge/fractal/`, outside the product repository.
-A single task coordinator and a run-wide invocation limiter bound nested work and QA;
-setup and shutdown count toward the task deadline, explicit pauses do not. Fractal
-execution status, Forge acceptance and repository verification remain separate records.
-
-`inspection.py` reads curated managed artifacts and the pinned SQLite ledger without
-constructing lifecycle-reconciling Fractal nodes or marking messages read. The browser
-server is read-only and localhost-bound; portable HTML embeds captured data and assets.
-Unsupported tokens/cost/tool details stay unknown, and the bridge rejects dollar caps.
-See [operating instructions](fractal.md) and [verification evidence](../tests/fractal-verification.md).
+Old records stay readable. `scripts/forge_legacy.py` recognises a plan or solo directory made
+with Fractal (`fractal-selection.json`), which `run`, `retry`, `split`, `next` and
+`forge handoff resume` refuse, and reads the tier pools older plans kept in
+`fractal-routing.json` (new plans write `dwarf-routing.json`). `forge du` reports what the old
+runtime left under `${XDG_STATE_HOME:-$HOME/.local/state}/forge/fractal/`.

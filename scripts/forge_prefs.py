@@ -30,7 +30,6 @@ PREFS = {
     'reviewer_session': (None, 'off'),           # off, on, or a share between 0 and 1
     'update_check': (('on', 'off'), 'on'),
     'ripwire': (('ask', 'install', 'never'), 'ask'),
-    'fractal': (('no', 'install'), 'no'),
     'decide': (('off', 'on'), 'off'),
     'models_base': (None, ''),                    # what the `setup` profile was built from
 }

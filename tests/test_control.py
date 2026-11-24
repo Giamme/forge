@@ -91,8 +91,8 @@ class ControlTests(unittest.TestCase):
         self.put('control.log', json.dumps({'at': 1.0, 'actor': 'cli', 'task': None}) + '\nnot json\n'
                  + json.dumps({'at': 2.0, 'actor': 'ui', 'task': 'a'}) + '\n')
         shown = self.show()
-        self.assertEqual((shown['plan'], shown['run_id'], shown['live'], shown['fractal']),
-                         (str(self.plan), 'r-7', False, False))
+        self.assertEqual((shown['plan'], shown['run_id'], shown['live'], shown['removed']),
+                         (str(self.plan), 'r-7', False, None))
         self.assertEqual(shown['run'], dict(qa_threshold='P2', qa_threshold_source='set', timeout=90, escalate_after=3, escalate_effort='off',
                                             verify_retries=1, retry_budget=None, infra_budget=None, infra_backoff='exp:60',
                                             infra_fallback='off', max_parallel=None, drained=False, stopping=None,
@@ -460,17 +460,26 @@ class ControlTests(unittest.TestCase):
 
     # ------------------------------------------------------------------------------------ pins
 
-    def test_a_pin_on_a_merged_task_or_a_fractal_plan_is_refused(self):
+    def test_a_pin_on_a_merged_task_is_refused(self):
         self.put('tasks/b/merged', '')
         self.assertIn('MERGED', self.code(3, 'pin', self.plan, 'b', 'sol:high:codex').stderr)
         self.assertIn('MERGED', self.code(3, 'set', self.plan, 'qa-threshold', 'P1', '--task', 'b').stderr)
         self.code(3, 'unpin', self.plan, 'b')
         self.assertFalse((self.plan / 'tasks/b/escalation.pin').exists())
+
+    def test_an_old_fractal_plan_is_shown_and_never_changed(self):
+        # A plan made with Fractal, which forge 0.23 removed: `show` reads it, every change is refused.
         self.put('fractal-selection.json', json.dumps({'enabled': True}))
-        self.assertIn('Fractal', self.code(3, 'pin', self.plan, 'a', 'sol:high:codex').stderr)
-        self.assertTrue(self.show()['fractal'])
-        self.ok('set', self.plan, 'qa-threshold', 'P1', '--task', 'a')   # only pins are Fractal-refused
-        self.put('fractal-selection.json', json.dumps({'enabled': False}))
+        self.assertEqual(self.show()['removed'], 'Fractal')
+        self.assertIn('made with Fractal, which forge 0.23 removed', self.ok('show', self.plan).stdout)
+        for args in (('pin', self.plan, 'a', 'sol:high:codex'), ('set', self.plan, 'qa-threshold', 'P1', '--task', 'a'),
+                     ('set', self.plan, 'timeout', '60'), ('retry', self.plan, 'a')):
+            refused = self.code(3, *args).stderr
+            self.assertIn('made with Fractal, which forge 0.23 removed', refused, args)
+            self.assertIn('Start a new run', refused, args)
+        self.assertFalse((self.plan / 'tasks/a/escalation.pin').exists())
+        self.put('fractal-selection.json', json.dumps({'enabled': False}))   # a plan that declined it is an ordinary plan
+        self.assertIsNone(self.show()['removed'])
         self.ok('pin', self.plan, 'a', 'sol:high:codex')
 
     def test_a_valid_pin_is_written_a_failing_one_is_refused_and_unpin_removes_it(self):

@@ -177,11 +177,11 @@ report_opencode
 say
 say "Verify with: bash $SKILL_DIR/scripts/forge-dispatch.sh doctor"
 
-# What a first run needs (models, reviews, forge-ui, memory, Ripwire, Fractal, decision models),
+# What a first run needs (models, reviews, forge-ui, memory, Ripwire, decision models),
 # asked once on a terminal and saved as defaults (#162). `forge update` re-runs this installer with
 # FORGE_SETUP=off: an update never asks again. Setup failing never fails the install.
 if [ "$DRY" = 1 ]; then
-  say "  would: run forge setup on a terminal (models, reviews, forge-ui, memory, Ripwire, Fractal; skipped once done)"
+  say "  would: run forge setup on a terminal (models, reviews, forge-ui, memory, Ripwire; skipped once done)"
 elif [ "${FORGE_SETUP:-}" = off ]; then
   :
 elif [ -t 0 ] && [ -t 1 ]; then

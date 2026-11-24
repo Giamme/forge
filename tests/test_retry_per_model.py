@@ -2,7 +2,7 @@
 
 The policy core only: the setting, the escalation trigger, the rung ladder, `per-model` (may the task
 retry) and `worst-case` (the most dispatches the unmerged tasks can spend). Plan dirs are written by hand,
-as the scheduler leaves them: tasks.tsv, fractal-routing.json pools, tasks/<id>/attempts.tsv.
+as the scheduler leaves them: tasks.tsv, dwarf-routing.json pools, tasks/<id>/attempts.tsv.
 """
 import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
 import importlib.util
@@ -36,7 +36,7 @@ class PlanCase(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.plan = Path(os.path.realpath(tmp.name)) / 'plan'
         (self.plan / 'tasks').mkdir(parents=True)
-        (self.plan / 'fractal-routing.json').write_text(json.dumps(POOLS))
+        (self.plan / 'dwarf-routing.json').write_text(json.dumps(POOLS))
         saved = os.environ.pop('FORGE_REGISTRY', None)
         if saved is not None:
             self.addCleanup(os.environ.__setitem__, 'FORGE_REGISTRY', saved)
@@ -142,7 +142,7 @@ class LadderTests(PlanCase):
     def test_a_ladder_is_capped(self):
         # A registry row with a long ladder of efforts still ends at MAX_RUNGS.
         pools = {'low': ['luna'], 'high': ['opus']}
-        (self.plan / 'fractal-routing.json').write_text(json.dumps(pools))
+        (self.plan / 'dwarf-routing.json').write_text(json.dumps(pools))
         self.setting('escalate_effort', 'on\n')
         self.assertLessEqual(len(route.rungs_above('luna', self.plan)), route.MAX_RUNGS)
 

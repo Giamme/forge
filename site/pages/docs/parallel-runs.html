@@ -68,6 +68,21 @@ bash scripts/forge-parallel.sh integrate "$PLAN" --approved</pre>
 <h2>Tasks that are a command</h2>
 <p>A codemod or a generated file doesn't need a model to type it. Put <code>script</code> in a row's dwarf column and write the command as an executable <code>tasks/&lt;id&gt;/run</code>: forge runs it in the task's worktree, from the task's starting point on every attempt, under the plan's timeout. A command that fails isn't reviewed; one that succeeds is reviewed as a script's output, like any other task.</p>
 
+<h2 id="subtasks">A task that is really several</h2>
+<p>Sometimes a task turns out to be more than one piece of work. forge can split it into subtasks without you rewriting the plan. The subtasks run like any tasks, each in its own worktree with its own review, inside the files the task owns. When all of them have merged, the task is reviewed once more on everything they produced, and only then joins the run. A subtask can be split again the same way.</p>
+<p>A split is always a decision someone made, and it's recorded with its reason:</p>
+<ul>
+  <li><strong>The planner</strong> can propose it when it plans. You see the subtasks under the approval table.</li>
+  <li><strong>You</strong> can choose it when a task stops and asks for a decision: <code>retry &lt;plan&gt; &lt;task&gt; --decide split</code>, with the subtasks in a file or a planner to write them.</li>
+  <li><strong>The run</strong> does it for you only if you asked: <code>run --auto-split</code> lets the planner split a task that stops on <code>split</code>, without waiting.</li>
+</ul>
+<p>Keeping a task whole is just as valid, and that's recorded too. A split keeps the work the task already has and builds on it; <code>--decide split=fresh</code> starts over and sets the old work aside.</p>
+<p>Three limits keep a split from running away: how many levels deep (2), how many subtasks one split may make (6), and how many in the whole run (24). They're shown with the approval table, and you can change them there with <code>--split-depth</code>, <code>--split-children</code> and <code>--split-nodes</code>. Once the run starts they're fixed. A split that would pass one isn't made: the task runs as one piece and the record says which limit it met.</p>
+<p><code>forge runs tree &lt;plan&gt;</code> prints the whole tree, and <a href="forge-ui.html">forge-ui</a> shows it on the task, with each subtask's decision, model, tokens and diff.</p>
+
+<h2>A goal bigger than one plan</h2>
+<p>When a goal is too large for one plan, the planner plans the first stage and lists the ones that follow. After that plan has merged, <code>forge-parallel.sh next &lt;plan&gt;</code> plans the next stage from the code as it now is, with the same models and settings, and stops at its own approval table. <code>integrate</code> on the last plan brings in the whole chain.</p>
+
 <h2>A plan that starts where another ended</h2>
 <p>A second milestone can build on the first before either reaches your branch. <code>plan &lt;dir&gt; --after &lt;earlier plan&gt;</code> starts from the earlier plan's integration branch, once all its tasks merged. If the earlier plan moves on, <code>run</code> stops and says so, and <code>integrate</code> names the whole chain it brings in.</p>
 

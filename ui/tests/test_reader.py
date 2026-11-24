@@ -115,7 +115,7 @@ class ReaderTests(unittest.TestCase):
         self.assertIsNotNone(data['integration'])  # the merged marker
         self.assertEqual(data['integration']['merged'], [{'id': 'reader', 'at': reader['merged_at']}])
         for field, value in (('final_review', None), ('final_reviews', []), ('deferrals', []), ('findings_available', True),
-                             ('fractal', None)):
+                             ('removed', None)):
             self.assertEqual(data[field], value, field)
         self.assertEqual(data['request'], 'A read-only run viewer.\n')
         self.assertIsNone(data['brief'])
@@ -155,6 +155,26 @@ class ReaderTests(unittest.TestCase):
                     self.write(run / 'qa_threshold', text)
                 settings = detail(run)['settings']
                 self.assertEqual((settings['qa_threshold'], settings['qa_threshold_source']), want, (run.name, text))
+
+    def test_an_old_fractal_run_still_reads_and_says_what_removed_it(self):
+        # The fixture of a run made with Fractal, which forge 0.23 removed: plan and solo alike.
+        plan, solo = F.make_plan(self.base / 'p'), F.make_solo(self.base / 's')
+        for run in (plan, solo):
+            self.assertIsNone(summarize(run)['removed'], run.name)
+            self.assertIsNone(detail(run)['removed'], run.name)
+            tasks = [task['id'] for task in detail(run)['tasks']]
+            F.make_old_fractal(run)
+            for read in (summarize, detail):
+                removed = read(run)['removed']
+                self.assertEqual((removed['name'], removed['since']), ('Fractal', '0.23'), run.name)
+                self.assertIn('made with Fractal, which forge 0.23 removed', removed['note'])
+            self.assertNotIn('fractal', detail(run))
+            self.assertEqual([task['id'] for task in detail(run)['tasks']], tasks)   # every task still reads
+            # a selection that said no was an ordinary run; one that cannot be parsed counts as Fractal
+            self.write(run / 'fractal-selection.json', '{"enabled": false}')
+            self.assertIsNone(summarize(run)['removed'])
+            self.write(run / 'fractal-selection.json', '{not json')
+            self.assertEqual(summarize(run)['removed']['name'], 'Fractal')
 
     def test_settings_profile_is_the_frozen_profile_or_null(self):
         plan = F.make_plan(self.base)

@@ -107,8 +107,8 @@ That's the whole minimum. `sol` builds it at `high` effort on Codex, `opus` revi
 ```
 
 A decomposed run plans the tasks, rates and routes each one, then **shows you the table and
-stops** before spending anything. Before an interactive run, forge also asks whether to use
-[Fractal](docs/fractal.md) and whether to open [forge-ui](docs/forge-ui.md).
+stops** before spending anything. Before an interactive run, forge also asks whether to open
+[forge-ui](docs/forge-ui.md).
 
 → [Every flag, with more examples](docs/commands.md)
 
@@ -122,8 +122,9 @@ flowchart LR
 ```
 
 Without `--decompose-level`, the whole goal is one task: one dwarf, and one review of its diff.
-With optional [Fractal execution](docs/fractal.md), an implementer can delegate bounded child
-tasks inside the paths it owns. forge still reviews the combined diff.
+A task that proves too large can itself be [split into subtasks](docs/decomposed-runs.md#splitting-a-task-into-subtasks),
+at any depth inside limits you approve. They merge into the task's branch, and forge reviews the
+combined diff.
 
 Every model is named by one spec, `alias:effort:harness`. Each field after the alias is optional:
 
@@ -185,9 +186,8 @@ python3 ui/tools/demo_runs.py /tmp/forge-demo
 | [Install and update](docs/install.md) | npm or a git checkout, the doctor, what the installer does per CLI, updating |
 | [Command reference](docs/commands.md) | every `/forge` flag with examples, the `forge` command, the runner scripts and their exit codes |
 | [Models, efforts and harnesses](docs/models.md) | the `alias:effort:harness` spec, effort ladders and clamping, yolo mode, the model registry |
-| [Decomposed runs](docs/decomposed-runs.md) | decompose levels and difficulty, routing, waves, capsules, planning, resuming, split and combine, `tasks.tsv` |
+| [Decomposed runs](docs/decomposed-runs.md) | decompose levels and difficulty, routing, waves, capsules, planning, splitting a task into subtasks, resuming, split and combine, `tasks.tsv` |
 | [Reviews, retries and recovery](docs/reviews.md) | verdicts, retries, infrastructure stops, severity thresholds, accepting, whole-run and shadow reviews, guards, verification, fail-first |
-| [Fractal execution](docs/fractal.md) | the optional nested-execution backend: install, run, inspect, bounds and recovery |
 | [Project memory](docs/memory.md) | `.forge/memory.md` and the ledger, what each role is told, whether to commit it, spend |
 | [forge-ui](docs/forge-ui.md) | the run viewer: commands, the shared server, environment variables, privacy |
 | [Run dataset](docs/dataset.md) | every run's inputs and outcomes, kept for training decision models |

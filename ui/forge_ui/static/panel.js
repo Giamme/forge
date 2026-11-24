@@ -85,6 +85,7 @@ window.ForgePanel = (() => {
   // the write controls of a plan run (task undefined) or of one of its tasks; a page without controls.js says it is read-only
   function controlsSection(host, ctx, task) {
     if (ctx.run.kind === 'solo') return;
+    if (ctx.run.removed) { muted(section(host, 'Controls'), `Read-only: this run was made with ${ctx.run.removed.name}, which forge ${ctx.run.removed.since} removed.`); return; }
     if (window.ForgeControls && window.ForgeUI && window.ForgeUI.confirmInline) { window.ForgeControls[task ? 'mountTask' : 'mountRun'](host, ctx, task); return; }
     const s = section(host, 'Controls');
     muted(s, 'Read-only: this page cannot change the run.');
@@ -477,6 +478,29 @@ window.ForgePanel = (() => {
   // other ids on the page (mono). The hash is the other run's page, the same shape app.js uses.
   function chainRows(run) {
     const rows = [];
+    // A sub-plan (the subtasks of a split task): the task it belongs to, in the plan above.
+    const up = run.parent;
+    if (up && typeof up === 'object' && up.key && up.task) {
+      rows.push(['Subtasks of', link(`${up.task}${up.run_id ? ' · ' + up.run_id : ''}`, '#/runs/' + encodeURIComponent(up.key) + '/tasks/' + encodeURIComponent(up.task)), true]);
+    }
+    // The limits a split works within, and how much of the run was split (run.decomposition, when the plan records any).
+    const tree = run.decomposition, lim = tree && tree.limits;
+    if (lim && typeof lim === 'object') {
+      const off = lim.depth === 0 || lim.nodes === 0;
+      const text = off ? 'splitting is off for this run' : `depth ${lim.depth} · up to ${lim.children} subtasks per split · ${lim.nodes} subtasks in the run`;
+      const used = tree.split ? ` · ${tree.subtasks} subtask${tree.subtasks === 1 ? '' : 's'} in ${tree.split} split task${tree.split === 1 ? '' : 's'}` : '';
+      const value = el('span', text + (lim.frozen ? ' (frozen)' : '') + used);
+      value.title = 'The limits every split of a task works within: levels of subtasks, subtasks one split may make, and subtasks in the whole run. '
+        + (lim.frozen ? 'They were frozen when the plan first ran.' : 'They can still change with plan --split-depth, --split-children and --split-nodes; the first run freezes them.');
+      rows.push(['Decomposition', value, true]);
+    }
+    // A goal larger than one plan: the stage this plan is, and the stages its planner proposed after it.
+    const later = run.later;
+    if (later && typeof later === 'object') {
+      const names = list(later.stages).map(st => st && st.title).filter(Boolean);
+      if (num(later.stage) !== null) rows.push(['Stage', `${later.stage} of a larger goal`]);
+      if (names.length) rows.push(['Later stages', names.join(' · ')]);
+    }
     const prev = run.after;
     if (prev && typeof prev === 'object') {
       const label = prev.run_id || prev.key;
@@ -496,6 +520,8 @@ window.ForgePanel = (() => {
   function runView(host, ctx) {
     const run = ctx.run, now = ctx.now;
     const tr = RM.timeRange(run, now);
+    // An old run of a backend forge no longer has: it reads as any run, and nothing here can run it again.
+    if (run.removed) host.append(el('p', `This run was ${run.removed.note}. Start a new run for the work that is left.`, 'warn'));
     const s = section(host, 'Timeline');
     fields(s, [['Started', time(tr && tr.start)], ['Last activity', time(tr && tr.end)], ['Wall time', tr ? RM.fmtDur(tr.end - tr.start) : '—'],
       ['Concurrency limit', run.settings && run.settings.max_parallel != null ? run.settings.max_parallel : (run.kind === 'solo' ? '—' : '3 (default; not recorded)')]]);
@@ -922,7 +948,7 @@ window.ForgePanel = (() => {
       as.append(box);
     }
 
-    if (run.fractal && run.fractal.enabled) fractalSection(host, ctx, task);
+    decompositionSection(host, ctx, task);
 
     // reviews and their findings
     const rs = section(host, 'Review findings');
@@ -1008,79 +1034,58 @@ window.ForgePanel = (() => {
     if (list(d.warnings).length) details(ps, `Reader warnings (${d.warnings.length})`, d.warnings.join('\n'), `exec-${sel.exec}-warn`);
   }
 
-  /* ---------- Fractal: the child tasks a task was split into ---------- */
-  const money = v => num(v) === null ? '—' : '$' + (v < 1 ? v.toFixed(3) : v.toFixed(2));
-  const fractalPath = (run, task) => `/api/runs/${encodeURIComponent(run.key)}/tasks/${encodeURIComponent(task)}/fractal`;
-  function fractalSection(host, ctx, task) {
-    const run = ctx.run, fs = section(host, 'Fractal tree');
-    if (!run.fractal.available) { muted(fs, `Fractal ran this run, but its state cannot be read: ${run.fractal.reason || 'unavailable'}.`); return; }
-    const entry = lazy(ctx, fractalPath(run, task.id), run.updated);
-    if (loading(fs, entry, 'the Fractal tree')) return;
-    const F = entry.data;
-    if (ctx.onFractal) ctx.onFractal(task.id, F.available ? F : null);
-    if (!F.available) { muted(fs, F.reason || 'No Fractal state for this task.'); return; }
-    const st = F.state || {}, out = F.outcome || {};
+  /* ---------- decomposition: the decision on a task, and the subtasks a split task has ---------- */
+  // What a node spent, in tokens (input + output): forge records tokens, never a price.
+  const spent = t => t && typeof t === 'object' ? (num(t.input) || 0) + (num(t.output) || 0) : null;
+  const tok = v => v === null ? null : (v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(1) + 'k' : String(v)) + ' tokens';
+  const DECISIONS = { atomic: 'kept whole', split: 'split', bounded: 'kept whole at a limit' };
+  // What each word means, shown when the pointer rests on it.
+  const DECISION_HELP = {
+    atomic: 'Done as one piece. Keeping a task whole is always a valid decision.',
+    split: 'Split into subtasks. They run as a plan of their own, merge into this task, and the task is then reviewed on all of their work.',
+    bounded: 'A split here would pass a limit of the run (levels, subtasks per split, or subtasks in the whole run), so it runs as one piece.',
+  };
+  const BY_HELP = {
+    planner: 'The planner decided this when it planned.',
+    user: 'A person decided this (retry --decide split).',
+    auto: 'The run decided this: it was started with --auto-split, so the planner split a task that stopped on split.',
+    default: 'Nobody decided: a task is one piece unless someone splits it.',
+  };
+  // task.decomposition: {decision, reason, by, at, sub: {key, run_id, path} | null, merged, waiting, start, kept,
+  // nodes: [{id, parent, run, run_id, task, level, title, status, difficulty, model, qa, decision, reason, by, attempts,
+  // tokens, has_diff}]}, the nodes in tree order through every level below the task. Absent on a plan with no record.
+  function decompositionSection(host, ctx, task) {
+    const D = task.decomposition, nodes = D ? list(D.nodes) : [];
+    if (ctx.onSubtasks) ctx.onSubtasks(task.id, nodes.length ? nodes : null);
+    if (!D || (!D.decision && !nodes.length)) return;
+    // A task nobody decided about is one piece, as every task was before: nothing to say.
+    if (D.decision === 'atomic' && D.by === 'default' && !nodes.length) return;
+    const ds = section(host, 'Decomposition');
     const chips = el('div', undefined, 'chips');
-    if (st.status) chips.append(chip(st.status === 'active' ? 'RUNNING' : st.status, st.status === 'active' ? 'running' : undefined));
-    if (out.acceptance || st.acceptance) chips.append(chip('acceptance ' + (out.acceptance || st.acceptance), String(out.acceptance || '').toLowerCase() === 'pass' ? 'pass' : 'none'));
-    if (out.verification) chips.append(chip('verification ' + out.verification, out.verification === 'passed' ? 'pass' : 'none'));
-    fs.append(chips);
-    const nodes = list(F.nodes), cost = nodes.reduce((a, n) => a + (num(n.cost) || 0), 0);
-    muted(fs, `${nodes.length} node${nodes.length === 1 ? '' : 's'} · ${RM.fmtDur(st.elapsed)} · ${money(cost)} so far · click a node for its goal, decision and output`);
-    const T = RM.fractalTree(nodes), ul = el('ul', undefined, 'fractal-tree');
+    if (D.decision) { const c = el('span', DECISIONS[D.decision] || D.decision, 'tag'); c.title = DECISION_HELP[D.decision] || ''; chips.append(c); }
+    if (D.by) { const c = el('span', 'decided by ' + D.by, 'plate src-plate'); c.title = BY_HELP[D.by] || ''; chips.append(c); }
+    ds.append(chips);
+    if (D.reason) ds.append(el('p', D.reason));
+    if (!nodes.length) return;
+    const total = nodes.reduce((a, n) => a + (spent(n.tokens) || 0), 0), merged = nodes.filter(n => n.status === 'MERGED').length;
+    muted(ds, [`${nodes.length} subtask${nodes.length === 1 ? '' : 's'}`, `${merged} merged`, total ? tok(total) : null,
+      D.merged ? "their work is on this task's branch, and the task is reviewed on all of it" : 'the task is reviewed on all of their work once every one has merged',
+      D.start === 'fresh' ? 'started over from the task\'s base' + (D.kept ? ` (earlier work kept at ${String(D.kept).slice(0, 12)})` : '') : null].filter(Boolean).join(' · '));
+    if (list(D.waiting).length) ds.append(el('p', 'Waiting for: ' + list(D.waiting).join(', '), 'muted'));
+    if (D.sub && D.sub.key) { const open = el('p', undefined, 'muted'); open.append(link('Open the subtasks as a plan of their own →', '#/runs/' + encodeURIComponent(D.sub.key))); ds.append(open); }
+    const T = RM.nodeTree(nodes), ul = el('ul', undefined, 'node-tree');
     for (const n of nodes) {
-      const li = el('li', undefined, 'ft-node ft-d' + Math.min(6, (T.pos[n.id] || {}).depth || 0) + (n.reserved ? ' reserved' : ''));
-      li.append(el('i', undefined, 'led st-' + String(n.ui_status || 'unknown').toLowerCase()));
-      const target = { kind: 'fractal', task: task.id, node: n.id };
-      li.append(link(n.id, ctx.hash(target), () => ctx.onSelect(target)));
-      const bits = [n.reserved ? 'reserved' : n.status, n.difficulty, n.phase ? `${n.phase}${n.iteration ? ' #' + n.iteration : ''}` : null, num(n.cost) !== null ? money(n.cost) : null].filter(Boolean);
+      const li = el('li', undefined, 'ft-node ft-d' + Math.min(6, (T.pos[n.id] || {}).depth || 0));
+      li.append(el('i', undefined, 'led st-' + String(n.status || 'unknown').toLowerCase()));
+      const a = el('a', n.task || n.id); a.href = ctx.nodeHash ? ctx.nodeHash(n) : '#'; li.append(a);
       if (n.model) li.append(plate(n.model));
-      li.append(el('span', bits.join(' · '), 'muted'));
-      const dec = n.decomposition;
-      if (dec && dec.decision) li.append(el('span', dec.decision === 'split' ? `split into ${list(dec.children).length}` : dec.decision, 'tag'));
-      if (n.has_diff) { const a = diffLink(ctx, 'diff', { kind: 'fractal', task: task.id, node: n.id }, 'diff-link small'); if (a) li.append(a); }
-      if (n.goal) li.title = n.goal;
+      li.append(el('span', [n.status, n.difficulty, num(n.attempts) > 1 ? `${n.attempts} attempts` : null, tok(spent(n.tokens))].filter(Boolean).join(' · '), 'muted'));
+      if (n.decision && n.decision !== 'atomic') { const c = el('span', DECISIONS[n.decision] || n.decision, 'tag'); c.title = DECISION_HELP[n.decision] || ''; li.append(c); }
+      if (n.has_diff && ctx.nodeHash) { const d = el('a', 'diff', 'diff-link small'); d.href = ctx.nodeHash(n) + '/diff'; li.append(d); }
+      li.title = [n.title, n.reason].filter(Boolean).join('\n');
       ul.append(li);
     }
-    fs.append(ul);
-    if (list(F.events).length) details(fs, `Recent events (${F.events.length})`, F.events.map(e => `${time(e.at)}  ${e.kind}${e.node ? ' · ' + e.node : ''}${e.decision ? ' · ' + e.decision : ''}${e.status ? ' · ' + e.status : ''}${e.reason ? ' — ' + e.reason : ''}`).join('\n'), `fractal-${task.id}-events`);
-    if (list(F.warnings).length) details(fs, `Reader warnings (${F.warnings.length})`, F.warnings.join('\n'), `fractal-${task.id}-warn`);
-  }
-  function fractalNodeView(host, ctx, sel) {
-    const run = ctx.run, path = `${fractalPath(run, sel.task)}/nodes/${encodeURIComponent(sel.node)}`;
-    const entry = lazy(ctx, path, run.updated), n = entry.data;
-    const head = el('div', undefined, 'insp-head');
-    head.append(el('h2', sel.node), el('div', `Fractal node · task ${sel.task}`, 'insp-kind'));
-    const back = { kind: 'task', id: sel.task };
-    if (n) { const chips = el('div', undefined, 'chips'); chips.append(chip(n.reserved ? 'reserved' : n.ui_status || n.status, n.reserved ? 'none' : undefined)); if (n.decomposition && n.decomposition.decision) chips.append(el('span', n.decomposition.decision, 'tag')); head.append(chips); }
-    head.append(link('← task ' + sel.task, ctx.hash(back), () => ctx.onSelect(back)));
-    if (n && n.has_diff) { const a = diffLink(ctx, 'Its candidate diff →', { kind: 'fractal', task: sel.task, node: sel.node }); if (a) head.append(a); }
-    host.append(head);
-    if (loading(host, entry, 'this node')) return;
-    if (n.goal) host.append(el('p', n.goal));
-    fields(host, [['Parent', n.parent ? link(n.parent, ctx.hash({ kind: 'fractal', task: sel.task, node: n.parent }), () => ctx.onSelect({ kind: 'fractal', task: sel.task, node: n.parent })) : '—'],
-      ['Difficulty', n.difficulty], ['Model', n.model ? plate(n.model) : '—'], ['Resolved', n.resolved_model ? plate(n.resolved_model) : '—'], ['Paths', list(n.paths).join('\n') || '—', true], ['Depends on', list(n.deps).join(', ') || '—', true],
-      ['Phase', n.phase ? `${n.phase}${n.iteration ? ' · iteration ' + n.iteration : ''}` : '—'], ['Started', time(n.started_at)], ['Ended', time(n.ended_at)],
-      ['Cost', `${money(n.cost)}${n.unknown_cost_steps ? ` (+${n.unknown_cost_steps} steps of unknown cost)` : ''}`], ['Tokens', n.tokens ? `${display(n.tokens.input_tokens)} in (${display(n.tokens.cached_input_tokens)} cached) · ${display(n.tokens.output_tokens)} out` : '—']]);
-    if (n.error) host.append(el('p', n.error, 'warn'));
-    const dec = n.decomposition;
-    if (dec) {
-      const ds = section(host, 'Decomposition');
-      fields(ds, [['Decision', dec.decision], ['Phase', dec.phase], ['Attempts', dec.attempts]]);
-      if (dec.reason) ds.append(el('p', dec.reason));
-      const adm = list(dec.admission);
-      if (adm.length) {
-        const ul = el('ul', undefined, 'plain');
-        for (const a of adm) { const li = el('li'); li.append(link(a.name, ctx.hash({ kind: 'fractal', task: sel.task, node: a.name }), () => ctx.onSelect({ kind: 'fractal', task: sel.task, node: a.name })), document.createTextNode(` · ${a.difficulty || '—'} · `), plate(a.model), document.createTextNode(` — ${a.goal || ''}`)); ul.append(li); }
-        ds.append(el('p', 'Children it admitted:', 'muted'), ul);
-      }
-      if (dec.error) ds.append(el('p', dec.error, 'warn'));
-    }
-    if (list(n.decomposition_history).length > 1) details(host, `Decomposition history (${n.decomposition_history.length})`, n.decomposition_history.map(h => `${h.phase || '—'} · ${h.decision || '—'}${h.reason ? ' — ' + h.reason : ''}`).join('\n'), `fnode-${sel.task}-${sel.node}-hist`);
-    const ps = section(host, 'Output');
-    if (n.last != null) details(ps, 'Last message', n.last, `fnode-${sel.task}-${sel.node}-last`);
-    if (n.planning_last != null) details(ps, 'Planner\'s last message', n.planning_last, `fnode-${sel.task}-${sel.node}-plan`);
-    if (n.last == null && n.planning_last == null) muted(ps, 'No output yet.');
+    ds.append(ul);
   }
 
   // Commits made outside forge that `adopt` brought in, each reviewed alone: a person's work, so no task row claims them.
@@ -1260,9 +1265,8 @@ window.ForgePanel = (() => {
     if (sel.kind === 'adoption') return adoptionView(host, ctx, sel);
     if (sel.kind === 'verification') return verificationView(host, ctx);
     if (sel.kind === 'integration') return integrationView(host, ctx);
-    if (sel.kind === 'fractal') return fractalNodeView(host, ctx, sel);
     return runView(host, ctx);
   }
-  return { render, cache, trailLine, reasonText, linkModel, headerActions, summaryBank, changeSummaries, answerOutcome };
+  return { render, cache, trailLine, reasonText, linkModel, headerActions, summaryBank, changeSummaries, answerOutcome, decompositionSection };
 })();
 if (typeof module === 'object' && module.exports) module.exports = window.ForgePanel;

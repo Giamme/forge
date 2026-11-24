@@ -14,7 +14,7 @@ forge/
 ├── docs/                        the full documentation, one page per topic
 ├── LICENSE                      MIT
 ├── package.json                 the npm package: its name, version and the files it ships
-├── forge                        launcher, on PATH from npm: `forge install`, `fractal`, `jev`, `dataset` and `ui`
+├── forge                        launcher, on PATH from npm: `forge install`, `jev`, `dataset` and `ui`
 ├── scripts/
 │   ├── forge-dispatch.sh        resolve a spec → run one role on one harness
 │   ├── forge-solo.sh            the whole single-task run: dwarf → diff → qa
@@ -29,11 +29,10 @@ forge/
 │   ├── forge-guard.py           implementer guards: session wrapper, orphan reaping, promise scan
 │   ├── forge-verify-coverage.py suites the project defines that the verify command skips
 │   ├── forge-memory.sh          inject / note / record / spend project memory
-│   ├── forge-fractal.py         Fractal CLI and internal adapter entrypoint
-│   ├── forge-fractal-options.sh runner selection, limit flags and help
-│   ├── forge-fractal-dispatch.sh bridge entrypoint for existing pipelines
-│   ├── forge-install-fractal.sh isolated optional runtime installer
-│   ├── forge_fractal/           nested execution, recovery, inspection and dashboard
+│   ├── forge-lib-decompose.sh   subtasks: a split task's sub-plan, `retry --decide split`, `run --auto-split`, `next`
+│   ├── forge_decompose.py       the node model of a split: limits, validation, the tree, `decomposition.json`
+│   ├── forge-planner.py         the planner's prompt and the strict parse of its reply (tasks, subtasks, later stages)
+│   ├── forge_legacy.py          read-only compatibility for runs made with Fractal, removed in 0.23
 │   ├── forge-compare.py         `forge runs rerun|compare`: a plan under another implementer, side by side
 │   ├── forge-ui.py              `forge ui open|status|stop`: the one shared forge-ui server
 │   ├── forge-ui-options.sh      `--ui|--no-ui` and the fail-open launch, sourced by the runners
@@ -53,7 +52,6 @@ forge/
     ├── decompose-recovery.md    retries, NEEDS_DECISION, INFRA stops, accept, split and combine
     ├── decompose-integration.md chained plans, branches and worktrees, verification
     ├── decompose-opt-in.md      groups, retro notes, brief mode, task summaries
-    ├── fractal.md               opt-in backend, limits, recovery and observability
     ├── memory.md                FORGE_LEARNING grammar, promotion and pruning rules
     └── dataset.md               the run dataset: what is captured, where, and its invariants
 ```

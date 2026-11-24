@@ -20,7 +20,8 @@ The rest of the decomposition reference is split by phase, so a run reads only w
 - [The two axes: decompose-level and difficulty](#the-two-axes-decompose-level-and-difficulty)
 - [tasks.tsv](#taskstsv)
 - [Routing](#routing)
-- [Fractal within decomposed tasks](#fractal-within-decomposed-tasks)
+- [Subtasks: a task split at any level](#subtasks-a-task-split-at-any-level)
+- [A goal larger than one plan](#a-goal-larger-than-one-plan)
 - [Waves and disjointness](#waves-and-disjointness)
 - [Task size and acceptance criteria](#task-size-and-acceptance-criteria)
 - [Plan gates: sent back, and the block under the table](#plan-gates-sent-back-and-the-block-under-the-table)
@@ -270,51 +271,87 @@ changes. An unchanged command repeats the previous diff, and that retry stops: `
 `noretry`, and `The retry changed nothing: the diff is byte-identical to the previous
 attempt.` It is not reviewed again.
 
-## Fractal within decomposed tasks
+## Subtasks: a task split at any level
 
-Select optional Fractal execution on `run`; planning the task table does not activate it.
-`--decompose-level` defines the top-level Forge tasks and approval table. Each such task
-can then use a Fractal implementation node with bounded children inside its declared `files`.
-Each top-level task still returns its combined candidate to Forge's independent QA and
-existing integration checks. Child completion never marks the Forge task accepted.
+Goal, plans, tasks and subtasks follow one rule: a node is either done as one piece or split
+into children that own parts of it. forge does this itself; there is no other runtime.
 
-Use `--fractal-auto-decompose` on `run` to require recursive split-or-atomic decisions
-automatically. Add `--fractal-planner <spec>` to use a stronger decision model for all
-nodes; otherwise the saved top-level planner or each task's initial root model is reused.
-Show that choice and the bounds in the approval table. See the
-[decision contract](fractal.md#automatic-decomposition-decisions) for recovery and limits.
+A split task's subtasks are a plan of their own in `<plan>/tasks/<id>/sub` (its `run_id` is
+`<run>--<id>`, its `parent.json` names the task). They are routed with the plan's difficulty
+pools and reviewer pools, each owns paths **inside the task's `files`**, and `deps` name sibling
+subtasks only. They run on the same scheduler, under the run's one `--max-parallel` for the whole
+tree. Each subtask is reviewed against its own prompt (which carries the task's prompt, so the
+requirement is not lost). When every subtask has merged, their work is merged onto the task's
+branch and the task is reviewed once on the cumulative diff, against the task's prompt. A subtask
+can be split again, the same way.
+
+**Who splits.** Never force a split: one task is always a valid answer.
+
+- **The planner, at plan time.** A task of its reply may carry `subtasks` and a one-line
+  `reason` ([planner contract](planning.md#the-planner-contract-forge-plannerpy)). `plan` makes
+  the sub-plan, and the table shows the tree under `subtasks`. A task the planner kept whole with
+  a `reason` has that reason recorded.
+- **The user, for a task that stopped.** A `NEEDS_DECISION` whose reasons include `split` offers
+  it in `decision.md`. Relay the choice; on the user's word run
+  `retry <plan> <id> --decide split --subtasks FILE --reason "<their reason>" --approved`
+  (`--planner SPEC` instead of `--subtasks` dispatches one read-only planner about that task).
+  You may write the subtasks file yourself when the user asked you to split the task:
+  `forge-planner.py node-prompt --plan <plan> --task <id>` writes the rules and the format to
+  `tasks/<id>/split.prompt`. On a live run, `forge control retry <plan> <id> --decide split
+  --subtasks FILE --reason "…" --approved` queues the same decision.
+- **The run, when the user opted in.** `run --auto-split [--split-planner SPEC]`: a task that
+  stops on `split` is split by the planner once, without waiting. Off unless asked for. Offer it
+  with the table when the plan has `high` tasks; do not turn it on yourself.
+
+`--decide split` keeps the task's work: the subtasks start from its branch and get the last
+review. `--decide split=fresh` starts from the task's base, and the earlier work stays on
+`refs/forge/kept/<run>/<id>`. Ask which, when the user did not say; default to keeping it.
+
+**Limits.** `plan --split-depth N` (default 2; `0` = no splitting), `--split-children N` (6) and
+`--split-nodes N` (24, the whole run). They are printed under the task table as
+`decomposition limits: …` and are part of what the user approves. The first `run` freezes them
+(`decomposition.json`: `limits`, `frozen`); a `plan` that would change one afterwards exits 2. A
+split past a limit is not made: the node is recorded `bounded` with the limit it met, and the
+task runs as one task. Say so; do not retry the split.
+
+**Outcomes of a split request.** `retry --decide split` exits 0 after running the task with its
+subtasks, or with `--no-dispatch` after making them. It exits 2 and changes nothing when the
+answer was one task (recorded as kept whole, with the reason), when a limit bounded it, or when
+the subtasks were refused (a file outside the task's, a dep that is not a sibling, a cycle, a
+duplicate id, a prompt without `## Acceptance criteria`). A task already split is never split
+again; its subtasks are kept and `run` continues them.
+
+**While it runs.** The task is `RUNNING` while its subtasks run. If one fails, stops or waits
+for a person, the task becomes `BLOCKED` with `tasks/<id>/sub.waiting` listing them, no attempt
+of the task is spent, and the summary prints `waiting for their subtasks:` with the sub-plan's
+path. Work on the subtask in its own plan (`retry <plan>/tasks/<id>/sub <subtask>`, and every
+`--answer`, `--decide`, `accept` and `forge control` form), then `run <plan>` again. `run
+--retry-failed N` and `--infra-retries M` reach the subtasks. Resume and retry keep accepted
+decisions and never make a subtask twice.
+
+**Records.** `decomposition.json` in each plan of the tree: per task `decision` (`atomic`,
+`split`, `bounded`), `reason`, `by` (`planner`, `user`, `auto`, `default`), `at` and the limits
+in force. `tasks/<id>/decisions.tsv` gets `retry=1 split` or `retry=1 split=fresh`: the split
+grants the one attempt that reviews the whole task. `forge runs tree <plan>` prints the tree;
+`forge control show`, `forge handoff` and `forge watch` name subtasks by path (`<id>/<sub>`);
+forge-ui shows each node's decision, reason, model, tokens and diff.
+
+## A goal larger than one plan
+
+A planner that judges the goal too large for one plan returns the first coherent stage as
+`tasks` and the stages after it as `later` (title and goal each). `plan` prints them under the
+table (`later stages`), and the run summary names them once every task has merged. Then:
 
 ```bash
-# With tasks.tsv, goal.txt, request.md and per-task prompts already prepared:
-bash <skill_dir>/scripts/forge-parallel.sh plan "$PLAN" --repo "$REPO" --decompose-level medium \
-  --dwarf sol:high --dwarf-low luna:medium --dwarf-high sol:xhigh,terra:xhigh --qa opus
-
-# Preview the selected backend, pools, bounds and workspace without provider calls.
-bash <skill_dir>/scripts/forge-parallel.sh run "$PLAN" --fractal --dry-run
-
-# After approval of the task/model table:
-bash <skill_dir>/scripts/forge-parallel.sh run "$PLAN" --fractal \
-  --max-parallel 3 --fractal-concurrency 3 --fractal-depth 2
+bash <skill_dir>/scripts/forge-parallel.sh next "$PLAN" [<new-plan-dir>] [--planner <spec>] [plan flags...]
 ```
 
-Add `--ui` to `plan` to open the plan in [forge-ui](ui.md): the `forge-ui:` URL is printed
-under the task table, so the user can watch the later `run`. Ask once when the plan is made,
-not on `run`, `retry` or resume; it is fail-open and not remembered.
-
-`plan` saves tier pools in `fractal-routing.json`. The first enabled execution freezes
-eligible specs, canonical resolutions and limits with the run and preflights every
-eligible model/harness. Children route by difficulty, then the configured general dwarf,
-then their parent's dwarf. A retry cannot introduce a model outside that frozen pool.
-
-`--max-parallel` bounds top-level task pipelines. `--fractal-concurrency` separately bounds
-all active model invocations across their trees, including QA. Parents release their model
-slot while waiting; nesting cannot multiply that limit. Child dependencies must be satisfied,
-ownership must remain inside the parent, and overlapping children are serialized.
-
-The choice is persisted in `fractal-selection.json`. Explicit `--fractal` or `--no-fractal`
-skips the once-per-interactive-run question; unattended execution without either is off.
-Installation never activates the backend. The [Fractal reference](fractal.md) documents
-all limits, prerequisites and the child-request protocol.
+`next` needs every task of `$PLAN` `MERGED` (exit 3 otherwise) and a planner (the plan's, or
+`--planner`; exit 2 with neither). It makes the next plan dir (`<first plan dir>-<stage>` unless
+named), starts it from `$PLAN`'s integration branch (`--after`), copies the options, pools and
+limits, dispatches the planner on the code as it now is, and stops at the table. Show that table
+and wait for approval, as for any plan; `--approved` is refused on `next`. `integrate --approved`
+on the last plan brings the whole chain ([chained plans](decompose-integration.md#chained-plans)).
 
 ## Waves and disjointness
 

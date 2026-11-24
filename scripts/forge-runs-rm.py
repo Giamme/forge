@@ -261,10 +261,58 @@ class Run:
         self.removable = set()   # paths of the worktrees --worktrees removes (or prunes, when missing on disk)
         self.wt_root = None
         self.owners = {}         # worktree path -> forge_worktrees kind (None: foreign), for the dataset events
+        # The run and, after it, every sub-plan under it (#153: the subtasks of a split task run as a plan of
+        # their own, with its own run id, branches and worktree folder): dict(run_id, tasks, wt_root, path).
+        self.members = []
+
+
+SUB_DEPTH = 8   # the depth limit of a run's decomposition tops out at 6
+
+
+def plan_tasks(path, ignored=None):
+    """The task ids of a plan dir's tasks.tsv that are safe as file names and ref components."""
+    tasks, seen = [], set()
+    for line in (read_text(os.path.join(path, 'tasks.tsv')) or '').splitlines():
+        if not line.strip() or line.startswith('#'):
+            continue
+        task = line.split('\t', 1)[0]
+        if not TASK_ID.fullmatch(task):
+            if ignored is not None:
+                ignored.append(task)
+        elif task not in seen:
+            seen.add(task)
+            tasks.append(task)
+    return tasks
+
+
+def sub_members(run, path, tasks, depth=0):
+    """The sub-plans under a plan dir, as members. One whose run id is not safe, or whose worktree folder
+    would overlap the run dir, is left out: nothing of it is touched."""
+    found = []
+    if depth >= SUB_DEPTH:
+        return found
+    for task in tasks:
+        sub = os.path.join(path, 'tasks', task, 'sub')
+        if os.path.islink(sub) or not os.path.isfile(os.path.join(sub, 'tasks.tsv')):
+            continue
+        run_id = first_line(os.path.join(sub, 'run_id')) or ''
+        if not RUN_ID.fullmatch(run_id) or not run_id.startswith(run.run_id + '--'):
+            continue
+        root = forge_worktrees.wt_root(run.repo, run_id)
+        if contains(run.path, root) or contains(root, run.path):
+            continue
+        below = plan_tasks(sub)
+        found.append(dict(run_id=run_id, tasks=below, wt_root=root, path=sub))
+        found += sub_members(run, sub, below, depth + 1)
+    return found
 
 
 def identify(target):
     path = target.path
+    if os.path.basename(path) == 'sub' and os.path.basename(os.path.dirname(os.path.dirname(path))) == 'tasks' \
+            and os.path.isfile(os.path.join(path, 'parent.json')):
+        raise Refused('%s holds the subtasks of a split task: it is deleted with the run it belongs to, not by itself'
+                      % path)
     if path == '/' or any(contains(path, home) for home in homes()):
         raise Refused('refusing to delete %s: it is, or contains, the home directory' % path)
     if os.path.lexists(os.path.join(path, '.git')):
@@ -286,20 +334,14 @@ def identify(target):
     if contains(path, run.repo_real) or contains(path, os.path.abspath(run.repo)):
         raise Refused('refusing to delete %s: it is, or contains, the run\'s repo %s' % (path, run.repo))
     if run.kind == 'plan':
-        seen = set()
-        for line in (read_text(os.path.join(path, 'tasks.tsv')) or '').splitlines():
-            if not line.strip() or line.startswith('#'):
-                continue
-            task = line.split('\t', 1)[0]
-            if not TASK_ID.fullmatch(task):
-                run.ignored_tasks.append(task)
-            elif task not in seen:
-                seen.add(task)
-                run.tasks.append(task)
+        run.tasks = plan_tasks(path, run.ignored_tasks)
     # forge-parallel.sh: wt_root="$(cd "$REPO/.." && pwd)/.forge-worktrees/$run_id", a logical cd
     run.wt_root = forge_worktrees.wt_root(run.repo, run.run_id)
     if contains(path, run.wt_root) or contains(run.wt_root, path):
         raise Refused('refusing to delete %s: it overlaps the run\'s worktree root %s' % (path, run.wt_root))
+    run.members = [dict(run_id=run.run_id, tasks=run.tasks, wt_root=run.wt_root, path=path)]
+    if run.kind == 'plan':
+        run.members += sub_members(run, path, run.tasks)
     return run
 
 
@@ -444,17 +486,24 @@ def inspect_git(run):
     except Failed as error:
         run.git_error = str(error)
         return
-    branch_refs = {'refs/heads/forge/%s/%s' % (run.run_id, task) for task in run.tasks}
-    branch_refs.add('refs/heads/forge/%s-integration' % run.run_id)
+    # The run's own branches and those of every sub-plan under it (a split task's subtasks, #153).
+    branch_refs = set()
+    for member in run.members:
+        branch_refs |= {'refs/heads/forge/%s/%s' % (member['run_id'], task) for task in member['tasks']}
+        branch_refs.add('refs/heads/forge/%s-integration' % member['run_id'])
     for wt in listed:
         real = os.path.realpath(wt['path'])
-        in_root = real != run.wt_root and contains(run.wt_root, real)
+        in_root = any(real != member['wt_root'] and contains(member['wt_root'], real) for member in run.members)
         ours = wt['branch'] in branch_refs
         if not in_root and not ours:
             continue   # the main worktree, or another run's: not this command's business
         # forge_worktrees.owner is the rule forge-ui's Worktrees screen uses too: a task or integration branch in
         # the run's folder, or a scratch worktree integrate or the culprit search left there.
-        kind = forge_worktrees.owner(wt['path'], wt['branch'], run.run_id, run.tasks, run.wt_root)
+        kind = None
+        for member in run.members:
+            kind = forge_worktrees.owner(wt['path'], wt['branch'], member['run_id'], member['tasks'], member['wt_root'])
+            if kind:
+                break
         run.owners[wt['path']] = kind
         entry = dict(path=wt['path'], branch=(wt['branch'] or '').replace('refs/heads/', '', 1) or None,
                      kind='run' if kind else 'foreign', dirty=None, removed=False, note='')
@@ -486,6 +535,21 @@ def inspect_git(run):
         run.branches.append(dict(name=ref.replace('refs/heads/', '', 1), sha=sha, merged=merged,
                                  status='merged' if merged else 'UNMERGED', checked_out=checked_out.get(ref),
                                  stays_checked_out=checked_out.get(ref), deleted=False, note=''))
+    # What a split that started over set aside (retry --decide split=fresh): refs, not branches, listed and
+    # deleted with them under their full name.
+    for member in run.members:
+        code, out, err = git(run.repo, 'for-each-ref', '--format=%(refname) %(objectname)',
+                             'refs/forge/kept/%s/' % member['run_id'])
+        if code != 0:
+            run.git_error = 'git for-each-ref failed in %s: %s' % (run.repo, err or 'exit %d' % code)
+            return
+        for line in sorted(out.splitlines()):
+            ref, _, sha = line.rpartition(' ')
+            if ref.rsplit('/', 1)[-1] not in member['tasks']:
+                continue
+            merged = git(run.repo, 'merge-base', '--is-ancestor', sha, 'HEAD')[0] == 0
+            run.branches.append(dict(name=ref, sha=sha, merged=merged, status='merged' if merged else 'UNMERGED',
+                                     checked_out=None, stays_checked_out=None, deleted=False, note=''))
 
 
 # ------------------------------------------------------------------------------ the steps
@@ -607,11 +671,13 @@ def remove_worktrees(run):
     code, _, err = git(run.repo, 'worktree', 'prune')
     if code != 0:
         problems.append('git worktree prune: ' + (err or 'exit %d' % code))
-    if os.path.isdir(run.wt_root) and not os.path.islink(run.wt_root):
-        try:
-            os.rmdir(run.wt_root)   # only succeeds when it is empty: a foreign worktree keeps it
-        except OSError:
-            pass
+    for member in run.members:
+        root = member['wt_root']
+        if os.path.isdir(root) and not os.path.islink(root):
+            try:
+                os.rmdir(root)   # only succeeds when it is empty: a foreign worktree keeps it
+            except OSError:
+                pass
     return '; '.join(problems) or None
 
 
@@ -624,10 +690,15 @@ def delete_branches(run):
         if where:
             branch['note'] = 'kept: checked out in ' + where
             continue
-        code, _, err = git(run.repo, 'branch', '-D', branch['name'])
+        if branch['name'].startswith('refs/'):
+            code, _, err = git(run.repo, 'update-ref', '-d', branch['name'], branch['sha'])
+            restore = 'git update-ref %s %s' % (branch['name'], branch['sha'])
+        else:
+            code, _, err = git(run.repo, 'branch', '-D', branch['name'])
+            restore = 'git branch %s %s' % (branch['name'], branch['sha'])
         if code == 0:
             branch['deleted'] = True
-            branch['note'] = 'was %s; restore with: git branch %s %s' % (branch['sha'][:12], branch['name'], branch['sha'])
+            branch['note'] = 'was %s; restore with: %s' % (branch['sha'][:12], restore)
         else:
             branch['note'] = err or 'git branch -D exit %d' % code
             problems.append('%s: %s' % (branch['name'], branch['note']))

@@ -49,6 +49,7 @@ import time
 # forge_infra.py sits beside this file; forge-control.py loads this module by path.
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+import forge_decompose  # noqa: E402
 import forge_flock as fcntl  # noqa: E402
 import forge_infra  # noqa: E402
 import forge_posix  # noqa: E402
@@ -389,22 +390,6 @@ def drained(plan: object) -> bool:
     return _read_small(plan, 'drain') is not None
 
 
-def _fractal_plan(plan: object) -> bool:
-    """fractal-selection.json enabled (unreadable counts: fail closed, as forge-control does)."""
-    try:
-        text = Path(_resolve(plan, 'fractal-selection.json')).read_text()
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return True
-    if not text.strip():
-        return False
-    try:
-        return bool(json.loads(text).get('enabled'))
-    except (ValueError, AttributeError):
-        return True
-
-
 def live_capacity(plan: object, default: int) -> int:
     """`forge control set max-parallel` (1-64), else the argument the run started with."""
     text = _read_small(plan, 'max_parallel')
@@ -488,7 +473,8 @@ REQUESTS = 'control.requests'
 REQUEST_MAX = 64 * 1024
 ANSWER_MAX = 8000   # characters of a NEEDS_INPUT answer a request may carry (#147)
 # What `forge control retry --decide` may carry: retry=N (1 to 20) or threshold=Pn.
-DECISION = re.compile(r'retry=(?:[1-9]|1[0-9]|20)|threshold=P[0-3]')
+DECISION = re.compile(r'retry=(?:[1-9]|1[0-9]|20)|threshold=P[0-3]|split(?:=keep|=fresh)?')
+SPLIT_DECISIONS = ('split', 'split=keep', 'split=fresh')   # #153: the task becomes a sub-plan of subtasks
 # NEEDS_INPUT is in neither: a task stopped for the user's answer resumes only through
 # `retry <plan> <id> --answer`, whose preparation refuses without one. Nor is NEEDS_DECISION (#69):
 # a task whose reviews do not converge, or that the retry policy cannot move to a stronger model,
@@ -722,7 +708,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     retries = {}       # automatic reviewer-driven retries used per task, this run
     per_model_seen = {}  # task -> the per-model answer that allowed its latest automatic retry
     refused = {}       # task -> budget at the time its retry could not be prepared
-    retried = set()    # tasks whose next dispatch is a retry (FORGE_FRACTAL_RETRY=1)
+    retried = set()    # tasks whose next dispatch is a retry
     offsets = {}       # how much of each task.out was already echoed under --output full
     infra_seen = []    # tasks stopped by an infrastructure failure, awaiting resume
     held = set()       # INFRA tasks not resumed: their pin could not be applied
@@ -741,11 +727,27 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     backoff_warned = [] # an invalid infra_backoff file is reported once
     graceful = False   # `forge control stop`: start nothing more, end once running tasks are done
     human = set()      # tasks whose next dispatch is a `forge control retry` (dataset trigger human)
+    # One --max-parallel for a run and every sub-plan run under it (#153): each task that works holds
+    # a slot of the root plan's tree.slots. A split task waiting for its subtasks holds none.
+    try:
+        tree_root = forge_decompose.root_of(plan)
+    except Exception:
+        tree_root = plan
+    tree_slots = forge_decompose.Slots(tree_root)
+    slot_of = {}       # task -> the slot it holds
+
+    def split_open(name: str) -> bool:
+        try:
+            return forge_decompose.is_open(plan, name)
+        except Exception:
+            return False
+
+    def give_slot(name: str) -> None:
+        forge_decompose.Slots.give(slot_of.pop(name, None))
     for name in tasks:  # `retry --no-dispatch` (#118) prepared it for this run: still a person's retry
         if (plan / 'tasks' / name / 'retry.prepared').exists():
             retried.add(name)
             human.add(name)
-    fractal = _fractal_plan(plan)
     drain_told = False # the drained message was printed for this drain
     sweep_asked = False  # this invocation already asked for the finding sweep
     sweep_checked = {}   # the answer of this invocation's one `plan --check`
@@ -1013,7 +1015,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         implementer to the next healthy model of its tier, or, when only its reviewer is held, the reviewer
         to a peer. Tried once for each set of pauses and models: a move changes the models, so a task with
         both on the paused harness moves its implementer, then its reviewer. True when the task moved."""
-        if interrupted or graceful or fractal or _read_small(plan, 'infra_fallback') != 'on':
+        if interrupted or graceful or _read_small(plan, 'infra_fallback') != 'on':
             return False
         pairs = next_pairs(name)
         seen = (frozenset(pauses), tuple(pairs))
@@ -1071,7 +1073,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         exhausted pair is excluded (and a harness stop excludes the whole harness); a pool all
         stopped cannot bounce the task forever. True when the task moved, and so left the pause."""
         stage = info.get('stage')
-        if interrupted or graceful or fractal or _read_small(plan, 'infra_fallback') != 'on':
+        if interrupted or graceful or _read_small(plan, 'infra_fallback') != 'on':
             return False
         # A pin waits for the next full retry, which a review's move is not.
         if stage not in ('dwarf', 'qa') or (stage == 'dwarf' and _pinned(plan, name)):
@@ -1285,7 +1287,23 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                   file=sys.stderr, flush=True)
         write_paused()
 
+    STORED_SUBTASKS = re.compile(r'split\.request\.[0-9]+-[0-9]+\.json')
+
     def apply_retry(request: dict) -> tuple:
+        """_apply_retry, and a split's stored subtasks never outlive a request that was refused."""
+        outcome = _apply_retry(request)
+        stored = request.get('subtasks')
+        if isinstance(stored, str) and STORED_SUBTASKS.fullmatch(stored) and isinstance(request.get('task'), str) \
+                and request['task'] in tasks:
+            leftovers = [stored] + ([forge_decompose.PROPOSAL] if outcome[0] == 'refused' else [])
+            for leftover in leftovers:
+                try:
+                    (plan / 'tasks' / request['task'] / leftover).unlink()
+                except OSError:
+                    pass
+        return outcome
+
+    def _apply_retry(request: dict) -> tuple:
         name, dwarf = request['task'], request.get('dwarf')
         if name not in tasks:
             return 'refused', 'this run does not know task ' + name
@@ -1311,10 +1329,27 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                                + ' ' + name + ' --answer \u2026 (on a live run: forge control retry ' + str(plan)
                                + ' ' + name + ' --answer \u2026)')
         decide, reason, approved = request.get('decide'), request.get('reason'), request.get('approved') is True
-        if decide and state != 'NEEDS_DECISION':
+        splitting = decide in SPLIT_DECISIONS
+        if decide and state != 'NEEDS_DECISION' and not splitting:
             return 'refused', name + ' is ' + state + ', not waiting for a decision; --decide only decides a NEEDS_DECISION task'
         decision = []
-        if state == 'NEEDS_DECISION':
+        if splitting:
+            # A split (#153): any task that has not passed, with a reason and --approved. Its subtasks were
+            # checked and stored by `forge control retry --decide split`.
+            if dwarf:
+                return 'refused', 'a split does not take --dwarf: the subtasks are routed with the plan\'s pools'
+            if not (reason or '').strip() or not approved:
+                return 'refused', 'a split needs --reason and --approved'
+            stored = request.get('subtasks')
+            if not isinstance(stored, str) or not STORED_SUBTASKS.fullmatch(stored):
+                return 'refused', 'a split needs its subtasks: forge control retry ' + str(plan) + ' ' + name \
+                    + ' --decide split --subtasks FILE'
+            try:
+                os.replace(plan / 'tasks' / name / stored, plan / 'tasks' / name / forge_decompose.PROPOSAL)
+            except OSError:
+                return 'refused', 'the subtasks of this split are no longer stored; ask again'
+            decision = ['--decide', decide, '--reason', reason, '--approved']
+        elif state == 'NEEDS_DECISION':
             # Only a person's explicit decision resumes it: a choice, a reason, and --approved.
             if not decide and not dwarf:
                 return 'refused', (name + ' is waiting for your decision, and only a decision resumes it: '
@@ -1336,6 +1371,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         command = [forge_proc.bash_executable(), script, '_prepare_retry', str(plan), name] + (
             ['--prompt'] if state == 'STALE' else (['--dwarf', dwarf] if dwarf else []) + decision)
         rc = subprocess.run(command).returncode
+        if rc and splitting:
+            return 'refused', 'the task was not split (exit ' + str(rc) + '; the run output says why)'
         if rc == 3:
             try:
                 why = (plan / 'tasks' / name / 'split.suggested').read_text().strip()
@@ -1704,6 +1741,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                     into.add(name)
                 log.close()
                 del active[name]
+                give_slot(name)
                 job = task_jobs.pop(name, None)
                 if job is not None:
                     job.disarm()
@@ -1955,6 +1993,11 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 write_paused()
             end_scoped_waits()
             handle_requests()
+            # A running task that has become a split task (run --auto-split) waits for its subtasks
+            # now: they need its slot.
+            for name in list(slot_of):
+                if name in active and split_open(name):
+                    give_slot(name)
             cap = live_capacity(plan, capacity)
             draining = drained(plan)   # again: the infrastructure wait above can last minutes
             brief_waiting.clear()
@@ -1981,16 +2024,25 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                         pass
                     if scope_held(name):
                         continue
+                # The tree's bound, last of the checks: a task that will only run its subtasks takes no
+                # slot, they do. None means every slot of the tree is taken, here or in another plan of it.
+                slot = False if split_open(name) else tree_slots.take(live_capacity(tree_root, capacity))
+                if slot is None:
+                    break
                 root = plan / 'tasks' / name
-                if not (root / 'base_ref').exists():
-                    worktree = Path(forge_posix.host_path((plan / 'wt_root').read_text().strip())) / '_integration'
-                    base = subprocess.check_output(['git', '-C', str(worktree), 'rev-parse', 'HEAD'])
-                    (root / 'base_ref').write_bytes(base)
-                log = open(root / 'task.out', 'ab')
-                # A retried task runs with the same environment `retry` gives it, so the
-                # no-progress guard (byte-identical diff) applies under Fractal too.
-                env = (dict(os.environ, FORGE_FRACTAL_RETRY='1',
-                            FORGE_DATASET_TRIGGER='human' if name in human else 'auto')
+                try:
+                    if not (root / 'base_ref').exists():
+                        worktree = Path(forge_posix.host_path((plan / 'wt_root').read_text().strip())) / '_integration'
+                        base = subprocess.check_output(['git', '-C', str(worktree), 'rev-parse', 'HEAD'])
+                        (root / 'base_ref').write_bytes(base)
+                    log = open(root / 'task.out', 'ab')
+                except BaseException:
+                    forge_decompose.Slots.give(slot)
+                    raise
+                if slot:
+                    slot_of[name] = slot
+                # A retried task runs with the dataset trigger `retry` gives it.
+                env = (dict(os.environ, FORGE_DATASET_TRIGGER='human' if name in human else 'auto')
                        if name in retried else None)
                 human.discard(name)
                 _remove(plan, 'tasks', name, 'retry.prepared')
@@ -2067,6 +2119,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             except subprocess.TimeoutExpired:
                 pass
             log.close()
+            give_slot(name)
         stopped_groups = [name[len(GROUP_KEY):] for name, _ in stopping if name.startswith(GROUP_KEY) and name not in tasks]
         stop_harnesses(plan, [name for name, _ in stopping if name in tasks], stopped_groups)
         for name, _ in stopping:
@@ -2084,6 +2137,9 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         return 130
     if paused or any(live_pause(pause) for pause in pauses.values()) \
             or any(status(name) == 'INFRA' for name in tasks):
+        return INFRA_EXIT
+    # A split task whose subtasks paused on an infrastructure failure (#153): the same pause, one level down.
+    if any(status(name) == 'BLOCKED' and (plan / 'tasks' / name / 'sub.infra').exists() for name in tasks):
         return INFRA_EXIT
     # A fix task that did not merge leaves its findings for `forge issues`; the run's own work is done.
     return 0 if all(status(name) == 'MERGED' for name in tasks if not is_fix(name)) else 5

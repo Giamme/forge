@@ -8,7 +8,6 @@ efforts, harnesses and any explicit bypass flags before dispatch.
 bash <skill_dir>/scripts/forge-solo.sh "$FORGE_RUN" --repo "$REPO" \
   --dwarf <spec> [--qa <spec>] [--approach <file>] \
   [--yolo-dwarf] [--yolo-qa] [--timeout <seconds>] [--no-memory] [--dry-run] \
-  [--fractal | --no-fractal] [--fractal-concurrency <n>] [--fractal-deadline <seconds>] \
   [--ui | --no-ui]
 ```
 
@@ -38,8 +37,7 @@ This detects mutations; it is not an operating-system security sandbox for unres
 
 Read `dwarf.last`, `qa.last`, `changes.diff` and `verdict`. Preserve CONFIRMED/PLAUSIBLE labels
 when relaying findings. Report scope drift and unsupported implementation claims. Do not
-automatically retry. In ordinary execution the run is one implementation followed by
-one review; Fractal may use multiple bounded work steps before that independent review.
+automatically retry. A solo run is one implementation followed by one review.
 
 Statuses: PASS, FAIL, UNKNOWN, NOCHANGES, INVALIDATED. Exit codes: 0 completed review
 (inspect verdict), 2 usage, 3 precondition, 4 dispatch failure, 5 no changes or invalidated
@@ -47,8 +45,7 @@ review, 7 timeout, 8 infrastructure failure (quota, auth, rate limit, network, e
 nothing was judged — fix the cause and run again; a dwarf that returns nothing *and* changes
 nothing is reported as 8, not 5). The default dispatch timeout is 2700 seconds, scaled up for
 `xhigh`/`max` effort (so the default planner effort gets 3600; QA defaults to `high`), overridable per model in the
-registry; 0 disables that dispatch timeout, but an enabled Fractal task still has its own attempt
-deadline. See [dispatch timeouts](../docs/commands.md#scriptsforge-dispatchsh).
+registry; 0 disables that dispatch timeout. See [dispatch timeouts](../docs/commands.md#scriptsforge-dispatchsh).
 
 The dwarf prompt carries implementer rules (no commits, no background processes, finish every
 measurement before the last message). forge records what it observes: if the dwarf committed
@@ -92,37 +89,11 @@ packages, when it has them; the prompt says what is there, and the reviewer repo
 Optional [Ripwire context](ripwire.md) is enabled by default. Use `--no-ripwire`
 or `FORGE_RIPWIRE=off` to disable preparation and installation offers.
 
-## Fractal execution and recovery
+## Fractal, removed in 0.23
 
-[Fractal](fractal.md) is separately opt-in. It starts from the complete snapshot
-above, runs in a managed isolated repository, and imports the candidate only after
-checking source drift. Resume preserves that snapshot. `--retry` starts an explicit
-new Fractal attempt using preserved work and the original QA baseline. A saved PASS
-checkpoint is reused only while its source fingerprint remains unchanged.
-
-Ask `Use Fractal for this run? [y/N]` once in the conversational workflow and pass
-`--fractal` or `--no-fractal` explicitly to the runner. A direct interactive runner
-asks if neither flag is given; unattended execution defaults off. Installation is a
-separate choice. Do not ask again when resuming or retrying a recorded run.
-
-```bash
-# First run, with optional child routing; the run directory already contains prompt.md.
-bash <skill_dir>/scripts/forge-solo.sh "$FORGE_RUN" --repo "$REPO" \
-  --dwarf sol:high --qa opus --dwarf-low luna:medium --fractal
-
-# Discover the managed run ID, then inspect or resume from another terminal.
-<skill_dir>/forge fractal runs --repo "$REPO" --json
-<skill_dir>/forge fractal tree RUN_ID --json
-<skill_dir>/forge fractal resume RUN_ID
-
-# Start a new attempt only when explicitly requested, using the same frozen settings.
-bash <skill_dir>/scripts/forge-solo.sh "$FORGE_RUN" --repo "$REPO" \
-  --dwarf sol:high --qa opus --dwarf-low luna:medium --fractal --retry
-```
-
-The solo directory's `fractal-selection.json` also records the managed run ID.
-Per-node workspaces, preserved responses and raw attempts are under the managed run;
-the solo directory still supplies `changes.diff`, `qa.last` and `verdict` for delivery.
-Parent invocations yield while their children run. QA sees their combined task diff.
-Use [Fractal controls and reports](fractal.md#inspection-and-controls) to inspect partial
-work; a completed execution node does not imply a PASS verdict or repository verification.
+A solo run has one implementer and one reviewer. `--fractal`, `--no-fractal`, every
+`--fractal-…` flag and the `--dwarf-low|medium|high` pools that routed Fractal's child tasks exit
+2 with one line saying they were removed. A solo directory an earlier forge ran under Fractal
+(`fractal-selection.json`) is refused, exit 3: it can be read, not run again. A change too large
+for one implementer is a decomposed run, where a task can be
+[split into subtasks](decompose.md#subtasks-a-task-split-at-any-level).

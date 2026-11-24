@@ -59,32 +59,14 @@ STOP_WAIT_S = 10
 PREPARE_TIMEOUT_S = 120
 
 
-def plan_is_fractal(plan: Path) -> bool:
-    """True when this plan's saved selection says Fractal runs the dispatches."""
-    try:
-        data = json.loads((plan / 'fractal-selection.json').read_text())
-    except (OSError, ValueError):
-        return False
-    return isinstance(data, dict) and bool(data.get('enabled'))
-
-
 def service_tier_args(plan: Path, role: str) -> list[str]:
     """`--service-tier fast` when <role> is a line of <plan>/fast, and nothing otherwise.
-
-    Fractal dispatches through its own runner and does not take the option. A retry
-    preflights before that runner is selected, so a plan whose selection is already on
-    is the same case for every role it dispatches. A whole-run review is not one of them.
-    Specs never change.
-    """
-    if os.environ.get('FORGE_FRACTAL_RUN'):
-        return []
+    Specs never change."""
     try:
         text = (plan / 'fast').read_text()
     except OSError:
         return []
     if role not in [line.strip() for line in text.splitlines() if line.strip()]:
-        return []
-    if role != 'review' and plan_is_fractal(plan):
         return []
     return ['--service-tier', 'fast']
 
@@ -241,7 +223,7 @@ def run(args) -> int:
     parent = os.getppid()
     status, out, spec, why, review = 'skipped', None, None, None, None
     try:
-        if os.environ.get('FORGE_FRACTAL_RUN') or not sampled(plan, args.task, args.attempt, rate_of(plan)):
+        if not sampled(plan, args.task, args.attempt, rate_of(plan)):
             return 0
         spec, why = pick(candidates(plan), args.qa)
         if not spec:

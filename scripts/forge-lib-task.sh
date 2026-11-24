@@ -189,20 +189,44 @@ resume_check() { # resume_check <plan> <id>
 # tasks/<id>/escalation.pin holds one dwarf spec (written by `forge control pin`). The
 # retry claims it with an atomic rename so a writer replacing it meanwhile never races the
 # read, and settles the claim once tasks.tsv and escalations.tsv are written.
-forge_plan_is_fractal() { # forge_plan_is_fractal <plan>
-  [ -s "$1/fractal-selection.json" ] || return 1
-  python3 -c 'import json, sys
-try:
-    sys.exit(0 if json.load(open(sys.argv[1])).get("enabled") else 1)
-except Exception:
-    sys.exit(1)' "$1/fractal-selection.json"
+# --- Fractal, removed in forge 0.23 (#154): the removal note and old-record compatibility ----
+# A plan or solo directory whose fractal-selection.json says enabled ran under Fractal. It stays
+# readable from what forge recorded; nothing runs, retries or resumes it.
+FORGE_FRACTAL_REMOVED_IN=0.23
+forge_plan_was_fractal() { # forge_plan_was_fractal <plan or solo dir>
+  [ -e "$1/fractal-selection.json" ] || return 1
+  python3 "$SKILL_DIR/scripts/forge_legacy.py" was-fractal "$1"
+}
+
+# Refuses (exit 3) to run, retry or resume a directory that ran under Fractal.
+forge_refuse_fractal_run() { # forge_refuse_fractal_run <plan or solo dir> <what the command is, e.g. run>
+  forge_plan_was_fractal "$1" || return 0
+  die "$2: $1 was made with Fractal, which forge $FORGE_FRACTAL_REMOVED_IN removed: it can still be read (forge runs, forge-ui) but not run, retried or resumed. Start a new run for the work that is left." 3
+}
+
+# A removed Fractal option exits 2 with one line. Returns 1 for any other argument.
+forge_removed_flag() { # forge_removed_flag <argument>
+  case "$1" in
+    --fractal|--no-fractal|--fractal-*) ;;
+    *) return 1 ;;
+  esac
+  printf 'forge: %s was removed with Fractal in forge %s. Task decomposition is native now: see --decompose-level and docs/decomposed-runs.md\n' "$1" "$FORGE_FRACTAL_REMOVED_IN" >&2
+  exit 2
+}
+
+# The plan's dwarf tier pools: dwarf-routing.json, or the file a plan made before 0.23 has.
+forge_pools_file() { # forge_pools_file <plan>
+  if [ ! -e "$1/dwarf-routing.json" ] && [ -e "$1/fractal-routing.json" ]; then
+    printf '%s\n' "$1/fractal-routing.json"
+  else
+    printf '%s\n' "$1/dwarf-routing.json"
+  fi
 }
 
 # --- fast service tier (--fast, #68) ---------------------------------------------------
 # A plan or solo run keeps the roles that should ask for the fast tier in <dir>/fast,
 # one role per line, in the order dwarf, qa, planner, review. Specs never change: the
 # dispatch and its preflight doctor get `--service-tier fast` only for a listed role.
-# Fractal dispatches through its own runner and ignores the file.
 #
 # forge_fast_parse sets FAST_PARSED (dynamic scope: the caller's local, when it has one)
 # to `none` or the roles. forge_fast_store writes that when --fast was given this time;
@@ -284,12 +308,8 @@ forge_fast_store() { # forge_fast_store <dir> — honour FAST_GIVEN / FAST_PARSE
 }
 
 # Prints `--service-tier fast` when <role> is listed in <dir>/fast, and nothing otherwise.
-# Fractal's runner does not take the option. That is FORGE_FRACTAL_RUN once the runner is
-# selected, and also a saved selection: retry preflights before the runner is selected, so
-# the variable is still unset. A whole-run review is not a Fractal dispatch and still asks.
 forge_fast_tier() { # forge_fast_tier <dir> <role>
   local line found=0
-  [ -n "${FORGE_FRACTAL_RUN:-}" ] && return 0
   [ -f "$1/fast" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
     line="${line%$'\r'}"
@@ -298,23 +318,7 @@ forge_fast_tier() { # forge_fast_tier <dir> <role>
     if [ "$line" = "$2" ]; then found=1; break; fi
   done < "$1/fast"
   [ "$found" = 1 ] || return 0
-  if [ "$2" != review ] && forge_plan_is_fractal "$1"; then return 0; fi
   printf '%s %s\n' --service-tier fast
-}
-
-# One note per invocation, and only where this invocation's dispatches go through Fractal
-# (FORGE_FRACTAL_RUN already set) or are about to (a retry of a plan whose selection is on).
-# A whole-run review is not one of those dispatches, so it still asks for the tier.
-# No fast file, or no fractal selection to consult, returns before any python.
-forge_fast_fractal_note() { # forge_fast_fractal_note <dir>
-  [ -s "$1/fast" ] || return 0
-  [ -n "${FORGE_FAST_FRACTAL_NOTED:-}" ] && return 0
-  if [ -z "${FORGE_FRACTAL_RUN:-}" ]; then
-    [ -s "$1/fractal-selection.json" ] || return 0
-    forge_plan_is_fractal "$1" || return 0
-  fi
-  export FORGE_FAST_FRACTAL_NOTED=1
-  note "fast tier is not applied to Fractal dispatches"
 }
 
 # The pin's spec: the first line, trimmed, a single token (it lands in a TSV column).
@@ -540,7 +544,7 @@ PY
 #   resolution-file  this dispatch's resolution (doctor output): harness=, model=, effort=
 #   harnesses        the ones that can continue this role (default: a reviewer's, claude
 #                    openclaude codex; an implementer passes claude openclaude)
-# The caller has already handled the cases that need no files (first round, Fractal). Anything
+# The caller has already handled the cases that need no files (the first round). Anything
 # that cannot be checked is fresh; nothing here aborts.
 review_session_decide() {
   local sf="$1" rf="$2" cf="$3" can="${4:-claude openclaude codex}" id="" k a b h
@@ -776,8 +780,12 @@ PYEOF
       echo "  accept it as it is:     forge-parallel.sh accept $PLAN $id --reason \"...\" --approved"
       echo "                          (merges it; its findings become known issues)" ;;
     esac
-    echo "  split it:               replace its row in $PLAN/tasks.tsv with smaller tasks (each with a"
-    echo "                          tasks/<id>/prompt.md) and point its dependents at them, then forge-parallel.sh run $PLAN"
+    echo "  split it into subtasks: forge-parallel.sh retry $PLAN $id --decide split --subtasks <file> --reason \"...\" --approved"
+    echo "                          (<file> holds the subtasks, each owning paths inside this task's files; or --planner <spec>"
+    echo "                          to have a planner write them. They build on the work so far, run as a plan of their own in"
+    echo "                          tasks/$id/sub and merge into this task, which is then reviewed on all of it."
+    echo "                          --decide split=fresh starts over from the task's base instead and keeps the old work on a ref)"
+    echo "                          $(python3 "$SKILL_DIR/scripts/forge_decompose.py" limits "$PLAN" 2>/dev/null)"
   } > "$tmp" && mv "$tmp" "$tdir/decision.md" || { rm -f "${tmp:?}"; note "$id: could not write decision.md; the task stays FAIL"; return 1; }
   rm -f "${tdir:?}/decided.left"
   echo "$from" > "$tdir/decision.from"
@@ -810,6 +818,17 @@ decision_after_attempt() { # decision_after_attempt <plan> <id> <stop-before> <c
 # decision offered to a task that waits for none. Runs before anything is written.
 retry_decision_gate() { # retry_decision_gate <plan> <id> <status> <decide> <dwarf> <reason> <approved 0|1>
   local PLAN="$1" id="$2" st="$3" decide="$4" dwarf="$5" reason="$6" approved="$7" n
+  # A split (#153) is a decision any task that has not passed can take, not only one that stopped for it.
+  if [ "$st" != NEEDS_DECISION ] && forge_decide_is_split "$decide"; then
+    case "$st" in
+      MERGED|PASS|RUNNING|IMPLEMENTED|NEEDS_INPUT)
+        die "retry: '$id' is $st: only a task that has not passed, is not running and waits for no answer can be split" ;;
+    esac
+    reason="$(printf '%s' "$reason" | tr '\n\r\t' '   ' | sed 's/^ *//; s/ *$//')"
+    [ -n "$reason" ] || die "retry: a decision needs --reason \"<why>\": it is recorded with the task"
+    [ "$approved" = 1 ] || die "retry: a decision needs --approved: a split changes the plan, and is only given on the user's instruction"
+    return 0
+  fi
   if [ "$st" != NEEDS_DECISION ]; then
     if [ -n "$decide" ]; then
       case "$st" in
@@ -824,7 +843,7 @@ retry_decision_gate() { # retry_decision_gate <plan> <id> <status> <decide> <dwa
   if [ -z "$decide" ] && [ -z "$dwarf" ]; then
     die "retry: '$id' is waiting for your decision, and only a decision resumes it:
 $(sed -n '1,3p' "$PLAN/tasks/$id/decision.md" 2>/dev/null)
-read $PLAN/tasks/$id/decision.md, then retry with --decide retry=N or --decide threshold=Pn, or --dwarf <spec>, each with --reason \"...\" --approved; or accept the task"
+read $PLAN/tasks/$id/decision.md, then retry with --decide retry=N, --decide threshold=Pn or --decide split, or --dwarf <spec>, each with --reason \"...\" --approved; or accept the task"
   fi
   case "$decide" in
     "") ;;
@@ -832,7 +851,8 @@ read $PLAN/tasks/$id/decision.md, then retry with --decide retry=N or --decide t
              case "$n" in ''|*[!0-9]*) n=0 ;; esac
              [ "${#n}" -le 3 ] && [ "$n" -ge 1 ] && [ "$n" -le 20 ] || die "retry: --decide retry=N takes N from 1 to 20" ;;
     threshold=P[0-3]) ;;
-    *) die "retry: --decide takes retry=N (1 to 20) or threshold=P0|P1|P2|P3, not '$decide'" ;;
+    split|split=keep|split=fresh) ;;
+    *) die "retry: --decide takes retry=N (1 to 20), threshold=P0|P1|P2|P3 or split (split=fresh), not '$decide'" ;;
   esac
   reason="$(printf '%s' "$reason" | tr '\n\r\t' '   ' | sed 's/^ *//; s/ *$//')"
   [ -n "$reason" ] || die "retry: a decision needs --reason \"<why>\": it is recorded with the task"
@@ -918,7 +938,7 @@ report_decisions() { # report_decisions <plan>
   echo "decide with (each needs --reason \"...\" --approved; decision.md has the commands filled in):"
   echo "  forge-parallel.sh retry $plan <task-id> --decide retry=N | --decide threshold=Pn | --dwarf <spec>"
   [ "$acceptable" = 0 ] || echo "  forge-parallel.sh accept $plan <task-id>    (merge it with its findings as known issues)"
-  echo "  or split it: replace its row in $plan/tasks.tsv with smaller tasks, then forge-parallel.sh run $plan"
+  echo "  or split it into subtasks: forge-parallel.sh retry $plan <task-id> --decide split --subtasks <file> | --planner <spec>"
   echo "several side by side: add --no-dispatch to each retry, which records the decision and starts nothing, then:"
   echo "  forge-parallel.sh run $plan"
   echo
@@ -1016,8 +1036,6 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf [decided]]
     rm -f "$tdir/escalation.stop" "$tdir/split.suggested" "$tdir/escalation.next"
   elif [ "$has_pin" = 1 ] && [ "$qa_only" = 1 ]; then
     note "$id: the escalation pin waits for the next full retry (this one only re-runs QA)"
-  elif [ "$has_pin" = 1 ] && forge_plan_is_fractal "$PLAN"; then
-    note "$id: an escalation pin is set, but Fractal plans never apply pins — leaving it in place"
   elif [ "$has_pin" = 1 ] && ! escalation_record_ok "$PLAN" "$id"; then
     # Before the claim: a refused record leaves the pin unclaimed and tasks.tsv as it was.
     note "$id: could not record the escalation in escalations.tsv; nothing was retried"
@@ -1120,8 +1138,6 @@ prepare_resume() { # prepare_resume <plan> <id>
   [ -f "$tdir/escalation.pin" ] && [ ! -L "$tdir/escalation.pin" ] || return 0
   if resume_check "$PLAN" "$id"; then
     note "$id: the escalation pin waits for the next full retry (this resume only re-runs QA)"
-  elif forge_plan_is_fractal "$PLAN"; then
-    note "$id: an escalation pin is set, but Fractal plans never apply pins — leaving it in place"
   elif ! escalation_record_ok "$PLAN" "$id"; then
     note "$id: could not record the escalation in escalations.tsv; nothing was retried"
     return 1
@@ -1136,15 +1152,14 @@ prepare_resume() { # prepare_resume <plan> <id>
 # member of its own tier pool (forge-route.py fallback). A move is no escalation: it is recorded in
 # tasks/<id>/lateral.tsv and as a `lateral` dataset event, not in escalations.tsv, so the retry
 # policy's streak carries across it. No attempt is spent: the stop already refunded it. Returns
-# 1, changing nothing, when there is no candidate, a pin is waiting (a human's choice wins), the plan
-# is Fractal or the move cannot be recorded. The fourth argument names the cause of the stop.
+# 1, changing nothing, when there is no candidate, a pin is waiting (a human's choice wins) or the
+# move cannot be recorded. The fourth argument names the cause of the stop.
 # The fifth names the stage that stopped: dwarf (the default) or qa. A review that stopped moves to a
 # peer reviewer of the plan's qa-routing.json (forge-route.py qa-fallback), keeping its attempt and its
 # `resume` marker, so the next entry is a QA-only dispatch to the new reviewer; a pin waits for the
 # next full retry as it does for any QA-only resume, and the escalation streak is not touched.
 prepare_fallback() { # prepare_fallback <plan> <id> <excluded harness/model,...> [<cause> [<dwarf|qa>]]
   local PLAN="$1" id="$2" tdir="$1/tasks/$2" role="${5:-dwarf}" setter=set_dwarf cur pick cause attempt line phrase
-  forge_plan_is_fractal "$PLAN" && return 1
   if [ "$role" = qa ]; then
     setter=set_qa
     # A stopped review keeps its attempt only through a valid QA-only resume; a task not yet started
@@ -1271,6 +1286,14 @@ retry_for_scheduler() { # retry_for_scheduler <plan> <id> [--resume | --prompt |
   done
   st="$(task_status "$PLAN" "$id")"
   retry_decision_gate "$PLAN" "$id" "$st" "$decide" "$newdwarf" "$reason" "$approved"
+  if forge_decide_is_split "$decide"; then
+    # A split queued into the live run (#153): `forge control retry --decide split` checked the subtasks and
+    # stored them as the task's proposal. The split grants the one attempt that reviews the whole task.
+    attempt_cap_gate "$PLAN" "$id" "$st" retry=1 || return 4
+    retry_split "$PLAN" "$id" "$decide" "$reason" "" "" user || return $?
+    rm -f "$PLAN/tasks/$id/status"
+    return 0
+  fi
   # At its attempt cap (#69), a scheduler's or a control's retry is stopped for a decision, not dispatched.
   attempt_cap_gate "$PLAN" "$id" "$st" "$decide" || return 4
   if [ "$st" = NEEDS_DECISION ]; then
@@ -1357,8 +1380,8 @@ forge_now() { python3 -c 'import time; print("%.3f" % time.time())' 2>/dev/null 
 
 # The gate goes both ways, at the effective threshold. A reviewer's FAIL whose confirmed
 # findings are all labelled and less severe than the threshold is accepted as
-# PASS-with-known-issues; the literal status stays PASS, so the merge path, the scheduler
-# and Fractal need no new vocabulary. A PASS that lists a blocking CONFIRMED finding (at the
+# PASS-with-known-issues; the literal status stays PASS, so the merge path and the scheduler
+# need no new vocabulary. A PASS that lists a blocking CONFIRMED finding (at the
 # threshold or worse, or with no severity) becomes FAIL.
 # The optional 5th argument is the threshold the caller already used for this attempt's review
 # prompt; when given it is used as-is, so a change to the files between the prompt and the
@@ -1550,7 +1573,6 @@ report_escalations() { # report_escalations <plan>
   head="retry policy (after $(cat "$plan/escalate_after" 2>/dev/null || echo 3) failed attempts on one model):"
   for id in $(all_ids "$plan/tasks.tsv"); do
     pin="$(pin_spec "$plan/tasks/$id/escalation.pin")"
-    [ -n "$pin" ] && forge_plan_is_fractal "$plan" && pin=""
     if [ -n "$pin" ] && [ "$(task_status "$plan" "$id")" != MERGED ]; then
       [ "$n" = 0 ] && echo "$head"
       n=$((n+1))

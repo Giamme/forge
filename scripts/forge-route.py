@@ -38,7 +38,7 @@ bias (inverse-propensity weighting needs the probability each choice had).
       once the streak no longer holds. A pending tasks/<id>/escalation.pin (a human's one-shot
       choice, applied by prepare_retry) is what `--check` reports as the next model instead
       (escalation.next = its spec), whatever escalate_after says, unless the next retry is a
-      QA-only resume or the plan is Fractal (pins never apply there). `--qa-only-next` is
+      QA-only resume. `--qa-only-next` is
       that fact as the caller measured it; without the option, a resume marker or an
       unreviewed commit is taken as QA-only. Nothing has applied the pin yet, so the policy's
       own stop and split markers stay as the policy decided them beneath it: they are what
@@ -89,7 +89,7 @@ bias (inverse-propensity weighting needs the probability each choice had).
 
 The propensity of the chosen spec is (1-E)*[chosen == SPEC] + E/2. Forge never picks a
 model the user did not name: both helpers read only the pools `plan` stored in
-fractal-routing.json, and "stronger" means only "in a higher tier of those pools" --
+dwarf-routing.json, and "stronger" means only "in a higher tier of those pools" --
 registry.tsv has no cost or capability column to say more. FORGE_ROUTE_EXPLORE_SEED makes
 the draws reproducible (tests only). Any failure prints SPEC (explore) or nothing
 (escalation): neither ever changes a run by breaking.
@@ -118,6 +118,7 @@ SCRIPTS = Path(__file__).resolve().parent
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 import forge_flock as fcntl  # noqa: E402
+import forge_legacy  # noqa: E402
 import forge_posix  # noqa: E402
 REGISTRY = SCRIPTS.parent / 'registry.tsv'
 FAILED = ('FAIL', 'TIMEOUT', 'BOUNCED', 'INCOMPLETE')   # a judgment against the spec that ran
@@ -441,7 +442,7 @@ def record_running_tier(plan: str, task: str, row: str, control) -> None:
         return
     tier = running_tier(Path(plan), task, frm)
     if tier and source != 'fallback':
-        tier = escalation_target(source, frm, to, tier, load_pools(Path(plan) / 'fractal-routing.json'),
+        tier = escalation_target(source, frm, to, tier, load_pools(forge_legacy.pools_path(plan)),
                                  registry_models())
     if tier:
         write_running_tier(plan, task, tier, to, control)
@@ -454,7 +455,7 @@ def fallback(args) -> int:
     current = _dwarf_of(plan, args.task)
     if not current or current in ('-', 'UNASSIGNED'):
         return 1
-    pick = fallback_pick(current, load_pools(plan / 'fractal-routing.json'), registry_models(),
+    pick = fallback_pick(current, load_pools(forge_legacy.pools_path(plan)), registry_models(),
                          parse_excluded(args.exclude), running_tier(plan, args.task, current),
                          _row_cell(plan, args.task, 5))
     if not pick:
@@ -756,7 +757,7 @@ def rungs_above(spec: str, plan: Path) -> list:
     if spec in NON_MODEL_DWARFS:
         return []
     registry = registry_models()
-    pools = load_pools(plan / 'fractal-routing.json')
+    pools = load_pools(forge_legacy.pools_path(plan))
     if rank_of(spec, pools, registry) is None:
         return []
     out, seen = [], {spec}
@@ -843,13 +844,6 @@ def worst_case(plan: Path) -> dict:
             capped.append(task)
     total = sum(t['dwarf'] + t['qa'] + t['shadow'] for t in tasks)
     return {'per_model': limit, 'tasks': tasks, 'total': total, 'capped': capped}
-
-
-def _fractal(plan: Path) -> bool:
-    try:
-        return bool(json.loads((plan / 'fractal-selection.json').read_text()).get('enabled'))
-    except (OSError, ValueError, AttributeError):
-        return False
 
 
 # --- attempt cap (#69) -------------------------------------------------------------
@@ -1077,7 +1071,7 @@ def _decide(plan: Path, tdir: Path, args, after: int):
     # `--decide retry=N --dwarf <spec>` (#118) is N attempts on that model, whatever the usual patience is.
     if streak < max(after, held_attempts(tdir, current)):
         return MARKERS, (), '', 0
-    target, why = stronger(current, load_pools(plan / 'fractal-routing.json'), registry)
+    target, why = stronger(current, load_pools(forge_legacy.pools_path(plan)), registry)
     # Only once no higher tier has a model. A tier-up is still the stronger move.
     if target is None and step:
         target = _next_effort_spec(current)
@@ -1104,16 +1098,14 @@ def escalation(args) -> int:
         _clear(tdir, *MARKERS)
         return 0
     after = _patience(plan)
-    fractal = _fractal(plan)
-    # Fractal plans freeze their eligible set at selection; a QA-only resume spends no dwarf
-    # attempt, so neither is a moment to change the implementer.
-    idle = after <= 0 or fractal or (tdir / 'resume').exists()
+    # A QA-only resume spends no dwarf attempt, so it is not a moment to change the implementer.
+    idle = after <= 0 or (tdir / 'resume').exists()
     # A pin is a human's choice and outranks the policy, so `--check` reports it as the next
     # model whatever escalate_after says; prepare_retry applies it and claims the file. The
     # policy is still decided underneath it and its markers kept current. The policy's own
     # idle test above is separate and stays on the raw resume marker.
     qa_only = _qa_next(tdir) if args.qa_only_next is None else args.qa_only_next == 'yes'
-    pin = _pin(tdir) if args.check and not fractal and not qa_only else None
+    pin = _pin(tdir) if args.check and not qa_only else None
     clear, writes, shown, rc = (MARKERS if after <= 0 else ()), (), '', 0
     if not idle:
         clear, writes, shown, rc = _decide(plan, tdir, args, after)

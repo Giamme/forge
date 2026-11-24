@@ -241,7 +241,7 @@
   // The run's controls as they stand (`forge control show`'s `run`): what each shows.
   function runValues(controls) {
     const c = obj(controls), run = obj(c.run);
-    return { live: c.live === true, fractal: c.fractal === true,
+    return { live: c.live === true,
       qa: LEVELS.includes(run.qa_threshold) ? run.qa_threshold : run.qa_threshold === 'none' ? 'P3' : DEFAULT_LEVEL,
       qaSource: run.qa_threshold_source === 'set' ? 'set' : 'default',
       qaText: `${LEVELS.includes(run.qa_threshold) ? run.qa_threshold : run.qa_threshold === 'none' ? 'P3' : DEFAULT_LEVEL} (${run.qa_threshold_source === 'set' ? 'set' : 'default'})`,
@@ -304,11 +304,10 @@
   const effective = (controls, id) => id === undefined ? runValues(controls) : taskValues(controls, id);
 
   // Whether a control can be changed now: {enabled, why, hidden}. Retry and infra budgets only while a scheduler is
-  // live; a merged task has nothing left to change; Fractal plans never apply pins (the control is hidden).
+  // live; a merged task has nothing left to change.
   function canEdit(controls, key, id) {
     const c = obj(controls), info = KEYS[key];
     if (key === 'pin') {
-      if (c.fractal === true) return { enabled: false, hidden: true, why: 'Fractal plans never apply pins' };
       if (id !== undefined && taskValues(c, id).status === 'MERGED') return { enabled: false, hidden: false, why: 'merged: nothing left to change' };
       return { enabled: true, hidden: false, why: null };
     }
@@ -694,7 +693,7 @@
     body.append(switchRow(view, c, { key: 'escalate-effort', label: 'Effort step', current: v.escalateEffort, perm: perm('escalate-effort'),
       help: v.escalateEffort === 'on' ? 'On: at the top tier, a task is retried once more at the next effort its model accepts before it stops.'
         : 'Off: at the top tier, a task that used up its escalation stops with a split suggestion.' }));
-    if (c.fractal !== true) body.append(tierBox(view, c));
+    body.append(tierBox(view, c));
     body.append(changeLog(c));
     return body;
   }

@@ -15,7 +15,7 @@ forge setup set KEY VALUE    change one answer
 
 Without a terminal it never prompts: plain `forge setup` exits 2 and names `--defaults` and `--from`.
 Setup never calls a model. It sends nothing anywhere unless an answer says it will: installing
-Ripwire or Fractal downloads them, and setting up a decision model asks for a provider.
+Ripwire downloads it, and setting up a decision model asks for a provider.
 
 ## For the orchestrator
 
@@ -27,7 +27,6 @@ is true, each answer below is the user's word for what it covers, so do not ask 
 |---|---|
 | `models` | nothing: setup saved it as the default profile, which the runner applies (a default profile is the user's model choice) |
 | `ui` | `ask`: ask the forge-ui question as usual; `always`: pass `--ui` without asking; `never`: pass `--no-ui` |
-| `fractal` | `no`: pass `--no-fractal` without asking; `install`: ask the Fractal question as usual |
 | `file_issues` | the `--file-issues` choice for leftover findings (`ask`, `auto` or `off`) |
 | `sweep` | `P0`..`P3`: pass `run --sweep Pn`; `off`: do not add it |
 | `reviewer_session` | `on`: pass `plan --reviewer-session`; a share such as `0.25`: `plan --reviewer-session-rate 0.25`; `off`: do not add it |
@@ -55,7 +54,6 @@ see the same values. Nothing setup saves is hidden: `forge setup show` lists it 
 | `file_issues`, `sweep`, `reviewer_session` | as in the table above | `setup.json` |
 | `update_check` | `on`, `off` | `setup.json` |
 | `ripwire` | `ask` (offered at the first run), `install`, `never` | `setup.json` |
-| `fractal` | `no` (runs do not ask about it), `install` | `setup.json` |
 | `decide` | `off`, `on` (set one up now) | `setup.json`; the gates themselves with `forge decide` |
 
 `setup.json` is `${XDG_CONFIG_HOME:-~/.config}/forge/setup.json`, next to `decide.json`.

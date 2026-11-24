@@ -527,96 +527,13 @@ def make_solo(base: Path) -> Path:
     return run
 
 
-FRACTAL_DIFF = """diff --git a/ui/labels.py b/ui/labels.py
-new file mode 100644
-index 0000000..dddddddd
---- /dev/null
-+++ b/ui/labels.py
-@@ -0,0 +1,2 @@
-+LABELS = {'MERGED': 'merged'}
-+FALLBACK = 'unknown'
-"""
-
-
-def make_fractal(state: Path, run_dir: Path, task_id: str) -> Path:
-    """A managed Fractal run, as scripts/forge_fractal leaves it, for one task of `run_dir` (a plan
-    task id, or `solo` for a solo run) under `state`, the XDG_STATE_HOME the test sets. The root
-    split into ui (completed, with a candidate.diff), api (active) and docs (admitted, not created
-    yet); control/ holds a dir nobody may read. Returns the Fractal task dir."""
+def make_old_fractal(run_dir: Path) -> Path:
+    """Mark `run_dir` (a plan or a solo run) as one made with Fractal, the backend forge 0.23 removed:
+    the selection file such a run kept. Nothing else of that runtime is read any more."""
     run_dir = Path(os.path.realpath(run_dir))
-    output = run_dir if task_id == 'solo' else Path(os.path.realpath(run_dir / 'tasks' / task_id))
     run_id = 'run-' + hashlib.sha256(str(run_dir).encode()).hexdigest()[:20]
-    task = Path(state) / 'forge/fractal/runs' / run_id / 'tasks' / (
-        'task-' + hashlib.sha256(str(output).encode()).hexdigest()[:16])
     write(run_dir / 'fractal-selection.json', dict(enabled=True, run=run_id))
-    write(task.parents[1] / 'run.json', dict(
-        id=run_id, backend='fractal', mode='solo' if task_id == 'solo' else 'parallel',
-        repository='/example/fixture-repo', runner=str(run_dir), routing=dict(any=['sol:xhigh', 'luna']),
-        limits=dict(depth=2, children=3, nodes=12, iterations=6, concurrency=3, deadline=2700), yolo_dwarf=False,
-        eligible=['luna', 'sol:xhigh'], qa_specs=['opus'], version='1.2.0', acceptance='pending',
-        workspace=str(task.parent), resolved=[dict(spec='sol:xhigh', role='dwarf', canonical='gpt-sol:xhigh:codex')],
-        decomposition=dict(enabled=True, version=1, planner='sol:xhigh', resolved=[])))
-    write(task / 'request.json', dict(repo='/example/fixture-repo', output=str(output), model='sol:xhigh',
-                                      prompt='Read forge run dirs into plain dicts.\n', planner='sol:xhigh',
-                                      paths=['ui'], step_timeout=0))
-    write(task / 'state.json', dict(status='active', acceptance='pending', elapsed=120.5, owner=4242,
-                                    started_at=T0 + 20, settled=False))
-    write(task / 'initialization.json', dict(repository=str(task / 'control'), ledger=str(task / 'control/ledger.db'),
-                                             tree='e' * 40))
-    write(task / 'events.jsonl', ''.join(json.dumps(event) + '\n' for event in [
-        dict(at=T0 + 21, kind='node_created', node='implementation', difficulty='medium', model='sol:xhigh'),
-        dict(at=T0 + 60, kind='decomposition_decision', node='implementation', phase='accepted', decision='split',
-             reason='The labels and the API are independent.'),
-        dict(at=T0 + 61, kind='node_created', node='ui', difficulty='low', model='luna'),
-        dict(at=T0 + 62, kind='node_created', node='api', difficulty='medium', model='sol:xhigh'),
-        dict(at=T0 + 300, kind='step_finished', node='ui', phase='implementation', iteration=1, exit_code=0, cost=0.08),
-    ]))
-    control = task / 'control'
-    write(control / 'ledger.db', 'SQLite format 3\x00')
-    (control / 'locked').mkdir()
-    workspace = str(control / '.worktrees')
-    admission = [dict(name='ui', goal='Add accessible status labels', difficulty='low', paths=['ui/labels.py'], deps=[],
-                      model='luna'),
-                 dict(name='api', goal='Serve the labels', difficulty='medium', paths=['ui/api.py'], deps=[],
-                      model='sol:xhigh'),
-                 dict(name='docs', goal='Document the labels', difficulty='low', paths=['ui/docs'], deps=['ui'],
-                      model='luna')]
-    nodes = task / 'nodes'
-    write(nodes / 'implementation/node.json', dict(
-        id='implementation', parent=None, ancestors=[], goal='Read forge run dirs into plain dicts.\n',
-        difficulty='medium', paths=['ui'], deps=[], model='sol:xhigh', resolved_model='gpt-sol:xhigh:codex',
-        status='waiting', phase='implementation', iteration=1, started_at=T0 + 22, cost=0.42, unknown_cost_steps=0,
-        tokens=dict(input_tokens=1000, cached_input_tokens=200, output_tokens=300),
-        planning_tokens=dict(input_tokens=500, cached_input_tokens=0, output_tokens=50),
-        decomposition=dict(phase='accepted', attempts=1, decision='split', reason='The labels and the API are independent.',
-                           bounds=dict(depth=0, max_depth=2, children=3, nodes=11), admission=admission),
-        decomposition_history=[dict(phase='rejected', attempts=1, reason='The first proposal crossed owned paths.')],
-        awaiting_children=True, control=workspace + '/forge-root', workspace=str(nodes / 'implementation/product'),
-        source='/example/fixture-repo', branch='forge-root.implementation', fingerprint='f' * 40,
-        planning_step='nodes/implementation/planning/' + 'a' * 32, last='Planned the split. ' * 2000,
-        planning_last='FORGE_FRACTAL: {"decision":"split"}'))
-    write(nodes / 'ui/node.json', dict(
-        id='ui', parent='implementation', ancestors=['implementation'], goal='Add accessible status labels',
-        difficulty='low', paths=['ui/labels.py'], deps=[], model='luna', resolved_model='luna-model', status='completed',
-        phase='implementation', iteration=1, started_at=T0 + 70, ended_at=T0 + 300, cost=0.08, unknown_cost_steps=0,
-        tokens=dict(input_tokens=400, cached_input_tokens=100, output_tokens=80), control=workspace + '/ui',
-        workspace=str(nodes / 'ui/product'), candidate=str(nodes / 'ui/candidate.diff'),
-        branch='forge-root.implementation.ui',
-        imported_fingerprint='a' * 40, step='nodes/ui/steps/' + 'b' * 32, last='Done.\nFORGE_FRACTAL: {"done": true}'))
-    write(nodes / 'ui/candidate.diff', FRACTAL_DIFF)
-    write(nodes / 'ui/product/ui/labels.py', "LABELS = {'MERGED': 'merged'}\n")
-    write(nodes / 'ui/steps' / ('b' * 32) / 'request.json', dict(role='dwarf'))
-    write(nodes / 'api/node.json', dict(
-        id='api', parent='implementation', ancestors=['implementation'], goal='Serve the labels', difficulty='medium',
-        paths=['ui/api.py'], deps=[], model='sol:xhigh', resolved_model='gpt-sol:xhigh:codex', status='active',
-        phase='implementation', iteration=2, started_at=T0 + 75, cost=None, unknown_cost_steps=1, tokens=None,
-        control=workspace + '/api', branch='forge-root.implementation.api', step='nodes/api/steps/' + 'c' * 32))
-    write(nodes / 'implementation/planning' / ('a' * 32) / 'planner.last', 'never read\n')
-    for path in sorted(task.rglob('*'), key=lambda item: len(item.parts), reverse=True):
-        os.utime(path, (MTIME, MTIME))
-    os.chmod(control / 'locked', 0)
-    return task
-
+    return run_dir
 
 
 # ---------- a live run, for where each task stands and the checks its agents ran ----------
