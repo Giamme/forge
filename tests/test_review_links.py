@@ -86,8 +86,10 @@ class ReviewLinksGitTests(unittest.TestCase):
         ):
             subprocess.check_call(cmd, cwd=self.src)
 
-        # Clone into snap cleanly (committed files only).
+        # Clone into snap cleanly (committed files only), with repo-local identity for CI runners.
         subprocess.check_call(['git', 'clone', '-q', str(self.src), str(self.snap)])
+        subprocess.check_call(['git', 'config', 'user.name', 'forge'], cwd=self.snap)
+        subprocess.check_call(['git', 'config', 'user.email', 'forge@local'], cwd=self.snap)
 
     def _run_bash(self, body: str, check: bool = True) -> subprocess.CompletedProcess:
         env = dict(os.environ)
