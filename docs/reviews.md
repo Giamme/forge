@@ -180,7 +180,10 @@ member's settled `FAIL` is checked the same way. A solo review is not.
 task's status. `decision.md` prints `path — declared by <id> (<status>)` or
 `path — declared by no task`, then the plan choices: add the path to this task's `files`, make
 this task depend on the owner, or merge the two rows. Edit `tasks.tsv`, run `plan` again when
-no run is live, then `retry --decide retry=1` with `--reason` and `--approved`.
+no run is live, then `retry --decide retry=1` with `--reason` and `--approved`. When no task
+declares the path, the first choice is one command, on a live run too:
+`forge control retry <plan> <id> --decide files+=<path> --reason "…" --approved` adds it to the
+task's files and resumes it (refused, with nothing written, when another task declares the path).
 
 That `FAIL` counts toward `--max-attempts`, because a review happened. It does not spend a
 further attempt on the model: escalation does not run, and `--retry-failed` does not re-queue a
@@ -205,6 +208,12 @@ path. The stale attempt's `changes.diff` is removed, so a
 re-dispatch that keeps the committed work is reviewed rather than refused as identical. The
 dataset attempt event has `prompt_changed`. `forge dataset routing`, tiers and the forecast
 leave those attempts out. The `prompt` blob is the text the implementer was given.
+
+An edit made while the review runs is caught the same way, after the review and before its verdict
+counts: the attempt is `STALE`, the review's `FAIL` costs nothing, and its findings go to the next attempt
+with the new text, to be checked against it. Edits at any other moment (between attempts, while a task waits)
+are logged in `control.log` when the next attempt starts, and the run summary marks a drifted file the brief
+names as `(named in the brief)`, apart from drift nothing explains.
 
 ## Infrastructure failures are not task failures
 

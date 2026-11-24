@@ -671,7 +671,8 @@ def set_feature(args):
 
 # Feature keys a plan copies when it is planned (#162): a change reaches later plans only.
 _LATER = {
-    'retro': None, 'brief': None, 'brief.scope': None, 'brief.model': None,
+    'retro': None, 'brief': None, 'brief.scope': None,
+    'brief.model': 'forge control set <plan> brief-model <spec>',
     'summaries': 'forge control set <plan> summaries on|off',
     'summaries.model': 'forge control set <plan> summaries-model <spec>',
 }

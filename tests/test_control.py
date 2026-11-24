@@ -37,7 +37,8 @@ class ControlTests(unittest.TestCase):
         (self.plan / 'tasks.tsv').write_text(TASKS)
         self.stub = self.base / 'doctor.sh'
         self.stub.write_text(STUB); self.stub.chmod(0o755)
-        self.env = dict(os.environ, FORGE_DATASET='off', FORGE_CONTROL_DOCTOR=str(self.stub))
+        self.env = dict(os.environ, FORGE_DATASET='off', FORGE_CONTROL_DOCTOR=str(self.stub),
+                        XDG_CONFIG_HOME=str(self.base / 'config'))   # no user feature settings but a test's own
 
     def run_control(self, *args, env=None, timeout=60):
         return subprocess.run([sys.executable, str(SCRIPT), *map(str, args)], capture_output=True, text=True,
@@ -693,6 +694,7 @@ class ControlTests(unittest.TestCase):
 
     def test_summaries_at_plan_and_task_level_are_audited(self):
         self.live()   # a live scheduler notices the change itself: nothing is started here
+        self.put('summaries_model', 'haiku:low\n')
         self.ok('set', self.plan, 'summaries', 'on')
         self.assertEqual((self.plan / 'summaries').read_text(), 'on\n')
         self.ok('set', self.plan, 'summaries', 'off', '--task', 'a', '--actor', 'ui')
@@ -726,16 +728,23 @@ class ControlTests(unittest.TestCase):
             self.code(2, 'set', self.plan, 'summaries', *args)
         self.assertEqual(self.files(self.plan), ['tasks', 'tasks.tsv'])
 
+    def summaries_env_off(self):
+        # a model so the switch is taken, and FORGE_SUMMARIES=off so the summarize it starts dispatches nothing
+        self.put('summaries_model', 'haiku:low\n')
+        return dict(self.env, FORGE_SUMMARIES='off')
+
     def test_summaries_on_for_a_finished_run_starts_summarize_detached(self):
+        env = self.summaries_env_off()
         self.ok('set', self.plan, 'summaries', 'off', '--task', 'b')
-        self.ok('set', self.plan, 'summaries', 'on')
-        out = self.wait_for(self.plan / 'summaries.out', 'skipped')   # forge summarize ran: no model is set up here
-        self.assertIn('a skipped no-model', out)
-        self.assertIn('b skipped off', out)
+        self.assertEqual(self.run_control('set', self.plan, 'summaries', 'on', env=env).returncode, 0)
+        out = self.wait_for(self.plan / 'summaries.out', 'skipped')   # forge summarize ran
+        self.assertIn('a skipped env', out)
+        self.assertIn('b skipped env', out)
         self.assertEqual([(e['key'], e['value']) for e in self.log()], [('summaries', 'off'), ('summaries', 'on')])
 
     def test_summaries_on_for_one_task_summarizes_only_that_task(self):
-        self.ok('set', self.plan, 'summaries', 'on', '--task', 'a')
+        env = self.summaries_env_off()
+        self.assertEqual(self.run_control('set', self.plan, 'summaries', 'on', '--task', 'a', env=env).returncode, 0)
         out = self.wait_for(self.plan / 'summaries.out', 'skipped')
         self.assertIn('a skipped', out)
         self.assertNotIn('b ', out)
@@ -743,12 +752,85 @@ class ControlTests(unittest.TestCase):
     def test_summaries_can_be_set_on_a_merged_task(self):
         # a MERGED task: the switch changes no behaviour of the run, and a finished task is where summaries matter
         self.put('tasks/b/merged', '')
+        self.put('summaries_model', 'haiku:low\n')
+        self.live()
         self.ok('set', self.plan, 'summaries', 'on', '--task', 'b')
         self.assertEqual((self.plan / 'tasks/b/summaries').read_text(), 'on\n')
         self.ok('set', self.plan, 'summaries', 'off', '--task', 'b')
         self.ok('set', self.plan, 'summaries', 'inherit', '--task', 'b')
         self.assertFalse((self.plan / 'tasks/b/summaries').exists())
         self.code(3, 'set', self.plan, 'qa-threshold', 'P1', '--task', 'b')   # the others still refuse a merged task
+
+    # #163: a planned plan never reads the user's summaries.model again, so the switch needs the plan's own
+
+    def user_features(self, **features):
+        path = self.base / 'config' / 'forge' / 'decide.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({'version': 1, 'features': features}))
+
+    def side_settings(self):
+        code = ('import json, sys; sys.path.insert(0, sys.argv[1]); import forge_side; '
+                'print(json.dumps(forge_side.settings(sys.argv[2])))')
+        out = subprocess.run([sys.executable, '-c', code, str(SCRIPT.parent), str(self.plan)], capture_output=True,
+                             text=True, env=self.env, timeout=30)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_summaries_on_with_no_model_is_refused_with_the_command_that_sets_one(self):
+        self.put('waves.tsv', '1\ta\n')
+        self.user_features(summaries={'model': 'haiku:low'})   # set after planning: a planned plan never sees it
+        self.live()
+        for args in ((), ('--task', 'a')):
+            out = self.code(3, 'set', self.plan, 'summaries', 'on', *args)
+            self.assertIn('summaries need a model', out.stderr)
+            self.assertIn(f'forge control set {self.plan} summaries-model SPEC', out.stderr)
+        self.assertEqual(self.log(), [])
+        self.assertFalse((self.plan / 'summaries').exists() or (self.plan / 'tasks/a/summaries').exists())
+        # the reproduction's way out: the model for this plan, then the switch, and the summaries have their model
+        self.ok('set', self.plan, 'summaries-model', 'haiku:low')
+        self.ok('set', self.plan, 'summaries', 'on')
+        self.assertEqual(self.side_settings()['summaries'], {'mode': 'on', 'model': 'haiku:low'})
+        self.assertEqual([(e['key'], e['value']) for e in self.log()], [('summaries-model', 'haiku:low'),
+                                                                        ('summaries', 'on')])
+
+    def test_summaries_on_before_planning_takes_the_users_model(self):
+        self.user_features(summaries={'model': 'haiku:low'})
+        self.live()
+        self.ok('set', self.plan, 'summaries', 'on')
+        self.assertEqual(self.side_settings()['summaries']['model'], 'haiku:low')
+
+    def test_summaries_model_default_is_refused_while_it_would_leave_no_model(self):
+        self.put('waves.tsv', '1\ta\n')
+        self.live()
+        self.ok('set', self.plan, 'summaries-model', 'haiku:low')
+        self.ok('set', self.plan, 'summaries', 'on', '--task', 'a')   # one task's override is enough to need it
+        out = self.code(3, 'set', self.plan, 'summaries-model', 'default')
+        self.assertIn('would leave this plan with no model', out.stderr)
+        self.assertEqual((self.plan / 'summaries_model').read_text(), 'haiku:low\n')
+        self.ok('set', self.plan, 'summaries', 'inherit', '--task', 'a')
+        self.ok('set', self.plan, 'summaries-model', 'default')        # summaries off everywhere: dropping it is fine
+        self.assertFalse((self.plan / 'summaries_model').exists())
+
+    def test_summaries_model_default_before_planning_falls_back_on_the_users_model(self):
+        self.user_features(summaries={'model': 'sol'})
+        self.put('summaries', 'on\n'); self.put('summaries_model', 'haiku:low\n')
+        self.ok('set', self.plan, 'summaries-model', 'default')
+        self.assertEqual(self.side_settings()['summaries'], {'mode': 'on', 'model': 'sol'})
+
+    def test_brief_model_changes_a_planned_run_and_default_is_refused_while_brief_is_on(self):
+        self.put('waves.tsv', '1\ta\n'); self.put('brief', 'advisory\n'); self.put('brief_model', 'sol\n')
+        self.ok('set', self.plan, 'brief-model', 'haiku:low')
+        self.assertEqual((self.plan / 'brief_model').read_text(), 'haiku:low\n')
+        self.assertIn('--spec haiku:low --role qa', (self.base / 'doctor.sh.calls').read_text())
+        self.code(3, 'set', self.plan, 'brief-model', 'bad:spec:x')
+        self.code(2, 'set', self.plan, 'brief-model', 'haiku:low', '--task', 'a')
+        out = self.code(3, 'set', self.plan, 'brief-model', 'default')
+        self.assertIn('no brief model', out.stderr)
+        self.assertEqual(self.side_settings()['brief']['model'], 'haiku:low')
+        self.put('brief', 'off\n')
+        self.ok('set', self.plan, 'brief-model', 'default')
+        self.assertEqual([(e['key'], e['value'], e['previous']) for e in self.log()],
+                         [('brief-model', 'haiku:low', 'sol'), ('brief-model', 'default', 'haiku:low')])
 
     def test_summaries_off_starts_nothing(self):
         self.ok('set', self.plan, 'summaries', 'off')

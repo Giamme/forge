@@ -133,11 +133,19 @@ class LadderTests(PlanCase):
         self.assertEqual(route.rungs_above('opus:xhigh', self.plan), ['opus:max'])
         self.assertEqual(route.rungs_above('opus:max', self.plan), [])
 
-    def test_a_spec_in_no_pool_has_no_rungs(self):
-        self.setting('escalate_effort', 'on\n')
+    def test_a_spec_in_no_pool_has_no_rungs_without_the_effort_step(self):
         self.assertEqual(route.rungs_above('gemini', self.plan), [])
-        self.assertEqual(route.rungs_above('script', self.plan), [])
         self.assertEqual(route.rungs_above('luna', self.plan.parent / 'nowhere'), [])
+        self.setting('escalate_effort', 'on\n')
+        self.assertEqual(route.rungs_above('script', self.plan), [])
+
+    def test_a_spec_in_no_pool_still_has_its_effort_steps(self):
+        # #222: a plan without tier pools (dwarf-routing.json is {}) still escalates effort.
+        self.setting('escalate_effort', 'on\n')
+        self.assertEqual(route.rungs_above('gemini:medium', self.plan), ['gemini:high'])
+        (self.plan / 'dwarf-routing.json').write_text('{}')
+        self.assertEqual(route.rungs_above('opus:xhigh', self.plan), ['opus:max'])
+        self.assertEqual(route.rungs_above('luna', self.plan), route.rungs_above('luna:medium', self.plan))
 
     def test_a_ladder_is_capped(self):
         # A registry row with a long ladder of efforts still ends at MAX_RUNGS.
@@ -163,6 +171,19 @@ class PerModelTests(PlanCase):
         self.attempts('a', (1, 'FAIL', 'opus'), (2, 'FAIL', 'opus'))
         got = route.per_model(self.plan, 'a')
         self.assertEqual((got['retry'], got['failed_on_rung'], got['rungs_left']), (False, 2, 0))
+
+    def test_per_model_agrees_with_escalation_on_a_plan_without_pools(self):
+        # #222: --retry-per-model 3 --escalate-effort on a plan with no tier pools: after 3 failures
+        # escalation names the effort step, and per-model lets the task retry on it.
+        (self.plan / 'dwarf-routing.json').write_text('{}')
+        self.decision('opus:xhigh', 3)
+        self.setting('escalate_effort', 'on\n')
+        self.attempts('a', (1, 'FAIL', 'opus:xhigh'), (2, 'FAIL', 'opus:xhigh'), (3, 'FAIL', 'opus:xhigh'))
+        got = route.per_model(self.plan, 'a')
+        self.assertEqual((got['retry'], got['rung'], got['failed_on_rung'], got['rungs_left']),
+                         (True, 'opus:xhigh', 3, 1))
+        done = self.route('escalation', '--plan', str(self.plan), '--task', 'a', '--check')
+        self.assertEqual((done.returncode, done.stdout), (0, 'opus:max\n'), done.stderr)
 
     def test_effort_steps_leave_rungs_at_the_top_tier(self):
         self.decision('opus')

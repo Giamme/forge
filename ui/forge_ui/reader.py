@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import posixpath
 import re
+import shlex
 import stat
 import sys
 import time
@@ -351,7 +352,48 @@ def _tasks(reader):
                           qa=_nullable(qa), status=status,
                           merged_at=float(merged.st_mtime) if merged is not None else None,
                           accepted=_nonempty(reader, prefix + '/accepted.by')))
+    _mark_stale(reader, tasks)
     return tasks
+
+
+# The forge commands that run a plan's tasks while they hold its lock: `run` (from before its scheduler starts
+# until after it ends) and `retry`, which dispatches a task with no scheduler at all.
+_DISPATCHING_HOLDERS = ('run', 'retry')
+
+
+def _live_pid(reader, name):
+    """The pid a JSON file of the run dir names, or None."""
+    pid = (reader.object(name) or {}).get('pid') if reader.exists(name) else None
+    return pid if type(pid) is int else None
+
+
+def run_live(reader):
+    """Whether a forge process runs this plan's tasks now: its scheduler (scheduler.live names a live pid), or
+    the `run` or `retry` command holding the plan lock (schedule.holder, which each command that takes the lock
+    writes). forge-handoff.py's `scheduler.live` check alone would read a starting run, or a retry, as gone."""
+    if forge_proc.pid_alive(_live_pid(reader, 'scheduler.live')):
+        return True
+    holder = (reader.object('schedule.holder') or {}) if reader.exists('schedule.holder') else {}
+    return holder.get('command') in _DISPATCHING_HOLDERS and forge_proc.pid_alive(_live_pid(reader, 'schedule.holder'))
+
+
+def _run_gone(reader):
+    """Whether the run dir records the forge process that ran it (scheduler.live, which a run that ends normally
+    removes, or schedule.holder) and none of it runs now. A dir with neither record tells nothing, and is left
+    as it reads."""
+    recorded = reader.exists('scheduler.live') or reader.exists('schedule.holder')
+    return recorded and not run_live(reader)
+
+
+def _mark_stale(reader, tasks):
+    """#229: a task left RUNNING by a forge process that is gone (a crash, a SIGKILL, a closed terminal: nothing
+    marked it INTERRUPTED) reads as INTERRUPTED with `stale` set, so the page stops its clock, the run and its
+    project stop counting as live and its worktrees as in use. Nothing is probed while no task says RUNNING."""
+    running = [task for task in tasks if task['status'] == 'RUNNING']
+    if not running or not _run_gone(reader):
+        return
+    for task in running:
+        task.update(status='INTERRUPTED', stale=True)
 
 
 _TITLE_CAP = 160
@@ -960,7 +1002,7 @@ def _now(reader, owner_dir, execs):
 def _scheduler(reader):
     """RunDetail.scheduler: whether a scheduler runs this plan now, and, while one does, what holds it: a drain, a
     stop, infrastructure pauses (scheduler-written infra.paused) and the capacity it dispatches up to."""
-    pid = (reader.object('scheduler.live') or {}).get('pid') if reader.exists('scheduler.live') else None
+    pid = _live_pid(reader, 'scheduler.live')
     live = forge_proc.pid_alive(pid)
     result = dict(live=live, drained=False, stopping=None, pauses=[], max_parallel=None)
     if not live:
@@ -1237,6 +1279,11 @@ def _waiting(reader, tasks, scheduler):
     running = [task for task in tasks if task['status'] == 'RUNNING']
     for task in tasks:
         task['waiting'] = None
+        if task.pop('stale', False):
+            # #229: left RUNNING by a forge process that is gone. handoff resume saves its work and resets it.
+            task['waiting'] = dict(kind='stale', status='RUNNING',
+                                   command='forge handoff resume ' + shlex.quote(str(reader.path)))
+            continue
         if task['status'] in ('RUNNING', 'MERGED'):
             continue
         stop = _escalation_stop(reader, task['id'])
@@ -1569,8 +1616,32 @@ def _attempt_review(execs, attempt):
     return chosen
 
 
-def _trail(reader, rows, execs, sources_name, escalations, queue_times):
-    """One entry per attempts.tsv row: its review, why it ran, and its execution ids."""
+_STEER_LIMIT = 50   # messages read from one steer file
+
+
+def _steer_list(reader, name, with_text=False):
+    """The messages of a steer file (#134: `forge control steer`), oldest first: `{actor, at, chars}`, and `text`
+    (capped) when asked. A line that is not such an object is warned and skipped."""
+    out = []
+    for n, line in enumerate((reader.text(name) or '').splitlines()[:_STEER_LIMIT], 1):
+        if not line.strip():
+            continue
+        obj = reader.object(f'{name} line {n}', line)
+        if not isinstance(obj, dict) or not isinstance(obj.get('text'), str):
+            if obj is not None:
+                reader.warn(name, f'line {n} is not a message')
+            continue
+        item = dict(actor=obj.get('actor') if isinstance(obj.get('actor'), str) else None,
+                    at=obj.get('at') if _is_number(obj.get('at')) else None, chars=len(obj['text']))
+        if with_text:
+            item['text'] = reader.cap(obj['text'], name, size=8000)
+        out.append(item)
+    return out
+
+
+def _trail(reader, rows, execs, sources_name, escalations, queue_times, prefix=None):
+    """One entry per attempts.tsv row: its review, why it ran, its execution ids, and the messages a person sent it
+    (`steered`, a plan task's only)."""
     sources = _retry_sources(reader, sources_name)
     manual = _manual_indexes(rows, queue_times)
     result = []
@@ -1587,7 +1658,9 @@ def _trail(reader, rows, execs, sources_name, escalations, queue_times):
             worst=summary.get('worst') if summary else None, reason=_attempt_reason(
                 index, row, rows, sources, escalations, manual),
             executions=[item['id'] for item in execs
-                        if item.get('attempt') == row['attempt'] and not item.get('shadow')]))
+                        if item.get('attempt') == row['attempt'] and not item.get('shadow')],
+            steered=_steer_list(reader, f"{prefix}/steered.{row['attempt']}.jsonl")
+            if prefix and isinstance(row['attempt'], int) else []))
     return result
 
 
@@ -1912,7 +1985,8 @@ def _task_detail(reader, task, run_id, waves, branches, max_attempts, origin, re
     execs = _task_execs(reader, task)
     task['executions'] = execs
     task['header'] = _header(reader, task['title'], texts['prompt'], texts['approach'], request, prefix, origin)
-    task['trail'] = _trail(reader, logged, execs, prefix + '/retry_sources.tsv', task['escalations'], queues)
+    task['trail'] = _trail(reader, logged, execs, prefix + '/retry_sources.tsv', task['escalations'], queues, prefix)
+    task['steer_waiting'] = _steer_list(reader, prefix + '/steer.jsonl', with_text=True)
     task['now'] = _now(reader, prefix, execs) if task['status'] == 'RUNNING' else None
     merged = reader.stat(prefix + '/merged') if task['status'] == 'MERGED' else None
     task['merged_at'] = float(merged.st_mtime) if merged is not None else None
@@ -2009,7 +2083,7 @@ def _sweep(reader, tasks):
 _RUN_CONTROLS = ('control.log', 'retry_budget', 'infra_budget', 'drain', 'stop', 'max_parallel', 'infra.paused', 'infra.last',
                  'infra_backoff', 'escalate_effort', 'control.requests', 'summaries', 'summaries_model')
 _TASK_CONTROLS = ('qa_threshold', 'retry_budget', 'retries.used', 'escalation.pin', 'escalation.stop', 'escalation.next',
-                  'summaries')
+                  'summaries', 'steer.jsonl')
 
 
 _FAIL_FIRST_RESULTS = ('proven', 'passes_without_change', 'inconclusive', 'error')
@@ -2537,7 +2611,7 @@ def _solo_detail(reader, source):
                 gate=_gate(reader, 'qa.gate'), known_issues=_nonempty(reader, 'known_issues.md'),
                 fail_first=_fail_first(reader, 'failfirst.json'), pre_review=None,
                 now=_now(reader, '', execs) if status == 'RUNNING' else None, waiting=None, sweep=None, swept=[],
-                summary=None, summaries_override=None, brief=None)
+                summary=None, summaries_override=None, brief=None, steer_waiting=[])
     task['header'] = _header(reader, task['title'], prompt, approach, request, 'tasks/solo',
                              _github_origin(reader))
     task['trail'] = _trail(reader, logged, execs, 'retry_sources.tsv', [], _queued_retries(reader).get('solo', ()))
@@ -2712,6 +2786,7 @@ def detail(path, source='plan') -> dict:
     for name in _RUN_CONTROLS:
         reader.stat(name)
     result['scheduler'] = _scheduler(reader)
+    result['scheduler']['stale'] = [task['id'] for task in tasks if task.get('stale')]
     _waiting(reader, tasks, result['scheduler'])
     result['sweep'] = _sweep(reader, tasks)
     run_execs = _run_execs(reader)

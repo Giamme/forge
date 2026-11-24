@@ -261,6 +261,19 @@ def _attempts(rows, execs, plan_spec):
     return result
 
 
+def _censor_steered(attempts, rd, base):
+    """A person's message (#134: `forge control steer`) went into an attempt: from it on, the task's attempts say
+    nothing about the implementer alone, so they are censored, as forge dataset leaves them out."""
+    marked = [row['n'] for row in attempts if reader._nonempty(rd, f"{base}/steered.{row['n']}.jsonl")]
+    if not marked:
+        return attempts
+    first = min(marked)
+    for row in attempts:
+        if row['n'] >= first:
+            row['outcome'], row['reason'], row['gate'], row['gate_fail'] = 'censored', 'steered', False, False
+    return attempts
+
+
 def _route(rd, base):
     explored, propensity = rd.exists(base + '/route.explored'), None
     for n, line in enumerate((rd.text(base + '/route.jsonl') or '').splitlines(), 1):
@@ -322,8 +335,8 @@ def _facts(path, summary, root):
             tasks.append(dict(base_row, task=task['id'], kind='plan', difficulty=task['difficulty'] or None,
                               explored=explored, propensity=propensity, final_status=task['status'],
                               accepted=reader._nonempty(rd, base + '/accepted.by'),
-                              attempts=[] if scripted else _attempts(_attempt_rows(rd, base + '/attempts.tsv'), execs,
-                                                                     task['dwarf']),
+                              attempts=[] if scripted else _censor_steered(
+                                  _attempts(_attempt_rows(rd, base + '/attempts.tsv'), execs, task['dwarf']), rd, base),
                               escalations=[{'n': item['attempt'], 'from': item['from'], 'to': item['to']}
                                            for item in reader._history(rd, base + '/escalations.tsv', True)]))
             reviews += _reviews(key, task['id'], execs, shadows)

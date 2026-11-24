@@ -222,6 +222,21 @@ bash scripts/forge-parallel.sh integrate "$PLAN" --approved
 first-try PASS rate per task, with tasks unlikely to pass first time flagged. It is advisory only,
 and `--no-forecast` turns it off. See [plan forecast](../references/dataset.md#plan-forecast).
 
+While it works, `run` prints a line when it dispatches a task (`forge: dispatched <task> -> <worktree>`),
+when it retries one, and when a task stops for you while the others go on:
+
+```
+forge: needs you: auth NEEDS_DECISION (plan) -> /tmp/forge-auth/tasks/auth/decision.md
+forge: needs you: docs NEEDS_INPUT (a question to answer) -> /tmp/forge-auth/tasks/docs/needs_input.md
+forge: stopped: api INFRA (rate_limit, no attempt spent) -> /tmp/forge-auth/tasks/api/infra.txt
+```
+
+An agent that started the run in the background and cannot read its output as it comes can follow
+it with `forge watch "$PLAN"` instead: one line per task status change, ending when the run does
+(see [`forge watch`](commands.md#forge-watch)). Either way it learns of the stop at once and can put
+the decision to you while the run continues. Re-reading the logs or the task statuses in a loop is
+the polling the skill avoids; these two are not.
+
 `integrate` refuses without `--approved`, and refuses on a dirty working tree.
 A task that turns out to be several pieces can be split into subtasks without editing the plan:
 see [Splitting a task into subtasks](#splitting-a-task-into-subtasks). `--max-parallel` bounds the
@@ -371,6 +386,22 @@ forge control add <plan-dir> docs-fix             # queue a row you appended to 
 forge control accept <plan-dir> docs --reason "the P2 is a test-only nit" --approved   # queue an accept
 ```
 
+To tell an implementer something, queue a message for the task's next attempt (no live run needed):
+
+```bash
+forge control steer <plan-dir> docs "keep the old function name; callers outside this repo use it"
+forge control steer <plan-dir> docs --file note.md     # or --file - for stdin; 1 to 8000 characters
+```
+
+A message starts nothing. It waits in `tasks/<id>/steer.jsonl` until the task's next implementer
+attempt starts, whatever starts it (the run's own retry, `forge control retry`, a resume), and goes
+into that attempt's prompt beside any review findings; the reviewer of that attempt sees it too, as
+part of the requirements. A running attempt is not interrupted: the probes for #134 found no route
+that works on every harness. `control.log` records `steer` (the length and a hash, never the text)
+and `steer-delivered` with the attempt. The attempt is marked steered in forge-ui and in the dataset,
+and `forge dataset routing`, `reviewers`, `pairs` and `export` leave a steered task out from its
+first steered attempt on unless given `--include-steered`. forge-ui's leaderboard censors those attempts.
+
 A stop skips verification and exits 130, unless every task had merged by then, and a drain
 with nothing left to start lets the run end as usual: both act on work still to do.
 `retry` and `add` only queue a request in `control.requests/`; the scheduler applies or refuses
@@ -389,8 +420,11 @@ live run which `forge control` command to use instead.
 
 Editing a task's `prompt.md` or `approach.md` while a run is going is allowed. An attempt
 already running is not reviewed against the new text: it is marked `STALE` and re-dispatched
-with the new requirements, and the attempt is not spent. `control.log` records `prompt-changed`
-with actor `scheduler`. See [failures that are the plan's](reviews.md#failures-that-are-the-plans).
+with the new requirements, and the attempt is not spent. An edit made while the attempt is
+being reviewed is treated the same way: that review's verdict does not count, and its findings go to
+the next attempt for reference. `control.log` records `prompt-changed` with actor `scheduler` for
+every brief change, whenever it lands: one made between attempts or while the task waits is logged
+when its next attempt starts. See [failures that are the plan's](reviews.md#failures-that-are-the-plans).
 
 Each change is validated, written under `control.lock`, and says when it applies:
 
@@ -566,8 +600,11 @@ in the summary and in the QA prompt:
 
 ```
 scope drift (touched files the task did not declare):
-  auth           src/db.py
+  auth           src/db.py docs/auth.md (named in the brief)
 ```
+
+A path the task's brief names, as when you added it to `prompt.md` mid-run, is marked
+`(named in the brief)`, so an approved scope change reads apart from drift nothing explains.
 
 Never a failure — a dwarf that genuinely needed one more file did the right thing. What it
 buys is that a merge `CONFLICT` two waves later arrives with its cause already named.

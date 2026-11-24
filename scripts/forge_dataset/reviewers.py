@@ -100,13 +100,13 @@ def report(runs: Runs, *, horizon_days: int = HORIZON_DAYS, repo: str = None) ->
     return out
 
 
-def load(horizon_days: int = HORIZON_DAYS, repo: str = None) -> dict:
+def load(horizon_days: int = HORIZON_DAYS, repo: str = None, include_steered: bool = False) -> dict:
     # Reading must not create a store: a fresh machine (or forge-ui asking) gets an empty report.
     if not (dataset_dir() / 'dataset.sqlite').exists():
         return _empty(horizon_days)
     db = connect()
     try:
-        runs = Runs(Store(db))
+        runs = Runs(Store(db), include_steered=include_steered)
     finally:
         db.close()
     return report(runs, horizon_days=horizon_days, repo=repo)
@@ -120,7 +120,8 @@ def main(args) -> int:
     if args.horizon_days < 1:
         print('forge dataset reviewers: --horizon-days must be at least 1', file=sys.stderr)
         return 2
-    rep = load(args.horizon_days, os.path.realpath(args.repo) if args.repo else None)
+    rep = load(args.horizon_days, os.path.realpath(args.repo) if args.repo else None,
+               include_steered=getattr(args, 'include_steered', False))
     if args.json:
         print(json.dumps(rep, indent=2, sort_keys=True))
         return 0

@@ -96,6 +96,7 @@ forge:test_side
 forge:test_side_triage
 forge:test_snapshot_cleanup
 forge:test_solo_gate
+forge:test_steer
 forge:test_storage
 forge:test_summaries
 forge:test_summary_triggers
@@ -136,6 +137,7 @@ forge:test_worktrees_cli.RemoveTests
 ui:test_control_actions.AnswerTests
 ui:test_control_actions.CompactTests
 ui:test_control_actions.MemoriesForgetTests
+ui:test_control_actions.SteerTests
 ui:test_control_api.ArgvAndMappingTests
 ui:test_control_api.ReadOnlyTests
 ui:test_control_api.RefusalTests

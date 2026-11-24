@@ -579,6 +579,8 @@ dialog.keys-sheet::backdrop { background: light-dark(rgb(17 22 19 / .35), rgb(0 
 .tasks-switch .sum-msgs { flex-basis: 100%; }
 .tasks-switch .sum-model { display: inline-flex; }
 .tasks-switch .sum-state { font-weight: 600; }
+.tasks-switch .sum-model-form { display: inline-flex; gap: var(--s-1); align-items: center; }
+.tasks-switch .sum-model-form input { width: 14ch; font-family: var(--mono, monospace); }
 body[data-tasks=closed] .tasks-module :is(.run-tasks, .splitter, .dt-tools, .tasks-switch, .run-questions) { display: none; }
 body[data-tasks=closed] .tasks-module .module-head { border-bottom: 0; }
 .run-tasks .dt, .run-tasks .dt-frame, .run-tasks .table-scroll { height: 100%; }
@@ -834,6 +836,12 @@ p.ctl-request-refused { color: var(--warn-ink); font-weight: 600; }
 .sum-bank { justify-self: start; flex-wrap: wrap; max-width: 100%; }
 p.sum-note { margin: 0; font-size: var(--t-xs); }
 .sum-msgs:empty { display: none; }
+.steer-waiting { list-style: none; margin: 0 0 var(--s-1); padding: 0; display: grid; gap: var(--s-1); }
+.steer-waiting .steer-text { white-space: pre-wrap; margin: 0; }
+.steer-box { display: grid; gap: var(--s-1); }
+.steer-box textarea { width: 100%; box-sizing: border-box; font: inherit; }
+.steer-box button { justify-self: start; }
+.tag.steered { margin-left: var(--s-1); }
 /* the one-sentence column: one line, cut off at the cell's edge */
 .sum-col { max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* who decided an escalation, on the line that reports it */

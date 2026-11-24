@@ -10,7 +10,9 @@
                                                  needs --confirm: raising the cap is a person's decision),
                                                  converge-window (reviews the non-converging signal looks at),
                                                  summaries (on/off; with --task also inherit; on for a finished run
-                                                 also starts `forge summarize` detached, output in summaries.out)
+                                                 also starts `forge summarize` detached, output in summaries.out;
+                                                 refused while the plan has no summaries model),
+                                                 summaries-model SPEC|default, brief-model SPEC|default
   pin   <plan> <task> <spec>                     the model the task's next FULL implementer retry uses
   models <plan> <tier> [--dwarf SPECS] [--qa SPECS]
                                                  the implementer and/or reviewer of every task of one difficulty
@@ -25,6 +27,9 @@
                                                  a NEEDS_DECISION task (reviews that do not converge, or a stop with no
                                                  stronger model) is resumed only by a decision: --decide retry=N or
                                                  threshold=P0..P3, or --dwarf SPEC, each with --reason TEXT --approved
+  steer <plan> <task> TEXT|--file F             queue a message for the task's next implementer attempt (1 to 8000
+                                                 characters): tasks/<id>/steer.jsonl, given to the next dispatch
+                                                 whatever starts it; it starts nothing, and control.log keeps no text
   accept <plan> <task> --reason TEXT --approved  queue an accept of a FAIL, UNKNOWN or NEEDS_DECISION task into the
                                                  live run: its findings become known issues, it merges, its dependents start
   add   <plan> <task>                            queue a row added to tasks.tsv (with its prompt.md) into the live run
@@ -77,8 +82,10 @@ from __future__ import annotations
 import argparse
 import contextlib
 import errno
+import hashlib
 import json
 import os
+import posixpath
 import re
 import shlex
 import stat
@@ -100,6 +107,7 @@ import forge_legacy  # noqa: E402
 import forge_models  # noqa: E402
 import forge_posix  # noqa: E402
 import forge_proc  # noqa: E402
+import forge_side  # noqa: E402
 
 SKILL = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 LOCK_WAIT = 5.0
@@ -121,6 +129,7 @@ NEXT_INFRA_WAIT = 'at the next infrastructure wait'
 NEXT_INFRA_STOP = 'at the next infrastructure stop'
 NEXT_DISPATCH = "at the scheduler's next dispatch decision"
 NEXT_CHANGE = "at the task's next change"
+NEXT_BRIEF = 'at the next brief change proposal'
 
 
 class Invalid(Exception):
@@ -666,6 +675,40 @@ def _summaries_model(value, _task):
     return value
 
 
+def _brief_model(value, _task):
+    """The model of a plan's brief-change dispatches (#163): as summaries-model."""
+    return _summaries_model(value, _task)
+
+
+def summaries_on_anywhere(plan, rows):
+    """Whether summaries are on for the plan or for any one task's override."""
+    if forge_side.settings(plan)['summaries']['mode'] == 'on':
+        return True
+    return any(text_of(plan, f'tasks/{row[0]}/summaries') == 'on' for row in rows if valid_task_id(row[0]))
+
+
+def refuse_model_gap(args, plan, rows, value):
+    """#163: summaries switched on, or a side model dropped while its feature is on, with no model left
+    for the plan. A planned plan does not read `forge config set ...model` again, so this names the key
+    that sets the model for this plan instead of letting every dispatch be skipped with `no-model`."""
+    where = shlex.quote(args.plan)
+    if args.key == 'summaries' and value == 'on' and not forge_side.settings(plan)['summaries']['model']:
+        raise Refused('summaries need a model and this plan has none (a planned plan keeps the settings it was '
+                      'planned with, so forge config set summaries.model does not reach it); set one first: '
+                      f'forge control set {where} summaries-model SPEC, then switch summaries on')
+    if value != 'default':
+        return
+    if args.key == 'summaries-model' and not forge_side.fallback_model(plan, 'summaries') \
+            and summaries_on_anywhere(plan, rows):
+        raise Refused('summaries are on and default would leave this plan with no model (a planned plan does not '
+                      'read forge config set summaries.model); give another spec, or switch summaries off first: '
+                      f'forge control set {where} summaries off')
+    if args.key == 'brief-model' and not forge_side.fallback_model(plan, 'brief') \
+            and forge_side.settings(plan)['brief']['level'] != 'off':
+        raise Refused('brief is on and default would leave this plan with no brief model (a planned plan does not '
+                      'read forge config set brief.model); give another spec')
+
+
 # key -> (plan only or both, validator, file, live only, when it applies)
 KEYS = {
     'qa-threshold': ('both', _qa, 'qa_threshold', False, NEXT_ATTEMPT),
@@ -684,6 +727,7 @@ KEYS = {
     'converge-window': ('plan', _int, 'converge_window', False, NEXT_DECISION),
     'summaries': ('both', _summaries, 'summaries', False, NEXT_CHANGE),
     'summaries-model': ('plan', _summaries_model, 'summaries_model', False, NEXT_CHANGE),
+    'brief-model': ('plan', _brief_model, 'brief_model', False, NEXT_BRIEF),
 }
 
 
@@ -751,6 +795,7 @@ def cmd_set(args):
         value = check(args.value, task)
     except Invalid as error:
         raise Invalid(f'{args.key}: {error}')
+    refuse_model_gap(args, plan, rows, value)
     rel = f'tasks/{task}/{name}' if task else name
     drop = (value in ('inherit', 'default') or (args.key in ('escalate-effort', 'pre-review-tests') and value == 'off')
             or (args.key == 'infra-backoff' and value == 'none'))
@@ -1023,6 +1068,25 @@ def check_row(plan, rows, task):
     return dwarf, qa
 
 
+def brief_changed(plan, task):
+    """#220: whether tasks/<task>/prompt.md or approach.md differs from what its last attempt was given
+    (prompt.dispatched, approach.dispatched), or None when no attempt recorded that."""
+    root = Path(plan) / 'tasks' / task
+    if not (root / 'prompt.dispatched').is_file():
+        return None
+    for name in ('prompt', 'approach'):
+        given = root / (name + '.dispatched')
+        if not given.is_file():
+            continue
+        try:
+            now = (root / (name + '.md')).read_bytes() if (root / (name + '.md')).is_file() else b''
+            if given.read_bytes() != now:
+                return True
+        except OSError:
+            return None
+    return False
+
+
 def queue(args, plan, verb, task, dwarf, decision=None, accept_reason=None, answer=None, subtasks=None):
     """Write the request under the control lock, live only; log it with its id.
     decision: a retry's (--decide choice or None, reason, approved) for a NEEDS_DECISION task.
@@ -1051,6 +1115,8 @@ def queue(args, plan, verb, task, dwarf, decision=None, accept_reason=None, answ
         if answer is not None:
             request['answer'] = answer
             extra['answer_chars'] = len(answer)
+        if decision:
+            extra['brief_changed'] = brief_changed(plan, task)
         body = json.dumps(request) + '\n'
         if len(body.encode('utf-8')) > REQUEST_MAX:
             raise Refused(f'the answer does not fit in a request ({len(body.encode("utf-8"))} bytes, the scheduler reads '
@@ -1068,9 +1134,72 @@ def queue(args, plan, verb, task, dwarf, decision=None, accept_reason=None, answ
     return 0
 
 
-DECISION = re.compile(r'retry=(?:[1-9]|1[0-9]|20)|threshold=P[0-3]')
+DECISION = re.compile(r'retry=(?:[1-9]|1[0-9]|20)|threshold=P[0-3]|files\+=[^\s,]+(?:,[^\s,]+)*')
+FILES_ADD = 'files+='
+
+
+def files_paths(decide):
+    """#199: the paths of a `files+=<path>[,<path>]` decision, normalized, or Invalid. Repo-relative paths
+    only: no absolute path, no `..`, no `.forge`, at most 20."""
+    paths = []
+    for raw in decide[len(FILES_ADD):].split(','):
+        path = posixpath.normpath(raw)
+        if raw.startswith('/') or path in ('.', '..') or path.startswith('../') or '\0' in raw \
+                or any(c.isspace() for c in raw) or path == '.forge' or path.startswith('.forge/'):
+            raise Invalid(f'--decide files+=: {raw!r} is not a path inside the repository')
+        if path not in paths:
+            paths.append(path)
+    if not paths or len(paths) > 20:
+        raise Invalid('--decide files+= takes 1 to 20 paths, comma-separated')
+    return paths
+
+
+def files_add(plan, task, decide, reason, check=False):
+    """#199: add paths to a stopped task's files in tasks.tsv, the simplest plan choice for reason `plan`, on a live
+    run or not. Refused (nothing written) when another task declares a path, or the task already owns every one.
+    No path any task declares means no new overlap: the waves `plan` computed stay valid. With check, only checks.
+    Logs `files-added` in control.log (the paths, the files before, the reason). Returns the new files column."""
+    paths = files_paths(decide)
+    schedule = schedule_module()
+    for _ in range(5):
+        text = read_file(plan, 'tasks.tsv', strict=True) or ''
+        lines = text.splitlines()
+        rows = [line.split('\t') for line in lines if line.strip() and not line.startswith('#')]
+        mine = next((row for row in rows if row[0] == task), None)
+        if mine is None or len(mine) < 7:
+            raise Invalid(f'task {task!r} is not in this plan')
+        for row in rows:
+            if row[0] != task and len(row) > 3:
+                owned = [path for path in paths if schedule.overlap(path, row[3])]
+                if owned:
+                    raise Refused(f'{", ".join(owned)} overlaps the files of task {row[0]} ({row[3]}): that is a real '
+                                  f'ownership conflict and needs the plan (make {task} depend on {row[0]}, or merge the rows)')
+        before = mine[3].strip()
+        current = [] if before in ('', '-') else [f for f in before.split(',') if f]
+        new = [path for path in paths if not any(schedule.overlap(path, f) for f in current)]
+        if not new:
+            raise Refused(f'task {task} already owns {", ".join(paths)}')
+        files = ','.join(current + new)
+        if check:
+            return files
+        out = []
+        for line in lines:
+            cells = line.split('\t')
+            if not line.startswith('#') and cells[0] == task:
+                cells[3] = files
+                line = '\t'.join(cells)
+            out.append(line)
+        if read_file(plan, 'tasks.tsv', strict=True) != text:
+            continue
+        write_atomic(plan, 'tasks.tsv', '\n'.join(out) + '\n')
+        audit(plan, 'scheduler', 'files-added', task, 'files', ','.join(new), before or '-', reason=reason)
+        return files
+    raise Refused('tasks.tsv kept changing under the change; try again')
+
+
 SPLIT = re.compile(r'split(?:=keep|=fresh)?')   # a split into subtasks (#153): not only for a NEEDS_DECISION task
-DECIDE_TAKES = '--decide takes retry=N (1 to 20), threshold=P0|P1|P2|P3, or split | split=fresh with --subtasks FILE'
+DECIDE_TAKES = ('--decide takes retry=N (1 to 20), threshold=P0|P1|P2|P3, files+=PATH[,PATH] (paths no task declares), '
+                'or split | split=fresh with --subtasks FILE')
 
 
 def decision_of(plan, args, dwarf):
@@ -1108,6 +1237,10 @@ def decision_of(plan, args, dwarf):
                       '(retry --decide retry=N | threshold=Pn | split, or --dwarf SPEC, each with --reason TEXT --approved)')
     if args.decide is not None and not DECISION.fullmatch(args.decide):
         raise Invalid(DECIDE_TAKES)
+    if args.decide is not None and args.decide.startswith(FILES_ADD):
+        # #199: checked now, so a path another task declares is refused with nothing queued. The scheduler writes
+        # the row when it applies the request, and checks again.
+        files_add(plan, args.task, args.decide, decision_words(args), check=True)
     return args.decide, decision_words(args), True
 
 
@@ -1237,6 +1370,93 @@ def answer_of(args):
     if len(text) > ANSWER_MAX:
         raise Invalid(f'the answer is limited to {ANSWER_MAX} characters')
     return text
+
+
+STEER_MAX = 8000            # characters of one message for the next attempt (#134)
+STEER_QUEUE = 20           # messages waiting at once for one task
+STEER_FILE = 'steer.jsonl'
+
+
+def steer_text(args):
+    """The message --file or TEXT gives (stripped), checked as an answer is."""
+    if (args.text is None) == (args.file is None):
+        raise Invalid('give the message as TEXT or with --file FILE (- for stdin), not both')
+    text = args.text if args.file is None else answer_file_text(args.file)
+    text = text.strip()
+    if not text:
+        raise Invalid('the message is empty')
+    if '\0' in text:
+        raise Invalid('the message contains a NUL byte')
+    if len(text) > STEER_MAX:
+        raise Invalid(f'the message is limited to {STEER_MAX} characters')
+    return text
+
+
+def steer_entries(plan, rel):
+    """The JSON lines of a steer file; a line that does not parse is skipped."""
+    out = []
+    for line in (read_file(plan, rel, strict=True) or '').splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict) and isinstance(entry.get('text'), str):
+            out.append(entry)
+    return out
+
+
+def steer_digest(text):
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+def cmd_steer(args):
+    """Queue a message for a task's next implementer attempt (#134): stored in tasks/<id>/steer.jsonl, given to
+    the next dispatch of that task, whatever starts it, and logged without its text. It starts nothing."""
+    plan, rows = load(args.plan)
+    require_task(rows, args.task)
+    text = steer_text(args)
+    rel = f'tasks/{args.task}/{STEER_FILE}'
+    with control_lock(plan):
+        probe(plan, 'control.log')
+        refuse_task(plan, args.task)
+        if len(steer_entries(plan, rel)) >= STEER_QUEUE:
+            raise Refused(f'task {args.task} already has {STEER_QUEUE} messages waiting for its next attempt')
+        entry = dict(at=time.time(), actor=args.actor, text=text, sha256=steer_digest(text), chars=len(text))
+        append_line(plan, rel, json.dumps(entry) + '\n')
+        waiting = len(steer_entries(plan, rel))
+        audit(plan, args.actor, 'steer', args.task, 'steer', 'queued', None, steer_chars=len(text),
+              sha256=entry['sha256'], waiting=waiting)
+    live = is_live(plan)
+    if args.json:
+        json.dump(dict(ok=True, queued=True, task=args.task, waiting=waiting, live=live, chars=len(text)), sys.stdout,
+                  indent=2)
+        sys.stdout.write('\n')
+    else:
+        print(f'queued a message for task {args.task}\'s next attempt ({waiting} waiting); it starts nothing: '
+              + ('the run gives it at the task\'s next dispatch' if live else
+                 'the next run, retry or resume of the task gives it'))
+    return 0
+
+
+def cmd_steer_take(args):
+    """forge-parallel.sh, as an implementer attempt starts: move the waiting messages to steered.<attempt>.jsonl
+    (appended, so a re-dispatch of the same attempt keeps them) and log the delivery. Prints how many moved."""
+    plan, rows = load(args.plan)
+    require_task(rows, args.task)
+    if not re.fullmatch(r'[1-9][0-9]{0,5}', args.attempt):
+        raise Invalid('attempt must be a positive integer')
+    rel, dest = f'tasks/{args.task}/{STEER_FILE}', f'tasks/{args.task}/steered.{args.attempt}.jsonl'
+    with control_lock(plan):
+        entries = steer_entries(plan, rel)
+        if entries:
+            probe(plan, 'control.log')
+            for entry in entries:
+                append_line(plan, dest, json.dumps(entry) + '\n')
+            remove_safe(plan, rel)
+            audit(plan, 'scheduler', 'steer-delivered', args.task, 'steer', str(len(entries)), None,
+                  attempt=int(args.attempt), sha256=[e.get('sha256') for e in entries])
+    print(len(entries))
+    return 0
 
 
 def retry_prepared(args, plan, answer):
@@ -1391,7 +1611,7 @@ def cmd_show(args):
 def parser():
     top = argparse.ArgumentParser(prog='forge control', description="Show and change a plan's live controls.")
     sub = top.add_subparsers(dest='command', required=True,
-                             metavar='{show,set,pin,unpin,retry,accept,add,drain,resume,stop}')
+                             metavar='{show,set,pin,unpin,retry,steer,accept,add,drain,resume,stop}')
 
     def common(p, mutator=True):
         p.add_argument('plan', metavar='PLAN_DIR', help="the plan dir (the one with tasks.tsv)")
@@ -1406,7 +1626,10 @@ def parser():
                        'retry-budget, infra-retries and max-parallel change only while a run is live. '
                        'qa-threshold, retry-budget and summaries also take --task (value inherit drops the override; at run level, default drops the file and none means P3). '
                        'summaries on|off turns generated task summaries on or off; on for a finished run also starts them. '
-                       'summaries-model SPEC changes the model they use (default follows forge config set summaries.model).')
+                       'summaries-model SPEC changes the model they use (default drops the plan\'s own: before planning it '
+                       'follows forge config set summaries.model, once planned it leaves none, so it is refused while '
+                       'summaries are on; summaries on is refused while the plan has no model). '
+                       'brief-model SPEC changes the model of brief change proposals the same way.')
     common(p)
     p.add_argument('key', choices=list(KEYS))
     p.add_argument('value')
@@ -1440,6 +1663,17 @@ def parser():
     p.add_argument('--reason', metavar='TEXT', help='why (a decision needs it)')
     p.add_argument('--approved', action='store_true', help='the decision is the user\'s (a decision needs it)')
     p.set_defaults(func=cmd_retry)
+    p = sub.add_parser('steer', help="queue a message for a task's next implementer attempt (it starts nothing)")
+    common(p)
+    p.add_argument('task')
+    p.add_argument('text', nargs='?', help=f'the message (1 to {STEER_MAX} characters)')
+    p.add_argument('--file', metavar='FILE', help='the message, read from FILE (- for stdin)')
+    p.set_defaults(func=cmd_steer)
+    p = sub.add_parser('_steer-take')   # forge-parallel.sh only
+    p.add_argument('plan')
+    p.add_argument('task')
+    p.add_argument('attempt')
+    p.set_defaults(func=cmd_steer_take)
     p = sub.add_parser('accept', help="queue an accept of a FAIL or NEEDS_DECISION task into the live run: "
                        "its findings become known issues and it merges (the user's decision only)")
     common(p)

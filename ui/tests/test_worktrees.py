@@ -109,6 +109,17 @@ class StatusTests(Fixture):
             self.assertEqual(rows[name]['commands'], [], name)
         self.assertEqual(rows['stranger']['status'], 'foreign')
 
+    def test_a_run_whose_scheduler_died_does_not_hold_its_worktrees(self):
+        # #229: a task left RUNNING by a scheduler that is gone (SIGKILL) is not a reason to keep them in use.
+        (self.plan / 'tasks' / 'later' / 'status').write_text('RUNNING\n')
+        (self.plan / 'scheduler.live').write_text(json.dumps({'pid': 2 ** 22 + 12345}))
+        rows, _ = self.rows()
+        self.assertEqual((rows['done']['status'], rows['bad']['status']), ('finished', 'failed'))
+        # a retry holding the plan lock runs its task with no scheduler: that one does hold them
+        (self.plan / 'schedule.holder').write_text(json.dumps({'pid': os.getpid(), 'command': 'retry', 'at': 0}))
+        rows, _ = self.rows()
+        self.assertEqual(rows['done']['status'], 'in_use')
+
     def test_an_integrated_run_frees_its_integration_worktree(self):
         history = dict(enabled=True, since=None, events=[], attempts=[], repos=[],
                        integrated=[dict(repo_path=str(self.repo), run_id='r1')])

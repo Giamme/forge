@@ -1459,6 +1459,39 @@ def _scheduler_live(path):
     return forge_proc.pid_alive(pid)
 
 
+def _task_text(ctx):
+    """The stripped `text` of a task message body as UTF-8 bytes (an answer, a steer message), or BadBody."""
+    body = _body_object(ctx, ('text',))
+    text = body.get('text')
+    if not isinstance(text, str):
+        raise BadBody('text must be a string')
+    text = text.strip()
+    if '\x00' in text:
+        raise BadBody('text must not contain a NUL')
+    if not 1 <= len(text) <= MAX_TASK_ANSWER:
+        raise BadBody(f'text must be 1 to {MAX_TASK_ANSWER} characters')
+    try:
+        return text.encode('utf-8')
+    except UnicodeEncodeError:
+        raise BadBody('text must be valid text')
+
+
+def _task_steer(ctx):
+    """POST `{text}`: `forge control steer <plan> <id> --file - --actor ui --json`, the text on stdin (#134). The
+    message waits in the task's steer.jsonl for its next implementer attempt; nothing is started."""
+    ctx.route = 'steer'
+    task = ctx.parts[0]
+    try:
+        stdin = _task_text(ctx)
+    except BadBody as exc:
+        return _invalid(str(exc))
+    path = ctx.locate(('plan',))
+    if path is None:
+        return 404, {'error': 'not found'}
+    return ctx.locked(lambda: ctx.call('control', 'steer', path, task, '--file', '-', '--actor', 'ui', '--json',
+                                       stdin=stdin))
+
+
 def _task_answer(ctx):
     """POST `{text}`: `forge control retry <plan> <id> --answer-file - --actor ui --json`, the text on stdin.
 
@@ -1466,19 +1499,7 @@ def _task_answer(ctx):
     ctx.route = 'answer'
     task = ctx.parts[0]
     try:
-        body = _body_object(ctx, ('text',))
-        text = body.get('text')
-        if not isinstance(text, str):
-            raise BadBody('text must be a string')
-        text = text.strip()
-        if '\x00' in text:
-            raise BadBody('text must not contain a NUL')
-        if not 1 <= len(text) <= MAX_TASK_ANSWER:
-            raise BadBody(f'text must be 1 to {MAX_TASK_ANSWER} characters')
-        try:
-            stdin = text.encode('utf-8')
-        except UnicodeEncodeError:
-            raise BadBody('text must be valid text')
+        stdin = _task_text(ctx)
     except BadBody as exc:
         return _invalid(str(exc))
     path = ctx.locate(('plan',))
@@ -1977,6 +1998,7 @@ ROUTES = [
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/issues/dismiss'), _issues_dismiss),
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/delete'), _delete),
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/tasks/([A-Za-z0-9][A-Za-z0-9._-]{0,127})/answer'), _task_answer),
+    ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/tasks/([A-Za-z0-9][A-Za-z0-9._-]{0,127})/steer'), _task_steer),
     ('POST', re.compile(r'/api/worktrees/remove()'), _worktrees_remove),
     ('POST', re.compile(r'/api/storage/compact()'), _storage_compact),
     ('POST', re.compile(r'/api/projects/([0-9a-f]{8})/memories/forget'), _memories_forget),

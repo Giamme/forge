@@ -932,13 +932,34 @@ window.ForgeApp = (() => {
           value => window.ForgePanel.changeSummaries(host.querySelector('.sum-msgs'), null, key, { input: value }, () => loadRun(key)),
           'Summaries for this run'));
       } else kids.push(el('span', undefined, 'sum-state'));
-      kids.push(el('span', undefined, 'sum-model'), el('div', undefined, 'sum-msgs'));
+      kids.push(el('span', undefined, 'sum-model'));
+      // The model they use (#163): a planned run never reads `forge config set summaries.model` again, so this sets
+      // the run's own (`forge control set summaries-model`); the CLI refuses `on` while the run has none.
+      if (summaryWritable) kids.push(summaryModelForm(host, key));
+      kids.push(el('div', undefined, 'sum-msgs'));
       host.replaceChildren(...kids);
     }
     for (const b of host.querySelectorAll('.sum-bank button')) b.setAttribute('aria-pressed', String(b.dataset.value === mode));
     const word = host.querySelector('.sum-state');
     if (word) word.textContent = mode;
-    host.querySelector('.sum-model').replaceChildren(...(mode === 'on' && run.summaries.model ? [window.ForgeIcons.modelPlate(run.summaries.model)] : []));
+    const model = run.summaries && run.summaries.model;
+    host.querySelector('.sum-model').replaceChildren(...(model ? [window.ForgeIcons.modelPlate(model)]
+      : mode === 'on' ? [] : [el('span', 'no model set', 'muted')]));
+    const field = host.querySelector('.sum-model-form input');
+    if (field && document.activeElement !== field) field.placeholder = model ? 'change model' : 'model, e.g. haiku:low';
+  }
+  function summaryModelForm(host, key) {
+    const form = el('form', undefined, 'sum-model-form');
+    const field = el('input'); field.type = 'text'; field.spellcheck = false; field.autocomplete = 'off';
+    field.setAttribute('aria-label', 'Summaries model for this run (a model spec)');
+    const go = el('button', 'Set model'); go.type = 'submit';
+    form.append(field, go);
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      window.ForgePanel.changeSummaries(host.querySelector('.sum-msgs'), null, key, { key: 'summaries-model', input: field.value },
+        res => { if (res && res.ok) field.value = ''; loadRun(key); });
+    });
+    return form;
   }
   function renderInspector(run) {
     const host = $('inspector'); if (!host || !window.ForgePanel) return;

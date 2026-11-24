@@ -730,6 +730,13 @@ window.ForgePanel = (() => {
     for (const item of items) {
       const li = el('li', undefined, 'trail-line');
       li.append(el('span', trailLine(item), 'trail-summary'));
+      const steered = list(item && item.steered);
+      if (steered.length) {                                // a person's message went into this attempt (#134)
+        const tag = el('span', 'steered', 'tag steered');
+        tag.title = `${steered.length} message${steered.length === 1 ? '' : 's'} from ${[...new Set(steered.map(m => m.actor || '?'))].join(', ')} `
+          + '(forge control steer); left out of routing and calibration statistics';
+        li.append(tag);
+      }
       const nav = executionLinks(ctx, task, item && item.executions);
       if (nav.childElementCount) li.append(nav);
       ol.append(li);
@@ -756,12 +763,13 @@ window.ForgePanel = (() => {
     }
     return seg;
   }
-  // Asks, sends and answers one change to a summaries switch (`forge control set summaries`). `slot` takes the question
+  // Asks, sends and answers one change to a summaries switch (`forge control set summaries`, or `change.key`
+  // summaries-model). `slot` takes the question
   // and the answer. `held` is the section that holds a task's switch (null for the run's): it is kept as it is while the
   // question is open or the answer pends, the way controls.js keeps its own sections.
   function changeSummaries(slot, held, runKey, change, done) {
     const C = window.ForgeControls, U = window.ForgeUI, node = held || slot;
-    const plan = C.prepare({ kind: 'set', key: 'summaries', input: change.input, task: change.task });
+    const plan = C.prepare({ kind: 'set', key: change.key || 'summaries', input: change.input, task: change.task });
     if (!plan.ok) { U.outcome(slot, { ok: false, status: 400, error: 'invalid', detail: plan.error }); return; }
     if (node.dataset.busy) return;
     node.dataset.editing = '1';
@@ -849,6 +857,58 @@ window.ForgePanel = (() => {
     writable.then(on => { if (!on) { row.remove(); if (!sum) s.remove(); } });
   }
 
+  // Messages for the task's next attempt (#134: `forge control steer`): the ones waiting, and where the page can write,
+  // a box that queues one. It starts nothing: the next implementer attempt, whatever starts it, gets them.
+  function steerSection(host, ctx, task) {
+    const run = ctx.run, U = window.ForgeUI;
+    if (run.kind === 'solo' || task.status === 'MERGED') return;
+    const waiting = list(task.steer_waiting);
+    const s = section(host, 'Message for the next attempt');
+    s.classList.add('steer-section');
+    s.dataset.hold = `steer:${run.key}:${task.id}`;
+    if (waiting.length) {
+      const ul = el('ul', undefined, 'steer-waiting');
+      for (const m of waiting) {
+        const li = el('li');
+        li.append(el('p', String(m.text || ''), 'steer-text'), el('p', `queued by ${m.actor || '?'}${num(m.at) !== null ? ', ' + ago(m.at, ctx.now) : ''}`, 'muted'));
+        ul.append(li);
+      }
+      s.append(ul);
+    }
+    muted(s, waiting.length ? 'Waiting: the task\'s next implementer attempt gets them, beside any review findings.'
+      : 'Nothing waiting. A message starts nothing: the task\'s next implementer attempt gets it (a retry, a resume, or the run\'s own next attempt). Steered attempts are marked and left out of routing and calibration statistics.');
+    if (!U || !U.controlsEnabled) return;
+    const box = el('div', undefined, 'steer-box');
+    const field = el('textarea'); field.rows = 3; field.maxLength = 8000; field.autocomplete = 'off';
+    field.setAttribute('aria-label', 'Message for the next attempt');
+    const send = el('button', 'Queue message'); send.type = 'button';
+    const msgs = el('div', undefined, 'steer-msgs');
+    const mark = () => { s.dataset.editing = '1'; };
+    field.addEventListener('focus', mark);
+    field.addEventListener('input', mark);
+    field.addEventListener('blur', () => { if (!s.dataset.busy && !String(field.value || '').trim()) delete s.dataset.editing; });
+    send.addEventListener('click', async () => {
+      if (s.dataset.busy) return;
+      const text = String(field.value || '').trim();
+      if (!text) { U.outcome(msgs, { ok: false, status: 400, error: 'invalid', detail: 'the message is empty' }); return; }
+      s.dataset.busy = '1'; send.disabled = true;
+      const path = '/api/runs/' + encodeURIComponent(run.key) + '/tasks/' + encodeURIComponent(task.id) + '/steer';
+      let res;
+      try { res = await U.post(path, { text }); } catch (_) { res = { ok: false, error: 'failed', detail: 'could not send' }; }
+      delete s.dataset.busy; send.disabled = false;
+      if (!s.isConnected) return;
+      if (res && res.ok) {
+        field.value = ''; delete s.dataset.editing;
+        const n = res.data && num(res.data.waiting);
+        U.outcome(msgs, res, `Queued for the next attempt${n ? ` (${n} waiting)` : ''}`);
+        if (ctx.refresh) ctx.refresh();
+      } else U.outcome(msgs, res);
+    });
+    box.append(field, send, msgs);
+    s.append(box);
+    U.controlsEnabled().then(on => { if (!on && box.isConnected) box.remove(); if (!on && !waiting.length && s.isConnected) s.remove(); });
+  }
+
   function taskView(host, ctx, task) {
     const run = ctx.run, now = ctx.now, solo = run.kind === 'solo';
     const detail = lazy(ctx, `/api/runs/${encodeURIComponent(run.key)}/tasks/${encodeURIComponent(task.id)}`, run.updated);
@@ -883,6 +943,7 @@ window.ForgePanel = (() => {
     if (!solo) fields(host, [['Difficulty', task.difficulty], ['Depends on', depLinks(task.deps, ctx)], ['Files', list(task.files).join('\n') || '—', true], ['Branch', task.branch, true]]);
     if (C) C.nowSection(host, ctx, task);
     sweepSection(host, ctx, task);
+    steerSection(host, ctx, task);
 
     // the models: who owned it, how it was routed, what it was escalated to
     const ms = section(host, 'Models');

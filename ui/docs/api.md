@@ -143,6 +143,14 @@ task that depends on one waits on it (it is not a stopped dependency). `status_c
 leaves it in `on` only. `PASS` is neither: it is saved and not merged yet, so a dependent
 still lists it.
 
+A task whose `status` file says `RUNNING` reads as `INTERRUPTED` when the run dir records the forge
+process that ran it (`scheduler.live` or `schedule.holder`) and none of it is running: neither the pid
+in `scheduler.live` nor a `run` or `retry` command holding the plan lock (`schedule.holder`). That is a
+run killed outright, which nothing could mark `INTERRUPTED` (#229). Its clock stops, the run and its
+project stop counting as live, its worktrees stop being in use, and `scheduler.stale` and the task's
+`waiting` name it and `forge handoff resume`. The reader writes nothing, and a run dir with neither file
+reads as before.
+
 Only the ids listed in `tasks.tsv` are tasks: `tasks/` may also hold forge's own dirs (e.g.
 `tasks/_integration/`), and a task dir holds many other files (`attempts/` is a directory of
 receipts, not `attempts.tsv`), all of which the reader ignores.
@@ -303,6 +311,7 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `POST /api/runs/<key>/issues/dismiss` | dismiss or (`undo`) restore findings; authenticated |
 | `POST /api/runs/<key>/delete` | dry-run or delete a run with `forge runs rm`; authenticated, 900 s timeout; later requests for the key answer `404` |
 | `POST /api/runs/<key>/tasks/<id>/answer` | answer a task that waits for input (`forge control retry … --answer-file -`); authenticated, see Controls |
+| `POST /api/runs/<key>/tasks/<id>/steer` | queue a message for a task's next attempt (`forge control steer … --file -`); authenticated, see Controls |
 | `POST /api/worktrees/remove` | remove chosen worktrees (`forge worktrees rm`); authenticated, 900 s timeout |
 | `POST /api/projects/<id>/memories/forget` | forget learnings in a project's checkouts (`forge memory forget`); authenticated |
 | `POST /api/projects/<id>/memories/add` | add a learning in a project's checkouts (`forge memory add`); body `{path?, category, text, paths?}`; authenticated |
@@ -605,7 +614,8 @@ Every RunSummary field, plus:
   `max_parallel` (the `max_parallel` file when it holds 1 to 64, else `null`) and `pauses` (the scopes of
   `infra.paused`, `[]` without it; each with `needs_you` (`true` only for a bool `true`), `hint` (a string or
   `null`) and `reset_at` (an epoch or `null`), which an older scope lacks, so they read as `false`, `null`, `null`);
-  while no scheduler runs they are `false`, `null`, `null` and `[]`.
+  while no scheduler runs they are `false`, `null`, `null` and `[]`. `stale` lists the tasks a forge process
+  that is gone left `RUNNING` (see the task `status` below), `[]` otherwise.
   A solo run's `scheduler` is `null`.
 - `sweep`: the run's finding sweep (`run --sweep`), `null` without `sweep/plan.json` (and for a solo
   run). `tasks` are its fix tasks (tasks with a `sweep.json`), `findings` how many findings they took
@@ -819,6 +829,8 @@ Every RunSummary field, plus:
   `started` comes from the harness's own times, from `<role>.clock`, or, when the call is the log's
   last line, the log's mtime. Every value but the call is `null` when unknown.
 - `waiting`: why a task that is not running waits, as far as the run dir says, or `null`:
+  `{"kind": "stale", "status": "RUNNING", "command": "forge handoff resume <plan>"}` for a task a forge
+  process that is gone left `RUNNING` (#229); else
   `{"kind": "escalation", "attempts", "model", "split"}` when `escalation.stop` exists (whether or
   not a scheduler runs); else, while `scheduler.live` is true, for a `PENDING` or `INFRA` task:
   `infra` (a pause in `scheduler.pauses` holds it: scope `all`, or its id in `tasks`; the pause's
@@ -847,6 +859,10 @@ Every RunSummary field, plus:
   a merge changes the status the page shows. `error` is the text of `tasks/<id>/summary.error`, or `null` when
   the file is missing or blank. A task whose first generation failed has no `summary.json`, so its `summary` is
   `null` and its error is not shown. The export blanks `text` and `error` unless texts are chosen.
+- `steer_waiting`: the messages `forge control steer` queued for the task's next attempt, oldest first, from
+  `tasks/<id>/steer.jsonl`: `{actor, at, chars, text}` (text capped at 8000 characters). `[]` for a solo task. Each
+  `trail` entry has `steered`, the same objects without `text`, from `tasks/<id>/steered.<attempt>.jsonl`: the
+  messages that attempt was given (`[]` when none).
 - `summaries_override`: `on` or `off` from `tasks/<id>/summaries`, or `null` when the file is missing or holds
   anything else (the task then follows the run's switch). A solo run's task has `null` for `summary` and
   `summaries_override`.
@@ -1673,6 +1689,7 @@ known or a spec runs is for the CLI to say (its `400` or `409` comes back as abo
 | `{"action": "set", "key": "qa-threshold", "value": "P2"}` (`default` at run level removes the setting, `none` is P3; for a task `inherit` drops the override) | `control set <dir> qa-threshold P2 --actor ui --json` |
 | `{"action": "set", "key": "retry-budget", "value": "inherit", "task": "reader"}` | `control set <dir> retry-budget inherit --task reader --actor ui --json` |
 | `{"action": "set", "key": "summaries", "value": "on"}` (or `off`) | `control set <dir> summaries on --actor ui --json` |
+| `{"action": "set", "key": "summaries-model", "value": "haiku:low"}` (or `default`) | `control set <dir> summaries-model haiku:low --actor ui --json` |
 | `{"action": "set", "key": "summaries", "value": "inherit", "task": "reader"}` (`on` or `off` with `task` too) | `control set <dir> summaries inherit --task reader --actor ui --json` |
 | `{"action": "pin", "task": "graph", "spec": "sol:high:codex"}` | `control pin <dir> graph sol:high:codex --actor ui --json` |
 | `{"action": "unpin", "task": "graph"}` | `control unpin <dir> graph --actor ui --json` |
@@ -1884,6 +1901,15 @@ live scheduler and prepares the retry itself when none runs. The answer is `200 
 RunDetail's `scheduler.live`) and `result` is `{"queued": true, "request"}` or `{"queued": false,
 "prepared": true}`. Exit 3 (the task is not `NEEDS_INPUT`) is `409` with the CLI's message. Holds
 the run's write lock (`409 busy`); timeout 60 s. Refused under `--read-only` and without the token.
+
+### `POST /api/runs/<key>/tasks/<id>/steer`
+
+Body: `{"text": string}`, checked as for `/answer`. The run must be a plan (`404` otherwise). Runs
+`control steer <plan> <id> --file - --actor ui --json` with the stripped text on stdin; the answer
+is `200` with the CLI's object, `{"ok": true, "queued": true, "task", "waiting", "live", "chars"}`.
+Exit 3 (a MERGED task, or 20 messages already waiting) is `409` with the CLI's message. Nothing is
+started: the task's next implementer attempt gets the message (#134). Holds the run's write lock
+(`409 busy`); timeout 60 s. Refused under `--read-only` and without the token.
 
 ### `GET /api/models/reviewers`
 

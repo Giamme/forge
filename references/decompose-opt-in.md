@@ -515,6 +515,9 @@ are capped at 8 KB. The model never sees the repository, the diff or the task pr
   task; its own `on` or `off` overrides the plan, and `inherit` drops that override.
 - **Model.** `--summaries-model SPEC` is required with summaries on, and it must resolve;
   otherwise `plan` exits `2`. Set a user default with `forge config set summaries.model SPEC`.
+  A planned plan does not read that default again: `forge control set PLAN summaries-model SPEC`
+  sets its own, and `forge control set PLAN summaries on` is refused, with that command, while the
+  plan has no model, so summaries are never switched on only to be skipped with `no-model`.
 - **Off.** With `--summaries off`, no setting, or `FORGE_SUMMARIES=off`, there is no dispatch and
   no `summary.json`.
 

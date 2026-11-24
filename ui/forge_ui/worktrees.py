@@ -221,7 +221,7 @@ def _runs(catalog):
             continue
         read = reader._Read(run['path'])
         try:
-            live = reader._scheduler(read)['live']
+            live = reader.run_live(read)
         except Exception:
             live = False
         tasks = {t['id']: t['status'] for t in run.get('task_statuses') or [] if t.get('id')}

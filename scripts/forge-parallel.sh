@@ -1279,6 +1279,12 @@ EOF
   # kept whole. Not for a plan that is about to be refused for an unassigned task.
   [ "$unassigned" -gt 0 ] || forge_decompose_settle "$PLAN"
 
+  # The brief each task starts from: a change after this is logged at the next dispatch (#220).
+  local seen_id
+  for seen_id in $(all_ids "$T"); do
+    [ ! -d "$PLAN/tasks/$seen_id" ] || record_seen_inputs "$PLAN/tasks/$seen_id" || true
+  done
+
   render_table "$PLAN"
   forge_decompose_table "$PLAN"
   if [ -n "$qa_kept_msg" ]; then
@@ -1786,6 +1792,24 @@ dispatch_duration() { # dispatch_duration <tdir> <role>
 #
 # A warning, never a failure: a dwarf that genuinely had to touch one more file did
 # the right thing, and failing the task for it would be worse than reporting it.
+# The run summary's scope drift of one task, on one line (#220): a path the task's current brief names
+# (prompt.md or approach.md, as a person may have added it mid-run) is marked as such, apart from paths
+# nothing explains.
+drift_labelled() { # drift_labelled <tdir>
+  local tdir="$1" f out="" brief=()
+  [ ! -f "$tdir/prompt.md" ] || brief+=("$tdir/prompt.md")
+  [ ! -f "$tdir/approach.md" ] || brief+=("$tdir/approach.md")
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if [ "${#brief[@]}" -gt 0 ] && grep -qF -- "$f" "${brief[@]}" 2>/dev/null; then
+      out="${out:+$out }$f (named in the brief)"
+    else
+      out="${out:+$out }$f"
+    fi
+  done < "$tdir/drift.txt"
+  printf '%s' "$out"
+}
+
 check_drift() { # check_drift <declared-comma-list> <tdir> <wt> <base>
   local declared="$1" tdir="$2" wt="$3" base="$4" touched f d covered
   : > "$tdir/drift.txt"
@@ -1850,6 +1874,59 @@ record_dispatched_inputs() { # record_dispatched_inputs <tdir>
   done
 }
 
+# The brief forge last accounted for (#220): prompt.md and approach.md as `plan` left them, then as each
+# change to them was logged (at a dispatch, or by a STALE check). prompt.seen is written last.
+record_seen_inputs() { # record_seen_inputs <tdir>
+  local tdir="$1" f tmp
+  for f in approach prompt; do
+    tmp="$tdir/.$f.seen.tmp"
+    if [ -f "$tdir/$f.md" ]; then cp "$tdir/$f.md" "$tmp" || { rm -f "$tmp"; return 1; }
+    else : > "$tmp" || return 1; fi
+    mv "$tmp" "$tdir/$f.seen" || { rm -f "$tmp"; return 1; }
+  done
+}
+
+# One control.log entry for a change to a task's brief: actor scheduler, action prompt-changed, the attempt,
+# the files and when forge saw it (`during`: attempt, review or dispatch).
+audit_brief_change() { # audit_brief_change <plan> <id> <attempt> <during> <file>...
+  python3 - "$SKILL_DIR/scripts/forge-control.py" "$@" <<'PY' 2>/dev/null || note "$2: control.log not updated with the brief change"
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('forge_control', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules['forge_control'] = module
+spec.loader.exec_module(module)
+module.audit(Path(sys.argv[2]), 'scheduler', 'prompt-changed', sys.argv[3], 'prompt', int(sys.argv[4]), None,
+             files=sys.argv[6:], during=sys.argv[5])
+PY
+}
+
+# At dispatch (#220): a brief edited since forge last saw it (between attempts, while the task waited for
+# a decision or its dependencies, or before its first dispatch) gets its control.log entry now, and its
+# diff in brief.diff, so every change after `plan` is on record. The baseline is prompt.seen, else the
+# previous attempt's prompt.dispatched; with neither (a plan from before #220) there is nothing to compare.
+audit_brief_at_dispatch() { # audit_brief_at_dispatch <plan> <id> <tdir> <attempt>
+  local PLAN="$1" id="$2" tdir="$3" attempt="$4" f cur old ext=seen changed=() tmp="$3/.brief.diff.tmp"
+  [ -f "$tdir/prompt.seen" ] || ext=dispatched
+  [ -f "$tdir/prompt.$ext" ] || { record_seen_inputs "$tdir" || true; return 0; }
+  : > "$tmp" || return 0
+  for f in prompt approach; do
+    cur="$tdir/$f.md"; [ -f "$cur" ] || cur=/dev/null
+    old="$tdir/$f.$ext"; [ -f "$old" ] || old=/dev/null
+    cmp -s "$old" "$cur" && continue
+    changed+=("$f.md")
+    diff -u --label "$f.md (as forge last saw it)" --label "$f.md (attempt $attempt)" "$old" "$cur" >> "$tmp" || true
+  done
+  if [ "${#changed[@]}" -gt 0 ]; then
+    mv "$tmp" "$tdir/brief.diff" || rm -f "$tmp"
+    audit_brief_change "$PLAN" "$id" "$attempt" dispatch "${changed[@]}"
+    note "$id: its brief changed since forge last saw it (${changed[*]}); attempt $attempt gets the new text (see $tdir/brief.diff)"
+  else
+    rm -f "$tmp"
+  fi
+  record_seen_inputs "$tdir" || true
+}
+
 # Brief inputs the last completed review judged (#209), written in reverse order so
 # prompt.reviewed's presence marks the snapshot complete.
 record_reviewed_inputs() { # record_reviewed_inputs <tdir> <thr>
@@ -1882,8 +1959,11 @@ brief_changed_since_review() { # brief_changed_since_review <tdir> <thr> -> 0 wh
 # Whether the planner edited prompt.md or approach.md while the attempt ran (#150). Returns 0 when it did:
 # the attempt is then STALE, written to stale.diff and control.log, and the caller stops before any review.
 # Returns 1 when nothing changed, or when the attempt predates the .dispatched copies (no check possible).
-prompt_drifted() { # prompt_drifted <plan> <id> <tdir> <attempt>
-  local PLAN="$1" id="$2" tdir="$3" attempt="$4" f cur old changed=() tmp="$3/.stale.diff.tmp" what
+# With `review` (#212) the check runs after the review instead: an edit made while the reviewer worked means
+# its verdict judged the old text, so it does not count. The finished review is kept as qa.stale.last for the
+# next attempt to read, and the attempt is STALE all the same.
+prompt_drifted() { # prompt_drifted <plan> <id> <tdir> <attempt> [attempt|review]
+  local PLAN="$1" id="$2" tdir="$3" attempt="$4" during="${5:-attempt}" f cur old changed=() tmp="$3/.stale.diff.tmp" what
   [ -f "$tdir/prompt.dispatched" ] || return 1
   : > "$tmp" || return 1
   for f in prompt approach; do
@@ -1895,19 +1975,17 @@ prompt_drifted() { # prompt_drifted <plan> <id> <tdir> <attempt>
   done
   if [ "${#changed[@]}" -eq 0 ]; then rm -f "$tmp" "$tdir/stale.diff"; return 1; fi
   mv "$tmp" "$tdir/stale.diff" || rm -f "$tmp"
-  python3 - "$SKILL_DIR/scripts/forge-control.py" "$PLAN" "$id" "$attempt" "${changed[@]}" <<'PY' 2>/dev/null \
-    || note "$id: control.log not updated with the prompt change"
-import importlib.util, sys
-from pathlib import Path
-spec = importlib.util.spec_from_file_location('forge_control', sys.argv[1])
-module = importlib.util.module_from_spec(spec)
-sys.modules['forge_control'] = module
-spec.loader.exec_module(module)
-module.audit(Path(sys.argv[2]), 'scheduler', 'prompt-changed', sys.argv[3], 'prompt', int(sys.argv[4]), None,
-             files=sys.argv[5:])
-PY
+  audit_brief_change "$PLAN" "$id" "$attempt" "$during" "${changed[@]}"
+  # Logged once: the dispatch that follows compares with this, not with the attempt's copy (#220).
+  record_seen_inputs "$tdir" || true
   what="${changed[0]}"; [ "${#changed[@]}" -eq 1 ] || what="${changed[0]} and ${changed[1]}"
-  note "$id: $what changed during attempt $attempt — not reviewed; the implementer gets the new text (no attempt spent)"
+  if [ "$during" = review ]; then
+    rm -f "$tdir/qa.stale.last"
+    [ ! -f "$tdir/qa.last" ] || mv -f "$tdir/qa.last" "$tdir/qa.stale.last"
+    note "$id: $what changed during the review of attempt $attempt — its verdict does not count; the implementer gets the new text and the review's findings (no attempt spent)"
+  else
+    note "$id: $what changed during attempt $attempt — not reviewed; the implementer gets the new text (no attempt spent)"
+  fi
   echo STALE > "$tdir/status"
   # The implementer has to run again, so a saved QA-only resume of this attempt no longer applies.
   rm -f "$tdir/resume"
@@ -2094,6 +2172,8 @@ do_task_body() (
     # Persist each source separately; QA receives complete context once.
     write_capsule "$PLAN" "$id" dwarf >/dev/null
     cp "$tdir/capsule.md" "$tdir/baseline.capsule"
+    # A brief edited since forge last saw it is logged now, whenever the edit landed (#220).
+    audit_brief_at_dispatch "$PLAN" "$id" "$tdir" "$attempt"
     # What this attempt's implementer is given, to tell later whether the planner edited it (#150).
     record_dispatched_inputs "$tdir" || { rm -f "$tdir/prompt.dispatched"; note "$id: could not record the dispatched prompt; a later edit will not be detected"; }
     if [ "$is_script" = 1 ]; then
@@ -2115,8 +2195,11 @@ do_task_body() (
     # it, or with Jev off, the full role slice is injected exactly as before.
     /bin/bash "$MEMORY" inject "$REPO" dwarf --task "$tdir/prompt.md" \
         --run-dir "$tdir" > "$tdir/dwarf.memory"
+    # The messages queued for this task's next attempt (forge control steer, #134) are this attempt's.
+    steer_take "$PLAN" "$id" "$attempt"
     {
       python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --retry-source "$(cat "$tdir/retry_findings.source" 2>/dev/null || echo review)" --memory "$tdir/dwarf.memory"
+      steer_section "$tdir" "$attempt" dwarf
       [ ! -f "$PLAN/sweep_ahead" ] || python3 "$SKILL_DIR/scripts/forge-sweep.py" ahead "$PLAN" "$id" --role dwarf 2>/dev/null
       echo "Implement this task in the repository. Follow the intended approach unless it is wrong; explain deviations. Run the task's requested verification and report results."
       echo "On retry, fix the findings in the existing work; preserve parts not criticised. Explain any finding you reject."
@@ -2389,6 +2472,7 @@ do_task_body() (
   [ "$(wc -c < "$tdir/.qa.diff" | tr -d ' ')" -le "$REVIEW_DIFF_LIMIT" ] || qa_inline=0
   {
     python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --retry-source "$(cat "$tdir/retry_findings.source" 2>/dev/null || echo review)" ${prompt_extra[@]+"${prompt_extra[@]}"} --memory "$tdir/dwarf.memory" --memory "$tdir/qa.memory"
+    steer_section "$tdir" "$attempt" qa
     python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind "$qa_kind"
     echo
     if [ "$is_script" = 1 ]; then
@@ -2543,6 +2627,9 @@ for r in json.load(sys.stdin):
     echo review > "$tdir/invalidated.reason"
     echo INVALIDATED > "$tdir/status"; note "$id: artifact changed during review"; return 1
   fi
+  # The brief edited while the reviewer worked (#212): the verdict judged text that is gone, so it does not
+  # count. STALE as before review, nothing spent; the next attempt gets the new text and these findings.
+  if prompt_drifted "$PLAN" "$id" "$tdir" "$attempt" review; then return 0; fi
   local verdict
   verdict="$(forge_verdict "$tdir/qa.last")"
   /bin/bash "$MEMORY" record "$REPO" --last "$tdir/qa.last" --role qa \
@@ -2874,6 +2961,7 @@ do_retry() {
   if [ "$prc" != 0 ]; then
     write_results "$PLAN"
     [ "$prc" = 3 ] && return 2
+    [ "$prc" = 6 ] && return 3   # --decide files+= refused (#199): nothing was written
     return "$prc"
   fi
   [ "${FORGE_RIPWIRE:-}" != off ] || touch "$PLAN/no_ripwire"
@@ -3780,7 +3868,7 @@ do_run() {
     if [ -s "$PLAN/tasks/$id/drift.txt" ]; then
       [ "$drift" = 0 ] && echo "scope drift (touched files the task did not declare):"
       drift=1
-      printf '  %-*s %s\n' "$id_w" "$id" "$(tr '\n' ' ' < "$PLAN/tasks/$id/drift.txt")"
+      printf '  %-*s %s\n' "$id_w" "$id" "$(drift_labelled "$PLAN/tasks/$id")"
     fi
   done
   [ "$drift" = 1 ] && echo

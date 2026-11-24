@@ -80,6 +80,10 @@ running task it shares files with, no free slot, a drain or stop, an infrastruct
 its countdown, or the retry policy's stop with the split it proposes. The run's inspector says
 what the scheduler is doing and how many tasks wait on what.
 
+A run whose scheduler died (a crash, a killed terminal) reads as stopped: the tasks it left running
+show as `INTERRUPTED`, *stopped: no live scheduler*, with `forge handoff resume <plan>` to pick it
+up; the clock stops, Projects no longer counts the run as live and its worktrees are no longer in use.
+
 A run with `groups.tsv` shows a Groups block after the task table. Each row is the group's title
 and goal, "one review" or "per-task review", its reviewer and its members. A review group's
 title opens `#/runs/<key>/group/<gid>`, and that row also shows the status, the round and who
@@ -299,6 +303,12 @@ press the button, with no dry run. The HTTP shapes are in
 - **Summaries:** a switch above a plan's task table turns summaries on or off for the run. A task's own
   switch, in its Summary section, sets it to *On*, *Off* or *Inherit* (the run's setting). Each change is
   confirmed first. Turning them on for a finished run starts `forge summarize` in the background.
+  Beside the run's switch, the model they use (or *no model set*) and a field that sets the run's own
+  (`forge control set summaries-model`): a planned run never reads `forge config set summaries.model`
+  again, and *On* is refused, with that reason, while the run has no model.
+- **Message for the next attempt:** a task that has not merged has a box that queues a message for its
+  next implementer attempt (`forge control steer`), and lists the ones waiting. It starts nothing. An
+  attempt that got messages has a *steered* mark on its line of the attempt trail.
 - **Brief answers and proposals:** each brief question in a task's inspector has an answer box, and *Send* records the
   answer (`forge brief answer`, logged as `ui`). A late answer, given after the task started, shows the
   CLI's notice under its question. An answered parked `wave` or `plan` question has *Propose a change*

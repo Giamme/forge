@@ -13,6 +13,18 @@ Part of the decomposition reference; planning is in [decompose.md](decompose.md)
 
 ## Retrying, and resuming an interrupted run
 
+When the user wants to tell an implementer something (a hint, a correction, a constraint), queue it:
+`forge control steer <plan> <task> "text"` (live run or not). It starts nothing; the task's next implementer
+attempt gets it beside the findings, and that attempt is marked steered and left out of routing statistics.
+A running attempt is not interrupted (#134).
+
+A live `run` says at once when a task stops for the user while the rest goes on (#193):
+`forge: needs you: <task> NEEDS_DECISION (<reasons>) -> <plan>/tasks/<task>/decision.md`, the same with
+`NEEDS_INPUT (a question to answer)` and `needs_input.md`, and `forge: stopped: <task> INFRA (<cause>, no
+attempt spent) -> …/infra.txt` for an infrastructure stop the run is waiting out. Put a `needs you` task to
+the user then. A driver that cannot read the run's output as it comes runs `forge watch <plan>` (one line
+per status change, exits with the run); neither is polling, which is re-reading logs or statuses in a loop.
+
 A failed task keeps its branch and its worktree. `retry` is what acts on them:
 
 ```bash
@@ -90,6 +102,24 @@ routing`, tiers and the forecast leave those attempts out,
 the same way they leave out a refunded or infrastructure stop. The `prompt` blob is
 `prompt.dispatched`, the text the implementer was given; an attempt from before the copy falls
 back to `prompt.md`. An empty `approach.dispatched` stores no approach blob.
+
+**A brief edited during the review (#212).** The same comparison runs again once the review has
+finished, before its verdict is recorded. If `prompt.md` or `approach.md` changed while the reviewer
+worked, the verdict judged text that is gone: the attempt is `STALE` exactly as above (refunded, neutral
+in the streak, re-dispatched at once), `control.log`'s `prompt-changed` entry has `during: review`, and
+the finished review is kept as `qa.stale.last` until the next preparation adds it to
+`retry_findings.md`, under the diff, as findings to check against the new text.
+
+**Every brief change is on record (#220).** `plan` copies each task's brief to `prompt.seen` and
+`approach.seen`. When an implementer attempt is dispatched, a brief that differs from them (an edit
+between attempts, while the task waited for a decision or its dependencies, or before its first
+dispatch) gets one `prompt-changed` entry with `during: dispatch` and the attempt about to run, and
+its diff in `brief.diff`; the copies are then refreshed. A `STALE` check refreshes them too, so an edit
+during an attempt or its review is logged once, with `during: attempt` or `review`. A plan from before
+these copies compares with the last `prompt.dispatched`. `retry --decide` adds `brief_changed` to its
+dataset decision event, and `forge control retry --decide` to its `control.log` entry: `true` when the
+brief differs from what the last attempt was given, `null` when no attempt recorded that. The run
+summary's scope drift marks a path the task's current brief names with `(named in the brief)`.
 
 **Escalation after repeated failures.** In forge's history the first three attempts at a task
 pass review at about the same rate (43%, 42%, 47%), and the fourth and later at 29%, whether
@@ -198,7 +228,22 @@ or `path — declared by no task`, then the plan choices, which edit `tasks.tsv`
 this task's `files`, make this task depend on the owner (edit its `deps`), or merge the two
 rows into one task. Then `forge-parallel.sh plan <plan>` again when no run is live, and
 `forge-parallel.sh retry <plan> <id> --decide retry=1 --reason "…" --approved`. The usual
-choices (more attempts, a threshold, a named model, accept, split) stay listed. This `FAIL`
+choices (more attempts, a threshold, a named model, accept, split) stay listed, under a line saying
+that on a live run each is given as `forge control retry` with the same arguments.
+
+When no task declares any of the paths, the first plan choice is one command, on a live run or
+not (#199): `forge control retry <plan> <id> --decide files+=<path>[,<path>] --reason "…" --approved`
+(with no run live, `forge-parallel.sh retry` with the same arguments), and `decision.md` prints it
+with the paths filled in, plus a reminder that a finding that is not a change you want is answered
+by clarifying the brief and `--decide retry=1`. The decision adds the paths to the task's `files`
+in `tasks.tsv`, logs `files-added` in `control.log` (the paths as `value`, the files before as
+`previous`, the reason) and the choice in `decisions.tsv`, and resumes the task for one attempt,
+whose input lists the paths under "Files this task owns". It is refused with nothing written (exit 3)
+when another task declares a path, overlapping it as `plan` tells overlap, when the task already owns
+them all, or for a path that is absolute, leaves the repository or is under `.forge`. A path no task
+declares adds no overlap, so the waves stay as `plan` made them, and a dependent starts in the same
+run once the task merges. `forge control` checks the request before queuing it, and the scheduler
+checks again when it applies it. This `FAIL`
 counts toward the cap. It does not escalate, and `--retry-failed` does not re-queue
 `NEEDS_DECISION`, so it spends no further attempt on the model. The reviewer's `{outside=…}`
 is what stops the task. The implementer is told not to edit a file outside its `files`, and to

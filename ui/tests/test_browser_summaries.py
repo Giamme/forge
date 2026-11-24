@@ -92,6 +92,7 @@ class Summaries(unittest.TestCase):
         page.wait_for_selector('#run-summaries .sum-bank')
         self.assertEqual(page.get_attribute('#run-summaries button[data-value=off]', 'aria-pressed'), 'true')
         self.assertEqual(page.locator('th[data-col=summary]').count(), 0, 'off: no column')
+        self.assertEqual(page.text_content('#run-summaries .sum-model'), 'no model set')
         page.click('#run-summaries button[data-value=on]')
         self.assertEqual(page.text_content('#run-summaries .ui-confirm .ui-confirm-text'),
                          "Set Summaries to on? Takes effect at each task's next change")
@@ -112,8 +113,46 @@ class Summaries(unittest.TestCase):
         self.assertEqual(self.posts[1], {'action': 'set', 'key': 'summaries', 'value': 'off'})
         self.set_switch('off')
         page.wait_for_function("() => !document.querySelector('th[data-col=summary]')", timeout=20000)
-        self.assertEqual(page.text_content('#run-summaries .sum-model'), '')
+        self.assertEqual(page.text_content('#run-summaries .sum-model'), 'sol:low')   # off keeps the run's model
         self.assertClean(page)
+
+    def test_the_model_field_sets_the_runs_summaries_model_and_a_refused_on_says_why(self):
+        # #163: a planned run never reads `forge config set summaries.model` again; the field sets the run's own
+        page = self.open(cdn=False, view='2d')
+        refusal = 'summaries need a model and this plan has none; set one first: forge control set p summaries-model SPEC'
+
+        def control(route):
+            if route.request.method != 'POST':
+                return route.continue_()
+            body = json.loads(route.request.post_data)
+            self.posts.append(body)
+            if body['key'] == 'summaries':
+                return route.fulfill(status=409, content_type='application/json',
+                                     body=json.dumps({'ok': False, 'error': 'refused', 'detail': refusal}))
+            route.fulfill(status=200, content_type='application/json',
+                          body=json.dumps({'ok': True, 'changed': {'key': body['key'], 'previous': None, 'value': body['value']},
+                                           'applies': "at each task's next change"}))
+        page.route(CONTROLS, control)
+        page.goto(self.url + '#/runs/' + self.key)
+        page.wait_for_selector('#run-summaries .sum-model-form')
+        page.click('#run-summaries button[data-value=on]')
+        page.click('#run-summaries .ui-confirm button:text-is("Confirm")')
+        page.wait_for_selector('#run-summaries .ui-outcome')
+        self.assertIn('summaries-model SPEC', page.text_content('#run-summaries .sum-msgs'))
+        page.fill('#run-summaries .sum-model-form input', 'two words')
+        page.click('#run-summaries .sum-model-form button')
+        page.wait_for_function("() => document.querySelector('#run-summaries .sum-msgs').textContent.includes('one model spec')")
+        self.assertEqual(len(self.posts), 1, 'a bad spec is not sent')
+        page.fill('#run-summaries .sum-model-form input', 'haiku:low')
+        page.click('#run-summaries .sum-model-form button')
+        self.assertEqual(page.text_content('#run-summaries .ui-confirm .ui-confirm-text'),
+                         "Set Summaries model to haiku:low? Takes effect at each task's next change")
+        page.click('#run-summaries .ui-confirm button:text-is("Confirm")')
+        while len(self.posts) < 2:
+            page.wait_for_timeout(20)
+        self.assertEqual(self.posts[1], {'action': 'set', 'key': 'summaries-model', 'value': 'haiku:low'})
+        self.set_switch('off', 'haiku:low')
+        page.wait_for_function("() => document.querySelector('#run-summaries .sum-model').textContent === 'haiku:low'", timeout=20000)
 
     def test_a_task_summary_shows_its_text_model_time_sources_and_out_of_date(self):
         page = self.open(cdn=False, view='2d')
@@ -154,6 +193,33 @@ class Summaries(unittest.TestCase):
         page.click('#inspector .sum-section .ui-confirm button:text-is("Confirm")')
         page.wait_for_selector('#inspector .sum-msgs .ui-outcome.ok')
         self.assertEqual(self.posts, [{'action': 'set', 'key': 'summaries', 'value': 'off', 'task': 'reader'}])
+        self.assertClean(page)
+
+    def test_a_message_for_the_next_attempt_is_queued_and_a_steered_attempt_is_marked(self):
+        # #134: the task's box posts to /steer; an attempt that got messages has a steered mark on the trail
+        line = json.dumps({'at': time.time() - 60, 'actor': 'cli', 'text': 'Use the parser.', 'sha256': 'ab', 'chars': 15})
+        F.write(self.plan / 'tasks/reader/steered.2.jsonl', line + '\n')
+        F.write(self.plan / 'tasks/graph/steer.jsonl', line + '\n')
+        sent = []
+
+        def steer(route):
+            sent.append((route.request.url, json.loads(route.request.post_data)))
+            route.fulfill(status=200, content_type='application/json',
+                          body=json.dumps({'ok': True, 'queued': True, 'task': 'graph', 'waiting': 2, 'live': False, 'chars': 9}))
+        page = self.open(cdn=False, view='2d')
+        page.route(re.compile(r'/api/runs/[^/]+/tasks/graph/steer$'), steer)
+        page.goto(self.url + '#/runs/' + self.key + '/tasks/reader')
+        page.wait_for_selector('#inspector .attempt-trail .tag.steered')
+        self.assertEqual(page.locator('#inspector .attempt-trail .tag.steered').count(), 1)
+        self.assertEqual(page.locator('#inspector .steer-section').count(), 0, 'a merged task takes no message')
+        page.goto(self.url + '#/runs/' + self.key + '/tasks/graph')
+        page.wait_for_selector('#inspector .steer-section .steer-box textarea')
+        self.assertEqual(page.text_content('#inspector .steer-waiting .steer-text'), 'Use the parser.')
+        page.fill('#inspector .steer-box textarea', ' Keep it. ')
+        page.click('#inspector .steer-box button')
+        page.wait_for_selector('#inspector .steer-msgs .ui-outcome.ok')
+        self.assertEqual([body for _, body in sent], [{'text': 'Keep it.'}])
+        self.assertIn('Queued for the next attempt (2 waiting)', page.text_content('#inspector .steer-msgs'))
         self.assertClean(page)
 
     def test_a_poll_keeps_the_keyboard_on_the_task_switch(self):

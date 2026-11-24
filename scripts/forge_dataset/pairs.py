@@ -134,13 +134,13 @@ def report(runs: Runs, repo: str = None) -> dict:
                 by_kind={k: sum(r['pairs'] for r in out if r['kind'] == k) for k in KINDS}, comparisons=out)
 
 
-def load(repo: str = None) -> dict:
+def load(repo: str = None, include_steered: bool = False) -> dict:
     # Reading must not create a store: a fresh machine gets an empty report.
     if not (dataset_dir() / 'dataset.sqlite').exists():
         return dict(min_pairs=MIN_PAIRS, line_window=LINE_WINDOW, pairs=0, by_kind={k: 0 for k in KINDS}, comparisons=[])
     db = connect()
     try:
-        runs = Runs(Store(db))
+        runs = Runs(Store(db), include_steered=include_steered)
     finally:
         db.close()
     return report(runs, repo=repo)
@@ -151,7 +151,7 @@ HEADINGS = dict(effort='effort, within one model', model='another model, one fam
 
 
 def main(args) -> int:
-    rep = load(os.path.realpath(args.repo) if args.repo else None)
+    rep = load(os.path.realpath(args.repo) if args.repo else None, include_steered=getattr(args, 'include_steered', False))
     if args.json:
         print(json.dumps(rep, indent=2, sort_keys=True))
         return 0

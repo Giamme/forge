@@ -192,6 +192,7 @@ bash <skill_dir>/scripts/forge-solo.sh "$FORGE_RUN" --repo "$REPO" --dwarf <spec
 - When the server can write, the page's own actions are forge commands too, each with `--actor ui`
   except compact: Worktrees *Remove* is `forge worktrees rm`, Memories *Forget selected* is
   `forge memory forget`, a waiting task's *Send answer* is `forge control retry --answer-file -`,
+  a task's *Queue message* (for its next attempt) is `forge control steer --file -`,
   and Disk *Compact* / *Compact all* is `forge runs compact --logs`. Removing, forgetting and
   compacting dry-run and ask first; sending an answer does not. `--read-only` hides those buttons
   and leaves every copy button. See [forge-ui](../docs/forge-ui.md#controls).

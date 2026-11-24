@@ -106,4 +106,16 @@ test('the scheduler fields count each reason tasks wait, and only while a schedu
   assert.deepEqual(C.schedulerModel(run), [['Scheduler', 'dispatching'], ['Running', '1 of 3 slots'], ['Waiting', '2 on dependencies · 1 paused']]);
   assert.equal(C.schedulerModel({ ...run, scheduler: { ...run.scheduler, drained: true } })[0][1], 'drained: nothing new starts');
   assert.equal(C.schedulerModel({ ...run, scheduler: { live: false } }), null);
+  assert.equal(C.schedulerModel({ ...run, scheduler: { live: false, stale: [] } }), null);
+});
+
+test('a task left RUNNING by a scheduler that is gone reads as stopped, with the way back (#229)', () => {
+  const w = { kind: 'stale', status: 'RUNNING', command: "forge handoff resume '/p/run 1'" };
+  const m = C.waitingModel(w);
+  assert.equal(m.text, "stopped: no live scheduler · forge handoff resume '/p/run 1'");
+  assert.equal(m.command, w.command);
+  assert.equal(C.nowRank({ waiting: w }), 6);
+  const run = { scheduler: { live: false, stale: ['a', 'b'], pauses: [] },
+    tasks: [{ id: 'a', status: 'INTERRUPTED', waiting: w }, { id: 'b', status: 'INTERRUPTED', waiting: w }, { id: 'c', status: 'MERGED' }] };
+  assert.deepEqual(C.schedulerModel(run), [['Scheduler', 'stopped: no live scheduler'], ['Left running', 'a, b'], ['Resume with', w.command]]);
 });
