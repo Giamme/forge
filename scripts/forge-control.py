@@ -1375,6 +1375,9 @@ def answer_of(args):
 STEER_MAX = 8000            # characters of one message for the next attempt (#134)
 STEER_QUEUE = 20           # messages waiting at once for one task
 STEER_FILE = 'steer.jsonl'
+STEER_LIVE = 'steer.live'           # live steering (#252): the running attempt's feeder, while it takes messages
+STEER_INBOX = 'steer.inbox.jsonl'   # messages for that running attempt, until the feeder sends them
+STEER_POLL = 0.5                    # seconds between the feeder's looks at the inbox and the log
 
 
 def steer_text(args):
@@ -1415,6 +1418,8 @@ def cmd_steer(args):
     plan, rows = load(args.plan)
     require_task(rows, args.task)
     text = steer_text(args)
+    if args.now:
+        return steer_now(args, plan, text)
     rel = f'tasks/{args.task}/{STEER_FILE}'
     with control_lock(plan):
         probe(plan, 'control.log')
@@ -1438,6 +1443,62 @@ def cmd_steer(args):
     return 0
 
 
+def steer_feeder(plan, task):
+    """The live feeder of the task's running attempt, {attempt, pid, harness, at}, or None when none takes
+    messages: no steer.live, or its process is gone (a dispatch killed before it cleaned up)."""
+    try:
+        live = json.loads(read_file(plan, f'tasks/{task}/{STEER_LIVE}', strict=True) or '')
+        pid = int(live['pid'])
+    except (ValueError, KeyError, TypeError):
+        return None
+    return live if forge_proc.pid_alive(pid) else None
+
+
+def steer_now(args, plan, text):
+    """--now (#252): the message goes to the running attempt's live feeder, which sends it to the implementer at
+    its next tool boundary. Refused when the task's implementer is not running live: nothing is queued instead."""
+    rel = f'tasks/{args.task}/{STEER_INBOX}'
+    with control_lock(plan):
+        probe(plan, 'control.log')
+        refuse_task(plan, args.task)
+        live = steer_feeder(plan, args.task)
+        if live is None:
+            raise Refused(f'task {args.task} has no implementer running with live steering (only a claude or '
+                          'openclaude implementer runs live); queue the message for its next attempt instead '
+                          '(drop --now)')
+        if len(steer_entries(plan, rel)) >= STEER_QUEUE:
+            raise Refused(f'task {args.task} already has {STEER_QUEUE} messages waiting to be sent')
+        entry = dict(at=time.time(), actor=args.actor, text=text, sha256=steer_digest(text), chars=len(text))
+        append_line(plan, rel, json.dumps(entry) + '\n')
+        waiting = len(steer_entries(plan, rel))
+        attempt = live.get('attempt')
+        audit(plan, args.actor, 'steer', args.task, 'steer', 'live', None, steer_chars=len(text),
+              sha256=entry['sha256'], waiting=waiting, attempt=attempt)
+    if args.json:
+        json.dump(dict(ok=True, queued=False, sent=True, task=args.task, attempt=attempt, waiting=waiting, live=True,
+                       chars=len(text)), sys.stdout, indent=2)
+        sys.stdout.write('\n')
+    else:
+        print(f'sending a message to task {args.task}\'s running implementer (attempt {attempt}); it arrives at '
+              'the next tool call. If the attempt ends first, it waits for the next attempt.')
+    return 0
+
+
+def steer_requeue(plan, task, actor):
+    """Moves the inbox's unsent messages back to the queue for the next attempt; how many moved. Under the
+    control lock."""
+    inbox = f'tasks/{task}/{STEER_INBOX}'
+    entries = steer_entries(plan, inbox)
+    if entries:
+        probe(plan, 'control.log')
+        for entry in entries:
+            append_line(plan, f'tasks/{task}/{STEER_FILE}', json.dumps(entry) + '\n')
+        remove_safe(plan, inbox)
+        audit(plan, actor, 'steer-requeued', task, 'steer', str(len(entries)), None,
+              sha256=[e.get('sha256') for e in entries])
+    return len(entries)
+
+
 def cmd_steer_take(args):
     """forge-parallel.sh, as an implementer attempt starts: move the waiting messages to steered.<attempt>.jsonl
     (appended, so a re-dispatch of the same attempt keeps them) and log the delivery. Prints how many moved."""
@@ -1447,6 +1508,10 @@ def cmd_steer_take(args):
         raise Invalid('attempt must be a positive integer')
     rel, dest = f'tasks/{args.task}/{STEER_FILE}', f'tasks/{args.task}/steered.{args.attempt}.jsonl'
     with control_lock(plan):
+        # What an earlier attempt's feeder left behind when its dispatch was killed: never sent, so still waiting.
+        if steer_feeder(plan, args.task) is None:
+            remove_safe(plan, f'tasks/{args.task}/{STEER_LIVE}')
+            steer_requeue(plan, args.task, 'scheduler')
         entries = steer_entries(plan, rel)
         if entries:
             probe(plan, 'control.log')
@@ -1456,6 +1521,149 @@ def cmd_steer_take(args):
             audit(plan, 'scheduler', 'steer-delivered', args.task, 'steer', str(len(entries)), None,
                   attempt=int(args.attempt), sha256=[e.get('sha256') for e in entries])
     print(len(entries))
+    return 0
+
+
+class _Turns:
+    """Reads a claude/openclaude stream-json log as it grows: whether the model has ended its turn, i.e. the last
+    event is a `result` with only background-task events after it (forge-runtime.py's settled_result)."""
+
+    def __init__(self, path):
+        self.path, self.offset, self.rest, self.ended = path, 0, b'', False
+
+    def poll(self):
+        try:
+            with open(self.path, 'rb') as handle:
+                handle.seek(self.offset)
+                chunk = handle.read()
+        except OSError:
+            return self.ended
+        self.offset += len(chunk)
+        *lines, self.rest = (self.rest + chunk).split(b'\n')
+        for line in lines:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            if event.get('type') == 'result':
+                self.ended = True
+            elif not (event.get('type') == 'system' and event.get('subtype') in _runtime().BACKGROUND_EVENTS):
+                self.ended = False
+        return self.ended
+
+
+_RUNTIME = None
+
+
+def _runtime():
+    global _RUNTIME
+    if _RUNTIME is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('forge_runtime', os.path.join(SKILL, 'scripts', 'forge-runtime.py'))
+        _RUNTIME = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_RUNTIME)
+    return _RUNTIME
+
+
+def user_message(text):
+    """One stream-json input line: a user message, as claude and openclaude take it on --input-format stream-json."""
+    return (json.dumps(dict(type='user', message=dict(role='user', content=[dict(type='text', text=text)])))
+            + '\n').encode('utf-8')
+
+
+def cmd_steer_feed(args):
+    """forge-dispatch.sh, as the stdin of a live claude/openclaude implementer (#252): sends the prompt as the first
+    user message, then each message `steer --now` puts in the inbox, until the model ends its turn, the harness is
+    gone or the dispatch says stop. Delivered messages join steered.<attempt>.jsonl (mode live). Its stdout is the
+    harness's stdin, so it writes nothing else there."""
+    plan, rows = load(args.plan)
+    require_task(rows, args.task)
+    if not re.fullmatch(r'[1-9][0-9]{0,5}', args.attempt):
+        raise Invalid('attempt must be a positive integer')
+    task, attempt = args.task, int(args.attempt)
+    if args.pidfile:
+        with contextlib.suppress(OSError):
+            Path(args.pidfile).write_text(f'{os.getpid()}\n')
+    out = sys.stdout.buffer
+    parent = os.getppid()           # the harness: the dispatch execs it with this process as its stdin
+    turns = _Turns(args.log)
+    with open(args.prompt_file, 'rb') as handle:
+        prompt = handle.read().decode('utf-8', errors='replace')
+
+    def gone():
+        return os.getppid() != parent or bool(args.stop and os.path.exists(args.stop))
+
+    try:
+        out.write(user_message(prompt))   # first, so nothing below can keep the task from its implementer
+        out.flush()
+    except (BrokenPipeError, ConnectionResetError):
+        return 0
+    close = True
+    try:
+        with control_lock(plan):
+            write_atomic(plan, f'tasks/{task}/{STEER_LIVE}', json.dumps(dict(
+                attempt=attempt, pid=os.getpid(), harness=args.harness, at=time.time())) + '\n')
+        while True:
+            time.sleep(STEER_POLL)
+            if gone() or turns.poll():
+                break
+            if probe(plan, f'tasks/{task}/{STEER_INBOX}'):
+                steer_send(plan, task, attempt, out)
+    except (BrokenPipeError, ConnectionResetError):
+        pass                        # the harness closed its input: it is ending
+    except (Invalid, Refused, OSError) as error:
+        # Live steering stops; the implementer does not. Its input stays open, as a close mid-turn could end it.
+        print(f'forge control: live steering of task {task} stopped: {error}', file=sys.stderr)
+        close = False
+    finally:
+        with contextlib.suppress(Invalid, Refused, OSError):
+            steer_close(plan, task, os.getpid())
+    while not close and not gone():
+        time.sleep(STEER_POLL)
+    with contextlib.suppress(OSError):
+        out.close()
+    return 0
+
+
+def steer_send(plan, task, attempt, out):
+    """Sends the inbox's messages to the implementer and records them as this attempt's (mode live)."""
+    with control_lock(plan):
+        entries = steer_entries(plan, f'tasks/{task}/{STEER_INBOX}')
+        if not entries:
+            return
+        probe(plan, 'control.log')
+        for entry in entries:
+            out.write(user_message(entry['text']))
+        out.flush()                 # a closed input raises here, before anything is recorded as sent
+        now = time.time()
+        for entry in entries:
+            append_line(plan, f'tasks/{task}/steered.{attempt}.jsonl',
+                        json.dumps(dict(entry, mode='live', sent_at=now)) + '\n')
+        remove_safe(plan, f'tasks/{task}/{STEER_INBOX}')
+        audit(plan, 'scheduler', 'steer-sent', task, 'steer', str(len(entries)), None, attempt=attempt,
+              sha256=[e.get('sha256') for e in entries])
+
+
+def steer_close(plan, task, pid=None):
+    """Ends live steering of the task's attempt: removes steer.live (only the given feeder's, when pid is set)
+    and moves unsent messages back to the queue. Prints nothing; how many went back."""
+    with control_lock(plan):
+        try:
+            current = json.loads(read_file(plan, f'tasks/{task}/{STEER_LIVE}') or '').get('pid')
+        except (ValueError, AttributeError):
+            current = None
+        if pid is None or current in (None, pid):
+            remove_safe(plan, f'tasks/{task}/{STEER_LIVE}')
+        return steer_requeue(plan, task, 'scheduler')
+
+
+def cmd_steer_close(args):
+    """forge-dispatch.sh, once a live implementer has ended: whatever the feeder left (it may have been killed)."""
+    plan, rows = load(args.plan)
+    require_task(rows, args.task)
+    print(steer_close(plan, args.task))
     return 0
 
 
@@ -1668,12 +1876,28 @@ def parser():
     p.add_argument('task')
     p.add_argument('text', nargs='?', help=f'the message (1 to {STEER_MAX} characters)')
     p.add_argument('--file', metavar='FILE', help='the message, read from FILE (- for stdin)')
+    p.add_argument('--now', action='store_true', help="send it to the task's running implementer instead, at its "
+                   'next tool call (claude and openclaude implementers only; refused when none runs live)')
     p.set_defaults(func=cmd_steer)
     p = sub.add_parser('_steer-take')   # forge-parallel.sh only
     p.add_argument('plan')
     p.add_argument('task')
     p.add_argument('attempt')
     p.set_defaults(func=cmd_steer_take)
+    p = sub.add_parser('_steer-feed')   # forge-dispatch.sh only
+    p.add_argument('plan')
+    p.add_argument('task')
+    p.add_argument('attempt')
+    p.add_argument('prompt_file')
+    p.add_argument('log')
+    p.add_argument('--harness', default='claude')
+    p.add_argument('--stop', metavar='FILE', help='stop once this file exists')
+    p.add_argument('--pidfile', metavar='FILE', help='write this process id here')
+    p.set_defaults(func=cmd_steer_feed)
+    p = sub.add_parser('_steer-close')   # forge-dispatch.sh only
+    p.add_argument('plan')
+    p.add_argument('task')
+    p.set_defaults(func=cmd_steer_close)
     p = sub.add_parser('accept', help="queue an accept of a FAIL or NEEDS_DECISION task into the live run: "
                        "its findings become known issues and it merges (the user's decision only)")
     common(p)

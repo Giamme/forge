@@ -1633,10 +1633,22 @@ def _steer_list(reader, name, with_text=False):
             continue
         item = dict(actor=obj.get('actor') if isinstance(obj.get('actor'), str) else None,
                     at=obj.get('at') if _is_number(obj.get('at')) else None, chars=len(obj['text']))
+        if obj.get('mode') == 'live':      # sent to the running implementer (#252)
+            item['mode'] = 'live'
         if with_text:
             item['text'] = reader.cap(obj['text'], name, size=8000)
         out.append(item)
     return out
+
+
+def _steer_live(reader, prefix):
+    """The attempt whose implementer takes messages live now (#252: steer.live names a live feeder), or None."""
+    name = prefix + '/steer.live'
+    obj = (reader.object(name) or {}) if reader.exists(name) else {}
+    pid, attempt = obj.get('pid'), obj.get('attempt')
+    if type(pid) is not int or type(attempt) is not int or not forge_proc.pid_alive(pid):
+        return None
+    return attempt
 
 
 def _trail(reader, rows, execs, sources_name, escalations, queue_times, prefix=None):
@@ -1987,6 +1999,8 @@ def _task_detail(reader, task, run_id, waves, branches, max_attempts, origin, re
     task['header'] = _header(reader, task['title'], texts['prompt'], texts['approach'], request, prefix, origin)
     task['trail'] = _trail(reader, logged, execs, prefix + '/retry_sources.tsv', task['escalations'], queues, prefix)
     task['steer_waiting'] = _steer_list(reader, prefix + '/steer.jsonl', with_text=True)
+    task['steer_live'] = _steer_live(reader, prefix)
+    task['steer_sending'] = _steer_list(reader, prefix + '/steer.inbox.jsonl', with_text=True)
     task['now'] = _now(reader, prefix, execs) if task['status'] == 'RUNNING' else None
     merged = reader.stat(prefix + '/merged') if task['status'] == 'MERGED' else None
     task['merged_at'] = float(merged.st_mtime) if merged is not None else None
@@ -2083,7 +2097,7 @@ def _sweep(reader, tasks):
 _RUN_CONTROLS = ('control.log', 'retry_budget', 'infra_budget', 'drain', 'stop', 'max_parallel', 'infra.paused', 'infra.last',
                  'infra_backoff', 'escalate_effort', 'control.requests', 'summaries', 'summaries_model')
 _TASK_CONTROLS = ('qa_threshold', 'retry_budget', 'retries.used', 'escalation.pin', 'escalation.stop', 'escalation.next',
-                  'summaries', 'steer.jsonl')
+                  'summaries', 'steer.jsonl', 'steer.live', 'steer.inbox.jsonl')
 
 
 _FAIL_FIRST_RESULTS = ('proven', 'passes_without_change', 'inconclusive', 'error')
@@ -2611,7 +2625,8 @@ def _solo_detail(reader, source):
                 gate=_gate(reader, 'qa.gate'), known_issues=_nonempty(reader, 'known_issues.md'),
                 fail_first=_fail_first(reader, 'failfirst.json'), pre_review=None,
                 now=_now(reader, '', execs) if status == 'RUNNING' else None, waiting=None, sweep=None, swept=[],
-                summary=None, summaries_override=None, brief=None, steer_waiting=[])
+                summary=None, summaries_override=None, brief=None, steer_waiting=[], steer_live=None,
+                steer_sending=[])
     task['header'] = _header(reader, task['title'], prompt, approach, request, 'tasks/solo',
                              _github_origin(reader))
     task['trail'] = _trail(reader, logged, execs, 'retry_sources.tsv', [], _queued_retries(reader).get('solo', ()))

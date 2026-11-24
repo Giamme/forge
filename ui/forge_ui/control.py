@@ -1459,9 +1459,9 @@ def _scheduler_live(path):
     return forge_proc.pid_alive(pid)
 
 
-def _task_text(ctx):
+def _task_text(ctx, allowed=('text',)):
     """The stripped `text` of a task message body as UTF-8 bytes (an answer, a steer message), or BadBody."""
-    body = _body_object(ctx, ('text',))
+    body = _body_object(ctx, allowed)
     text = body.get('text')
     if not isinstance(text, str):
         raise BadBody('text must be a string')
@@ -1477,19 +1477,23 @@ def _task_text(ctx):
 
 
 def _task_steer(ctx):
-    """POST `{text}`: `forge control steer <plan> <id> --file - --actor ui --json`, the text on stdin (#134). The
-    message waits in the task's steer.jsonl for its next implementer attempt; nothing is started."""
+    """POST `{text, now?}`: `forge control steer <plan> <id> --file - --actor ui --json`, the text on stdin (#134).
+    The message waits in the task's steer.jsonl for its next implementer attempt; nothing is started. With `now`
+    true it goes to the running implementer instead (#252: `--now`), refused when none runs live."""
     ctx.route = 'steer'
     task = ctx.parts[0]
     try:
-        stdin = _task_text(ctx)
+        stdin = _task_text(ctx, ('text', 'now'))
+        now = ctx.body.get('now', False)
+        if not isinstance(now, bool):
+            raise BadBody('now must be true or false')
     except BadBody as exc:
         return _invalid(str(exc))
     path = ctx.locate(('plan',))
     if path is None:
         return 404, {'error': 'not found'}
     return ctx.locked(lambda: ctx.call('control', 'steer', path, task, '--file', '-', '--actor', 'ui', '--json',
-                                       stdin=stdin))
+                                       *(('--now',) if now else ()), stdin=stdin))
 
 
 def _task_answer(ctx):

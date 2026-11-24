@@ -117,6 +117,20 @@ class Formats(unittest.TestCase):
             fh.write(lines[5])                                       # it finished: the same event, done
         self.assertEqual(read()[2:], [('command', None, 0)])
 
+    def test_live_steering_shows_the_messages_sent_while_it_ran(self):
+        # #252: --replay-user-messages repeats each user message where the CLI took it in; the first is the prompt.
+        user = lambda text: {'type': 'user', 'isReplay': True, 'message': {'role': 'user', 'content': [{'type': 'text', 'text': text}]}}
+        events = [{'type': 'system', 'subtype': 'init', 'session_id': 's1'}, user('Implement the task.'),
+                  {'type': 'assistant', 'message': {'id': 'm1', 'content': [{'type': 'tool_use', 'id': 't1', 'name': 'Bash', 'input': {'command': 'make'}}]}},
+                  {'type': 'user', 'message': {'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': 't1', 'content': 'ok'}]}},
+                  user('Keep the old name.'),
+                  {'type': 'assistant', 'message': {'id': 'm2', 'content': [{'type': 'text', 'text': 'Done.'}]}},
+                  {'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'Done.'}]
+        log = self.home / 'dwarf.log'
+        log.write_text(''.join(json.dumps(e) + '\n' for e in events))
+        got = brief(transcripts.transcript(log, 'claude')['events'])
+        self.assertEqual(got, [('command', 'make'), ('steer', 'Keep the old name.'), ('message', 'Done.'), ('result', '')])
+
     def test_a_call_not_answered_is_running_only_while_the_agent_runs(self):
         log = self.home / 'qa.log'
         log.write_text(''.join((LOGS / 'claude-stream.jsonl').read_text().splitlines(keepends=True)[:3]))   # Bash called, no result

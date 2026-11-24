@@ -22,9 +22,9 @@ window.ForgeConvo = (() => {
   const icon = name => window.ForgeIcons ? window.ForgeIcons.icon(name) : el('span');
   const chip = (text, st) => el('span', text, 'chip st-' + st);
   const num = v => Number.isFinite(Number(v)) && v !== null ? Number(v).toLocaleString() : '—';
-  const ICON = { prompt: 'flag', message: 'chat', reasoning: 'thought', command: 'terminal', edit: 'pencil', tool: 'tool', result: 'check', error: 'cross', text: 'keyboard', gap: 'chevron-down' };
+  const ICON = { prompt: 'flag', steer: 'chat', message: 'chat', reasoning: 'thought', command: 'terminal', edit: 'pencil', tool: 'tool', result: 'check', error: 'cross', text: 'keyboard', gap: 'chevron-down' };
   // which kinds each filter key shows
-  const SHOW = [['all', 'All', null], ['said', 'Said', ['prompt', 'message', 'reasoning', 'result', 'error']], ['ran', 'Ran', ['command', 'tool', 'error']],
+  const SHOW = [['all', 'All', null], ['said', 'Said', ['prompt', 'steer', 'message', 'reasoning', 'result', 'error']], ['ran', 'Ran', ['command', 'tool', 'error']],
     ['changed', 'Changed', ['edit']]];
   const urlFor = (run, spec) => `/api/runs/${enc(run.key)}/executions/${enc(spec.exec)}/transcript`;
 
@@ -163,6 +163,9 @@ window.ForgeConvo = (() => {
       body.append(d);
     } else if (kind === 'message') {
       head.append(el('span', D.role === 'qa' ? 'Reviewer' : 'Dwarf', 'ev-label')); if (when) head.append(when);
+      body.append(head, el('div', ev.text, 'ev-text'));
+    } else if (kind === 'steer') {                       // a message the user sent while it ran (#252)
+      head.append(el('span', 'Your message', 'ev-label'), el('span', 'sent live', 'tag steered')); if (when) head.append(when);
       body.append(head, el('div', ev.text, 'ev-text'));
     } else if (kind === 'command') {
       const st = ev.running ? 'running' : ev.error ? 'fail' : ev.exit === 0 || ev.error === false ? 'pass' : ev.exit != null ? 'fail' : 'none';

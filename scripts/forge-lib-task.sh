@@ -1275,7 +1275,8 @@ prepare_fallback() { # prepare_fallback <plan> <id> <excluded harness/model,...>
 # steer_take moves them to steered.<attempt>.jsonl under the control lock; steer_section prints them
 # into that attempt's implementer and reviewer prompts (again on a re-dispatch of the same attempt).
 steer_take() { # steer_take <plan> <id> <attempt>
-  [ -s "$1/tasks/$2/steer.jsonl" ] || return 0
+  # steer.inbox.jsonl: live messages an earlier attempt's killed dispatch never sent (#252).
+  [ -s "$1/tasks/$2/steer.jsonl" ] || [ -s "$1/tasks/$2/steer.inbox.jsonl" ] || [ -e "$1/tasks/$2/steer.live" ] || return 0
   local moved
   moved="$(python3 "$SKILL_DIR/scripts/forge-control.py" _steer-take "$1" "$2" "$3" 2>&1)" \
     || { note "$2: the waiting messages could not be given to attempt $3 ($moved); they stay for the next one"; return 0; }

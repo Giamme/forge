@@ -719,6 +719,15 @@ not always the end: a background task that completes wakes the session for anoth
 turn under way is never ended by the grace, however long it is silent. The grace is long
 because that wake-up can come many minutes later. `<role>.resolved` records `result_grace=`.
 
+**Live steering (#252).** forge-parallel dispatches an implementer with `--steer <plan> <task>
+<attempt>`. On claude and openclaude (not on Windows, and not with `FORGE_LIVE_STEER=off`) it then
+runs with `--input-format stream-json --replay-user-messages`, its stdin fed by `forge-control.py
+_steer-feed`: the prompt first, then each `forge control steer --now` message. A CLI whose help lacks
+those flags runs as before, with a note. The feeder stops at the model's final result; unsent
+messages go back to the task's queue. Its input stays open, so the CLI never exits by itself: with
+no background task open, forge ends it after `FORGE_LIVE_GRACE` seconds of silence (default 10) and
+the result stands (`ended_by=live`). `<role>.resolved` records `steer=live`.
+
 On `3` or `4`, forge shows you the actual error rather than substituting a different model —
 quietly swapping backends hides the fact that the one you picked is broken.
 

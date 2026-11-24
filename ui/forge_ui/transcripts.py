@@ -359,6 +359,12 @@ def parse_claude(text, session_file=False):
                     done.pop('running', None)
                     _answered(done, lines.end, t)
                     _put(done, 'output', _payload(block.get('content'))[0], OUTPUT_CAP)
+        elif kind == 'user' and message and value.get('isReplay'):
+            # Live steering (#252): the CLI replays each user message where it took it in. The first, before the
+            # model did anything, is the prompt; every later one is a message the user sent while it ran.
+            said = ' '.join(b.get('text', '') for b in _blocks(message.get('content')) if b.get('type') == 'text').strip()
+            if said and any(ev['kind'] in ('message', 'reasoning', 'command', 'edit', 'tool', 'result') for ev in events):
+                events.append(_event('steer', text=said, t=t))
         elif kind == 'user' and message:
             for block in _blocks(message.get('content')):
                 bt = block.get('type')

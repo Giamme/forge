@@ -2238,7 +2238,8 @@ do_task_body() (
     fi
     forge_metric_phase dispatch
     local dwarf_cmd=(/bin/bash "$DISPATCH" dwarf "$dw" --repo "$wt" --run-dir "$tdir" \
-          --ripwire-query-file "$tdir/prompt.md" --prompt-file "$tdir/dwarf.input" ${yd:+"$yd"} $ft_dwarf --output "${FORGE_OUTPUT:-summary}")
+          --ripwire-query-file "$tdir/prompt.md" --prompt-file "$tdir/dwarf.input" ${yd:+"$yd"} $ft_dwarf --output "${FORGE_OUTPUT:-summary}" \
+          --steer "$PLAN" "$id" "$attempt")
     "${dwarf_cmd[@]}" ${is_cont[@]+"${is_cont[@]}"} >"$tdir/dwarf.out" 2>&1
     rc=$?
     if [ "$rc" = 9 ] && [ "$is_mode" = continued ]; then
