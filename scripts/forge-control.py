@@ -12,6 +12,10 @@
                                                  summaries (on/off; with --task also inherit; on for a finished run
                                                  also starts `forge summarize` detached, output in summaries.out)
   pin   <plan> <task> <spec>                     the model the task's next FULL implementer retry uses
+  models <plan> <tier> [--dwarf SPECS] [--qa SPECS]
+                                                 the implementer and/or reviewer of every task of one difficulty
+                                                 (low, medium, high) that has not started yet; SPECS is one spec or
+                                                 a comma-separated pool, handed out in row order as `plan` does
   unpin <plan> <task>
   retry <plan> <task> [--dwarf SPEC]             queue a retry of a stopped or failed task into the live run
   retry <plan> <task> --answer TEXT              answer a NEEDS_INPUT task's question (or --answer-file F, - for stdin):
@@ -49,7 +53,16 @@ applies or refuses it at its next pass and logs the outcome in control.log, with
 when it was queued. A task-level change or a pin on a MERGED task, and a pin on a
 Fractal plan, are refused.
 
-A pin, a retry's --dwarf and an added row's specs are checked with `forge-dispatch.sh doctor
+`models` rewrites the dwarf and qa columns of tasks.tsv for the PENDING tasks of that tier that have
+never started an attempt (a running, finished, merged or retried task keeps its model: a pin or a retry
+changes that one), and leaves a scripted task's dwarf column alone. It needs no live run, so a plan can
+be adjusted before `run`. The file is replaced atomically, and only if no other writer changed it in
+between (an escalation rewrites a started task's row). `show --json` lists each tier's pending tasks
+and their specs (`tiers`), the model each spec of the plan resolves to (`models`) and the registry
+(`registry`, {alias: [[harness, model], ...]}, the first row the default), so forge-ui can show what a
+spec runs before it is applied (#169, #187).
+
+A pin, a retry's --dwarf, a `models` spec and an added row's specs are checked with `forge-dispatch.sh doctor
 --spec <spec> --role <role>`, which spends no quota, before the lock is taken.
 FORGE_CONTROL_DOCTOR replaces `bash forge-dispatch.sh doctor` with another command line, which
 then gets `--spec <spec> --role <role>`; tests use it.
@@ -83,6 +96,7 @@ if SCRIPTS not in sys.path:
     sys.path.insert(0, SCRIPTS)
 import forge_flock as fcntl  # noqa: E402
 import forge_infra  # noqa: E402
+import forge_models  # noqa: E402
 import forge_posix  # noqa: E402
 import forge_proc  # noqa: E402
 
@@ -100,6 +114,7 @@ STOP_MARKERS = ('escalation.stop', 'split.suggested', 'escalation.next')
 NEXT_ATTEMPT = "at the task's next attempt"
 NEXT_DECISION = 'at the next retry decision'
 NEXT_RETRY = 'at the next full retry (not QA-only resumes)'
+NEXT_START = 'when each task starts'
 NEXT_VERIFY = 'at the next verification'
 NEXT_INFRA_WAIT = 'at the next infrastructure wait'
 NEXT_INFRA_STOP = 'at the next infrastructure stop'
@@ -512,7 +527,51 @@ def show(plan, rows):
             if len(log) == LOG_SHOWN:
                 break
     return dict(plan=plan, run_id=get('run_id') or os.path.basename(plan).removeprefix('forge-'),
-                live=live, fractal=is_fractal(plan), run=run, tasks=tasks, log=log)
+                live=live, fractal=is_fractal(plan), run=run, tasks=tasks, log=log,
+                tiers=tier_summary(plan, rows), models=spec_models(tasks), registry=registry_map())
+
+
+def registry_map():
+    """{alias: [[harness, model], ...]} in registry order (the first row is the alias's default)."""
+    out = {}
+    for cells in forge_models.registry_rows():
+        out.setdefault(cells[0], []).append([cells[1], cells[2]])
+    return out
+
+
+def spec_models(tasks):
+    """{spec: label} for every spec the controls show: each task's dwarf, qa, pin and next model."""
+    rows = forge_models.registry_rows()
+    out = {}
+    for info in tasks.values():
+        for key in ('dwarf', 'qa', 'pin', 'escalation_next'):
+            for spec in forge_models.pool(info.get(key) or ''):
+                if spec not in out:
+                    out[spec] = forge_models.describe(spec, rows)
+    return out
+
+
+def not_started(plan, task):
+    """A task `models` may change: PENDING and no attempt ever started."""
+    return task_status(plan, task) == 'PENDING' and not has(plan, f'tasks/{task}/attempt')
+
+
+def tier_summary(plan, rows):
+    """{tier: {tasks, pending, dwarf: [specs], qa: [specs]}}: the specs the not-started tasks of the tier use."""
+    out = {tier: dict(tasks=0, pending=0, dwarf=[], qa=[]) for tier in DIFFICULTIES}
+    for row in rows:
+        if len(row) != 7 or row[2] not in out or not valid_task_id(row[0]):
+            continue
+        entry = out[row[2]]
+        entry['tasks'] += 1
+        if not not_started(plan, row[0]):
+            continue
+        entry['pending'] += 1
+        for column, key in ((4, 'dwarf'), (5, 'qa')):
+            for spec in forge_models.pool(row[column]):
+                if spec not in entry[key]:
+                    entry[key].append(spec)
+    return out
 
 
 # ------------------------------------------------------------------------------------ changes
@@ -760,7 +819,7 @@ def cmd_pin(args):
         return spec, previous, previous != spec
 
     return change(args, plan, rows, 'pin', args.task, 'pin', work, NEXT_RETRY,
-                  lambda v: f'pinned task {args.task} to {v}', pin_guard=True)
+                  lambda v: f'pinned task {args.task} to {v} ({forge_models.describe(v)})', pin_guard=True)
 
 
 def cmd_unpin(args):
@@ -775,6 +834,97 @@ def cmd_unpin(args):
 
     return change(args, plan, rows, 'unpin', args.task, 'pin', work, NEXT_RETRY,
                   lambda v: f'unpinned task {args.task}')
+
+
+def pool_specs(text, what):
+    """The specs of --dwarf/--qa: one spec or a comma-separated pool, each clean; Invalid otherwise."""
+    specs = [part.strip() for part in (text or '').split(',')]
+    if not specs or any(not s for s in specs):
+        raise Invalid(f'{what} must be one spec or a comma-separated pool such as sol:high,astra:xhigh')
+    for spec in specs:
+        clean_spec(spec, what)
+    return specs
+
+
+def cmd_models(args):
+    """The implementer and/or reviewer of every not-started task of one difficulty tier (#169)."""
+    plan, rows = load(args.plan)
+    if args.tier not in DIFFICULTIES:
+        raise Invalid('the tier is low, medium or high')
+    if args.dwarf is None and args.qa is None:
+        raise Invalid('give --dwarf, --qa or both')
+    if is_fractal(plan):
+        raise Refused('this plan runs under Fractal, whose tasks keep the models they were planned with')
+    dwarfs = pool_specs(args.dwarf, '--dwarf') if args.dwarf is not None else None
+    qas = pool_specs(args.qa, '--qa') if args.qa is not None else None
+    for spec in dwarfs or []:
+        doctor(spec, 'dwarf')
+    for spec in qas or []:
+        doctor(spec, 'qa')
+    result = {}
+
+    def rewrite(text):
+        lines, changed, kept, d_i, q_i = text.split('\n'), [], {}, 0, 0
+        for i, line in enumerate(lines):
+            cells = line.split('\t')
+            if line.startswith('#') or len(cells) != 7 or cells[2] != args.tier or not valid_task_id(cells[0]):
+                continue
+            if not not_started(plan, cells[0]):
+                kept[cells[0]] = task_status(plan, cells[0])
+                continue
+            before = list(cells)
+            if dwarfs and cells[4] != 'script':
+                cells[4] = dwarfs[d_i % len(dwarfs)]
+                d_i += 1
+            if qas:
+                cells[5] = qas[q_i % len(qas)]
+                q_i += 1
+            if cells != before:
+                lines[i] = '\t'.join(cells)
+                changed.append(dict(task=cells[0], dwarf=[before[4], cells[4]], qa=[before[5], cells[5]]))
+        return '\n'.join(lines), changed, kept
+
+    def work():
+        for _ in range(5):
+            text = read_file(plan, 'tasks.tsv', strict=True)
+            new, changed, kept = rewrite(text)
+            result.update(changed=changed, kept=kept)
+            if not changed:
+                return None, None, False
+            # Compare and swap: an escalation may rewrite a started task's row meanwhile.
+            if read_file(plan, 'tasks.tsv', strict=True) != text:
+                continue
+            write_atomic(plan, 'tasks.tsv', new)
+            value = ';'.join(x for x in (f'dwarf={args.dwarf}' if dwarfs else '', f'qa={args.qa}' if qas else '') if x)
+            return value, None, True
+        raise Refused('tasks.tsv kept changing under the change; try again')
+
+    with control_lock(plan):
+        probe(plan, 'control.log')
+        value, previous, changed = work()
+        if changed:
+            audit(plan, args.actor, 'models', None, args.tier, value, previous,
+                  tasks=[c['task'] for c in result['changed']])
+    controls = show(plan, load(args.plan)[1])
+    models = forge_models.registry_rows()
+    labels = {s: forge_models.describe(s, models) for s in (dwarfs or []) + (qas or [])}
+    if args.json:
+        json.dump(dict(ok=True, changed=dict(action='models', task=None, key=args.tier, value=value, previous=None),
+                       tasks=result['changed'], kept=result['kept'], models=labels,
+                       applies=NEXT_START, controls=controls), sys.stdout, indent=2)
+        sys.stdout.write('\n')
+    else:
+        n = len(result['changed'])
+        if not n:
+            print(f'no {args.tier} task that has not started needed a change; nothing logged')
+        else:
+            roles = ', '.join(f'{role} {" / ".join(f"{s} ({labels[s]})" for s in specs)}'
+                              for role, specs in (('dwarf', dwarfs), ('qa', qas)) if specs)
+            print(f'{n} {args.tier} task{"s" if n != 1 else ""} ({", ".join(c["task"] for c in result["changed"])}) '
+                  f'now use {roles}; applies {NEXT_START}')
+        if result['kept']:
+            print('kept (already started): ' + ', '.join(f'{t} ({st})' for t, st in sorted(result['kept'].items())))
+    return 0
 
 
 def run_command(args, action, rel, value, summary):
@@ -1164,6 +1314,12 @@ def parser():
     p.add_argument('task')
     p.add_argument('spec', help='a dwarf spec, e.g. sol:high:codex')
     p.set_defaults(func=cmd_pin)
+    p = sub.add_parser('models', help='the dwarf and/or qa model of every not-started task of one difficulty tier')
+    common(p)
+    p.add_argument('tier', help='low, medium or high')
+    p.add_argument('--dwarf', metavar='SPECS', help='one spec or a comma-separated pool (handed out in row order)')
+    p.add_argument('--qa', metavar='SPECS', help='one spec or a comma-separated pool')
+    p.set_defaults(func=cmd_models)
     p = sub.add_parser('unpin', help='drop a task pin')
     common(p)
     p.add_argument('task')
