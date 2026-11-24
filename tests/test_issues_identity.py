@@ -352,7 +352,7 @@ class InProcessTests(IdentityCase):
         expected = self.cli(str(self.repo), '--offline', '--all-runs', '--include-plausible', '--include-dismissed')
         got = mod.listing(self.repo)
         self.assertEqual(json.loads(json.dumps(got)), expected)
-        self.assertEqual(sorted(got), ['already_filed', 'drafts', 'findings', 'notes', 'plan', 'repo', 'summary', 'warnings'])
+        self.assertEqual(sorted(got), ['already_filed', 'drafts', 'findings', 'notes', 'online', 'plan', 'repo', 'summary', 'warnings'])
         self.assertEqual(len(got['drafts']), 2)
         # the same flags as a call: no plausible, no dismissed, one run
         narrow = mod.listing(run, include_plausible=False, include_dismissed=False, all_runs=False)

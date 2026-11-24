@@ -88,6 +88,18 @@ class OnlineStateTests(StateCase):
             self.assertEqual((found['issues_online'], found['issues_read_at']), (True, 500.0))
             self.assertFalse([n for n in found['notes'] if 'GitHub' in n or 'forge issues' in n])
 
+    def test_a_listing_that_asked_nothing_of_github_is_not_online(self):
+        # #174: a repository with no GitHub name lists without --offline but reads no issue state
+        calls = []
+
+        def issues(path, online=True):
+            calls.append(online)
+            return dict(repo='', online=False, findings=[])
+        found = self.screen_findings(issues=issues, now=700.0)
+        self.assertEqual(calls, [True], 'the listing is still used; nothing better comes from --offline')
+        self.assertEqual((found['issues_online'], found['issues_read_at']), (False, 700.0))
+        self.assertIn('the repository has no GitHub remote: issue states were not read from GitHub', found['notes'])
+
     def test_the_listing_is_asked_of_the_root_once_and_online_first(self):
         calls = []
 

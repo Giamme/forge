@@ -13,8 +13,8 @@
 #
 # The whole suite takes about 40 minutes on one runner, so each OS and Python pair splits it into
 # 4 shards (tests/run_tests.py --shard). The "Tests passed" job at the end is the one check to
-# require for merging: it fails when the lint job or any test job did, and passes for a
-# documentation-only change that lints clean.
+# require for merging: it fails when the lint job (ruff, links) or any test job did, and passes
+# for a documentation-only change that lints clean and whose links resolve.
 # The msys2 job (Windows MSYS2 mode, a short list of tests) runs with the windows job but is not
 # part of "Tests passed" yet: it becomes required once it has been reliable for a while.
 
@@ -76,13 +76,17 @@ jobs:
           PY
 
   # Pyflakes rules only (ruff.toml): unused imports and variables, undefined names, repeated dict
-  # keys. Takes seconds, and runs on every event, documentation-only pull requests included.
+  # keys. Then the Markdown links and #anchors of SKILL.md, README, references/ and docs/
+  # (tests/check_links.py, standard library only). Takes seconds, and runs on every event,
+  # documentation-only pull requests included, so a renamed heading in docs/ is caught there too.
   lint:
-    name: Lint (ruff)
+    name: Lint (ruff, links)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - run: pipx run ruff==0.16.9 check --output-format github .
+      - name: Links and anchors
+        run: python3 tests/check_links.py
 
   check:
     name: ${{ matrix.os }} · Python ${{ matrix.python }} · ${{ matrix.shard }}/4

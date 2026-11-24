@@ -232,7 +232,9 @@ class LiveStateTests(VerifyLanesCase):
         while time.monotonic() < deadline and not seen:
             try:
                 lane = self.lane_doc('slow')
-            except (FileNotFoundError, ValueError, StopIteration):
+            # PermissionError: on Windows, opening lanes.json while forge-verify's atomic replace of it runs
+            # is refused (errno 13); like a missing or half-read file, it means "read again"
+            except (FileNotFoundError, PermissionError, ValueError, StopIteration):
                 lane = None
             if lane and lane['state'] == 'running' and lane['step'] and lane['last_line'] == 'page 3/9':
                 seen = lane

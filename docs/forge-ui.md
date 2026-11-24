@@ -60,7 +60,7 @@ Claude's session file on this machine.
 
 The *Verification* node opens the run's verification in the inspector. While it runs you see
 for how long, the step a lane announced (`::forge step`, see
-[verification lanes](../references/decompose.md#execution-checks-and-integration-verification))
+[verification lanes](../references/decompose-integration.md#execution-checks-and-integration-verification))
 and its last printed line, a warning after five minutes with no output, and the live output of
 the lane that printed last (or of the one you choose). Once it fails, the failing tests come
 first, by lane and marked new or known (from the lanes' JUnit or TAP reports), each with its
@@ -234,8 +234,8 @@ press the button, with no dry run. The HTTP shapes are in
   Each asks you to confirm first, with no dry run; the confirm names the checkouts and, for an edit,
   the old text and the new. Add and edit are documented with
   [`forge memory forget`](commands.md#forge-memory-forget). Under `--read-only` the tab still shows
-  the learnings, hides the checkboxes, Forget, Add and Edit, and shows the `forge memory` commands
-  to copy. Reachable from the header, a run's repository name and each map district.
+  the learnings, hides the checkboxes, Forget, Add and Edit, and gives each row a *Commands*
+  button that shows its `forge memory edit` and `add` commands to copy, one row at a time. Reachable from the header, a run's repository name and each map district.
 - **Disk (`#/disk`):** what forge takes on disk in every repository it has runs for (each run dir's
   review snapshots, logs and anything forge does not create, each run's worktree folder, the data home),
   what can go without losing a run, and the command that takes it back (`forge runs compact --logs`),

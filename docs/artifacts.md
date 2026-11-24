@@ -151,7 +151,7 @@ forge/<run-id>-integration                       integration branch
 ```
 
 A group review's files are what each outcome writes. The rules are in
-[Groups and group review](../references/decompose.md#groups-and-group-review-opt-in).
+[Groups and group review](../references/decompose-opt-in.md#groups-and-group-review-opt-in).
 
 `control.log` lines look like
 `{"at": 1761200000.5, "actor": "ui", "action": "set", "task": null, "key": "qa-threshold", "value": "P2", "previous": "P1"}`

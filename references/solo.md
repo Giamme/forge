@@ -65,7 +65,7 @@ never blocks: a FAIL made only of those is accepted, and either way they are rec
 
 `--qa-threshold P0|P1|P2|P3|none` sets this run's threshold and is written to `<run>/qa_threshold`
 only when given. The gate, the same as in a decomposed run, writes `qa.gate` and `known_issues.md`
-in the run directory. See [the verdict rule](decompose.md#qa-verdicts).
+in the run directory. See [the verdict rule](decompose-review.md#qa-verdicts).
 
 `--native-review` is an explicit Codex-only alternative: native review cannot accept the
 custom requirements prompt or verdict instruction. Its result is informational and UNKNOWN;
@@ -74,7 +74,7 @@ baseline via `--review-base`.
 
 `--fail-first` runs the change's new tests against the code without its non-test changes
 first and gives the reviewer the result (`failfirst.json`); see
-[fail-first evidence](decompose.md#fail-first-evidence-opt-in).
+[fail-first evidence](decompose-review.md#fail-first-evidence-opt-in).
 
 Changes remain in the source working tree. Forge does not commit or integrate solo work.
 
@@ -84,9 +84,9 @@ reports immutable attempt metrics and native usage independently of project memo
 context is assembled from original requirements and approach; QA does not embed dwarf
 execution instructions. Review snapshots use self-contained object packs and one checkout, with
 the repo's dependency directories (`node_modules`, `.venv`, `vendor`, Mix's `deps` and the others
-listed under [worktree setup](decompose.md#worktree-setup)) linked in, at the root and in workspace
+listed under [worktree setup](decompose-integration.md#worktree-setup)) linked in, at the root and in workspace
 packages, when it has them; the prompt says what is there, and the reviewer reports `FORGE_TESTS` as in
-[worktree setup](decompose.md#worktree-setup). The snapshot is removed when the review ends
+[worktree setup](decompose-integration.md#worktree-setup). The snapshot is removed when the review ends
 (`FORGE_KEEP_SNAPSHOTS=1` keeps it).
 
 Optional [Ripwire context](ripwire.md) is enabled by default. Use `--no-ripwire`

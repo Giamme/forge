@@ -139,10 +139,11 @@ Either role can run through any of six agent CLIs:
 
 ## forge-ui
 
-forge-ui is an opt-in, read-only local page that watches any run live, drawn as a 3D map. It
+forge-ui is an opt-in local page that watches any run live, drawn as a 3D map. It
 shows every run on one plate, tasks in their waves and as they really ran, and the prompt, model,
-timings and P0–P3 findings behind every step. forge offers it at the start of every new run and
-never opens it without a yes.
+timings and P0–P3 findings behind every step. It can also act: live controls, findings, brief
+answers and deleting runs, unless you start it with `--read-only` (or `FORGE_UI_READONLY=1`).
+forge offers it at the start of every new run and never opens it without a yes.
 
 <p align="center">
   <img src="ui/docs/media/cloud.webp" width="880" alt="The run cloud: about seventy runs as blocks in five project spirals, orbited, then laid out as galaxies and as a timeline with one lane per project.">

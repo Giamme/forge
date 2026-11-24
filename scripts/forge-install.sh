@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# forge-install.sh — make /forge reachable from codex, claude, openclaude and opencode.
+# forge-install.sh — make /forge reachable from codex, claude, openclaude, opencode, antigravity and grok.
 #
 # This skill directory stays the single source of truth.
 #
@@ -134,11 +134,15 @@ install_antigravity() {
     say "$label: plugin -> $wrapper"; return "$rc"
   fi
   mkdir -p "$wrapper/skills" || return 1
+  # The plugin's version is forge's own (VERSION), not a fixed placeholder.
+  local version=""
+  read -r version < "$SKILL_DIR/VERSION" 2>/dev/null || true
+  [ -n "$version" ] || version="0"
   cat > "$wrapper/plugin.json" <<EOF
 {
   "name": "forge",
-  "description": "Dispatch a coding task to a dwarf model to implement, then an independent qa model to review its actual diff, across codex/claude/openclaude/opencode/antigravity.",
-  "version": "1.0.0",
+  "description": "Dispatch a coding task to a dwarf model to implement, then an independent qa model to review its actual diff, across codex/claude/openclaude/opencode/antigravity/grok.",
+  "version": "$version",
   "author": { "name": "forge" }
 }
 EOF
