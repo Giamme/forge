@@ -166,7 +166,7 @@ class ValidReplyTests(AutoCase):
         self.planner_says(reply(task('a')))
         result, plan = self.auto('frozen', '--plan', 'always', planner=None)
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn('gpt-6.1-sol', (plan / 'planner.cmd').read_text())
+        self.assertIn('gpt-6.2-sol', (plan / 'planner.cmd').read_text())
         self.assertNotIn('opus', (plan / 'planner.cmd').read_text())
         self.assertEqual(json.loads((plan / 'profile.json').read_text())['name'], 'then')
         # plan records the planner of a kept frozen profile too, so the table and the dataset see it.

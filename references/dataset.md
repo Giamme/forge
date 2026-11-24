@@ -325,7 +325,7 @@ only to local models. Builds are deterministic for a given store and `--seed`.
 tables kept apart because they answer different questions.
 
 **Observational.** Every task's first attempt, by declared tier and the model and effort that
-ran it (resolved, so `sol` and `gpt-6.1-sol:medium:codex` share a row):
+ran it (resolved, so `sol` and `gpt-6.2-sol:medium:codex` share a row):
 - first-try pass rate with a Wilson 95% interval
 - the share that passed review at some attempt, or that a human accepted
 - unfinished tasks

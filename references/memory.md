@@ -47,8 +47,8 @@ committed by the user — forge does not commit on anyone's behalf.
 | Intent | Action |
 |---|---|
 | share memory with the team | commit `.forge/` |
-| keep it to this machine | `echo '.forge/' >> .gitignore` |
-| no memory at all | `--no-memory` or `FORGE_MEMORY=off` |
+| keep it to this machine | `echo '.forge/' >> .gitignore`, or `forge setup set memory local` (lists it in `.git/info/exclude`) |
+| no memory at all | `--no-memory` or `FORGE_MEMORY=off`; for every run in one clone, `forge setup set memory off` (`git config forge.memory off`) |
 
 Gitignoring does **not** disable anything: an ignored `.forge/` is still written and still
 injected into every prompt. Only the third row turns the feature off.

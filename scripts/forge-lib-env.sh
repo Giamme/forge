@@ -44,6 +44,12 @@ forge_host_path() {
   fi
 }
 
+# forge_repo_memory_off REPO: `forge setup` chose no project memory for this clone
+# (git config forge.memory off). The env var and --no-memory work as before, on top.
+forge_repo_memory_off() {
+  [ "$(git -C "${1:-.}" config --get forge.memory 2>/dev/null)" = off ]
+}
+
 forge_ensure_python3() {
   forge_is_windows || return 0
 

@@ -35,7 +35,7 @@ WORKER = scope_tests.WORKER.replace(
 WORKER = WORKER.replace('[ -f "$plan/gate" ] && break', '[ -f "$plan/gate" ] || [ -f "$plan/gate.$name" ] && break', 1)
 assert 'gate.$name' in WORKER and WORKER.count('after') > 3 and '_prepare_retry)' in WORKER
 
-SOL = 'codex gpt-6.1-sol'
+SOL = 'codex gpt-6.2-sol'
 SONNET = 'claude sonnet'
 
 
@@ -108,7 +108,7 @@ class LateralTests(RecoveryBase):
         self.task('a', [f'INFRA capacity {SOL}', 'PASS'], dwarf='sol')
         r = self.run_scheduler('--infra-retries', 1)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.fallbacks(), ['a fallback codex/gpt-6.1-sol --cause capacity'])
+        self.assertEqual(self.fallbacks(), ['a fallback codex/gpt-6.2-sol --cause capacity'])
         self.assertNotIn('is over', r.stderr)           # its own pause is not waited out
 
     def test_capacity_with_no_peer_waits(self):
@@ -255,7 +255,7 @@ class AskTests(RecoveryBase):
         (self.plan / 'nopeer').write_text('')
         self.env['FORGE_INFRA_BACKOFF'] = '3'
         self.task('a', [f'INFRA provider_down {SOL}', 'PASS'], dwarf='sol')
-        self.task('b', ['INFRA usage_limit codex gpt-6-astra 8', 'PASS'], dwarf='astra', hold=True)
+        self.task('b', ['INFRA usage_limit codex gpt-6.2-astra 8', 'PASS'], dwarf='astra', hold=True)
         scheduler, scopes = self.live('--infra-retries', 2)
         self.assertEqual((scopes[0]['class'], scopes[0]['tasks']), ('provider_down', ['a']))
         started = time.time()
@@ -269,7 +269,7 @@ class AskTests(RecoveryBase):
     def test_a_usage_limit_joining_an_exhausted_pause_keeps_its_reset_for_the_restart(self):
         (self.plan / 'nopeer').write_text('')
         self.task('a', [f'INFRA provider_down {SOL}', 'PASS'], dwarf='sol')
-        self.task('b', ['INFRA usage_limit codex gpt-6-astra 4', 'PASS'], dwarf='astra', hold=True)
+        self.task('b', ['INFRA usage_limit codex gpt-6.2-astra 4', 'PASS'], dwarf='astra', hold=True)
         self.task('c', ['PASS'], dwarf='sonnet', qa='sonnet', hold=True)   # keeps the run alive
         scheduler, scopes = self.live('--infra-retries', 0, capacity=3)
         self.assertEqual((scopes[0]['class'], scopes[0]['exhausted']), ('provider_down', True))
@@ -290,7 +290,7 @@ class AskTests(RecoveryBase):
     def test_a_budget_stop_over_a_known_reset_restarts_from_that_reset(self):
         (self.plan / 'nopeer').write_text('')
         self.task('a', [f'INFRA usage_limit {SOL} 20', 'PASS'], dwarf='sol')
-        self.task('b', ['INFRA budget codex gpt-6-astra', 'PASS'], dwarf='astra', hold=True)
+        self.task('b', ['INFRA budget codex gpt-6.2-astra', 'PASS'], dwarf='astra', hold=True)
         self.task('c', ['PASS'], dwarf='sonnet', qa='sonnet', hold=True)   # keeps the run alive
         scheduler, scopes = self.live('--infra-retries', 1, capacity=3)
         (self.plan / 'gate.b').write_text('')
@@ -308,7 +308,7 @@ class AskTests(RecoveryBase):
     def test_a_later_reset_joining_an_asking_pause_still_asks_and_shows_the_reset(self):
         (self.plan / 'nopeer').write_text('')
         self.task('a', [f'INFRA budget {SOL}', 'PASS'], dwarf='sol')
-        self.task('b', ['INFRA usage_limit codex gpt-6-astra 60', 'PASS'], dwarf='astra', hold=True)
+        self.task('b', ['INFRA usage_limit codex gpt-6.2-astra 60', 'PASS'], dwarf='astra', hold=True)
         self.task('c', ['PASS'], dwarf='sonnet', qa='sonnet', hold=True)   # keeps the run alive
         scheduler, scopes = self.live('--infra-retries', 1, capacity=3)
         (self.plan / 'gate.b').write_text('')
@@ -338,7 +338,7 @@ class RetryMoveTests(RecoveryBase):
         r = self.run_scheduler('--infra-retries', 1)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.events()[:5], ['a start 1', 'a end INFRA', 'a start 2', 'a end INFRA',
-                                             'a fallback codex/gpt-6.1-sol --cause empty'])
+                                             'a fallback codex/gpt-6.2-sol --cause empty'])
         self.assertIn('dispatching it again at once', r.stderr)
         self.assertEqual(r.stderr.count('dispatching it again at once'), 1)
         self.assertNotIn('is over', r.stderr)            # the moved task does not wait for its old model
@@ -356,7 +356,7 @@ class RetryMoveTests(RecoveryBase):
         self.task('b', ['PASS'], dwarf='astra', hold=True)
         scheduler, scopes = self.live('--infra-retries', 1)
         self.assertEqual([(s['scope'], s['class'], s['exhausted'], s['needs_you'], s['hint']) for s in scopes],
-                         [('model:codex/gpt-6.1-sol', 'cancelled', True, True,
+                         [('model:codex/gpt-6.2-sol', 'cancelled', True, True,
                            "check codex's approval and permission settings")])
         code, err = self.release(scheduler)
         self.assertEqual(code, 8, err)

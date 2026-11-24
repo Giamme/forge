@@ -62,10 +62,10 @@ main() {
   fi
   # Updating Forge does not offer installation of optional dependencies.
   if [ "$dry" = 1 ]; then
-    FORGE_RIPWIRE=off /bin/bash "$source_dir/scripts/forge-install.sh" --dry-run || return $?
+    FORGE_RIPWIRE=off FORGE_SETUP=off /bin/bash "$source_dir/scripts/forge-install.sh" --dry-run || return $?
     echo 'forge: preview only; remote changes and live harness availability are not verified'
   else
-    FORGE_RIPWIRE=off /bin/bash "$source_dir/scripts/forge-install.sh" || {
+    FORGE_RIPWIRE=off FORGE_SETUP=off /bin/bash "$source_dir/scripts/forge-install.sh" || {
       echo 'forge: source retained; some installations failed. Fix the reported cause and retry with --local' >&2; return 1;
     }
     echo 'forge: installations refreshed; restart active harness sessions to load the updated skill'

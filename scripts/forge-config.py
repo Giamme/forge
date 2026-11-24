@@ -662,7 +662,19 @@ def set_feature(args):
     data.setdefault('version', 1)
     save_user(data)
     emit(args, args.key, previous, value)
+    if args.key in _LATER and not args.json:
+        live = _LATER[args.key]
+        print('  applies to runs planned from now on; a plan keeps the value it was planned with'
+              + ('. For a live plan: %s' % live if live else ''))
     return 0
+
+
+# Feature keys a plan copies when it is planned (#162): a change reaches later plans only.
+_LATER = {
+    'retro': None, 'brief': None, 'brief.scope': None, 'brief.model': None,
+    'summaries': 'forge control set <plan> summaries on|off',
+    'summaries.model': 'forge control set <plan> summaries-model <spec>',
+}
 
 
 def unset_feature(args):

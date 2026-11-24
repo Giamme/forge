@@ -328,7 +328,7 @@ class EndToEndTests(StoreCase):
             self.assertEqual((attempt['data']['status'], attempt['attempt']), ('PASS', 1))
             self.assertIn('+implemented', store.read_blob(attempt['data']['blobs']['diff']['sha']).decode())
             roles = {e['data']['role']: e['data'] for e in self.events(kind='dispatch', parent=attempt['rid'])}
-            self.assertEqual((roles['dwarf']['model'], roles['dwarf']['harness']), ('gpt-6.1-sol', 'codex'))
+            self.assertEqual((roles['dwarf']['model'], roles['dwarf']['harness']), ('gpt-6.2-sol', 'codex'))
             self.assertEqual(roles['qa']['verdict'], 'PASS')
             self.assertEqual(roles['dwarf']['tokens']['output'], 3)
         merges = {e['task']: e['data']['status'] for e in self.events(kind='event') if e['data']['name'] == 'merge'}
@@ -528,11 +528,11 @@ class EndToEndTests(StoreCase):
         state = routing['a']['state']
         self.assertIn('REQUIREMENT_SENTINEL TASK_a', state['prompt'])
         self.assertEqual([s['id'] for s in state['plan_tasks']], ['b'])
-        self.assertEqual(state['dwarf']['model'], 'gpt-6.1-sol')
+        self.assertEqual(state['dwarf']['model'], 'gpt-6.2-sol')
         reviews = sorted((c['task'], c['expected']['passes'], '+fixed' in c['state']['diff'])
                          for c in cases if c['slice'] == 'review')
         self.assertEqual(reviews, [('a', False, False), ('a', True, True), ('b', True, False)])
-        self.assertEqual({c['state']['reviewer']['model'] for c in cases if c['slice'] == 'review'}, {'opus'})
+        self.assertEqual({c['state']['reviewer']['model'] for c in cases if c['slice'] == 'review'}, {'claude-opus-5-5'})   # the claude row's exact id
         severities = sorted((c['task'], c['expected']['passes'], c['expected'].get('severity'))
                             for c in cases if c['slice'] == 'review')
         self.assertEqual(severities, [('a', False, 'P1'), ('a', True, 'none'), ('b', True, 'none')])
@@ -891,7 +891,7 @@ class EndToEndTests(StoreCase):
 
         shadows = {e['task']: e for e in self.events(kind='dispatch') if e['data']['role'] == 'qa_shadow'}
         self.assertEqual({t: (e['attempt'], e['data']['verdict'], e['data']['model']) for t, e in shadows.items()},
-                         {'a': (1, 'FAIL', 'gpt-6.1-sol'), 'b': (1, 'PASS', 'gpt-6.1-sol')})
+                         {'a': (1, 'FAIL', 'gpt-6.2-sol'), 'b': (1, 'PASS', 'gpt-6.2-sol')})
         [attempt_a] = self.attempts('a')
         self.assertEqual(shadows['a']['data']['shadow']['reviewed'], attempt_a['data']['reviewed_commit'])
         ended = {e['task']: e['data']['status'] for e in self.events(kind='event') if e['data']['name'] == 'shadow_review'}
@@ -1211,8 +1211,8 @@ class ShadowPickTests(unittest.TestCase):
 
 
 class PairsReportTests(StoreCase):
-    SOL_HIGH = dict(harness='codex', model='gpt-6.1-sol', effort='high')
-    SOL_MEDIUM = dict(harness='codex', model='gpt-6.1-sol', effort='medium')
+    SOL_HIGH = dict(harness='codex', model='gpt-6.2-sol', effort='high')
+    SOL_MEDIUM = dict(harness='codex', model='gpt-6.2-sol', effort='medium')
     OPUS_HIGH = dict(harness='claude', model='opus', effort='high')
 
     def pair(self, task, primary, shadow, status='done'):
@@ -1251,14 +1251,14 @@ class PairsReportTests(StoreCase):
         rep = pairs.report(export.Runs(export.Store(store.connect())))
         self.assertEqual((rep['pairs'], rep['by_kind']), (4, dict(effort=2, model=0, family=1, control=1)))
         rows = {r['kind']: r for r in rep['comparisons']}
-        self.assertEqual(rows['effort'], dict(kind='effort', a='gpt-6.1-sol:medium (codex)', b='gpt-6.1-sol:high (codex)',
+        self.assertEqual(rows['effort'], dict(kind='effort', a='gpt-6.2-sol:medium (codex)', b='gpt-6.2-sol:high (codex)',
                                               pairs=2, agree=1, agreement=0.5, ci=[0.095, 0.905], enough=False,
                                               only_a=1, only_b=1, tokens_ratio=2.5, time_ratio=2.5))
         self.assertEqual((rows['control']['a'], rows['control']['pairs'], rows['control']['agree'],
                           rows['control']['only_a'], rows['control']['only_b']),
-                         ('gpt-6.1-sol:high (codex)', 1, 0, 0, 1))
+                         ('gpt-6.2-sol:high (codex)', 1, 0, 0, 1))
         self.assertEqual((rows['family']['a'], rows['family']['b'], rows['family']['agree']),
-                         ('gpt-6.1-sol:high (codex)', 'opus:high (claude)', 1))
+                         ('gpt-6.2-sol:high (codex)', 'opus:high (claude)', 1))
 
 
 class RiskReportTests(StoreCase):
@@ -2007,7 +2007,7 @@ class ExportStateIdentityTests(StoreCase):
                  data=dict(status='FAIL', wall_started=1100, dwarf='sol:high', qa='opus:high')),
             dict(rid='d1', kind='dispatch', src='import', repo='fixture', run='run-1', mode='parallel',
                  task='a', attempt=1, ts=1100,
-                 data=dict(role='dwarf', model='gpt-6.1-sol', effort='high', harness='codex')),
+                 data=dict(role='dwarf', model='gpt-6.2-sol', effort='high', harness='codex')),
             dict(rid='q1', kind='dispatch', src='import', repo='fixture', run='run-1', mode='parallel',
                  task='a', attempt=1, ts=1100,
                  data=dict(role='qa', model='opus', effort='high', harness='claude', verdict='FAIL')),
@@ -2017,7 +2017,7 @@ class ExportStateIdentityTests(StoreCase):
                            blobs=dict(retry_findings=blob(findings)))),
             dict(rid='d2', kind='dispatch', src='import', repo='fixture', run='run-1', mode='parallel',
                  task='a', attempt=2, ts=1200,
-                 data=dict(role='dwarf', model='gpt-6.1-sol', effort='high', harness='codex')),
+                 data=dict(role='dwarf', model='gpt-6.2-sol', effort='high', harness='codex')),
             dict(rid='q2', kind='dispatch', src='import', repo='fixture', run='run-1', mode='parallel',
                  task='a', attempt=2, ts=1200,
                  data=dict(role='qa', model='opus', effort='high', harness='claude', verdict='PASS')),
@@ -2040,7 +2040,7 @@ class ExportStateIdentityTests(StoreCase):
             plan_tasks=[dict(id='sib', title='Sibling ' + 'T' * 112, files='s.txt', deps='-')],
             file_excerpts={'a.txt': 'print(1)\n', 'b.txt': '(does not exist yet)'},
             memory=memory,
-            dwarf=dict(model='gpt-6.1-sol', effort='high', harness='codex'),
+            dwarf=dict(model='gpt-6.2-sol', effort='high', harness='codex'),
             reviewer=dict(model='opus', effort='high', harness='claude'),
             size=dict(prompt_chars=58, declared_files=2, plan_tasks=2, deps=1, decompose_level='low')))
         self.assertEqual(routing['questions']['first_pass'], dict(
@@ -2218,7 +2218,7 @@ class SideDispatchHarvestTests(StoreCase):
         (attempt / 'metrics.json').write_text(json.dumps(dict(
             role=role, wall_started=1.0, exit_code=0, harness='codex', elapsed_s=dict(total=1),
             input_tokens=tokens[0], cached_input_tokens=tokens[1], output_tokens=tokens[2])))
-        (attempt / (role + '.resolved')).write_text('alias=sol\nharness=codex\nmodel=gpt-6.1-sol\neffort=low\n')
+        (attempt / (role + '.resolved')).write_text('alias=sol\nharness=codex\nmodel=gpt-6.2-sol\neffort=low\n')
         (attempt / (role + '.last')).write_text('done\n')
         (attempt / (role + '.prompt')).write_text('read this\n')
         return attempt

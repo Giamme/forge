@@ -74,9 +74,23 @@ Clone anywhere you like — the installer works out its own location and links f
 `~/.claude/skills/forge` is just the tidiest home: claude reads that path directly, and
 opencode and grok scan it on their own.
 
-The installer also offers optional Fractal support in an interactive terminal. Declining
-or a Fractal installation failure does not prevent ordinary Forge setup. See
-[Fractal installation](fractal.md#install-the-optional-runtime) for prerequisites and a separate install.
+On a terminal, the installer ends with `forge setup`: one short pass over what a first run needs
+(the models that build and review, review preferences, brief and summaries, forge-ui, project
+memory, decision models, storage, the update check, Ripwire and Fractal), saved as defaults so the
+first `/forge` run asks none of it. Once it is done the installer skips it, and `forge update`
+never runs it. Without a terminal the installer prints the command instead.
+
+```bash
+forge setup                  # change the answers; Enter keeps each one
+forge setup show             # every answer, where it lives, and the command that changes it
+forge setup --defaults       # the recommended answers, no prompts
+forge setup export > s.json  # the same answers for another machine: forge setup --from s.json
+```
+
+Setup never calls a model and sends nothing anywhere unless an answer says it will. Declining an
+add-on, or one failing to install, never fails the install. See [setup](../references/setup.md)
+for every answer, and [Fractal installation](fractal.md#install-the-optional-runtime) for its
+prerequisites.
 
 ## Windows: MSYS2 mode
 

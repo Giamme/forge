@@ -300,7 +300,7 @@ class RunForecastTests(unittest.TestCase):
 
 def fixtures_model():
     """The model the fake codex reports for `sol`, which is what live capture records."""
-    return 'gpt-6.1-sol'
+    return 'gpt-6.2-sol'
 
 
 if __name__ == '__main__':

@@ -74,4 +74,6 @@ forge_dataset_invocation() { # forge_dataset_invocation <command> <rc> <started>
 # offline, in CI and with FORGE_UPDATE_CHECK=off; it never changes a run's exit code.
 forge_update_notice() {
   python3 "$SKILL_DIR/scripts/forge-version.py" notice --source "$SKILL_DIR" </dev/null >&2 2>/dev/null || true
+  # The same for Ripwire (#170): on a terminal it asks before updating; without one it prints the command.
+  python3 "$SKILL_DIR/scripts/forge-ripwire.py" --notice </dev/null >&2 2>/dev/null || true
 }

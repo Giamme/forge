@@ -218,7 +218,7 @@ class ContinueSessionTests(DispatchBase):
         self.assertEqual(result.returncode, 0, result.stdout)
         argv, _tmp = read_only_codex(self.run_dir, self.argv(), 'qa')
         self.assertEqual(argv[:4], ['codex', 'exec', 'resume', self.SESSION])
-        self.assertEqual(argv[4:], ['--json', '-m', 'gpt-6.1-sol', '--skip-git-repo-check', '-o', str(self.run_dir / 'qa.last'),
+        self.assertEqual(argv[4:], ['--json', '-m', 'gpt-6.2-sol', '--skip-git-repo-check', '-o', str(self.run_dir / 'qa.last'),
                                     '-c', 'model_reasoning_effort=high', *read_only_tail(self.run_dir, 'qa'), '-'])
         for flag in ('-C', '-s', '--cd'):
             self.assertNotIn(flag, argv)
@@ -342,7 +342,7 @@ class ContinueSessionTests(DispatchBase):
             'dwarf with native review': ('dwarf', 'opus', '--continue-session', sid, '--native-review'),
             'native review': ('qa', 'sol', '--continue-session', sid, '--native-review'),
             'opencode': ('qa', 'gemini-pro::opencode', '--continue-session', sid),
-            'antigravity': ('qa', 'opus::antigravity', '--continue-session', sid),
+            'antigravity': ('qa', 'opus-4.6::antigravity', '--continue-session', sid),
             'grok': ('qa', 'grok:high', '--continue-session', sid),
             'too short': ('qa', 'opus', '--continue-session', 'abc1234'),
             'too long': ('qa', 'opus', '--continue-session', 'a' * 129),
@@ -377,6 +377,23 @@ class ContinueSessionTests(DispatchBase):
         self.assertEqual(code, 0, out)
         code, out = doctor('sol', '--role', 'dwarf', '--continue-session', self.SESSION)
         self.assertEqual(code, 2, out)
+
+
+class VersionedAliasNoteTests(DispatchBase):
+    """An alias is one model on every harness (#187): naming a harness the alias has no row for
+    passes it through as a literal id, and the note names the versioned alias that harness serves."""
+
+    def test_the_note_names_the_versioned_alias_the_harness_serves(self):
+        result = self.dispatch('qa', 'opus::antigravity', '--dry-run')
+        self.assertIn("alias 'opus' has no row for harness 'antigravity'", result.stdout)
+        self.assertIn('(antigravity serves opus-4.6)', result.stdout)
+        self.assertIn('model=opus', self.read('qa.resolved'))
+
+    def test_a_versioned_alias_resolves_to_its_own_model(self):
+        self.assertEqual(self.dispatch('qa', 'opus-4.6::antigravity', '--dry-run').returncode, 0)
+        self.assertIn('model=claude-opus-4-6-thinking', self.read('qa.resolved'))
+        self.assertEqual(self.dispatch('dwarf', 'sol-6.1', '--dry-run').returncode, 0)
+        self.assertIn('model=gpt-6.1-sol', self.read('dwarf.resolved'))
 
 
 class GrokHarnessTests(DispatchBase):
@@ -819,7 +836,7 @@ class TimeoutResolutionTests(DispatchBase):
         # gemini tops out at high on antigravity: asking for ultra costs nothing extra.
         self.assertEqual(self.resolve('gemini:ultra'), ('2700', 'default'))
         # A model with no effort dial has no effort to scale by.
-        self.assertEqual(self.resolve('opus:max:antigravity'), ('2700', 'default'))
+        self.assertEqual(self.resolve('opus-4.6:max:antigravity'), ('2700', 'default'))
 
     def test_passthrough_model_uses_default(self):
         self.assertEqual(self.resolve('some-new-model:xhigh:opencode'), ('3600', 'default+effort-scaled'))
@@ -999,7 +1016,7 @@ class FastTierTests(DispatchBase):
     REFUSED = (
         ('openclaude', 'sol:high:openclaude'),
         ('opencode', 'sol:high:opencode'),
-        ('antigravity', 'opus::antigravity'),
+        ('antigravity', 'opus-4.6::antigravity'),
         ('grok', 'grok:high'),
     )
 
@@ -1034,11 +1051,11 @@ class FastTierTests(DispatchBase):
     def test_without_the_option_the_command_resolved_and_exit_stay(self):
         # Pinned to the argv a dispatch builds today. A fast dispatch may add only its own flag.
         codex = [
-            'codex', 'exec', '--json', '-m', 'gpt-6.1-sol', '-C', str(self.repo), '--skip-git-repo-check',
+            'codex', 'exec', '--json', '-m', 'gpt-6.2-sol', '-C', str(self.repo), '--skip-git-repo-check',
             '-o', str(self.run_dir / 'dwarf.last'), '-c', 'model_reasoning_effort=medium', '--approve-for-me', '-',
         ]
         claude = [
-            'claude', '-p', '--model', 'opus', '--add-dir', str(self.run_dir), '--output-format', 'stream-json',
+            'claude', '-p', '--model', 'claude-opus-5-5', '--add-dir', str(self.run_dir), '--output-format', 'stream-json',
             '--verbose', '--effort', 'medium', '--permission-mode', 'acceptEdits', '--allowedTools', 'Bash',
         ]
         cases = (
@@ -1189,12 +1206,12 @@ class SideRoleTests(DispatchBase):
 
     def test_codex_and_claude_are_read_only_at_effort_low(self):
         codex = [
-            'codex', 'exec', '--json', '-m', 'gpt-6.1-sol', '-C', str(self.repo), '--skip-git-repo-check',
+            'codex', 'exec', '--json', '-m', 'gpt-6.2-sol', '-C', str(self.repo), '--skip-git-repo-check',
             '-o', str(self.run_dir / 'side.last'), '-c', 'model_reasoning_effort=low',
             *read_only_tail(self.run_dir, 'side'), '-',
         ]
         claude = [
-            'claude', '-p', '--model', 'opus', '--add-dir', str(self.run_dir), '--output-format', 'stream-json',
+            'claude', '-p', '--model', 'claude-opus-5-5', '--add-dir', str(self.run_dir), '--output-format', 'stream-json',
             '--verbose', '--effort', 'low', '--permission-mode', 'acceptEdits', '--allowedTools', 'Bash',
             '--disallowed-tools', 'Edit,Write,NotebookEdit',
         ]
@@ -1248,7 +1265,7 @@ class SideRoleTests(DispatchBase):
         cases = (
             ('sol::openclaude', '--disallowed-tools', 'Edit,Write,NotebookEdit', 'low'),
             ('sol::opencode', '--agent', 'plan', '<harness default>'),
-            ('opus::antigravity', '--mode', 'plan', '<harness default>'),
+            ('opus-4.6::antigravity', '--mode', 'plan', '<harness default>'),
             ('grok', '--reasoning-effort', 'low', 'low'),
         )
         for spec, flag, value, effort in cases:

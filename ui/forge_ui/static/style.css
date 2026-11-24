@@ -799,6 +799,13 @@ p.ctl-why::before { content: ''; width: 7px; height: 7px; border-radius: 50%; ba
 .ctl-set button, .ctl-pin > button { min-height: 28px; }
 .ctl-set button[aria-pressed=true] { background: var(--key); box-shadow: inset 0 0 0 1px var(--rule-2); color: var(--muted); }
 .ctl-pin-now { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+/* models per difficulty (#169) and what a spec runs */
+.ctl-tiers { margin-top: var(--s-1); }
+.ctl-tier-now { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.ctl-role { font-size: var(--t-xs); text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.ctl-spec { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
+.ctl-model { overflow-wrap: anywhere; }
+.ctl-resolved { overflow-wrap: anywhere; }
 p.ctl-stop { display: flex; align-items: center; gap: 7px; margin: 0; padding: 4px var(--s-2); border-radius: var(--r-small); background: var(--warn-wash); color: var(--warn-ink); font-weight: 600; }
 .ctl-log { margin-top: var(--s-1); }
 /* the run's keys (drain, resume, stop), its drained or stopping state, pauses and a queued retry's answer */

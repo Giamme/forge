@@ -1113,6 +1113,33 @@ class Controls(unittest.TestCase):
         self.assertFalse((self.plan / 'tasks/graph/escalation.pin').exists())
         self.assertClean(page)
 
+    def test_the_models_of_a_tier_go_through_the_cli_and_say_what_they_run(self):
+        # #169: the low tier's task that has not started (server) gets the implementers typed; started ones keep theirs.
+        page = self.open(cdn=False, view='2d')
+        self.inspect(page)
+        row = '#inspector [data-row=tier-low]'
+        self.assertIn('1 of 2 not started', page.text_content(row))
+        page.fill(row + ' input >> nth=0', 'haiku:xhigh,sol')
+        self.assertIn('sol → gpt-6.2-sol on codex', page.text_content(row + ' .ctl-resolved'))
+        page.click(row + ' button.primary')
+        page.wait_for_selector('#inspector .ui-confirm')
+        self.assertIn('for the 1 low task that has not started', page.text_content('#inspector .ui-confirm'))
+        page.click('#inspector .ui-confirm button:text-is("Confirm")')
+        page.wait_for_selector(row + ' .ui-outcome.ok')
+        rows = {r.split('\t')[0]: r.split('\t')[4] for r in (self.plan / 'tasks.tsv').read_text().splitlines() if not r.startswith('#')}
+        self.assertEqual((rows['server'], rows['docs']), ('haiku:xhigh', 'luna'))
+        self.assertClean(page)
+
+    def test_the_pin_says_what_the_typed_spec_runs(self):
+        page = self.open(cdn=False, view='2d')
+        self.inspect(page, 'graph')
+        row = '#inspector [data-row=pin]'
+        page.fill(row + ' .ctl-alias input', 'astra')
+        page.click(row + ' button[data-value=xhigh]')
+        page.wait_for_function("() => document.querySelector('#inspector [data-row=pin] .ctl-resolved').textContent.includes('xhigh')")
+        self.assertEqual(page.text_content(row + ' .ctl-resolved'), 'astra:xhigh runs gpt-6.2-astra on codex')
+        self.assertClean(page)
+
     def test_a_queued_retry_follows_the_scheduler_to_its_outcome(self):
         page = self.open(cdn=False, view='2d')
         self.inspect(page, 'docs')

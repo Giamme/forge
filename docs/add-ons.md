@@ -6,9 +6,11 @@ Two optional add-ons: Ripwire adds repository evidence to every prompt, and Jev 
 
 ## Ripwire context
 
-Forge automatically adds optional Ripwire 0.4.0 repository evidence to planner, dwarf,
-and QA prompts across all six harnesses. Setup and interactive runners offer a pinned,
-verified installation; headless runs continue when it is missing. Use `--no-ripwire`
+Forge automatically adds optional Ripwire repository evidence (Ripwire 0.6 or later) to
+planner, dwarf, and QA prompts across all six harnesses. Setup and interactive runners offer
+to install the latest release; headless runs continue when it is missing. After a run, forge
+tells you once a day when a newer Ripwire is out and, on a terminal, offers to update it
+(`forge ripwire update`; `forge ripwire status` shows installed vs latest). Use `--no-ripwire`
 or `FORGE_RIPWIRE=off` to disable it. Decomposed plans preserve opt-out across resumes
 and retries. See [installation, controls and attempt artifacts](../references/ripwire.md).
 
